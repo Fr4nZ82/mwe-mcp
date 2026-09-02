@@ -1,8 +1,8 @@
 ---
 name: ingest-reconcile
 description: Reconciler — after the memory has been read, decide what this turn closes, replaces, re-dates or re-shares among the facts the turn actually saw; strict JSON out; change nothing rather than the wrong thing
-version: 1.2
-default_version_at_bootstrap: v1.2
+version: 1.3
+default_version_at_bootstrap: v1.3
 ---
 
 # Prompt: ingest-reconcile
@@ -33,9 +33,11 @@ The system prompt for the **reconciliation stage**
   They reach this stage only through the `{new_facts}` block below, where they
   are legal only as a `successor`.*
 - **Model**: the `ingest` slot (the same cheap tier as the classifier).
-- **Placeholders**: `{message}` (the user's verbatim message), `{current_time}`
-  (the turn's semantic clock — `occurred_at` when replayed), `{candidates}`
-  (one line per candidate: `fact_id · validity · audience · text`).
+- **Placeholders**: `{message}` (the user's verbatim message),
+  `{completed_message}` (the classifier's reading of it with the implicit part
+  written in, `(none)` when it added nothing), `{current_time}` (the turn's
+  semantic clock — `occurred_at` when replayed), `{candidates}` (one line per
+  candidate: `fact_id · validity · audience · text`).
 - **Output**: one strict JSON object, first-balanced-`{}` parsed. All four
   arrays empty is a fully valid — and common — answer.
 - **`supersedes` also carries `{new_facts}`** — the facts this turn filed
@@ -70,6 +72,7 @@ Four verbs, and each one has to be plainly stated by the message:
 
 Rules that hold for all four:
 
+- **Read the message together with its completion.** WHAT IT SAYS IN FULL, below, is this same message with what the speaker left out written in — "I bought it" → "I bought the milk" — worked out earlier this turn from the conversation, which you cannot see. When it is there, that is the sentence to match candidates against: "I bought it", "done!", "sorted, no need any more" name nothing on their own words, and a closure they plainly make would be missed for want of a noun. It says `(none)` when the message already said everything. It is a reading and not the user's words, so where the two disagree the message above wins.
 - This is a PRECISION instrument. Act only on a candidate whose text plainly matches what the message says. When nothing matches, return empty arrays — changing nothing is always safe, because a missed reconciliation is recoverable on a later turn while a wrong one has already forgotten or exposed the wrong thing.
 - Never act on a candidate because it is merely related, on the same page, or about the same person.
 - **Talking about a fact is not changing it.** A message that discusses a fact, advises on it, helps plan it, summarises it or says it again leaves it exactly as it was. Saying the same thing in other words — a second report of the same value, a more precise wording of the same claim — is a DUPLICATE, and the memory merges duplicates by itself: closing one deletes a live fact and, because a closure names no replacement, leaves the reader nowhere to go. "contradicted" needs the message to assert something the fact cannot be true alongside; "completed" needs it to say the thing was DONE, not that it was discussed.
@@ -80,6 +83,9 @@ Rules that hold for all four:
 
 USER MESSAGE:
 {message}
+
+WHAT IT SAYS IN FULL (the same message with the implicit part written in):
+{completed_message}
 
 FACTS THIS TURN WROTE (fact_id · text) — the only legal `successor` values:
 {new_facts}

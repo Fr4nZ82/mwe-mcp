@@ -844,11 +844,14 @@ struct LlmIngestPlan {
     /// The turn's message with what the speaker left implicit written in —
     /// «i suoi reni sono peggiorati» → «i reni di bob sono peggiorati».
     ///
-    /// The search runs BEFORE this call and can only look for the words the
-    /// turn actually contains, so a turn whose subject lives in the previous
-    /// exchange is searched for blind. The classifier is the first thing in
-    /// the turn that has the conversation in front of it, so it is the first
-    /// thing that can say what the turn is really asking.
+    /// Everything that has to know what the message MEANS runs after this call
+    /// and would otherwise be handed the message alone: the search, which can look for no word
+    /// the turn does not contain, and the two stages that judge stored facts
+    /// against it, for which *«l'ho comprato»* matches nothing. The classifier
+    /// is the first thing in the turn with the conversation in front of it, so
+    /// it is the first thing that can say what the turn is really about — and
+    /// saying it costs nothing, the sentence riding the JSON it was already
+    /// returning.
     ///
     /// `None` on the turns that need nothing written in, which is most of
     /// them.
@@ -2636,6 +2639,17 @@ async fn reconcile_candidates(
 /// it is shown COMPLETE, never against a sample* — is satisfiable here because
 /// [`recall::facts_on_pages`] returns every readable fact on each opened page.
 ///
+/// **It is shown the completed message beside the raw one.** The stage acts
+/// only on a candidate whose text plainly matches what the message says, and
+/// *«l'ho comprato»*, *«fatto!»*, *«sistemato, non serve più»* say nothing
+/// matchable in their own words — the subject lives in the exchange before
+/// them, which this stage never sees. The classifier does see it, and the
+/// sentence it wrote with the implicit part filled in costs nothing to carry
+/// down here. Without it the textbook case — *«l'ho comprato»* closing *«devo
+/// comprare il latte»* — lands only when the two phrasings happen to share
+/// words. The raw message stays in front of it too: the completion is a
+/// reading, and a reading can be wrong about what the user actually said.
+///
 /// Skipped with no model call when the candidate set is empty: a turn that
 /// read nothing has nothing to reconcile against, and that is the shape of a
 /// pure chat turn.
@@ -2652,6 +2666,7 @@ async fn reconcile_after_reading(
     turn_now: chrono::DateTime<chrono::Utc>,
     candidates: &[RecallHit],
     turn_facts: &[(FactId, String)],
+    completed_message: Option<&str>,
 ) -> ReconcileDecision {
     if candidates.is_empty() {
         return ReconcileDecision::default();
@@ -2680,6 +2695,7 @@ async fn reconcile_after_reading(
         BUNDLED_INGEST_RECONCILE_MD,
         &[
             ("message", request.text.as_str()),
+            ("completed_message", completed_message.unwrap_or("(none)")),
             ("current_time", turn_time.as_str()),
             ("candidates", lines.as_str()),
             ("new_facts", new_facts.as_str()),
@@ -2806,11 +2822,16 @@ async fn recall_topic_candidates(
 /// resource cap; which candidates close is the confirmer's judgment, and an
 /// empty answer is always a valid one.
 ///
+/// The confirmer reads the completed message beside the raw one, for the
+/// reason [`reconcile_after_reading`] writes down: a closure gesture is
+/// exactly the shape of message that leaves its subject in the previous
+/// exchange, and *«l'ho comprato»* on its own matches no candidate's words.
+///
 /// Soft end to end: a recall or LLM failure returns no closures — the
 /// turn never dies on the second pass.
 #[expect(
     clippy::too_many_arguments,
-    reason = "the turn's full context (store, tree, embedder, slot, request, clock, topics, sender, policy, the facts it filed); a one-off bundle struct for the single call site would only rename the problem"
+    reason = "the turn's full context (store, tree, embedder, slot, request, clock, topics, sender, policy, the facts it filed, the completed message); a one-off bundle struct for the single call site would only rename the problem"
 )]
 async fn confirm_topic_closures(
     pool: &SqlitePool,
@@ -2823,6 +2844,7 @@ async fn confirm_topic_closures(
     sender_ctx: &SenderContext,
     policy: &IngestPolicy,
     turn_facts: &[(FactId, String)],
+    completed_message: Option<&str>,
 ) -> (Vec<LlmClosure>, Vec<RecallHit>) {
     let candidates =
         recall_topic_candidates(pool, embedder, topics, sender_ctx, policy, turn_facts).await;
@@ -2849,6 +2871,7 @@ async fn confirm_topic_closures(
         BUNDLED_INGEST_CLOSURES_MD,
         &[
             ("message", request.text.as_str()),
+            ("completed_message", completed_message.unwrap_or("(none)")),
             ("current_time", turn_time.as_str()),
             ("candidates", lines.as_str()),
         ],
@@ -6901,6 +6924,20 @@ pub async fn wiki_ingest_message(
     };
     tracing::debug!(intent = plan.intent.as_str(), "ingest: LLM plan parsed");
 
+    // The classifier's reading of the turn — the message with what the speaker
+    // left implicit written in — kept only where it says something the raw
+    // sentence does not: absent, blank, or a copy of what was typed, there is
+    // nothing to add. Three things downstream read it, and one binding rather
+    // than three copies of this filter is what keeps them agreeing on what the
+    // turn means: the second search below, the closure confirmer, and the
+    // reconciliation stage. The last two are the ones the raw sentence leaves
+    // blind — *«l'ho comprato»* matches no candidate on its own words.
+    let completed_message: Option<&str> = plan
+        .completed_message
+        .as_deref()
+        .map(str::trim)
+        .filter(|c| !c.is_empty() && *c != request.text.trim());
+
     // The second search. The first one ran before anything in this turn had
     // read the conversation, so it looked for the words the turn contains and
     // not for what the turn is about; now that the completed message exists,
@@ -6920,12 +6957,7 @@ pub async fn wiki_ingest_message(
     // has its own job and keeps it: it is the classifier's inventory, and it
     // stands alone on every turn where nothing was left implicit, which is
     // most of them.
-    if let Some(completed) = plan
-        .completed_message
-        .as_deref()
-        .map(str::trim)
-        .filter(|c| !c.is_empty() && *c != request.text.trim())
-    {
+    if let Some(completed) = completed_message {
         let depth = policy.nav_seed_depth.max(policy.recall_top_k);
         match recall::wiki_recall(
             pool,
@@ -7710,6 +7742,7 @@ pub async fn wiki_ingest_message(
                     &sender_ctx,
                     policy,
                     &turn_facts,
+                    completed_message,
                 )
                 .await;
                 turn_closures.extend(confirmed);
@@ -7914,8 +7947,16 @@ pub async fn wiki_ingest_message(
             &turn_facts,
         )
         .await;
-        let decision =
-            reconcile_after_reading(tree, llm, &request, turn_now, &candidates, &turn_facts).await;
+        let decision = reconcile_after_reading(
+            tree,
+            llm,
+            &request,
+            turn_now,
+            &candidates,
+            &turn_facts,
+            completed_message,
+        )
+        .await;
         if !decision.is_empty() {
             reconciled += apply_plan_closures(
                 pool,
@@ -14571,6 +14612,72 @@ mod tests {
         assert!(
             candidates.iter().any(|c| c.fact_id == older),
             "the claim the stage is for still fits the widened slot: {candidates:?}"
+        );
+        drop(dir);
+    }
+
+    /// The stage judges the completed message, not only the words typed.
+    ///
+    /// *«l'ho comprato»* matches no candidate on its own words — the noun is
+    /// in the exchange before it, which this stage never sees. The classifier
+    /// does see it, and wrote the sentence out in full inside the call it was
+    /// already making, so carrying it down here costs nothing. The raw message
+    /// stays beside it: a completion is a reading, and a reading can be wrong
+    /// about what was actually said.
+    #[tokio::test]
+    async fn the_reconciler_is_shown_the_completed_message() {
+        /// The line the `{completed_message}` placeholder rendered into.
+        fn says_in_full(prompt: &str) -> String {
+            prompt
+                .lines()
+                .skip_while(|l| !l.starts_with("WHAT IT SAYS IN FULL"))
+                .nth(1)
+                .unwrap_or_default()
+                .to_owned()
+        }
+
+        let (dir, tree, _pool) = setup_workdir().await;
+        let llm = FakeLlmBackend::new("fake", r#"{"closures":[],"supersedes":[]}"#);
+        let mut candidate = sample_recall_hit("0190f3c2-7a4e-7c31-9b02-2f6a1c8e5d77");
+        candidate.text = "alice deve comprare il latte".into();
+
+        let _ = reconcile_after_reading(
+            &tree,
+            &llm,
+            &req("l'ho comprato", "alice"),
+            chrono::Utc::now(),
+            std::slice::from_ref(&candidate),
+            &[],
+            Some("alice ha comprato il latte"),
+        )
+        .await;
+        let prompt = llm.last_prompt().expect("the stage called the model");
+        assert_eq!(
+            says_in_full(&prompt),
+            "alice ha comprato il latte",
+            "the completed message reaches the judge: {prompt}"
+        );
+        assert!(
+            prompt.contains("l'ho comprato"),
+            "and the words actually typed stay beside it: {prompt}"
+        );
+
+        // A turn that left nothing implicit says so, rather than leaving a
+        // blank for the model to read as an instruction.
+        let _ = reconcile_after_reading(
+            &tree,
+            &llm,
+            &req("ho comprato il latte", "alice"),
+            chrono::Utc::now(),
+            std::slice::from_ref(&candidate),
+            &[],
+            None,
+        )
+        .await;
+        assert_eq!(
+            says_in_full(&llm.last_prompt().expect("called")),
+            "(none)",
+            "nothing left implicit is stated, not left blank"
         );
         drop(dir);
     }

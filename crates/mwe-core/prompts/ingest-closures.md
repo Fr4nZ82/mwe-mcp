@@ -1,8 +1,8 @@
 ---
 name: ingest-closures
 description: Closure confirmer — topic-focused second recall pass for a closure-bearing turn whose targets missed the first recall window; strict JSON out; close nothing rather than a doubtful target
-version: 1.2
-default_version_at_bootstrap: v1.2
+version: 1.3
+default_version_at_bootstrap: v1.3
 ---
 
 # Prompt: ingest-closures
@@ -25,8 +25,10 @@ The system prompt for the ingest **closure confirmer**
   this message are the claims this very message just made.
 - **Model**: the `ingest` slot (the turn's classifier backend).
 - **Placeholders**: `{message}` (the user's verbatim message),
-  `{current_time}` (the turn's semantic clock — `occurred_at` when replayed),
-  `{candidates}` (one line per candidate: `fact_id · validity · text`).
+  `{completed_message}` (the classifier's reading of it with the implicit part
+  written in, `(none)` when it added nothing), `{current_time}` (the turn's
+  semantic clock — `occurred_at` when replayed), `{candidates}` (one line per
+  candidate: `fact_id · validity · text`).
 - **Output**: one strict JSON object, first-balanced-`{}` parsed. An empty
   `closures` array is a fully valid answer.
 - **Caps** (resource, not semantic): topics capped at
@@ -40,6 +42,7 @@ You are the closure confirmer inside mwe-mcp, an MCP server that holds a persist
 
 Decide which candidates this message actually closes. Rules:
 
+- **Read the message together with its completion.** WHAT IT SAYS IN FULL, below, is this same message with what the speaker left out written in — "I bought it" → "I bought the milk" — worked out earlier this turn from the conversation, which you cannot see. When it is there, that is the sentence to match candidates against: a closure gesture is the kind of message that leaves its subject in the exchange before it, and "I bought it" names nothing on its own words. It says `(none)` when the message already said everything. It is a reading and not the user's words, so where the two disagree the message above wins.
 - A closure is a PRECISION instrument: close ONLY a candidate whose text plainly matches what the message covers. When no candidate matches, return an empty list — closing nothing is always safe (a missed closure is recoverable later; a wrong closure forgets the wrong thing). Never close a candidate merely because it is vaguely related or on the same page.
 - `reason` is exactly one of: "completed" (a consumable intention was CARRIED OUT — bought, watched, done), "retracted" (the user takes it back, calls it off, or abandons it), "contradicted" (invalidated by what the message states without being directly replaced).
 - **"completed" and "retracted" look the same from outside and mean opposite things.** Both end an intention; only whether THE THING HAPPENED separates them. It did → "completed". It did not — cancelled, called off, refused, dropped, somebody was told it is not happening → "retracted". A message that reports doing something ABOUT a plan is not a message that reports doing the plan, and "completed" on a thing that never happened puts a false event in the memory.
@@ -50,6 +53,9 @@ Decide which candidates this message actually closes. Rules:
 
 USER MESSAGE:
 {message}
+
+WHAT IT SAYS IN FULL (the same message with the implicit part written in):
+{completed_message}
 
 CANDIDATES — facts that existed BEFORE this turn (fact_id · validity · text):
 {candidates}

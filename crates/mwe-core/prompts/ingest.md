@@ -1,7 +1,7 @@
 ---
 name: ingest
 description: Classifier driving `wiki_ingest_message` — one JSON object per turn (intent + an `extractions[]` array of atomic facts, the SOLE fact container; every fact is prose, each carrying a per-fact validity interval `valid_from`/`valid_to`, a per-fact `style` (and, for `lista` material or a requested container, a `target_page` + `page_description`), a `requested_container` live-write flag, a per-fact `salience`, and an `engine_rule` flag routing a standing governance directive to `@rules.md` instead of `fact_index`, a `behaviour_rule` flag (with a `behaviour_scope` of `per-user`/`agent-wide`/`user-global`, read from the addressee) routing a how-an-agent-converses-or-operates directive to the calling consumer's own wiki — or, user-global, to the sender's identity wiki for every assistant serving them — and an `attachments` claim list linking the turn's media to the fact that describes them); targets the strong-model tier
-version: 2.70
+version: 2.71
 default_version_at_bootstrap: v2.62
 source_of_truth: crates/mwe-core/src/ingest.rs (fn wiki_ingest_message)
 ---
@@ -378,7 +378,7 @@ The block shows facts this memory already holds. **Read it; write nothing agains
 
 **The search ran before you did**, on the words of the message and nothing else. So a turn like *«i suoi reni sono peggiorati»* was searched for as written — no name in it, no way for the search to know whose kidneys. You are the first thing in this turn that has `recent_messages` in front of it, so you are the first thing that can say what the turn is really about.
 
-**When the turn points at somebody or something without naming it, write the message again with the name in it**, and the engine searches again on yours:
+**When the turn points at somebody or something without naming it, write the message again with the name in it** — the engine then searches on your sentence, and the two stages at the end of the turn read it when they decide whether the message closes, replaces, re-dates or re-shares a fact already stored (*«l'ho comprato»* on its own matches nothing they are holding):
 
 - «i suoi reni sono peggiorati» → «i reni di bob sono peggiorati»
 - «quanto costava?» after a turn about a car → «quanto costava la Toyota Corolla usata»
@@ -389,7 +389,7 @@ The block shows facts this memory already holds. **Read it; write nothing agains
 - **Only from `recent_messages`.** The completion has to be *in the conversation*. Never from `recalled_memory` — a fact that merely looks related is not what the speaker meant, and putting its subject in would search for the wrong person with confidence.
 - **Write the same message, not a better one.** Keep the wording, keep the question, keep the tense. You are filling in a pronoun or a missing object, not rephrasing and not answering.
 - **Omit the field when nothing is implicit.** Most turns name what they are about, and repeating them costs a search for nothing. If you would write the message unchanged, leave it out.
-- **When you cannot tell who or what, leave it out.** A guess sends the search after the wrong person, and the block it fills is what the agent will answer from.
+- **When you cannot tell who or what, leave it out.** A guess sends the search after the wrong person, and the block it fills is what the agent will answer from — and a guessed object can close the wrong stored fact, which the next turn does not undo the way it recovers a missed search.
 
 ### `fact_scores` — say which of them actually answers the turn
 
