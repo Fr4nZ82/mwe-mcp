@@ -2349,31 +2349,32 @@ pub async fn recall_due_soon(
     Ok(hits)
 }
 
-/// Every active fact living on the pages a turn actually opened.
+/// Every active fact living on the pages a turn actually read — the
+/// navigator's walk and the identity cards served beside it.
 ///
-/// The third leg of the reconciliation stage's candidate set, and the reason
-/// that stage sits after the navigator rather than beside the classifier: a
-/// slot may reconcile against a set it is shown COMPLETE, never against a
-/// sample. The flat recall hands the turn a top-K sample of the store, so a
-/// judgement about a fact that ALREADY EXISTS ("is this the one the message
-/// closes?") is answered out of a window that may simply not contain it. The
-/// pages the navigator opened are different in kind: for each one this returns
-/// **all** of its readable facts, so within that page nothing is hidden by
-/// ranking.
+/// The structural leg of the reconciliation stage's candidate set, and the
+/// reason that stage sits after the navigator rather than beside the
+/// classifier: a slot may reconcile against a set it is shown COMPLETE, never
+/// against a sample. The flat recall hands the turn a top-K sample of the
+/// store, so a judgement about a fact that ALREADY EXISTS ("is this the one
+/// the message closes?") is answered out of a window that may simply not
+/// contain it. A page the turn read is different in kind: for each one this
+/// returns **all** of its readable facts, so within that page nothing is
+/// hidden by ranking.
 ///
-/// Cheap by construction, not by luck: `NavigatedFragment` already carries the
-/// page it came from and `fact_index` is indexed on `(source_path,
-/// region_start)` (`idx_fact_path`), so this is one indexed read per opened
-/// page — never a second search.
+/// Cheap by construction, not by luck: every caller already knows the page it
+/// injected, and `fact_index` is indexed on `(source_path, region_start)`
+/// (`idx_fact_path`), so this is one indexed read per page — never a second
+/// search.
 ///
 /// ACL-filtered by the same [`row_visible_to`] every other slot uses, so a
 /// fact the reader may not see can neither be shown nor closed. Score is
 /// always `1.0`: membership of a page is structural, not similarity.
 ///
-/// `cap` is a resource bound on the whole set. When it bites, the pages are
-/// consumed in the order given (the navigator's own order, best first) and the
-/// truncation is **logged** — a candidate silently dropped here is a fact that
-/// quietly cannot be closed.
+/// `cap` is a resource bound on the whole set. When it bites, the newest facts
+/// across all the pages together are the ones kept, and the truncation is
+/// **logged** — a candidate silently dropped here is a fact that quietly
+/// cannot be closed.
 ///
 /// # Errors
 ///

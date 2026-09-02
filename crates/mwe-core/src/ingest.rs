@@ -2543,6 +2543,13 @@ fn reconcile_candidate_line(h: &RecallHit, now: &chrono::DateTime<chrono::Utc>) 
 /// Assemble the reconciliation stage's candidate set: the union, deduplicated
 /// by `fact_id`, of what this turn actually read.
 ///
+/// The structural leg is EVERY page whose prose the turn injected, not only
+/// the navigator's walk. An identity card is served in full and
+/// deterministically, whatever the navigator decides, so its facts are the
+/// most certainly-read facts of the whole turn — and leaving them out made a
+/// correction to one of them («I don't live in Bologna any more») land only
+/// when similarity had happened to fish the old fact up as well.
+///
 /// Order matters and is not arbitrary. The flat hits come first because they
 /// are ranked by relevance to this very message; the page-scoped facts follow
 /// because they are complete rather than ranked, so if the cap ever bites it
@@ -2574,7 +2581,7 @@ async fn reconcile_candidates(
     embedder: &Arc<dyn Embedder>,
     query: &str,
     flat: &[RecallHit],
-    nav_paths: &[String],
+    injected_pages: &[String],
     sender_ctx: &SenderContext,
     fresh_top_k: usize,
     turn_facts: &[(FactId, String)],
@@ -2589,7 +2596,7 @@ async fn reconcile_candidates(
             out.push(h.clone());
         }
     }
-    match recall::facts_on_pages(pool, nav_paths, sender_ctx, RECONCILE_CANDIDATE_CAP).await {
+    match recall::facts_on_pages(pool, injected_pages, sender_ctx, RECONCILE_CANDIDATE_CAP).await {
         Ok(hits) => {
             for h in hits {
                 if seen.insert(h.fact_id.as_str().to_owned()) {
@@ -2637,7 +2644,8 @@ async fn reconcile_candidates(
 /// the four verbs all judge stored facts, and the classifier is shown a top-K
 /// similarity sample. The founder's rule — *a slot may reconcile against a set
 /// it is shown COMPLETE, never against a sample* — is satisfiable here because
-/// [`recall::facts_on_pages`] returns every readable fact on each opened page.
+/// [`recall::facts_on_pages`] returns every readable fact on each page the
+/// turn read, cards included.
 ///
 /// **It is shown the completed message beside the raw one.** The stage acts
 /// only on a candidate whose text plainly matches what the message says, and
@@ -7719,8 +7727,8 @@ pub async fn wiki_ingest_message(
             // The machinery below is kept ON PURPOSE, not stranded: it is the
             // substrate of the recall-side **reconciliation stage** — one
             // cheap call after the navigator, judging against the union of the
-            // flat hits, the fresh captures and the facts on the pages the
-            // navigator actually opened. See
+            // flat hits, the fresh captures and the facts on every page whose
+            // prose the turn injected. See
             // §"The reconciliation stage". An operator-overridden prompt that
             // still emits the fields keeps working meanwhile.
             //
@@ -7918,6 +7926,30 @@ pub async fn wiki_ingest_message(
     };
     let navigated = nav_tail.as_ref().and_then(|t| t.section.clone());
 
+    // EVERY page whose prose this turn injected: the navigator's walk, the
+    // speaker's identity card, and the cards of the people the turn is about.
+    // The cards are not a lesser kind of reading — they are served in full,
+    // deterministically, whatever the navigator decides, which is exactly why
+    // they must not be counted twice or forgotten once.
+    //
+    // Four readers below mean this same set, and they only stay in agreement
+    // by sharing it. The reconciliation stage takes its structural candidates
+    // from here, so a correction to something on a card («I don't live in
+    // Bologna any more, I've moved») can retire the fact it corrects instead
+    // of waiting for similarity to have happened to fish it out. The flat slot
+    // drops a hit whose page prose already rides in the block, so the card's
+    // facts are not restated under it. The recall log records it as what the
+    // turn surfaced, and the miss detector reads it back: a fact the turn had
+    // in front of it is not a fact recall failed to find.
+    let mut injected_pages: Vec<String> = nav_tail
+        .as_ref()
+        .map(|t| t.page_paths.clone())
+        .unwrap_or_default();
+    injected_pages.extend(identity_path.map(str::to_owned));
+    if let Some(m) = &mentioned {
+        injected_pages.extend(m.page_paths.iter().cloned());
+    }
+
     // Step 5a-bis — THE RECONCILIATION STAGE. The last point in the turn where
     // the engine has actually read the memory, and therefore the only place a
     // judgement about an ALREADY-STORED fact can be made honestly. The
@@ -7932,16 +7964,12 @@ pub async fn wiki_ingest_message(
     // which is the shape of an ordinary chat turn.
     let mut reconciled = 0usize;
     if matches!(intent, IntentKind::Capture) {
-        let nav_paths: Vec<String> = nav_tail
-            .as_ref()
-            .map(|t| t.page_paths.clone())
-            .unwrap_or_default();
         let candidates = reconcile_candidates(
             pool,
             &embedder,
             &request.text,
             &recall_hits,
-            &nav_paths,
+            &injected_pages,
             &sender_ctx,
             policy.recall_fresh_top_k,
             &turn_facts,
@@ -8034,23 +8062,17 @@ pub async fn wiki_ingest_message(
     // section, or from the identity card the deterministic slot serves
     // (69a: a `bio` fact on `@profile.md` is on both routes by construction).
     let relevant = if include_flat {
-        let mut nav_paths: Vec<String> = nav_tail
-            .as_ref()
-            .map(|t| t.page_paths.clone())
-            .unwrap_or_default();
-        nav_paths.extend(identity_path.map(str::to_owned));
-        // Same rule for the third-party cards: their prose rides the block, so
-        // restating their facts in the flat list is the double-pay 69a closed
-        // for the sender.
-        if let Some(m) = &mentioned {
-            nav_paths.extend(m.page_paths.iter().cloned());
-        }
         // The classifier's own reading of the hits, applied HERE and nowhere
         // else: navigation has already run above from the unrevised list, so
         // this turn's walk is untouched by construction as well as by
         // intent ([`apply_classifier_vote`]).
         let revised = apply_classifier_vote(&recall_hits, &plan.fact_scores);
-        format_snippet(&revised, &nav_paths, &project_docs, policy.relevance_floor)
+        format_snippet(
+            &revised,
+            &injected_pages,
+            &project_docs,
+            policy.relevance_floor,
+        )
     } else {
         None
     };
@@ -8077,25 +8099,12 @@ pub async fn wiki_ingest_message(
     if let Some((_, hits)) = &due_soon_tail {
         surfaced_ids.extend(hits.iter().map(|h| h.fact_id.as_str().to_owned()));
     }
-    // The pages whose prose the turn actually injected. The identity card
-    // belongs here with the navigated ones (69a): its facts DID reach the
-    // turn, so a restatement of one is not a recall miss.
-    let mut nav_paths: Vec<String> = nav_tail
-        .as_ref()
-        .map(|t| t.page_paths.clone())
-        .unwrap_or_default();
-    nav_paths.extend(identity_path.map(str::to_owned));
-    // A served card's facts count as surfaced, or restating one reads as a
-    // recall miss to the detector (69a's third dedup site).
-    if let Some(m) = &mentioned {
-        nav_paths.extend(m.page_paths.iter().cloned());
-    }
     let log_id = match recall_log::record_turn(
         pool,
         &request.sender_id,
         &turn_iso,
         &surfaced_ids,
-        &nav_paths,
+        &injected_pages,
         &seeds.topics,
     )
     .await
@@ -8118,7 +8127,7 @@ pub async fn wiki_ingest_message(
         }
         match fact_index::find_by_id(pool, fid).await {
             Ok(Some(row)) => {
-                if nav_paths.iter().any(|p| p == &row.source_path)
+                if injected_pages.iter().any(|p| p == &row.source_path)
                     || crate::wiki::is_rules_page(&row.source_path)
                 {
                     continue;
@@ -14678,6 +14687,65 @@ mod tests {
             says_in_full(&llm.last_prompt().expect("called")),
             "(none)",
             "nothing left implicit is stated, not left blank"
+        );
+        drop(dir);
+    }
+
+    /// A served identity card is part of what the turn read, so its facts are
+    /// reconciliation candidates.
+    ///
+    /// The card is served in full and deterministically — before the walk,
+    /// whatever the navigator decides — which makes its facts the most
+    /// certainly-read of the whole turn. Left out of the candidate set, *«non
+    /// abito più a Bologna, mi sono trasferito»* retired the claim it corrects
+    /// only when similarity happened to fish that claim up as well, and until
+    /// the nightly pass the two lived side by side.
+    ///
+    /// The flat slot and the fresh slot are both zero here, so the card is the
+    /// only leg left: the stage either sees it or is never called at all.
+    #[tokio::test]
+    async fn a_served_identity_card_is_reconcilable() {
+        let (dir, tree, pool) = setup_workdir().await;
+        seed_alice_card(&dir, &pool).await;
+        let retire_the_card_fact = format!(
+            "{{\"closures\":[{{\"target\":\"{ALICE_FACT_A}\",\
+              \"reason\":\"contradicted\",\"valid_to\":null}}]}}"
+        );
+        let llm = ScriptedLlm::new(&[
+            "{\"intent\":\"capture\",\"extractions\":[{\
+              \"target_wiki_id\":\"alice\",\"subject_id\":\"user:alice\",\
+              \"body\":\"Alice si è trasferita a Milano.\",\
+              \"fact_type\":\"bio\"}]}",
+            retire_the_card_fact.as_str(),
+        ]);
+        let policy = IngestPolicy {
+            recall_top_k: 0,
+            recall_fresh_top_k: 0,
+            ..IngestPolicy::default()
+        };
+        wiki_ingest_message(
+            &pool,
+            &tree,
+            fake_embedder(),
+            &llm,
+            None,
+            req(
+                "non abito più a Bologna, mi sono trasferito a Milano",
+                "alice",
+            ),
+            &policy,
+        )
+        .await
+        .expect("ingest");
+
+        let row = fact_index::find_by_id(&pool, &FactId::parse(ALICE_FACT_A).unwrap())
+            .await
+            .expect("read back")
+            .expect("the card fact is still in the store");
+        assert!(
+            row.valid_to.is_some(),
+            "the card's own claim is retired by the correction: {}",
+            row.text
         );
         drop(dir);
     }

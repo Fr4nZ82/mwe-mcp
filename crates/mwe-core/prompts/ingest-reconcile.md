@@ -23,8 +23,10 @@ The system prompt for the **reconciliation stage**
   silently, by omission, and compounds. The founder's rule: *a slot may
   reconcile against a set it is shown COMPLETE, never against a sample.*
 - **Candidates**: the union, deduplicated by `fact_id`, of (1) the turn's flat
-  recall hits, (2) **every** readable fact on the pages the navigator opened
-  (`recall::facts_on_pages` — complete per page, not ranked), and (3) the
+  recall hits, (2) **every** readable fact on every page whose prose the turn
+  injected — the navigator's walk AND the identity cards it served, which are
+  served in full whatever the navigator decides (`recall::facts_on_pages` —
+  complete per page, not ranked), and (3) the
   still-**buffered** captures, re-fetched here with **no** already-in-context
   suppression: that suppression stops the recall *block* saying a thing twice,
   and must never hide a candidate from a verb that acts on it. Skipped entirely
