@@ -121,11 +121,10 @@ For each MCP call the bot picks one of:
   From there the call is indistinguishable from a direct call by
   that user. This is also how you route a **structural-change
   notice**: drain `events_poll`, read `recipient_id` from the
-  `structure_applied` / `dedup_proposed` / `auto_applied` payload,
-  strip the `user:` prefix, and call `dashboard_link` with
-  `X-MWE-Act-As: <that user>` — then relay the returned single-use URL
-  (pointing at the notice's `dashboard_path`, the undo surface) to that
-  human (e.g. on Telegram). On a `null` recipient, fall back to the
+  `structure_applied` payload, strip the `user:` prefix, and call
+  `dashboard_link` with `X-MWE-Act-As: <that user>` — then relay the
+  returned single-use URL (pointing at the notice's `dashboard_path`,
+  where the receipt is read) to that human (e.g. on Telegram). On a `null` recipient, fall back to the
   admin. A `fact_minted_for_you` notice routes the same way but is a
   **delivery, not a pointer**: its `facts[].body` array carries the
   content another user's turn minted for the recipient, so phrase and
@@ -221,7 +220,7 @@ type.
 | `smart-consumer` | smart consumer + `.mwe/state.json` in cwd | `smart_bootstrap`, `wiki_admin_*`, cooperative lease, `_briefing.md` lifecycle, graceful degradation on token revoke |
 | `smart-codebase` | `smart-consumer` + software project | modules/decisions/runbooks/architecture layout, module + decision + change-log page conventions, `source_ref` + `last_synced` discipline |
 | `smart-onboarding` | on demand: `smart_bootstrap` answered that this project has no wiki, or the user asks | **first connect, once per project**: the intro (three questions, and the ones never to ask), importing existing docs faithfully, the `CLAUDE.md` doc-rules resolution, the post-import shape report, the cut-never-rewrite page repair |
-| `standard-conversational` | standard consumer (or absent claim) | `wiki_ingest_message` loop, wire shape, disambiguation, `pending_attention`, `events_poll`, structural notices + undo routing, consumer self-configuration |
+| `standard-conversational` | standard consumer (or absent claim) | `wiki_ingest_message` loop, wire shape, disambiguation, `pending_votes`, `events_poll`, structural notices and their routing, consumer self-configuration |
 
 How to consume skills (three modes, by preference):
 
@@ -247,9 +246,9 @@ hook envelopes for hook-capable hosts remain at
 
 ---
 
-## 6. Tool surface — families A–K
+## 6. Tool surface — families A–L
 
-The public MCP surface is organised by **family** (A–K); the exact
+The public MCP surface is organised by **family** (A–L); the exact
 roster and tool count are **canonical in the server's own schema registry**
 (`schemas::all_tools()`): call `tools/list` and you have the deployment's real
 surface, each tool with its full contract — parameters, returns, errors, side
@@ -259,7 +258,7 @@ bootstrap is which family covers which job:
 | Family | Covers | Who calls it |
 |---|---|---|
 | **A — Conversation** | The standard-consumer workhorse: every user turn → server-side ingest (classify / recall / capture / structural hint). | standard |
-| **B — Events** | Cooperative polling + acknowledgement of async events (incl. `structure_applied` notices — the undo surface is the dashboard). | any |
+| **B — Events** | Cooperative polling + acknowledgement of async events (incl. `structure_applied` notices, whose receipt is read in the dashboard). | any |
 | **D — Read (consumer UI)** | ACL-filtered page read + vector / full-text search. | any |
 | **E — Audit / health** | Audit-trail query + wiki lint pass. | admin |
 | **F — Setup** | First-time consumer registration + bulk external import. | any |
@@ -268,15 +267,14 @@ bootstrap is which family covers which job:
 | **I — Skills** | Enumerate + fetch skill bodies (bundled). | any |
 | **J** *(unused)* | `J` is a hole in the MCP family scheme; a wiki's shape is decided per fact, not by a registered type. | — |
 | **K — Smart-consumer bootstrap** | Session-start smart-wiki landscape + transversal contextual recall (hook-driven). | smart |
+| **L — Forget** | `wiki_forget` / `wiki_forget_bulk`: a person forgets their own facts outright; a request about somebody else's fact becomes a vote among its readers. | any |
 
-The server also composes a larger set of `_internal.*` operations
-(atomic capture / recall / supersede / forget / navigate / forge,
-etc.) internally when handling `wiki_ingest_message` or the dashboard
-chat panel. They are **not exposed via MCP** — the dispatcher returns
-`403 not_exposed` on direct calls. The illustrative roster lives
-alongside the public surface in
-; it is
-`mwe-core`'s own seam and is not a stable API.
+The server also composes a larger set of internal operations (atomic
+capture / recall / supersede / forget / navigate) when handling
+`wiki_ingest_message` or the dashboard chat panel. They are **not exposed
+via MCP** — a direct call by any such name is an unknown tool and the
+dispatcher answers `not_found`. They are `mwe-core`'s own seam and not a
+stable API.
 
 ---
 
@@ -284,12 +282,15 @@ alongside the public surface in
 
 - **Internal token** (1 year TTL): local-device clients on the
   operator's own machine.
-- **Exposed token** (30 day TTL): public-internet clients. Refresh
-  proactively when `exp - now < 7 days` via `POST /mcp/token-refresh`.
-- **Session cookie** (10 min sliding): dashboard browser only, never
+- **Exposed token** (30 day TTL): public-internet clients. A bearer
+  token is not refreshed over MCP: mint a new one from the dashboard
+  before `exp`. A connection made over OAuth (`webagentoauth`) refreshes
+  itself with `grant_type=refresh_token` at `/webagentoauth/token`.
+- **Session cookie** (60 min sliding): dashboard browser only, never
   over MCP.
 
-On `401 revoked` / `401 secret_rotated` / `401 expired` the bot
+On `401 token_revoked`, `401 invalid_token` (expired, or signed with a
+secret the server no longer holds) or `401 missing_bearer` the bot
 **stops** and logs fatal. Admin intervention required (re-issue a
 token, rotate the secret). Smart consumers degrade gracefully —
 keep local `.mwe/wiki/` intact, queue writes, replay on new token.
@@ -307,9 +308,10 @@ immediately on any dashboard write.
 - ❌ **Client-side intent classification.** mwe-mcp's server classifies
   for standard consumers; smart consumers use `wiki_search` directly.
   Neither pattern wants you to pattern-match on user text.
-- ❌ **Calling `_internal.*` tools directly.** Returns `403 not_exposed`.
-- ❌ **Path-shaped `wiki_id`.** Use the opaque id returned by
-  `capture_id` or `wiki_search` results.
+- ❌ **Calling internal operations as tools.** They are not on the
+  roster; the dispatcher answers `not_found`.
+- ❌ **Path-shaped `wiki_id`.** Use the id a `wiki_search` hit,
+  `smart_bootstrap` or `wiki_admin_push` carries.
 - ❌ **`wiki_admin_*` writes from a standard consumer.** Returns `403
   requires_consumer_class_smart`. Notify-only (`wiki_admin_notify`) is
   open.
@@ -325,24 +327,16 @@ Per-class anti-patterns are exhaustive in each skill body.
 
 ## 9. References
 
-The documentation set ([`docs/`](docs/)) is the reference for what the
-system is and does. It is brought true at each release; the code is what
-is authoritative in between:
+The running server is the reference for what the system is and does:
 
--  —
-  public tool surface (roster + families).
--  —
-  exhaustive shape of every tool (input, output, errors, paging).
--  —
-  protocol / config overview, auth, transport.
--  —
-  identity model, wiki structure, ingest classifier philosophy, the
-  `structure_proposals` lifecycle.
--  —
-  what ships today, per crate.
--  —
-  runtime / cost topology, REM cycle.
--  —
-  end-to-end usage scenarios.
+- `tools/list` — the public tool surface, every tool with its full
+  contract (input, output, errors, paging).
+- `skill_list` / `skill_fetch` — the operational skills, the same bodies
+  served at `/skills`.
+- [`INSTALL.md`](INSTALL.md) — standing the server up, its config, tokens.
+- [`INTEGRATING.md`](INTEGRATING.md) — the per-turn contract for a host
+  bridge and the deployment-security rules.
+- [`CHANGELOG.md`](CHANGELOG.md) — what shipped, release by release.
+
 The smart-consumer contract (what a smart agent may and must do) is
 §6–§8 of this document.

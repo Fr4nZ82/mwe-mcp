@@ -228,7 +228,7 @@ proposes it rather than leaking a sensitive repo into personal memory.
 ## Onboarding an existing project wiki (smart consumers)
 
 When a smart consumer (Claude Code) connects in a repo that **already has a wiki**
-(a markdown tree like this repo's own `docs/`), it proposes onboarding it **on
+(a markdown tree of notes, decisions and runbooks), it proposes onboarding it **on
 connect** and copies it up to the server as the project wiki — so the same
 knowledge is reachable later from a standard consumer or the dashboard.
 
@@ -266,11 +266,11 @@ it is never dropped. See the `smart-consumer` skill, "Onboarding an existing wik
 | Topic | Where the detail lives |
 |---|---|
 | Standing the server up, configuring its LLM, minting tokens | [`INSTALL.md`](INSTALL.md) |
-| Transport (MCP Streamable HTTP), endpoints, JWT bearer |  |
-| Token / identity flow (admin invites → user → consumer) |  |
-| The tool surface and per-tool I/O contract | ,  |
-| Server config + LLM profiles + secrets |  |
-| Deployment topology (server and consumer on separate hosts, remote HTTP) |  |
+| Transport (MCP Streamable HTTP), endpoints, JWT bearer | [`INSTALL.md`](INSTALL.md) §2 and §Hardening; the `WWW-Authenticate` challenge on a 401 names the OAuth discovery document |
+| Token / identity flow (admin invites → user → consumer) | [`INSTALL.md`](INSTALL.md) §3 and the dashboard's Users / Tokens consoles |
+| The tool surface and per-tool I/O contract | `tools/list` on the running server (every tool carries its full schema); families in [`AGENT_INSTRUCTIONS.md`](AGENT_INSTRUCTIONS.md) §6 |
+| Server config + LLM profiles + secrets | the commented `mwe-mcp.config.yaml` that `mwe-mcp init` seeds, and the dashboard's Admin panels |
+| Deployment topology (server and consumer on separate hosts, remote HTTP) | this document, [Deployment security](#deployment-security--where-to-run-the-consumer) |
 | Consumer-agent runtime behaviour (what *your agent* must do) | [`AGENT_INSTRUCTIONS.md`](AGENT_INSTRUCTIONS.md) |
 | Ready-made host bridges + the bridge-authoring guide | [`agents-bridges/README.md`](agents-bridges/README.md) |
 | Smart vs. standard consumers, smart wikis | [`AGENT_INSTRUCTIONS.md`](AGENT_INSTRUCTIONS.md) §6–§8 |
@@ -356,32 +356,34 @@ below directly.
    `document_ingested`).
 8. **Drain the reverse channel — the one obligation not anchored to a
    user turn.** Everything above fires when the *user* speaks; mwe-mcp
-   also emits notices when *it* acts and the user should know: REM
-   applied a structural change directly (`structure_applied`), a dedup
-   proposal auto-applied (`auto_applied`), a merge awaits an answer
-   (`dedup_proposed`), a document finished ingest (`document_ingested`),
-   and — the one notice addressed to a *different* human than the one
-   who spoke — a turn or upload minted facts owned by another enrolled
-   user (`fact_minted_for_you`: the payload carries the fact bodies, so
-   your agent delivers the content itself — "Alice worked out with the
-   assistant what you should check at the viewing: …" — not a bare
-   pointer).
+   also emits notices when *it* acts and the user should know: a
+   structural change it applied (`structure_applied`), a document that
+   finished ingest (`document_ingested`), a dated commitment that is due
+   (`reminder_due`), and — the one notice addressed to a *different*
+   human than the one who spoke — a turn or upload that minted facts
+   whose subject is another enrolled user (`fact_minted_for_you`: the
+   payload carries the fact bodies, so your agent delivers the content
+   itself — "Alice worked out with the assistant what you should check at
+   the viewing: …" — not a bare pointer). Three more kinds are addressed
+   to the operator rather than a user: `archive_proposed`,
+   `compile_failure_streak`, `recall_tuning_proposed`.
    Poll them with `events_poll`, hand each to your agent, then
    `events_ack` the ids so the server stops re-delivering. A structural
-   payload carries `recipient_id` (the addressed human — strip the
-   `user:` prefix; `null` ⇒ operator/admin), a `dashboard_path`, and a
-   `revert_deadline`; the agent mints a one-shot signed URL with
-   `dashboard_link` (acting as that human) and relays it — *"I
-   reorganized X — undo here: [link]"*. **Cadence:** piggyback one poll
+   payload carries `proposal_id`, `variant`, the `closed_facts`,
+   `recipient_id` (the addressed human — strip the `user:` prefix; `null`
+   ⇒ operator/admin) and a `dashboard_path`; the agent mints a one-shot
+   signed URL with `dashboard_link` (acting as that human) and relays it —
+   *"I reorganized X — see it here: [link]"*. A structural change is not
+   undone: the person steers the memory by talking to it. **Cadence:**
+   piggyback one poll
    on each user turn (in parallel with the ingest call) as the floor;
    add a background tick (≈30 s for a chat bot, never faster than ~5 s)
    so a notice reaches a user who is **not** currently talking. That
    out-of-turn tick is what makes delivery *proactive* rather than
    next-turn, and it needs your host channel to permit server-initiated
    outbound — a Telegram bot, for one, cannot cold-message a user who
-   has never written to it, so until they do the notice waits for their
-   next turn (where the recall block's `pending_attention` reminder
-   still carries it). The agent-side routing and wording live in
+   has never written to it, so until they do the notice waits in the
+   queue for the next poll. The agent-side routing and wording live in
    [`AGENT_INSTRUCTIONS.md`](AGENT_INSTRUCTIONS.md); the bridge owns the
    poll/ack loop and an outbound path to the user.
 9. **Map an unidentified human to `guest` — never to a wrong real
@@ -421,8 +423,7 @@ guarantees are still being driven by real consumers. The
 **proactive out-of-turn delivery** in step 8 now ships in the hermes
 bridge (the `mwe-events` gateway hook drains `fact_minted_for_you`
 per-recipient and the daily-digest cron script batches the system
-kinds — see the bridge README §Reverse channel); other bridges still
-rely on the next-turn `pending_attention` reminder until they wire
-their own poll/ack loop. If you're
+kinds — see the bridge README §Reverse channel); a bridge without its
+own poll/ack loop delivers nothing out of turn. If you're
 integrating now and hit a gap, open an issue — real integration friction
 is exactly what we want to capture here.

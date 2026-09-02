@@ -6,17 +6,27 @@ healthy and the dual-licensing model ([LICENSING.md](LICENSING.md)) workable.
 ## Before you write code
 
 Many architectural trade-offs in this codebase are already deliberately
-resolved — the documentation under [`docs/`](docs/) records part of that
-reasoning.
+resolved — the doc comment beside each mechanism records the reasoning, and
+[`CHANGELOG.md`](CHANGELOG.md) records the decisions that shipped.
 For anything beyond a small fix, **open an issue and discuss direction with
 the maintainer first**; it avoids wasted work on a design that won't merge.
 
 ## Building and testing
 
-See . CI runs
-`cargo fmt --check`, `clippy -D warnings`, the full test suite (unit +
-integration + property + fault-injection), and `cargo deny check` on every
-push — keep it green locally before opening a PR.
+The gate is the one CI runs (`.github/workflows/ci.yml`):
+
+```
+cargo fmt --all -- --check
+cargo clippy --workspace --all-targets -- -D warnings
+cargo test --workspace --all-targets
+cargo build --workspace --examples --features local-embedder
+```
+
+CI runs those on Linux, macOS and Windows, adds a `cargo check` on the
+declared minimum Rust version (`rust-version` in `Cargo.toml`) and `cargo
+deny check`, on every push — keep it green locally before opening a PR. The
+lint bar (clippy pedantic and nursery) is declared in the workspace manifest,
+so a plain `cargo clippy` already applies it.
 
 ## Licensing of contributions
 

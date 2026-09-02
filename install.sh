@@ -37,7 +37,7 @@ case "$os" in
   Darwin)
     case "$arch" in
       arm64 | aarch64) target="aarch64-apple-darwin" ;;
-      x86_64) target="x86_64-apple-darwin" ;;
+      x86_64) die "no prebuilt binary is published for Intel macOS — build from source: cargo install --path crates/mwe-mcp-server --features local-embedder (see INSTALL.md)" ;;
       *) die "unsupported macOS arch: $arch" ;;
     esac ;;
   *)
@@ -73,7 +73,7 @@ if curl -fsSL "${base}/${sha}" -o "$tmp/$sha" 2>/dev/null; then
   fi
   [ "$expected" = "$actual" ] || die "checksum mismatch (expected $expected, got $actual)"
 else
-  say "warning: no published checksum for ${asset} — skipping verification"
+  die "no published checksum for ${asset} — every release ships one; refusing to install an unverified binary"
 fi
 
 say "Extracting…"

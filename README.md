@@ -1,6 +1,6 @@
 <div align="center">
 
-<img src="" alt="mwe-mcp, the Memory Wiki Engine" width="100%">
+# mwe-mcp — the Memory Wiki Engine
 
 **Every AI agent you use, remembering into one shared Markdown wiki. Every fact in it governed individually: who it's about, who said it, who may read it, and when it stops being true.**
 
@@ -9,7 +9,7 @@
 [![Edition](https://img.shields.io/badge/edition-2024-orange.svg)](Cargo.toml)
 [![MCP](https://img.shields.io/badge/Model%20Context%20Protocol-server-8A2BE2)](https://modelcontextprotocol.io)
 [![CI](https://github.com/Fr4nZ82/mwe-mcp/actions/workflows/ci.yml/badge.svg)](.github/workflows/ci.yml)
-[![Status](https://img.shields.io/badge/status-1.5-brightgreen.svg)](CHANGELOG.md)
+[![Release](https://img.shields.io/github/v/release/Fr4nZ82/mwe-mcp?label=release)](https://github.com/Fr4nZ82/mwe-mcp/releases/latest)
 
 [Why](#why-this-exists) · [The demo](#same-page-two-readers-two-answers) · [Quickstart](#quickstart) · [Where it fits](#where-this-fits) · [How it works](#how-it-works) · [Docs](#documentation)
 
@@ -57,8 +57,7 @@ Alice sees that verbatim. Anyone who isn't Alice sees the protected span collaps
 She weighs [redacted] as of May 10, and just cut her hair.
 ```
 
-<p align="center"><img src="" alt="The same wiki page opened by two users: the person the private fact is about sees the span, the other reader sees it replaced by [redacted], with a banner explaining the declassified view" width="100%"></p>
-<p align="center"><sub>The same page in the built-in dashboard, opened by the person that private fact is about and by another member of the household. Reading it is decided by the fact's subject, audience and sender — not by whose wiki the page sits in. The reader is told the view is declassified, never what was withheld.</sub></p>
+The built-in dashboard renders the same page the same way: reading it is decided by the fact's subject, audience and sender, not by whose wiki the page sits in, and the reader is told the view is declassified, never what was withheld.
 
 No permissions database bolted on top, no per-document walls. Visibility is enforced fragment by fragment, sentence by sentence. **This is the thing most agent memories simply cannot express.**
 
@@ -109,7 +108,7 @@ Deployment topologies, LLM profiles and security posture are in [`INSTALL.md`](I
 
 We are not trying to win the recall race. Remembering more, faster and cheaper is a well-funded contest with years of optimization behind it, and it isn't the axis this was built on.
 
-> **Honest disclosure:** everything above is designed, implemented and exercised end-to-end, on a multi-week multi-user replay corpus and on a live deployment running since spring 2026. Not on years of organic production data at scale. The MCP tool families are a stable surface under semver.
+> **Honest disclosure:** everything above is designed, implemented and exercised end-to-end, on a multi-week multi-user replay corpus and on a live household deployment that ran from spring to August 2026. Not on years of organic production data at scale. The MCP tool families are a stable surface under semver.
 
 ## How it works
 
@@ -146,9 +145,9 @@ flowchart TB
     style E fill:#1f2a3a,color:#fff,stroke:#6688bb
 ```
 
-1. **Per turn**, the agent calls one tool, `wiki_ingest_message`, with the raw user message. The internal LLM classifies it (capture / supersede / close / recall / structural / skip) and routes it. The agent gets back a context block with recalled memory, imminent commitments and a draft reply, and never sees a filesystem path.
+1. **Per turn**, the agent calls one tool, `wiki_ingest_message`, with the raw user message. The internal LLM classifies it (capture / recall / structural / skip) and routes it. The agent gets back a context block with recalled memory, imminent commitments and a draft reply, and never sees a filesystem path.
 2. **Capture and dedup are deterministic**: local embeddings, cosine, a string-similarity check. Bounded latency, predictable cost.
-3. **Nightly**, with nobody waiting, the REM cycle tends the memory and recompiles the fact store into prose pages, one home per fact. Every structural change lands immediately, leaves a receipt, and stays revertible for a week.
+3. **Nightly**, with nobody waiting, the REM cycle tends the memory and recompiles the fact store into prose pages, one home per fact. Every structural change lands immediately and leaves a receipt you can read in the dashboard; the memory is steered by talking to it, not by rolling changes back.
 4. **Storage is a single folder.** `wikis/` holds the Markdown prose, `engine.db` beside it holds the per-fact governance. Snapshot the folder and you have backed up the memory. Export it and every fragment carries its governance inline — subject, audience, sender in the marker itself — so the archive reads on its own, without the index beside it. Reading such an archive back in is a job for a future importer; no import path ships today.
 
 The consumer pays for conversation volume. mwe-mcp pays a low floor, and it isn't a *second* bill: it is memory work a serious consumer would otherwise do itself, relocated to one place and paid once, then amortized across every agent that shares the memory.
@@ -167,14 +166,14 @@ The agent talks to a small surface of **high-level** MCP tools grouped into fami
 |---|---|
 | **A — Conversation** | `wiki_ingest_message`, the one-call-per-turn entrypoint. Recall, capture, attribution and validity, composed internally. |
 | **B — Events** | Cooperative async polling: applied-change notices, reminders. |
-| **C — Approval flows** | Read-only listing of structure receipts. Revert lives in the dashboard. |
 | **D — Read** | `wiki_read`, `wiki_search`, `wiki_navigate`, all ACL-aware, including *as-of-a-date* queries against the validity windows. |
 | **E — Audit / health** | Audit-trail search and integrity checks. |
 | **F — Setup** | Onboarding and bulk ingest of legacy data, with per-message semantic clocks so imported history keeps its dates. |
 | **G — Dashboard** | One-shot signed link into the built-in PWA. |
 | **H — Smart-wiki writes** | Authoritative writes for coding agents: push, pull, notify, cooperative leases. |
 | **I — Skill catalog** | Server-served operational instructions, etag-cached, pulled on demand instead of baked into a system prompt. |
-| **J — Smart bootstrap** | Smart-consumer session start and transversal recall. |
+| **K — Smart bootstrap** | Smart-consumer session start and transversal recall. |
+| **L — Forget** | `wiki_forget`, `wiki_forget_bulk`: a person forgets their own facts outright; a request about somebody else's fact goes to a vote among its readers. |
 
 The families are the stable, semver-governed surface. Exact tool counts may still grow within them across minor versions. Call `tools/list` for the deployment's real roster and each tool's full contract.
 
@@ -186,12 +185,9 @@ The dashboard is also **where you correct the memory**. On the memory proper the
 
 - **Identity console.** First-run wizard, users, groups and tokens, consumer delegation, a welcome flow that seeds each user's identity, rules and preferences.
 - **Memory explorer.** Browse every indexed wiki: rendered Markdown redacted to *your* eyes, page list, metadata, active-fact counts, smart-wiki views.
-- **Receipts tray.** Every structural change with its context and a one-tap revert inside the window.
+- **Receipts tray.** Every structural change with its context, and the forget requests waiting for a vote.
 - **Agentic chat.** A floating panel that *operates on* the memory, with explicit write confirmations.
 - **Admin config.** LLM-slot editor, API keys, operational prompts, full-archive export with inline governance markers.
-
-<p align="center"><img src="" alt="A shared shopping list page: open items each attributed to the family member who asked for them, bought items closed with a purchase date" width="90%"></p>
-<p align="center"><sub>A shared list the morning after. Open items keep their asker, bought items close with a date. Narrated, never deleted.</sub></p>
 
 ## Documentation
 

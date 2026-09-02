@@ -136,15 +136,16 @@ through everything — no YAML to hand-edit, no credentials to hand to anyone el
 1. **Create the single admin.**
 2. **Configure the internal LLM — this comes first.** The wizard takes you
    straight here, because everything after it needs a working model (mwe-mcp's
-   internal model powers ingest, the hub writer, dedup, the nightly REM cycle and
-   the prose compiler). Set a provider's API key — Anthropic, Google Gemini, or
+   internal models classify every turn, walk the pages at recall, deduplicate,
+   run the nightly REM cycle, write the prose and drive the dashboard chat —
+   six roles, and the product does not work until all six have a model). Set a provider's API key — Anthropic, Google Gemini, or
    OpenRouter — or point a role at a local [Ollama](https://ollama.com) model,
    then assign each role. A quick profile fills every role in one click:
 
    | Preset | Routing | Needs |
    |---|---|---|
    | **`all-api`** | every generative function on an external provider (Anthropic / Gemini) | API keys; no local model |
-   | **`hybrid`** | local workhorse for the cheap high-volume work, an API model for the heavier nightly REM | a local Ollama workhorse + API keys |
+   | **`hybrid`** | `ingest` and `operator_chat` on a local Ollama model; the navigator, `cronista` and the nightly REM roles on an API model | a local Ollama workhorse + API keys |
    | **`all-local`** | local workhorse for everything (Ollama + Qwen/Llama) | strong local hardware (a GPU); zero API cost, fully offline |
    | **`custom`** | wire nothing up front, pick every role from the dashboard | — |
 
@@ -156,15 +157,16 @@ through everything — no YAML to hand-edit, no credentials to hand to anyone el
    > structured router: it must emit valid plans with exact wiki ids, every
    > turn. In our testing, **small local models (≤ ~10B) route unreliably** —
    > they hallucinate target ids and facts get dropped — so `all-local` wants
-   > a genuinely strong local model, and `hybrid` (local workhorse + an API
-   > model on `ingest`/`cronista`/REM) is the safer budget setup. If pages
+   > a genuinely strong local model, and `hybrid` (local `ingest` and chat,
+   > an API model on the navigator, `cronista` and REM) is the safer budget
+   > setup; a strong API model on `ingest` alone is the safer one still. If pages
    > come out empty or badly filed, suspect the model before the engine.
 3. **Do the short profile primer** the wizard shows next (your name, language, a
    few preferences) so the memory starts with some context — or skip it.
-4. **Mint a token for your agent** (Admin → users / tokens). Use plain lowercase
-   letters and digits for user ids (`anna`, `sam2`) — the enrollment form
-   currently accepts an underscore that the wiki layer rejects, so an id with `_`
-   enrolls but its identity wiki silently fails to create.
+4. **Mint a token for your agent** (Admin → users / tokens). User ids are
+   plain lowercase letters and digits (`anna`, `sam2`); the enrollment form
+   refuses anything else, because the id is also the name of the person's
+   identity wiki.
 
    > **Connecting Claude Code?** Skip the token: it signs in over OAuth instead
    > (see [Next: connect an agent](#next-connect-an-agent)). You still need the
@@ -196,7 +198,7 @@ Snapshot that one folder and you've backed up the whole memory.
 
 ## Hardening checklist
 
-The defaults are already conservative; production exposure adds four habits:
+The defaults are already conservative; production exposure adds five habits:
 
 1. **Keep the bind on loopback** (both the exposure prompt and the
    non-interactive default resolve to `127.0.0.1:8742`) and expose the port
@@ -209,25 +211,32 @@ The defaults are already conservative; production exposure adds four habits:
    opaque `403` from the edge that looks like a revoked token but never
    reaches mwe-mcp at all. `/dashboard` is the browser surface; leave its
    filtering alone.
-2. **Treat tokens as per-consumer credentials.** Mint one token per agent
+2. **Once the dashboard is behind TLS, mark its cookies for HTTPS only.**
+   Set `instance.cookie_secure: true` in `mwe-mcp.config.yaml` and
+   restart: the session, reveal and 2FA cookies are then sent by the
+   browser over HTTPS alone. It is off by default only because the first
+   run is plain `http://127.0.0.1:8742`, where such a cookie would never
+   come back.
+3. **Treat tokens as per-consumer credentials.** Mint one token per agent
    from the dashboard, scope it with its delegation list at mint time, and
    revoke it there the moment the consumer is retired. The signing secret
    lives in the workdir's `mwe-mcp.env` — it travels with backups, so backups
    inherit the workdir's confidentiality requirements.
-3. **Back up the workdir as one unit.** `engine.db` is the authoritative
+4. **Back up the workdir as one unit.** `engine.db` is the authoritative
    fact store — it is *not* rebuildable from the Markdown — so a backup is
    only valid when it snapshots **both halves together**. The dashboard's
    Backup console takes a hot snapshot of the whole workdir on demand; to
    restore, stop the server and put the snapshot back in place.
-4. **Mind who shares the machine.** Per-reader redaction happens at render
+5. **Mind who shares the machine.** Per-reader redaction happens at render
    time; the files are cleartext on disk. The workdir permission rules and
    the consumer co-location topology are in
    [`INTEGRATING.md`](INTEGRATING.md#deployment-security--where-to-run-the-consumer)
    — `mwe-mcp doctor` audits the current install and prints fixes.
 
 Updates are a binary swap: stop the server, replace the binary (keep the old
-one as a `.bak`), start — pending migrations run at boot, and migrations are
-strictly additive.
+one as a `.bak`), start — pending migrations run at boot, forward only. Keep
+the pre-upgrade snapshot until the new build has served a day: a migration
+can rename a column, and the release notes say when one does.
 
 ---
 
@@ -259,6 +268,8 @@ To wire a host we don't ship a bridge for, the per-turn contract is in
 ## More
 
 - Full CLI roster: `mwe-mcp --help`, and `--help` on any subcommand.
-- The complete config schema: `mwe-mcp doctor` reports what the running
-  deployment resolved, and the dashboard's settings panels list every knob
-  with its default.
+- The complete config schema: `mwe-mcp init` seeds a commented
+  `mwe-mcp.config.yaml`, and the dashboard's settings panels list every knob
+  with its default. `mwe-mcp doctor` audits an installation (paths,
+  permissions, the env file); run it with the server stopped, it takes the
+  workdir lock.
