@@ -16,8 +16,6 @@ Cargo.lock.bak
 
 # Local workdir / state (mwe-mcp runtime)
 /work/
-/work_example/
-/work-bridgetest/
 /.mwe-mcp.lock
 *.mwe-write-in-progress
 
@@ -28,13 +26,7 @@ Cargo.lock.bak
 .env
 .env.*
 !.env.example
-
-# Compiled CSS. The dashboard's own stylesheet,
-# `crates/mwe-dashboard/assets/tailwind.css`, IS committed: rust-embed reads
-# it at compile time and Cargo cannot run the standalone tailwindcss CLI.
-# Rebuild it after editing `tailwind/` with
-# `tailwindcss -i tailwind/app.css -o crates/mwe-dashboard/assets/tailwind.css --minify`.
-/static/tailwind.css
+.secrets
 
 # Logs / temp
 *.log
@@ -53,27 +45,15 @@ Cargo.lock.bak
 /phase*-*.png
 /dogfood-*.png
 
-# Dashboard runtime comment/submission cache (created at runtime, not source)
-/.comment-md-cache/
-
 # OS
 Thumbs.db
 
-# Local scratch, never tracked
-/gitignored/
-.secrets
-/donotopen.tar.gz
-
-# Local corpora and replay workdirs
-/road-behind/
-/work_qwen_35b/
-/work_gemini_flash/
+# Python bytecode, next to the bridge sources that produce it
 __pycache__/
 
 # Maintainer-local material — never tracked in the public repo: the roadmap,
 # the dated decision log and the per-area cards live here on this disk only.
 /planning/
-/notes/
 
 # mwe-mcp smart-consumer state (per-machine: wiki_id, op-log head, checksums)
 /.mwe/
@@ -83,7 +63,5 @@ __pycache__/
 
 # Working documents between the maintainer and the assistant, in Italian —
 # not product surface, so the public repo stays English.
-/RIALLINEAMENTO.md
-/RIALLINEAMENTO-aperti.md
 /GLOSSARIO.md
 /CITAZIONI.md

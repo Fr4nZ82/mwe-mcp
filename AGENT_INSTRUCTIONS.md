@@ -1,9 +1,3 @@
----
-title: AGENT_INSTRUCTIONS — mwe-mcp consumer agent usage spec (slim core)
-status: canonical
-last_review: "2026-05-30"
----
-
 # AGENT_INSTRUCTIONS
 
 This document is the **slim bootstrap** for any LLM agent that
