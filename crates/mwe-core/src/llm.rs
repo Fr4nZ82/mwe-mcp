@@ -960,6 +960,36 @@ struct OllamaOptions {
     num_predict: Option<i32>,
     #[serde(skip_serializing_if = "Option::is_none")]
     temperature: Option<f32>,
+    /// The context window to run the model with. Ollama's own default is
+    /// a few thousand tokens, and a prompt longer than that is cut from
+    /// the **front** — the instructions — without a word of warning; the
+    /// classifier's system prompt alone is longer than that. Sized per
+    /// call from the request, see [`ollama_num_ctx`].
+    num_ctx: u32,
+}
+
+/// The smallest context window a call asks Ollama for.
+const OLLAMA_NUM_CTX_FLOOR: u32 = 8_192;
+/// The largest: past this the request itself is the problem.
+const OLLAMA_NUM_CTX_CEILING: u32 = 131_072;
+/// Characters per token assumed when sizing the window — conservative for
+/// Italian and English prose alike, where four is the usual estimate, so
+/// the window is never sized short.
+const OLLAMA_CHARS_PER_TOKEN: usize = 3;
+
+/// Size Ollama's context window for a request: the prompt's estimated
+/// tokens plus the output cap, rounded up to a power of two and clamped
+/// to `[8k, 128k]`. A power of two because that is how Ollama sizes its
+/// own defaults, so the same model reuses a loaded context across calls
+/// of similar length instead of reloading for every different number.
+fn ollama_num_ctx(prompt_chars: usize, max_tokens: Option<u32>) -> u32 {
+    let prompt_tokens = u32::try_from(prompt_chars / OLLAMA_CHARS_PER_TOKEN).unwrap_or(u32::MAX);
+    let wanted = prompt_tokens.saturating_add(max_tokens.unwrap_or(2_048));
+    wanted
+        .max(OLLAMA_NUM_CTX_FLOOR)
+        .checked_next_power_of_two()
+        .unwrap_or(OLLAMA_NUM_CTX_CEILING)
+        .min(OLLAMA_NUM_CTX_CEILING)
 }
 
 #[derive(Debug, Deserialize)]
@@ -975,14 +1005,15 @@ struct OllamaGenerateResponse {
     eval_count: Option<u32>,
 }
 
-fn options_for(max_tokens: Option<u32>, temperature: Option<f32>) -> Option<OllamaOptions> {
-    if max_tokens.is_some() || temperature.is_some() {
-        Some(OllamaOptions {
-            num_predict: max_tokens.and_then(|n| i32::try_from(n).ok()),
-            temperature,
-        })
-    } else {
-        None
+fn options_for(
+    prompt_chars: usize,
+    max_tokens: Option<u32>,
+    temperature: Option<f32>,
+) -> OllamaOptions {
+    OllamaOptions {
+        num_predict: max_tokens.and_then(|n| i32::try_from(n).ok()),
+        temperature,
+        num_ctx: ollama_num_ctx(prompt_chars, max_tokens),
     }
 }
 
@@ -1076,14 +1107,12 @@ impl LlmBackend for OllamaBackend {
         }
 
         let url = format!("{}/api/generate", self.base_url.trim_end_matches('/'));
-        let options = if request.max_tokens.is_some() || request.temperature.is_some() {
-            Some(OllamaOptions {
-                num_predict: request.max_tokens.and_then(|n| i32::try_from(n).ok()),
-                temperature: request.temperature,
-            })
-        } else {
-            None
-        };
+        let prompt_chars = request.prompt.len() + request.system.as_deref().map_or(0, str::len);
+        let options = Some(options_for(
+            prompt_chars,
+            request.max_tokens,
+            request.temperature,
+        ));
         let body = OllamaGenerateRequest {
             model: &self.model,
             prompt: &request.prompt,
@@ -1158,13 +1187,18 @@ impl LlmBackend for OllamaBackend {
         }
 
         let url = format!("{}/api/chat", self.base_url.trim_end_matches('/'));
+        let prompt_chars: usize = request.messages.iter().map(|m| m.content.len()).sum();
         let body = OllamaChatRequest {
             model: &self.model,
             messages: serialise_chat_messages(&request.messages),
             stream: false,
             think: false,
             tools: serialise_tool_descriptors(&request.tools),
-            options: options_for(request.max_tokens, request.temperature),
+            options: Some(options_for(
+                prompt_chars,
+                request.max_tokens,
+                request.temperature,
+            )),
         };
 
         let response = self
@@ -1192,20 +1226,16 @@ impl LlmBackend for OllamaBackend {
         Ok(resp)
     }
 
-    /// Cheaper liveness probe for Ollama: hits `/api/version` instead
-    /// of running an actual completion (which would warm the model
-    /// into RAM). Used at `mwe-mcp serve` boot per
-    /// LLM functions.
-    ///
-    /// Only confirms the daemon is reachable; the configured model is
-    /// not exercised here. A follow-up `complete` against an
-    /// unloaded model will still error out — we rely on REM's fatal
-    /// LLM-error path to surface that. The version probe
-    /// is the cheap pre-boot sanity check, not a full smoke test.
+    /// Liveness probe for Ollama, in two cheap steps and no completion
+    /// (which would warm the model into RAM): `/api/version` says the
+    /// daemon answers, `/api/show` says the configured model is pulled.
+    /// A model that is not there fails every later call with a 404 the
+    /// ingest turn would report as "nothing to save", so it is caught
+    /// here, at boot and on the health page, with its name in the error.
     async fn health_check(&self) -> Result<()> {
-        let url = format!("{}/api/version", self.base_url.trim_end_matches('/'));
+        let base = self.base_url.trim_end_matches('/');
         let response = self
-            .with_auth(self.client.get(url))
+            .with_auth(self.client.get(format!("{base}/api/version")))
             .send()
             .await
             .map_err(transport_error)?;
@@ -1215,7 +1245,130 @@ impl LlmBackend for OllamaBackend {
                 response.status()
             )));
         }
+        let show = self
+            .with_auth(self.client.post(format!("{base}/api/show")))
+            .json(&serde_json::json!({ "model": self.model }))
+            .send()
+            .await
+            .map_err(transport_error)?;
+        if show.status() == reqwest::StatusCode::NOT_FOUND {
+            return Err(LlmError::Invalid(format!(
+                "ollama has no model named `{}` — pull it first (`ollama pull {}`)",
+                self.model, self.model
+            )));
+        }
+        if !show.status().is_success() {
+            return Err(LlmError::Backend(format!(
+                "ollama /api/show for `{}` returned HTTP {}",
+                self.model,
+                show.status()
+            )));
+        }
         Ok(())
+    }
+}
+
+// ---------------------------------------------------------------------------
+// RetryingBackend — a second and a third attempt on a transient failure
+// ---------------------------------------------------------------------------
+
+/// Attempts a call gets in total: the first, and two retries.
+const RETRY_ATTEMPTS: u32 = 3;
+/// Wait before the first retry; the second waits three times as long.
+const RETRY_BASE_DELAY: Duration = Duration::from_millis(400);
+
+/// Wrap `inner` so a transient provider failure is retried before it is
+/// reported.
+///
+/// A rate limit, a transport error (DNS, TLS, a timeout) or a 5xx answer
+/// is the provider having a bad moment, and the callers up the stack all
+/// turn an error into *nothing happened*: the ingest turn files no fact
+/// and tells the consumer so, a nightly sweep skips its candidate. One
+/// bad moment therefore costs a memory, which is a worse trade than a
+/// second of waiting. The wrapper retries those three classes twice, with
+/// a short jittered pause; an invalid request, an auth failure and a
+/// protocol mismatch are answered the same way twice, so they are
+/// returned at once. A health check is a probe and is never retried.
+#[must_use]
+pub fn with_retries(inner: Box<dyn LlmBackend>) -> Box<dyn LlmBackend> {
+    Box::new(RetryingBackend { inner })
+}
+
+struct RetryingBackend {
+    inner: Box<dyn LlmBackend>,
+}
+
+impl RetryingBackend {
+    const fn retriable(e: &LlmError) -> bool {
+        matches!(
+            e,
+            LlmError::Transport(_) | LlmError::RateLimit(_) | LlmError::Backend(_)
+        )
+    }
+
+    /// The pause before attempt `attempt` (1-based, counting retries):
+    /// the base delay times the attempt, plus up to a quarter of jitter so
+    /// two callers that failed together do not retry together.
+    fn pause(attempt: u32) -> Duration {
+        let base = RETRY_BASE_DELAY * (2 * attempt - 1);
+        let mut noise = [0u8; 2];
+        // A jitter source that fails is a jitter of zero: acceptable.
+        let _ = getrandom::getrandom(&mut noise);
+        let fraction = f64::from(u16::from_le_bytes(noise)) / f64::from(u16::MAX);
+        base + base.mul_f64(0.25 * fraction)
+    }
+}
+
+#[async_trait]
+impl LlmBackend for RetryingBackend {
+    fn model_id(&self) -> &str {
+        self.inner.model_id()
+    }
+
+    async fn complete(&self, request: CompletionRequest) -> Result<CompletionResponse> {
+        let mut attempt = 0;
+        loop {
+            match self.inner.complete(request.clone()).await {
+                Err(e) if Self::retriable(&e) && attempt + 1 < RETRY_ATTEMPTS => {
+                    attempt += 1;
+                    tracing::warn!(
+                        model = self.inner.model_id(),
+                        attempt,
+                        error = %e,
+                        "llm call failed on a transient error; retrying"
+                    );
+                    tokio::time::sleep(Self::pause(attempt)).await;
+                },
+                other => return other,
+            }
+        }
+    }
+
+    async fn chat(&self, request: ChatRequest) -> Result<ChatResponse> {
+        let mut attempt = 0;
+        loop {
+            match self.inner.chat(request.clone()).await {
+                Err(e) if Self::retriable(&e) && attempt + 1 < RETRY_ATTEMPTS => {
+                    attempt += 1;
+                    tracing::warn!(
+                        model = self.inner.model_id(),
+                        attempt,
+                        error = %e,
+                        "llm chat failed on a transient error; retrying"
+                    );
+                    tokio::time::sleep(Self::pause(attempt)).await;
+                },
+                other => return other,
+            }
+        }
+    }
+
+    fn accepts_images(&self) -> bool {
+        self.inner.accepts_images()
+    }
+
+    async fn health_check(&self) -> Result<()> {
+        self.inner.health_check().await
     }
 }
 
@@ -4742,12 +4895,26 @@ mod tests {
         assert!(matches!(err, LlmError::Invalid(_)));
     }
 
+    /// The window follows the request: a short prompt gets the floor, a
+    /// long one the next power of two above its estimate, and nothing
+    /// ever exceeds the ceiling.
+    #[test]
+    fn ollama_num_ctx_is_sized_from_the_request() {
+        assert_eq!(ollama_num_ctx(100, None), OLLAMA_NUM_CTX_FLOOR);
+        // 100k chars ≈ 33k tokens, plus a 4k cap → 37k → 65 536.
+        assert_eq!(ollama_num_ctx(100_000, Some(4_096)), 65_536);
+        assert_eq!(
+            ollama_num_ctx(10_000_000, Some(4_096)),
+            OLLAMA_NUM_CTX_CEILING
+        );
+    }
+
     #[tokio::test]
     async fn ollama_backend_posts_and_decodes_response() {
         let server = MockServer::start().await;
         Mock::given(method("POST"))
             .and(path("/api/generate"))
-            .and(body_json(serde_json::json!({
+            .and(body_partial_json(serde_json::json!({
                 "model": "llama3",
                 "prompt": "Hello",
                 "stream": false,
@@ -4846,7 +5013,7 @@ mod tests {
         let server = MockServer::start().await;
         Mock::given(method("POST"))
             .and(path("/api/generate"))
-            .and(body_json(serde_json::json!({
+            .and(body_partial_json(serde_json::json!({
                 "model": "llama3",
                 "prompt": "Q?",
                 "system": "You are terse.",
@@ -4884,7 +5051,7 @@ mod tests {
         let server = MockServer::start().await;
         Mock::given(method("POST"))
             .and(path("/api/generate"))
-            .and(body_json(serde_json::json!({
+            .and(body_partial_json(serde_json::json!({
                 "model": "qwen3.5:9b-q8_0",
                 "prompt": "extract intent",
                 "stream": false,
@@ -4955,7 +5122,7 @@ mod tests {
         let server = MockServer::start().await;
         Mock::given(method("POST"))
             .and(path("/api/chat"))
-            .and(body_json(serde_json::json!({
+            .and(body_partial_json(serde_json::json!({
                 "model": "qwen3.5:9b-q8_0",
                 "messages": [
                     { "role": "system", "content": "Be brief." },
@@ -4995,7 +5162,7 @@ mod tests {
         let server = MockServer::start().await;
         Mock::given(method("POST"))
             .and(path("/api/chat"))
-            .and(body_json(serde_json::json!({
+            .and(body_partial_json(serde_json::json!({
                 "model": "qwen3.5:9b-q8_0",
                 "messages": [
                     { "role": "user", "content": "trovami i libri" }
@@ -5071,7 +5238,7 @@ mod tests {
         let server = MockServer::start().await;
         Mock::given(method("POST"))
             .and(path("/api/chat"))
-            .and(body_json(serde_json::json!({
+            .and(body_partial_json(serde_json::json!({
                 "model": "qwen3.5:9b-q8_0",
                 "messages": [
                     { "role": "user", "content": "trovami i libri" },
@@ -5496,7 +5663,7 @@ mod tests {
         let server = MockServer::start().await;
         Mock::given(method("POST"))
             .and(path("/api/generate"))
-            .and(body_json(serde_json::json!({
+            .and(body_partial_json(serde_json::json!({
                 "model": "qwen3-vl",
                 "prompt": "describe this",
                 "stream": false,

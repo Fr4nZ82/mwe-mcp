@@ -379,10 +379,10 @@ pub struct IngestResponse {
     /// Candidates the agent surfaces. Empty when `needs_disambig` is
     /// false.
     pub disambig_candidates: Vec<DisambigCandidate>,
-    /// `true` when the LLM round-tripped a parseable plan. `false` on
-    /// every fallback path (LLM transport error, malformed JSON,
-    /// capture-plan validation failure). Useful for the audit log and
-    /// for tests that need to assert which branch fired.
+    /// `true` when the classifier answered — even when its answer could
+    /// not be read or applied and the turn fell back; `false` only when
+    /// it could not be reached at all. A fallback turn is told apart by
+    /// its `suggested_seed`, which says nothing was stored.
     pub llm_used: bool,
     /// Wall-clock duration of the orchestrator. Echoed as `took_ms` in
     /// the MCP response.
@@ -549,9 +549,15 @@ pub struct IngestPolicy {
     /// link destination (`compiler::recommended_link_targets`), so no walk
     /// arrives at one.
     pub max_mentioned_cards: usize,
-    /// Canned `suggested_seed` returned on every fallback path. Short
+    /// Canned `suggested_seed` for a turn the classifier filed as
+    /// nothing to keep, or a capture turn that filed nothing new. Short
     /// on purpose — the agent will rewrite it.
     pub fallback_suggested_seed: String,
+    /// Canned `suggested_seed` for a turn the engine could not serve: the
+    /// model was unreachable, or its answer could not be read or applied.
+    /// Nothing was stored, and the seed must say so — "I've noted that."
+    /// on such a turn is the one sentence the consumer must never relay.
+    pub degraded_suggested_seed: String,
     /// Canned `suggested_seed` returned for `intent=structural` when
     /// the LLM did not supply its own seed.
     pub structural_suggested_seed: String,
@@ -626,6 +632,9 @@ impl Default for IngestPolicy {
             // more people than that and the extra card earns its characters.
             max_mentioned_cards: 3,
             fallback_suggested_seed: "I've noted that.".to_owned(),
+            degraded_suggested_seed: "Something went wrong on my side and I could not save that. \
+                                      Please tell me again in a moment."
+                .to_owned(),
             structural_suggested_seed:
                 "This looks like a structural change — open the dashboard to continue.".to_owned(),
             nav: recall_nav::NavigatorPolicy::default(),
@@ -1261,6 +1270,20 @@ enum CapturePlanError {
         target_subject: String,
         new_subject: String,
     },
+    /// `supersede_target` named a fact whose subject the sender is not
+    /// — neither the named user nor a member of the named group. The
+    /// same-subject guard above compares the target with the **new**
+    /// fact's subject, and that subject is the model's choice: a slip
+    /// that copies the target's subject onto the new fact would pass it.
+    /// This one asks the question the reconciliation stage asks of every
+    /// supersede (`acl::sender_is_subject`): a supersede replaces what
+    /// somebody's fact says, and only that somebody may replace it.
+    #[error("supersede_target `{id}` is about {target_subject}, which the sender {sender} is not")]
+    SupersedeNotOwned {
+        id: String,
+        target_subject: String,
+        sender: String,
+    },
 }
 
 /// Turn the LLM-proposed `target_page` into a safe `.md` page path.
@@ -1707,6 +1730,7 @@ fn validate_capture_plan(
 fn validate_supersede_target(
     unit: &CaptureUnit<'_>,
     request: &IngestRequest,
+    sender_groups: &[String],
     recall_hits: &[RecallHit],
 ) -> std::result::Result<Option<FactId>, CapturePlanError> {
     let raw = match unit.supersede_target {
@@ -1744,6 +1768,13 @@ fn validate_supersede_target(
             id: raw.to_owned(),
             target_subject: hit.subject_id.to_string(),
             new_subject: new_subject.to_string(),
+        });
+    }
+    if !crate::acl::sender_is_subject(&hit.subject_id, &request.sender_id, sender_groups) {
+        return Err(CapturePlanError::SupersedeNotOwned {
+            id: raw.to_owned(),
+            target_subject: hit.subject_id.to_string(),
+            sender: request.sender_id.clone(),
         });
     }
     Ok(Some(fact_id))
@@ -6358,8 +6389,19 @@ async fn record_ingest_trace(
     }
 }
 
+/// Output cap of the classifier call: room for a plan of a dozen
+/// extracted facts, each a verbose per-fact object.
+const CLASSIFIER_MAX_TOKENS: u32 = 4096;
+/// The cap of the one retry made when a reply stops at
+/// [`CLASSIFIER_MAX_TOKENS`] without parsing.
+const CLASSIFIER_MAX_TOKENS_WIDENED: u32 = 8192;
+
 // ---------- Internal: fallback response builder ----------
 
+/// The response of a turn the engine could not serve — every caller of
+/// this reached it because the model was unreachable or its plan could
+/// not be read or applied, so nothing was stored. The seed says exactly
+/// that; the recall block still carries what the search found.
 fn fallback_response(
     request: &IngestRequest,
     recall_hits: &[RecallHit],
@@ -6370,7 +6412,7 @@ fn fallback_response(
     let context_snippet = format_snippet(recall_hits, &[], &[], policy.relevance_floor);
     let suggested_seed = match request.context_hint {
         ContextHint::DashboardCommand => Some(policy.structural_suggested_seed.clone()),
-        _ => Some(policy.fallback_suggested_seed.clone()),
+        _ => Some(policy.degraded_suggested_seed.clone()),
     };
     IngestResponse {
         intent: IntentKind::Skip,
@@ -6875,40 +6917,42 @@ pub async fn wiki_ingest_message(
             "ingest: photo bytes riding the classifier call (vision)"
         );
     }
-    // `max_tokens` sizes the multi-fact `extractions` array so it is not
-    // clipped: a turn can yield several facts, each a verbose per-fact JSON
-    // object. 4096 is generous headroom on the Anthropic / Ollama paths
-    // (bumped from 800, which was sized for the single-fact-top-level era).
-    // The Gemini backend ignores this and forces `maxOutputTokens: 65536`
-    // (combined thinking+output budget); the temperature 0.1 is likewise
-    // clamped to Gemini's mandated 1.0 — both bind only on Ollama/Anthropic.
-    let llm_resp = llm
-        .complete(
-            CompletionRequest::new(prompt)
-                .with_system(system_prompt)
-                // The classifier's system half is `ingest.md` with only
-                // `{locale}` substituted — identical call-to-call for a
-                // given deployment — while everything that varies per turn
-                // (the user roster, the sender's rules, the recall block,
-                // the message itself) rides in the user half. That split is
-                // what makes the prefix cacheable, and it is nearly the
-                // whole request: `ingest.md` is ~30k tokens against a
-                // measured 27.8k average per call over the 174-call corpus
-                // rebuild of 2026-07-29, which ran with cache reads at zero
-                // because this was the one hot caller never marked.
-                //
-                // The 1 h window means the discount lands on bursts (a
-                // conversation, a replay, a REM night) and an isolated turn
-                // arriving after the window pays the write surcharge
-                // instead. Net positive on any real traffic shape, but it
-                // is a measured claim: `llm_usage.cached_prompt_tokens` is
-                // the number to read, not this comment.
-                .with_cached_system()
-                .with_temperature(0.1)
-                .with_max_tokens(4096)
-                .with_images(images),
-        )
-        .await;
+    // `max_tokens` sizes the multi-fact `extractions` array. The Gemini
+    // backend ignores it and forces `maxOutputTokens: 65536` (combined
+    // thinking+output budget); the temperature 0.1 is likewise clamped to
+    // Gemini's mandated 1.0 — both bind only on Ollama/Anthropic.
+    // The plan is many small JSON objects — one per extracted fact — and a
+    // long message can want more than the cap allows. A reply that stops at
+    // the ceiling is unbalanced JSON, which parses as nothing at all; when
+    // that happens the call is made once more with twice the room, because
+    // the alternative is filing nothing and saying so.
+    let mut max_tokens = CLASSIFIER_MAX_TOKENS;
+    let llm_resp = loop {
+        let attempt = llm
+            .complete(
+                CompletionRequest::new(prompt.clone())
+                    .with_system(system_prompt.clone())
+                    .with_cached_system()
+                    .with_temperature(0.1)
+                    .with_max_tokens(max_tokens)
+                    .with_images(images.clone()),
+            )
+            .await;
+        match &attempt {
+            Ok(resp)
+                if resp.finish_reason == crate::llm::FinishReason::MaxTokens
+                    && parse_plan(&resp.text).is_none()
+                    && max_tokens < CLASSIFIER_MAX_TOKENS_WIDENED =>
+            {
+                tracing::warn!(
+                    max_tokens,
+                    "ingest: classifier reply hit the cap and did not parse — retrying wider"
+                );
+                max_tokens = CLASSIFIER_MAX_TOKENS_WIDENED;
+            },
+            _ => break attempt,
+        }
+    };
     let plan = match llm_resp {
         Ok(resp) => {
             if let Some(p) = parse_plan(&resp.text) {
@@ -7325,28 +7369,32 @@ pub async fn wiki_ingest_message(
                     unit.subject_id = None;
                 }
 
-                let supersede_target =
-                    match validate_supersede_target(&unit, &request, &recall_hits) {
-                        Ok(target) => target,
-                        Err(err) => {
-                            tracing::warn!(error = %err, "ingest: supersede_target invalid");
-                            if legacy {
-                                return Ok(fallback_with_unclaimed_media(
-                                    pool,
-                                    tree,
-                                    &request,
-                                    &available,
-                                    policy,
-                                    &recall_hits,
-                                    start.elapsed(),
-                                    true,
-                                    &claimed_attachments,
-                                )
-                                .await);
-                            }
-                            continue;
-                        },
-                    };
+                let supersede_target = match validate_supersede_target(
+                    &unit,
+                    &request,
+                    &sender_ctx.sender_groups,
+                    &recall_hits,
+                ) {
+                    Ok(target) => target,
+                    Err(err) => {
+                        tracing::warn!(error = %err, "ingest: supersede_target invalid");
+                        if legacy {
+                            return Ok(fallback_with_unclaimed_media(
+                                pool,
+                                tree,
+                                &request,
+                                &available,
+                                policy,
+                                &recall_hits,
+                                start.elapsed(),
+                                true,
+                                &claimed_attachments,
+                            )
+                            .await);
+                        }
+                        continue;
+                    },
+                };
                 let mut cap_req = match validate_capture_plan(
                     &unit,
                     &request,
@@ -9728,7 +9776,7 @@ mod tests {
         let plan = plan_with_supersede(None);
         let hits = vec![sample_recall_hit("018f1234-5678-7abc-9def-0123456789ab")];
         let resolved =
-            validate_supersede_target(&first_unit(&plan), &req("supersede", "alice"), &hits)
+            validate_supersede_target(&first_unit(&plan), &req("supersede", "alice"), &[], &hits)
                 .expect("absent supersede is fine");
         assert!(resolved.is_none());
     }
@@ -9738,7 +9786,7 @@ mod tests {
         let plan = plan_with_supersede(Some("   "));
         let hits = vec![sample_recall_hit("018f1234-5678-7abc-9def-0123456789ab")];
         let resolved =
-            validate_supersede_target(&first_unit(&plan), &req("supersede", "alice"), &hits)
+            validate_supersede_target(&first_unit(&plan), &req("supersede", "alice"), &[], &hits)
                 .expect("blank supersede is none");
         assert!(resolved.is_none());
     }
@@ -9749,7 +9797,7 @@ mod tests {
         let plan = plan_with_supersede(Some(id));
         let hits = vec![sample_recall_hit(id)];
         let resolved =
-            validate_supersede_target(&first_unit(&plan), &req("supersede", "alice"), &hits)
+            validate_supersede_target(&first_unit(&plan), &req("supersede", "alice"), &[], &hits)
                 .expect("resolved");
         assert_eq!(resolved.as_ref().map(FactId::as_str), Some(id));
     }
@@ -9765,7 +9813,7 @@ mod tests {
         let hits = vec![sample_recall_hit(id)]; // hit subject = user:alice
         // Sender is morgana, so the new fact's subject differs from the
         // recalled fact's subject (alice): the supersede must be refused.
-        let err = validate_supersede_target(&first_unit(&plan), &req("x", "morgana"), &hits)
+        let err = validate_supersede_target(&first_unit(&plan), &req("x", "morgana"), &[], &hits)
             .expect_err("cross-subject supersede must fail");
         match err {
             CapturePlanError::SupersedeCrossSubject {
@@ -9779,6 +9827,37 @@ mod tests {
             },
             other => panic!("expected SupersedeCrossSubject, got {other:?}"),
         }
+    }
+
+    /// The same-subject guard compares the target with the subject the
+    /// model chose for the new fact — so a plan that copies the target's
+    /// subject passes it. The sender must actually *be* that subject:
+    /// bob's fact, recalled into alice's turn, is not alice's to replace
+    /// however the model labels the replacement.
+    #[test]
+    fn validate_supersede_target_rejects_a_sender_who_is_not_the_subject() {
+        let id = "018f1234-5678-7abc-9def-0123456789ab";
+        let mut plan = plan_with_supersede(Some(id));
+        plan.subject_id = Some("user:alice".to_owned());
+        let hits = vec![sample_recall_hit(id)]; // hit subject = user:alice
+        let err = validate_supersede_target(&first_unit(&plan), &req("x", "bob"), &[], &hits)
+            .expect_err("a sender who is not the subject must not supersede");
+        assert!(
+            matches!(err, CapturePlanError::SupersedeNotOwned { ref sender, .. } if sender == "bob"),
+            "expected SupersedeNotOwned, got {err:?}"
+        );
+        // A member of the subject group is the subject.
+        plan.subject_id = Some("group:team".to_owned());
+        let mut hit = sample_recall_hit(id);
+        hit.subject_id = "group:team".parse().unwrap();
+        let ok = validate_supersede_target(
+            &first_unit(&plan),
+            &req("x", "bob"),
+            &["team".to_owned()],
+            &[hit],
+        )
+        .expect("a member of the subject group supersedes");
+        assert!(ok.is_some());
     }
 
     /// Who may close a fact from chat: its subject, and whoever said it.
@@ -9829,8 +9908,9 @@ mod tests {
     fn validate_supersede_target_rejects_malformed_fact_id() {
         let plan = plan_with_supersede(Some("not-a-uuid"));
         let hits = vec![sample_recall_hit("018f1234-5678-7abc-9def-0123456789ab")];
-        let err = validate_supersede_target(&first_unit(&plan), &req("supersede", "alice"), &hits)
-            .expect_err("malformed fact_id");
+        let err =
+            validate_supersede_target(&first_unit(&plan), &req("supersede", "alice"), &[], &hits)
+                .expect_err("malformed fact_id");
         assert!(matches!(err, CapturePlanError::BadSupersedeFactId(_)));
     }
 
@@ -9844,8 +9924,9 @@ mod tests {
         let hallucinated = "018f9999-9999-7999-9999-999999999999";
         let plan = plan_with_supersede(Some(hallucinated));
         let hits = vec![sample_recall_hit(recall_id)];
-        let err = validate_supersede_target(&first_unit(&plan), &req("supersede", "alice"), &hits)
-            .expect_err("hallucinated supersede_target must fail");
+        let err =
+            validate_supersede_target(&first_unit(&plan), &req("supersede", "alice"), &[], &hits)
+                .expect_err("hallucinated supersede_target must fail");
         match err {
             CapturePlanError::SupersedeTargetNotInRecall { id, available } => {
                 assert_eq!(id, hallucinated);
@@ -17224,7 +17305,7 @@ mod tests {
         assert!(resp.capture_id.is_none());
         assert_eq!(
             resp.suggested_seed.as_deref(),
-            Some(IngestPolicy::default().fallback_suggested_seed.as_str())
+            Some(IngestPolicy::default().degraded_suggested_seed.as_str())
         );
         assert!(resp.llm_used);
         drop(dir);
@@ -17287,7 +17368,7 @@ mod tests {
         assert!(!resp.llm_used, "fallback path because LLM transport failed");
         assert_eq!(
             resp.suggested_seed.as_deref(),
-            Some(IngestPolicy::default().fallback_suggested_seed.as_str())
+            Some(IngestPolicy::default().degraded_suggested_seed.as_str())
         );
         drop(dir);
     }

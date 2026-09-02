@@ -424,17 +424,21 @@ impl LlmFunctionConfig {
         F: FnMut(&str) -> Option<String>,
     {
         let inner = self.build_backend_raw_with_env(function, env)?;
-        // Two decorators, innermost first, and the order does not
-        // matter for correctness — both are pure observers. The usage
-        // ledger goes outside so the latency it records is the one the
-        // caller waited, spooling included.
-        let spooled = crate::training_spool::maybe_wrap(inner, function, &self.backend);
-        Ok(crate::usage::maybe_wrap(
-            spooled,
-            function,
-            &self.backend,
-            self.billing(),
-        ))
+        // Four decorators, innermost first. The slot defaults go right
+        // against the provider so every caller that leaves `temperature`
+        // or `max_tokens` unset gets this slot's YAML values, not the
+        // provider's. The spool and the usage ledger are pure observers:
+        // the ledger sits outside the spool so the latency it records is
+        // the one the caller waited, spooling included. The retries go
+        // outermost so each attempt is its own ledger row — a failed
+        // attempt is a real call the provider saw.
+        let with_defaults: Box<dyn crate::llm::LlmBackend> = Box::new(SlotDefaultsBackend {
+            inner,
+            defaults: self.clone(),
+        });
+        let spooled = crate::training_spool::maybe_wrap(with_defaults, function, &self.backend);
+        let recorded = crate::usage::maybe_wrap(spooled, function, &self.backend, self.billing());
+        Ok(crate::llm::with_retries(recorded))
     }
 
     /// How this slot's tokens are paid for.
@@ -913,6 +917,49 @@ impl LlmFunctionConfig {
         if req.max_tokens.is_none() {
             req.max_tokens = self.max_tokens;
         }
+    }
+}
+
+/// The decorator that applies a slot's YAML `temperature` / `max_tokens`
+/// to every request that left them unset — the one place
+/// [`LlmFunctionConfig::apply_defaults_to_completion`] and
+/// [`LlmFunctionConfig::apply_defaults_to_chat`] are applied for the
+/// completion callers, so the knobs the dashboard editor and the
+/// `MWE_LLM_<SLOT>_TEMPERATURE` / `_MAX_TOKENS` overrides expose reach
+/// the ingest, REM, cronista and navigator calls and not only the chat.
+struct SlotDefaultsBackend {
+    inner: Box<dyn crate::llm::LlmBackend>,
+    defaults: LlmFunctionConfig,
+}
+
+#[async_trait::async_trait]
+impl crate::llm::LlmBackend for SlotDefaultsBackend {
+    fn model_id(&self) -> &str {
+        self.inner.model_id()
+    }
+
+    async fn complete(
+        &self,
+        mut request: crate::llm::CompletionRequest,
+    ) -> crate::llm::Result<crate::llm::CompletionResponse> {
+        self.defaults.apply_defaults_to_completion(&mut request);
+        self.inner.complete(request).await
+    }
+
+    async fn chat(
+        &self,
+        mut request: crate::llm::ChatRequest,
+    ) -> crate::llm::Result<crate::llm::ChatResponse> {
+        self.defaults.apply_defaults_to_chat(&mut request);
+        self.inner.chat(request).await
+    }
+
+    fn accepts_images(&self) -> bool {
+        self.inner.accepts_images()
+    }
+
+    async fn health_check(&self) -> crate::llm::Result<()> {
+        self.inner.health_check().await
     }
 }
 

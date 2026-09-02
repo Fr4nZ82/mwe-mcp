@@ -294,7 +294,6 @@ pub async fn reindex_file(
     abs_path: &Path,
 ) -> Result<ReindexFileReport> {
     // Reserved underscore-pages are not indexable content: `_meta.md`
-    // (rebuilt by `capture_buffer::reindex_capture_journal`), `_meta.md`
     // (wiki config), and `_briefing.md` / `_briefing.archive.md` (the smart
     // consumer's feedback INBOX, not knowledge it authored). The standard
     // sweep ignores them for lack of markers; the smart section-indexer
@@ -387,33 +386,22 @@ pub async fn reindex_file(
     // Standard wiki: DB-authoritative, offset-and-existence repair only —
     // per-fragment `{{f=…}}` markers stay the pillar here.
     let parsed = parser::parse(&raw);
-    for w in &parsed.warnings {
-        report
+    report.warnings.extend(
+        parsed
             .warnings
-            .push(format!("{:?}@{}: {}", w.kind, w.offset, w.detail));
-    }
+            .iter()
+            .map(|w| format!("{:?}@{}: {}", w.kind, w.offset, w.detail)),
+    );
 
     let on_disk = collect_disk_markers(&parsed.events);
-    let active_rows = fact_index::find_active_by_source_path(pool, &source_path).await?;
-    let active_by_id: std::collections::HashMap<&str, &FactIndexRow> = active_rows
-        .iter()
-        .map(|r| (r.fact_id.as_str(), r))
-        .collect();
-    let on_disk_ids: HashSet<&str> = on_disk.iter().map(|m| m.fact_id.as_str()).collect();
+    let active_rows =
+        repair_standard_markers(pool, &source_path, &resolved.wiki_id, &on_disk, &mut report)
+            .await?;
 
-    for marker in &on_disk {
-        let existing = active_by_id.get(marker.fact_id.as_str()).copied();
-        apply_standard_marker(
-            pool,
-            &source_path,
-            &resolved.wiki_id,
-            marker,
-            existing,
-            &mut report,
-        )
-        .await?;
+    if !markers_parse_whole(&parsed, &resolved.wiki_id, &source_path) {
+        return Ok(report);
     }
-
+    let on_disk_ids: HashSet<&str> = on_disk.iter().map(|m| m.fact_id.as_str()).collect();
     apply_orphan_sweep(
         pool,
         &source_path,
@@ -426,6 +414,28 @@ pub async fn reindex_file(
     .await?;
 
     Ok(report)
+}
+
+/// Bring every marker found on disk into agreement with its row (offsets,
+/// existence), and hand back the page's active rows for the sweep that
+/// follows.
+async fn repair_standard_markers(
+    pool: &SqlitePool,
+    source_path: &str,
+    wiki_id: &str,
+    on_disk: &[DiskMarker],
+    report: &mut ReindexFileReport,
+) -> Result<Vec<FactIndexRow>> {
+    let active_rows = fact_index::find_active_by_source_path(pool, source_path).await?;
+    let active_by_id: std::collections::HashMap<&str, &FactIndexRow> = active_rows
+        .iter()
+        .map(|r| (r.fact_id.as_str(), r))
+        .collect();
+    for marker in on_disk {
+        let existing = active_by_id.get(marker.fact_id.as_str()).copied();
+        apply_standard_marker(pool, source_path, wiki_id, marker, existing, report).await?;
+    }
+    Ok(active_rows)
 }
 
 // ---------- strip_fact_region (retire-time page cleanup) ----------
@@ -1503,27 +1513,68 @@ pub async fn run_watcher_loop(
     embedder: Arc<dyn Embedder>,
     mut rx: mpsc::UnboundedReceiver<WatchedChange>,
 ) {
-    while let Some(change) = rx.recv().await {
-        match change {
-            WatchedChange::Touched(p) | WatchedChange::Removed(p) => {
-                if !is_markdown_page(&p) {
+    while let Some(first) = rx.recv().await {
+        // An editor or a sync client writes a page in several steps —
+        // truncate, write, rename — and the notifier reports each one.
+        // Reacting to the first would re-index a half-written file; so
+        // the loop waits a beat, takes everything that arrived meanwhile,
+        // and handles each path once, in the order it was first seen.
+        tokio::time::sleep(WATCHER_SETTLE).await;
+        let mut batch = vec![first];
+        while let Ok(more) = rx.try_recv() {
+            batch.push(more);
+        }
+        // Per path, the last event of the burst is the one that describes
+        // the file as it is now; paths keep the order they first appeared.
+        let mut order: Vec<PathBuf> = Vec::new();
+        let mut latest: std::collections::HashMap<PathBuf, WatchedChange> =
+            std::collections::HashMap::new();
+        for change in batch {
+            let key = match &change {
+                WatchedChange::Touched(p) | WatchedChange::Removed(p) => p.clone(),
+                WatchedChange::Renamed { to, .. } => to.clone(),
+            };
+            if latest.insert(key.clone(), change).is_none() {
+                order.push(key);
+            }
+        }
+        for key in order {
+            if let Some(change) = latest.remove(&key) {
+                handle_watched_change(&pool, &tree, &embedder, change).await;
+            }
+        }
+    }
+}
+
+/// How long the watcher lets a burst of change events settle before it
+/// reads the files they name.
+const WATCHER_SETTLE: std::time::Duration = std::time::Duration::from_millis(300);
+
+async fn handle_watched_change(
+    pool: &SqlitePool,
+    tree: &Arc<WikiTree>,
+    embedder: &Arc<dyn Embedder>,
+    change: WatchedChange,
+) {
+    match change {
+        WatchedChange::Touched(p) | WatchedChange::Removed(p) => {
+            if !is_markdown_page(&p) {
+                return;
+            }
+            if let Err(e) = reindex_file(pool, tree, embedder.clone(), &p).await {
+                tracing::warn!(error = %e, path = %p.display(), "watcher: reindex_file failed");
+            }
+        },
+        WatchedChange::Renamed { from, to } => {
+            for p in [&from, &to] {
+                if !is_markdown_page(p) {
                     continue;
                 }
-                if let Err(e) = reindex_file(&pool, &tree, embedder.clone(), &p).await {
+                if let Err(e) = reindex_file(pool, tree, embedder.clone(), p).await {
                     tracing::warn!(error = %e, path = %p.display(), "watcher: reindex_file failed");
                 }
-            },
-            WatchedChange::Renamed { from, to } => {
-                for p in [&from, &to] {
-                    if !is_markdown_page(p) {
-                        continue;
-                    }
-                    if let Err(e) = reindex_file(&pool, &tree, embedder.clone(), p).await {
-                        tracing::warn!(error = %e, path = %p.display(), "watcher: reindex_file failed");
-                    }
-                }
-            },
-        }
+            }
+        },
     }
 }
 
@@ -1961,6 +2012,31 @@ async fn apply_standard_marker(
         );
     }
     Ok(())
+}
+
+/// Whether a page's markers parsed without a structural warning — a
+/// region opened and never closed, a stray terminator, an unclosed
+/// marker. A page that fails this is one somebody is still writing, or one
+/// a program truncated: what the parse did not find on it is no evidence
+/// that a fact was removed, so its markers are repaired and the orphan
+/// sweep waits for a pass that reads whole.
+fn markers_parse_whole(parsed: &parser::ParseOutput, wiki_id: &str, source_path: &str) -> bool {
+    let unreliable = parsed.warnings.iter().any(|w| {
+        matches!(
+            w.kind,
+            parser::ParseWarningKind::UnclosedRegion
+                | parser::ParseWarningKind::UnclosedMarker
+                | parser::ParseWarningKind::StrayCloseMarker
+        )
+    });
+    if unreliable {
+        tracing::warn!(
+            wiki_id,
+            source_path,
+            "reindex_file: markers do not parse whole — orphan sweep skipped for this pass"
+        );
+    }
+    !unreliable
 }
 
 async fn apply_orphan_sweep(

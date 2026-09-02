@@ -1292,6 +1292,7 @@ fn service_unit(
          ExecStart={bin} serve --workdir {workdir} --bind {bind} --port {port}{exec_bypass}\n\
          Restart=on-failure\n\
          RestartSec=2\n\
+         RestartPreventExitStatus=78\n\
          NoNewPrivileges=true\n\
          ProtectSystem=strict\n\
          ReadWritePaths={workdir}\n\
@@ -1610,6 +1611,10 @@ async fn cmd_serve_http(
     warn_loose_workdir(workdir);
 
     let (state, dashboard_state) = bootstrap_state(workdir, config).await?;
+    // The one gate the two dream loops and the dashboard's Dream console
+    // share; taken here because the router assembly below moves the
+    // dashboard state.
+    let rem_gate = dashboard_state.rem_gate.clone();
 
     // One broadcast channel fans the shutdown signal out to every
     // long-lived task that needs to exit cleanly: axum's graceful
@@ -1629,6 +1634,24 @@ async fn cmd_serve_http(
         info!("mwe-mcp serve: ctrl-c received, broadcasting shutdown");
         let _ = ctrl_c_tx.send(());
     });
+    // `systemctl stop` sends SIGTERM, not SIGINT: without this handler the
+    // process dies mid-turn with the audit row unwritten and the log
+    // buffer unflushed, exactly what the graceful path above exists to
+    // avoid.
+    #[cfg(unix)]
+    {
+        let term_tx = shutdown_tx.clone();
+        tokio::spawn(async move {
+            match tokio::signal::unix::signal(tokio::signal::unix::SignalKind::terminate()) {
+                Ok(mut term) => {
+                    term.recv().await;
+                    info!("mwe-mcp serve: SIGTERM received, broadcasting shutdown");
+                    let _ = term_tx.send(());
+                },
+                Err(e) => warn!(error = %e, "failed to install SIGTERM handler"),
+            }
+        });
+    }
     let restart_requested = Arc::new(std::sync::atomic::AtomicBool::new(false));
     let dashboard_state = dashboard_state.with_restart(mwe_dashboard::RestartHandle {
         shutdown: shutdown_tx.clone(),
@@ -1795,6 +1818,7 @@ async fn cmd_serve_http(
             state.embedder.clone(),
             std::sync::Arc::clone(llms),
             rem_policy,
+            rem_gate.clone(),
             async move {
                 let _ = rx.recv().await;
             },
@@ -1816,6 +1840,7 @@ async fn cmd_serve_http(
             state.tree.clone(),
             state.embedder.clone(),
             llms.clone(),
+            rem_gate.clone(),
             async move {
                 let _ = light_shutdown_rx.recv().await;
             },
@@ -2028,6 +2053,12 @@ async fn cmd_serve_http(
 /// deliberate stop (ctrl-c, `systemctl stop`) still exits clean.
 const RESTART_EXIT_CODE: i32 = 75;
 
+/// Exit code of a boot refused by the LLM health check: `EX_CONFIG` (78).
+/// The provisioned unit names it in `RestartPreventExitStatus`, so a
+/// deployment whose provider is down stays down, visibly, instead of
+/// relaunching every two seconds and probing every slot each time.
+const CONFIG_EXIT_CODE: i32 = 78;
+
 /// Run `LlmBackend::health_check` on every slot the operator has wired
 /// in `mwe-mcp.config.yaml > llm:`.
 ///
@@ -2228,8 +2259,15 @@ async fn bootstrap_state(workdir: &Path, config: &Config) -> Result<(McpState, D
     // accept traffic. Refuse to bind the listener if even one slot
     // fails its health check. The check runs *before* the lockfile
     // is taken so a misconfigured deploy can be diagnosed and rerun
-    // without contention with a previous instance.
-    health_check_llm_slots(&config.llm).await?;
+    // without contention with a previous instance. The refusal exits
+    // with `EX_CONFIG`, which the provisioned unit lists in
+    // `RestartPreventExitStatus`: a provider that is down is not fixed
+    // by relaunching every two seconds, and each relaunch would probe
+    // every slot again — paid calls on the healthy ones.
+    if let Err(e) = health_check_llm_slots(&config.llm).await {
+        tracing::error!(error = %e, "mwe-mcp serve: refusing to start");
+        std::process::exit(CONFIG_EXIT_CODE);
+    }
 
     let lock = lockfile::acquire(workdir).map_err(|e| anyhow!("lockfile: {e}"))?;
     // Lockfile must outlive the function; leak so the OS releases it at

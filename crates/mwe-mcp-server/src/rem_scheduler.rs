@@ -1,13 +1,19 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 //! REM cycle scheduler for the long-lived HTTP server.
 //!
-//! Closes the original `rem-cycle-not-scheduled` work item. The HTTP
-//! transport is the standard PWA-as-permanent-daemon deployment, so a
-//! tokio interval ticker inside `cmd_serve_http` is the right home for
-//! the recurring [`mwe_core::rem::run_cycle`] invocation. Operators who
-//! prefer an external scheduler (systemd timer, cron) can set
-//! `rem.schedule.mode: disabled` in `mwe-mcp.config.yaml` and call
-//! `mwe-mcp rem run-cycle` from their cron.
+//! The HTTP transport is the standard PWA-as-permanent-daemon deployment,
+//! so a tokio interval ticker inside `cmd_serve_http` is the home of the
+//! recurring [`mwe_core::rem::run_cycle`] invocation. `mwe-mcp rem
+//! run-cycle` exists for a stopped server (it takes the workdir lock that
+//! `serve` holds for its whole life), not as a cron alternative to this
+//! loop.
+//!
+//! Three things run the memory's write side — this full-dream loop, the
+//! light-dream loop below, and the dashboard's Dream console — and they
+//! share one `gate`: a `tokio::sync::Mutex<()>` the scheduled loops
+//! **wait** on and the console **tries**. Two of them writing at once
+//! would each save the compilation plan and the last writer would carry
+//! the other's page moves back to where they came from.
 //!
 //! ## Design choices
 //!
@@ -195,6 +201,7 @@ pub fn spawn<S>(
     embedder: Arc<dyn Embedder>,
     llms: Arc<OwnedRemLlms>,
     policy: Arc<RwLock<RemPolicy>>,
+    gate: Arc<tokio::sync::Mutex<()>>,
     shutdown: S,
 ) -> Option<JoinHandle<()>>
 where
@@ -228,7 +235,10 @@ where
             () = &mut initial => {},
         }
 
-        fire_once(&pool, &tree, &embedder, &llms, &snapshot_policy(&policy)).await;
+        {
+            let _running = gate.lock().await;
+            fire_once(&pool, &tree, &embedder, &llms, &snapshot_policy(&policy)).await;
+        }
 
         let mut ticker = tokio::time::interval(std::time::Duration::from_secs(interval_secs));
         // Skip missed ticks rather than burst-running them when the
@@ -248,6 +258,7 @@ where
                     return;
                 },
                 _ = ticker.tick() => {
+                    let _running = gate.lock().await;
                     fire_once(&pool, &tree, &embedder, &llms, &snapshot_policy(&policy)).await;
                 }
             }
@@ -420,6 +431,7 @@ pub fn spawn_light<S>(
     tree: WikiTree,
     embedder: Arc<dyn Embedder>,
     llms: Option<Arc<OwnedRemLlms>>,
+    gate: Arc<tokio::sync::Mutex<()>>,
     shutdown: S,
 ) -> Option<JoinHandle<()>>
 where
@@ -454,7 +466,10 @@ where
             () = &mut initial => {},
         }
 
-        fire_light(&pool, &tree, &embedder, llms.as_deref(), &policy).await;
+        {
+            let _running = gate.lock().await;
+            fire_light(&pool, &tree, &embedder, llms.as_deref(), &policy).await;
+        }
         let mut last_run = tokio::time::Instant::now();
 
         let mut ticker = tokio::time::interval(std::time::Duration::from_secs(poll_secs));
@@ -471,6 +486,7 @@ where
                     let due_timer = last_run.elapsed().as_secs() >= interval_secs;
                     let due_threshold = threshold > 0 && backlog_at_least(&pool, threshold).await;
                     if due_timer || due_threshold {
+                        let _running = gate.lock().await;
                         fire_light(&pool, &tree, &embedder, llms.as_deref(), &policy).await;
                         last_run = tokio::time::Instant::now();
                     }
@@ -591,6 +607,7 @@ mod tests {
             embedder,
             Arc::new(llms),
             Arc::new(RwLock::new(RemPolicy::default())),
+            Arc::new(tokio::sync::Mutex::new(())),
             async move {
                 let _ = rx.await;
             },
@@ -633,6 +650,7 @@ mod tests {
             tree,
             embedder,
             None,
+            Arc::new(tokio::sync::Mutex::new(())),
             async move {
                 let _ = rx.await;
             },
@@ -700,6 +718,7 @@ mod tests {
             embedder,
             Arc::new(llms),
             Arc::new(RwLock::new(RemPolicy::default())),
+            Arc::new(tokio::sync::Mutex::new(())),
             async move {
                 let _ = rx.await;
             },
