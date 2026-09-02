@@ -30,10 +30,9 @@
 //!   handles partial page writes; `mark_superseded` and
 //!   `mark_forgotten` are no-ops on already-superseded / already-
 //!   tombstoned rows; `insert_event` is gated by an idempotency probe).
-//!   A crashed cycle is safe to retry on the next REM tick — there is
-//!   no per-step rollback driver in this milestone, which is
-//!   documented as a follow-up alongside the proposal-side WAL
-//!   apply driver.
+//!   A crashed cycle is safe to retry on the next REM tick: the boot
+//!   sweep ([`crate::wal::rollback_stale_rems`]) closes the rows the
+//!   crash left open and the next cycle re-does the work.
 //! - Soft failures inside a sub-job (one wiki's template missing, one
 //!   fact body that fails YAML parse, the LLM hanging up on one pair)
 //!   are collected in the sub-job's `errors` list and the cycle
@@ -45,7 +44,6 @@
 //! | Out of scope here | Why |
 //! |---|---|
 //! | The compile pass (planner + Cronista + reviewer) | Composed in [`crate::dream`], which runs it after this cycle on the full cadence — not a `run_cycle` sub-job. |
-//! | Per-step rollback driver for `proposal_ops_log` | Deferred alongside the proposal apply engine (rollback shape mirrors REM's). |
 
 use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
 use std::sync::Arc;
@@ -729,7 +727,8 @@ pub struct BriefingProcessorReport {
     pub errors: Vec<String>,
 }
 
-/// Sub-report for the auto-apply sweep.
+/// Sub-report for the auto-apply sweep and the expire sweep that
+/// follows it.
 ///
 /// Walks every pending proposal past `timeout_at` and calls
 /// [`crate::proposals::auto_apply_overdue_proposals`] which dispatches
@@ -742,6 +741,10 @@ pub struct AutoApplyReport {
     /// `(proposal_id, kind)` of the rows the sweep moved from
     /// `pending` to `applied`.
     pub applied: Vec<(String, String)>,
+    /// Rows the expire sweep moved from `pending` to `expired` — the
+    /// ones still failing once the grace window past `timeout_at`
+    /// closed.
+    pub expired: u64,
     /// `(proposal_id, error_message)` for proposals the chassis or the
     /// handler refused. Soft errors only — the sweep keeps going.
     pub errors: Vec<(String, String)>,
@@ -1118,6 +1121,7 @@ pub async fn run_cycle(
     tracing::info!(
         cycle_id,
         auto_applied = auto_apply.applied.len(),
+        auto_expired = auto_apply.expired,
         pairs_examined = revisor.pairs_examined,
         pairs_confirmed = revisor.pairs_confirmed,
         dedup_applied = revisor.applied.len(),
@@ -1875,21 +1879,29 @@ async fn find_active_in_family(
 
 // ---------- Auto-apply sweep sub-job ----------
 
-/// Thin wrapper around [`proposals::auto_apply_overdue_proposals`]
-/// that adapts the call's report shape to the REM
-/// sub-job report shape ([`AutoApplyReport`]).
+/// The two overdue-proposal sweeps, adapted to the REM sub-job report
+/// shape ([`AutoApplyReport`]).
 ///
-/// The sweep flips `pending → applied` with `apply_mode='auto'`.
-/// Per-row handler failures are collected and the sweep keeps going.
+/// First [`proposals::auto_apply_overdue_proposals`] flips
+/// `pending → applied` with `apply_mode='auto'`; per-row handler
+/// failures are collected and the sweep keeps going, leaving the row
+/// `pending` for another night. Then
+/// [`proposals::expire_overdue_proposals`] flips
+/// `pending → expired` for the rows still overdue past
+/// [`proposals::EXPIRE_GRACE_PERIOD`], which is what stops a row that
+/// fails every night from being retried forever. Both get the cycle's
+/// `now`, so the grace window is measured against one clock.
 async fn run_auto_apply_sweep(
     pool: &SqlitePool,
     tree: &WikiTree,
     now: DateTime<Utc>,
 ) -> Result<AutoApplyReport> {
     let sweep = proposals::auto_apply_overdue_proposals(pool, tree, now).await?;
+    let expire = proposals::expire_overdue_proposals(pool, now).await?;
     Ok(AutoApplyReport {
         candidates_examined: sweep.candidates_examined,
         applied: sweep.auto_applied,
+        expired: expire.expired,
         errors: sweep.errors,
     })
 }
@@ -7623,6 +7635,40 @@ mod tests {
         ))
     }
 
+    /// Plant a `pending` `dedup_merge` row whose `timeout_at` sits
+    /// `timeout_offset_secs` from now (negative = already overdue).
+    /// Raw SQL: the engine has no emitter for the pending lifecycle, and
+    /// the sweeps are what this file tests.
+    async fn plant_pending_dedup_merge(
+        pool: &SqlitePool,
+        winner: &str,
+        loser: &str,
+        timeout_offset_secs: i64,
+    ) -> String {
+        let proposal_id = uuid::Uuid::new_v4().to_string();
+        let now = Utc::now();
+        let context = json!({ "winner_fact_id": winner, "loser_fact_id": loser });
+        let questions = json!([{
+            "id": "confirm",
+            "text": "Merge these two near-duplicate facts?",
+            "options": [{"id": "merge", "label": "Merge", "recommended": true}],
+        }]);
+        sqlx::query(
+            "INSERT INTO structure_proposals
+                 (proposal_id, kind, context, questions, proposed_at, timeout_at, status)
+             VALUES (?, 'dedup_merge', ?, ?, ?, ?, 'pending')",
+        )
+        .bind(&proposal_id)
+        .bind(context.to_string())
+        .bind(questions.to_string())
+        .bind(now.to_rfc3339())
+        .bind((now + chrono::Duration::seconds(timeout_offset_secs)).to_rfc3339())
+        .execute(pool)
+        .await
+        .expect("plant pending dedup_merge");
+        proposal_id
+    }
+
     async fn plant_fact(
         tree: &WikiTree,
         pool: &SqlitePool,
@@ -10462,23 +10508,10 @@ mod tests {
         tree = WikiTree::open(dir.path()).unwrap();
         let loser = plant_fact(&tree, &pool, "alice", "Alice has a cat", "alice").await;
         let winner = plant_fact(&tree, &pool, "alice", "Alice owns a cat", "alice").await;
-        // Emit a dedup_merge proposal directly, then back-date its
-        // timeout_at so the sweep picks it up on the next cycle.
-        let proposal_id = crate::dedup::emit_dedup_merge(
-            &pool,
-            &winner,
-            &loser,
-            &crate::dedup::DedupMergeHints::default(),
-            None,
-        )
-        .await
-        .unwrap();
-        sqlx::query("UPDATE structure_proposals SET timeout_at = ? WHERE proposal_id = ?")
-            .bind((chrono::Utc::now() - chrono::Duration::hours(1)).to_rfc3339())
-            .bind(&proposal_id)
-            .execute(&pool)
-            .await
-            .unwrap();
+        // Plant an overdue `dedup_merge` row: `timeout_at` an hour ago,
+        // so the sweep picks it up but the grace window is still open.
+        let proposal_id =
+            plant_pending_dedup_merge(&pool, winner.as_str(), loser.as_str(), -3600).await;
 
         let rev_llm = FakeLlmBackend::new("rev", "{\"same\": false}");
         let report = run_cycle(
@@ -10524,9 +10557,46 @@ mod tests {
         drop(dir);
     }
 
-    // build_recommended_answers moved to crate::proposals so the
-    // auto-apply sweep can live there as a first-class API. Tests for
-    // the helper live next to it in proposals.rs.
+    /// A row the auto-apply sweep cannot apply stops being retried once
+    /// the grace window past `timeout_at` closes: the expire sweep that
+    /// runs right after it in the same cycle flips the row to `expired`.
+    #[tokio::test]
+    async fn auto_apply_sweep_expires_a_row_past_grace() {
+        let (dir, mut tree, pool) = setup_workdir().await;
+        write_wiki(&tree, "alice", "Alice", "wiki-user");
+        tree = WikiTree::open(dir.path()).unwrap();
+        // Fact ids nothing planted: the handler refuses, so the row is
+        // still `pending` when the expire sweep looks at it.
+        let proposal_id = plant_pending_dedup_merge(
+            &pool,
+            "fact-01J0000000000000000000WIN",
+            "fact-01J0000000000000000000LOS",
+            -(48 * 3600),
+        )
+        .await;
+
+        let rev_llm = FakeLlmBackend::new("rev", "{\"same\": false}");
+        let report = run_cycle(
+            &pool,
+            &tree,
+            fake_embedder(),
+            &test_llms(&rev_llm),
+            &RemPolicy::default(),
+        )
+        .await
+        .unwrap();
+        assert!(report.auto_apply.applied.is_empty(), "the handler refuses");
+        assert_eq!(report.auto_apply.expired, 1);
+
+        let status: String =
+            sqlx::query_scalar("SELECT status FROM structure_proposals WHERE proposal_id = ?")
+                .bind(&proposal_id)
+                .fetch_one(&pool)
+                .await
+                .unwrap();
+        assert_eq!(status, "expired");
+        drop(dir);
+    }
 
     // ---------- parse helper ----------
 

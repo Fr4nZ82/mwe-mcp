@@ -798,8 +798,9 @@ async fn cmd_rem_run_cycle(workdir: &Path, config: &Config) -> Result<()> {
         (report.cycle.ended_at - report.cycle.started_at).num_milliseconds()
     );
     println!(
-        "auto_apply     : applied={}",
-        report.cycle.auto_apply.applied.len()
+        "auto_apply     : applied={} expired={}",
+        report.cycle.auto_apply.applied.len(),
+        report.cycle.auto_apply.expired,
     );
     println!(
         "revisor        : examined={} confirmed={} dedup_applied={}",
@@ -2182,17 +2183,16 @@ async fn health_check_llm_slots(config: &mwe_core::config::LlmConfig) -> Result<
     }
 }
 
-/// Run the WAL apply driver over both stale proposal ops and stale REM
-/// ops with a [`NoopInverse`] (a floor — per-kind inverses are wired
-/// later).
+/// Close the REM ops a crashed cycle left open: every `rem_ops_log` row
+/// still `pending` past [`DEFAULT_STALE_AFTER`] is flipped to `failed`
+/// with a [`NoopInverse`], because a REM sub-step is idempotent and the
+/// next cycle re-does it.
 async fn sweep_stale_wal(pool: &sqlx::SqlitePool) -> Result<()> {
-    let rb_props = wal::rollback_stale_proposals(pool, DEFAULT_STALE_AFTER, &NoopInverse).await?;
     let rb_rems = wal::rollback_stale_rems(pool, DEFAULT_STALE_AFTER, &NoopInverse).await?;
-    if rb_props.rolled_back + rb_rems.rolled_back > 0 {
+    if rb_rems.rolled_back > 0 {
         warn!(
-            proposal_ops = rb_props.rolled_back,
             rem_ops = rb_rems.rolled_back,
-            "WAL recovery: stale ops swept (NoopInverse)"
+            "WAL recovery: stale REM ops swept"
         );
     } else {
         info!("WAL recovery: clean");
@@ -2285,9 +2285,7 @@ fn dashboard_config_from(config: &Config) -> mwe_dashboard::DashboardConfig {
 /// 3. Apply a staged recovery, if the dashboard left one pending.
 /// 4. Open + migrate `engine.db`.
 /// 5. Load `MWE_TOKEN_SECRET` and prime the blacklist cache.
-/// 6. Run the WAL apply driver with a [`NoopInverse`] over both stale
-///    proposal ops and stale REM ops (a floor — per-kind inverses
-///    are wired later).
+/// 6. Sweep the stale REM ops a crashed cycle left open.
 /// 7. Open the memory-wiki tree.
 /// 8. Build the shared `McpState` and the matching `DashboardState`
 ///    (cloned from the same handles).

@@ -265,14 +265,6 @@ impl ReaderCard {
         self.wiki_topics.get(wiki_id).map_or(&[][..], Vec::as_slice)
     }
 
-    /// The whole `wiki_id` → topics map. Address-keyed bulk access for
-    /// callers that need every wiki's reader-visible vocabulary at once; it is
-    /// not a catalogue and nothing renders it to a reader.
-    #[must_use]
-    pub const fn wiki_topics_map(&self) -> &BTreeMap<String, Vec<String>> {
-        &self.wiki_topics
-    }
-
     /// The reader-visible page-topic map for a wiki, keyed by workdir-relative
     /// `source_path` — `None` when the wiki has no reader-visible page facts.
     #[must_use]

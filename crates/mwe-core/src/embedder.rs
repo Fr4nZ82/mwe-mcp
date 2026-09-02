@@ -153,11 +153,6 @@ impl OllamaEmbedder {
             dimensions,
         })
     }
-
-    /// Shortcut for "Ollama on localhost with `bge-m3` (1024-dim)".
-    pub fn local_bge_m3() -> Result<Self> {
-        Self::new(DEFAULT_OLLAMA_URL, DEFAULT_EMBED_MODEL, 1024)
-    }
 }
 
 #[async_trait]

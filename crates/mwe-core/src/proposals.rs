@@ -971,8 +971,6 @@ pub struct EmitParams {
     /// Window before auto-apply fires (default
     /// [`DEFAULT_EMIT_TIMEOUT`]).
     pub timeout: chrono::Duration,
-    /// Override the `proposed_at` clock — tests only.
-    pub now: Option<chrono::DateTime<chrono::Utc>>,
     /// Addressee of the proposal (0032): a `Principal` wire string like
     /// `"user:frodo"`, or `None` for unaddressed / admin-fallback.
     /// Emitters derive it with [`recipient_from_fact`].
@@ -988,7 +986,6 @@ impl EmitParams {
             context,
             questions,
             timeout: DEFAULT_EMIT_TIMEOUT,
-            now: None,
             recipient: None,
         }
     }
@@ -1004,13 +1001,6 @@ impl EmitParams {
     #[must_use]
     pub const fn with_timeout(mut self, timeout: chrono::Duration) -> Self {
         self.timeout = timeout;
-        self
-    }
-
-    /// Override the clock — tests only.
-    #[must_use]
-    pub const fn with_now(mut self, now: chrono::DateTime<chrono::Utc>) -> Self {
-        self.now = Some(now);
         self
     }
 }
@@ -1036,7 +1026,7 @@ pub async fn emit_proposal(pool: &SqlitePool, params: EmitParams) -> Result<Stri
         ))));
     }
     let proposal_id = Uuid::new_v4().to_string();
-    let now = params.now.unwrap_or_else(chrono::Utc::now);
+    let now = chrono::Utc::now();
     let timeout_at = now + params.timeout;
     let context_json = serde_json::to_string(&params.context)?;
     let questions_json = serde_json::to_string(&params.questions)?;
@@ -1123,7 +1113,7 @@ pub async fn emit_applied_proposal(
         ))));
     }
     let proposal_id = Uuid::new_v4().to_string();
-    let now = params.now.unwrap_or_else(chrono::Utc::now);
+    let now = chrono::Utc::now();
     let context_json = serde_json::to_string(&params.context)?;
     let questions_json = serde_json::to_string(&params.questions)?;
     let spec_json = serde_json::to_string(&spec)?;
@@ -1168,7 +1158,7 @@ pub async fn emit_applied_proposal(
 /// retries within this window to recover from transient failures (LLM
 /// down, embedding endpoint unreachable). Only after
 /// `timeout_at + EXPIRE_GRACE_PERIOD` does the chassis give up on the
-/// row and surface it as `expired` with an admin-facing event payload.
+/// row and flip it to `expired`.
 pub const EXPIRE_GRACE_PERIOD: chrono::Duration = chrono::Duration::hours(24);
 
 /// Summary of one call to [`auto_apply_overdue_proposals`].
@@ -1326,28 +1316,17 @@ pub fn build_recommended_answers(questions_raw: &str) -> std::result::Result<Val
 /// A row qualifies once `timeout_at + EXPIRE_GRACE_PERIOD < now`. The
 /// grace period lets [`auto_apply_overdue_proposals`] retry transient
 /// failures (LLM down, embedding endpoint reachable later) before the
-/// chassis gives up.
+/// chassis gives up. The REM cycle runs the two sweeps back to back and
+/// hands both the same `now`, so a row the auto-apply sweep keeps
+/// failing stops being retried once the grace window closes.
 ///
-/// Single-statement sweep with no per-row handler. Callers that need a
-/// per-row event for the admin can fold this into a list-then-emit
-/// pattern; the sweep itself doesn't emit anything.
+/// Single-statement sweep with no per-row handler: the row lands on
+/// `expired` and nothing is emitted.
 ///
 /// # Errors
 ///
 /// - [`ApplyError::Db`] for sqlx failures.
 pub async fn expire_overdue_proposals(
-    pool: &SqlitePool,
-) -> std::result::Result<ExpireReport, ApplyError> {
-    expire_overdue_proposals_at(pool, chrono::Utc::now()).await
-}
-
-/// As [`expire_overdue_proposals`], but with the cutoff clock injected
-/// for testability. Production callers should use the now-less form.
-///
-/// # Errors
-///
-/// - [`ApplyError::Db`] for sqlx failures.
-pub async fn expire_overdue_proposals_at(
     pool: &SqlitePool,
     now: chrono::DateTime<chrono::Utc>,
 ) -> std::result::Result<ExpireReport, ApplyError> {
@@ -1898,7 +1877,7 @@ mod tests {
         seed(&pool, "p-future", kind::WIKI_PROMOTE, "pending", 86_400).await;
 
         let now = chrono::Utc::now();
-        let report = expire_overdue_proposals_at(&pool, now).await.unwrap();
+        let report = expire_overdue_proposals(&pool, now).await.unwrap();
         assert_eq!(report.expired, 1, "only the stale row crosses the grace");
 
         let statuses: Vec<(String, String)> = sqlx::query_as(
@@ -1913,7 +1892,7 @@ mod tests {
         assert_eq!(map.get("p-future").map(String::as_str), Some("pending"));
     }
 
-    // ---- expire_overdue_proposals (now grace-period gated) ----
+    // ---- expire_overdue_proposals ----
 
     #[tokio::test]
     async fn expire_sweep_flips_past_grace_only() {
@@ -1947,7 +1926,9 @@ mod tests {
         )
         .await;
 
-        let report = expire_overdue_proposals(&pool).await.unwrap();
+        let report = expire_overdue_proposals(&pool, chrono::Utc::now())
+            .await
+            .unwrap();
         assert_eq!(report.expired, 1);
 
         let statuses: Vec<(String, String)> = sqlx::query_as(
@@ -1971,8 +1952,12 @@ mod tests {
     async fn expire_sweep_is_idempotent() {
         let (_workdir, pool) = fresh_pool().await;
         seed(&pool, "p-1", kind::WIKI_PROMOTE, "pending", -(48 * 3600)).await;
-        let first = expire_overdue_proposals(&pool).await.unwrap();
-        let second = expire_overdue_proposals(&pool).await.unwrap();
+        let first = expire_overdue_proposals(&pool, chrono::Utc::now())
+            .await
+            .unwrap();
+        let second = expire_overdue_proposals(&pool, chrono::Utc::now())
+            .await
+            .unwrap();
         assert_eq!(first.expired, 1);
         assert_eq!(second.expired, 0);
     }

@@ -26,8 +26,8 @@
 //!   tombstoning the row, and a crash in between leaves a pending
 //!   render the next compile re-emits; see
 //!   capture & dedup).
-//!   Multi-step structural writes elsewhere (the REM proposal kinds)
-//!   keep their `proposal_ops_log` journaling.
+//!   The multi-step structural writes elsewhere — the REM nightly
+//!   sub-jobs — journal in `rem_ops_log` (see [`crate::wal`]).
 //! - **Cross-user attribution constraints.** Per
 //!   the memory model,
 //!   when `sender != subject` the sender must have read access to the

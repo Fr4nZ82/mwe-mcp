@@ -1176,7 +1176,7 @@ async fn page_view_strips_the_testata_so_card_topics_never_leak() {
 //
 // The dashboard-only operator override (CookieJar `mwe_admin_reveal` +
 // server-side admin gate) renders memory-wiki pages through
-// `render::render_admin_reveal`, showing — highlighted — fragments the
+// `render::render_admin_reveal_segments`, showing — highlighted — fragments the
 // viewer could not read. The MCP tool surface is unaffected (it always
 // honours the ACL); these tests lock the dashboard wiring end-to-end.
 

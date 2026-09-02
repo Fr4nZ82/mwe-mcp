@@ -163,7 +163,7 @@ pub fn router() -> Router<DashboardState> {
 // single Settings toggle — lives in [`crate::reveal`]. The wiki read
 // surfaces below consult [`crate::reveal::active`] (so a fragment the
 // operator could not read via a consumer token renders highlighted via
-// `render::render_admin_reveal` instead of `[redacted]`) and show
+// `render::render_admin_reveal_segments` instead of `[redacted]`) and show
 // [`crate::reveal::banner`] while it is on.
 
 /// Admin-only download of the wiki subtree as a portable full-marker
@@ -1167,7 +1167,8 @@ async fn rendered_index_for(
 /// memberships and the page's DB-authoritative **active** ACL map
 /// (retired regions redact fail-closed), then
 /// [`render::render_for_sender`]. Under the admin reveal the map switches
-/// to the full variant and the render to [`render::render_admin_reveal`],
+/// to the full variant and the render to
+/// [`render::render_admin_reveal_segments`],
 /// so retired residue stays visible to the supervision lens.
 ///
 /// Like `wiki_read` (and the recall navigator), the **testata is stripped

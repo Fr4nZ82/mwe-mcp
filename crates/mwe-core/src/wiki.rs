@@ -55,7 +55,8 @@
 //!   it for the duration of a write.
 //! - Update `fact_index` or `wiki_events`. The caller (capture / supersede /
 //!   forget / REM) is responsible for pairing the file write with the DB
-//!   update inside the applicative WAL.
+//!   update — and, in the REM cycle, for journaling the pair in
+//!   `rem_ops_log` (see [`crate::wal`]).
 //! - Validate ACL at read time. The caller composes [`crate::render`] to
 //!   apply per-sender filtering; this module returns raw page contents.
 
@@ -1849,15 +1850,6 @@ pub fn wiki_read(tree: &WikiTree, id: &WikiId, page: &Path) -> Result<String> {
 /// As [`WikiHandle::list_pages`].
 pub fn wiki_list_pages(tree: &WikiTree, id: &WikiId) -> Result<Vec<PageInfo>> {
     tree.locate(id)?.list_pages()
-}
-
-/// `_internal.wiki_write_page` — atomic write of a page within a wiki.
-///
-/// # Errors
-///
-/// As [`WikiHandle::write_page`].
-pub fn wiki_write_page(tree: &WikiTree, id: &WikiId, page: &Path, contents: &str) -> Result<()> {
-    tree.locate(id)?.write_page(page, contents)
 }
 
 /// Read the optional one-line `summary` frontmatter key — the wiki's

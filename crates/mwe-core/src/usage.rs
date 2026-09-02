@@ -170,13 +170,6 @@ impl UsageSource {
             Self::Other => "other",
         }
     }
-
-    /// Is this the deployment's ordinary traffic, as opposed to an
-    /// operator's hand-run?
-    #[must_use]
-    pub const fn is_production(self) -> bool {
-        matches!(self, Self::Serve)
-    }
 }
 
 /// Process-wide ledger handle, installed once by the server binary

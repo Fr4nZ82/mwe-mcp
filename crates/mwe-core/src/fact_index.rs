@@ -20,7 +20,7 @@
 //! REM jobs) builds on top of these primitives.
 
 use serde::{Deserialize, Serialize};
-use sqlx::{Sqlite, SqlitePool};
+use sqlx::SqlitePool;
 use thiserror::Error;
 
 use crate::acl::{FactAclMap, RegionAcl};
@@ -331,48 +331,6 @@ pub async fn insert(pool: &SqlitePool, fact: &NewFact) -> Result<()> {
     Ok(())
 }
 
-/// Atomically replace every `fact_index` row at `source_path` with `facts`
-/// — drop the page's existing rows and insert the fresh set in **one
-/// transaction**.
-///
-/// This is the write half of smart-wiki section indexing
-/// ([`crate::reindex`]): a smart page is "drop the page's section rows,
-/// insert the freshly chunked ones". Doing the drop and the inserts in a
-/// single transaction is what makes **concurrent** reindexers of the same
-/// page converge to one clean set instead of accumulating duplicate rows:
-/// `SQLite` serializes writers, so a second reindex's drop catches the
-/// first's just-committed rows rather than interleaving between a separate
-/// drop and a separate insert. Embeddings must already be computed and
-/// carried in `facts` — the transaction does only fast DB work, never the
-/// slow embed I/O (holding a write transaction across a network embed
-/// would block every other writer).
-///
-/// Returns `(dropped, inserted)`.
-///
-/// # Errors
-///
-/// `sqlx::Error` (including a `fact_id` unique-constraint collision) +
-/// JSON serialization failures on `allow_ids` / `topics`; the transaction
-/// is rolled back on any error.
-pub async fn replace_source_path_rows(
-    pool: &SqlitePool,
-    source_path: &str,
-    facts: &[NewFact],
-) -> Result<(u64, u64)> {
-    let mut tx = pool.begin().await?;
-    let dropped = sqlx::query("DELETE FROM fact_index WHERE source_path = ?")
-        .bind(source_path)
-        .execute(&mut *tx)
-        .await?
-        .rows_affected();
-    for fact in facts {
-        insert_with(&mut *tx, fact, false).await?;
-    }
-    tx.commit().await?;
-    let inserted = u64::try_from(facts.len()).unwrap_or(u64::MAX);
-    Ok((dropped, inserted))
-}
-
 /// Insert a fresh fact row, but silently skip when a row with the same
 /// `fact_id` already exists.
 ///
@@ -400,14 +358,9 @@ pub async fn insert_if_absent(pool: &SqlitePool, fact: &NewFact) -> Result<u64> 
     insert_with(pool, fact, true).await
 }
 
-/// Insert one row on any executor — a pool *or* an open transaction — so
-/// [`replace_source_path_rows`] can drop-and-insert atomically while the
-/// plain [`insert`] / [`insert_if_absent`] helpers run on the pool. See
+/// The shared INSERT behind [`insert`] and [`insert_if_absent`]. See
 /// [`insert_if_absent`] for the `ignore_conflict` semantics.
-async fn insert_with<'e, E>(executor: E, fact: &NewFact, ignore_conflict: bool) -> Result<u64>
-where
-    E: sqlx::Executor<'e, Database = Sqlite>,
-{
+async fn insert_with(pool: &SqlitePool, fact: &NewFact, ignore_conflict: bool) -> Result<u64> {
     let now = chrono::Utc::now().to_rfc3339();
     let embedding_dim = i64::try_from(fact.embedding.len()).unwrap_or(i64::MAX);
     let blob = encode_embedding(&fact.embedding);
@@ -467,7 +420,7 @@ where
         .bind(&fact.source_ref)
         .bind(&authored_refs_json)
         .bind(&fact.subject_external)
-        .execute(executor)
+        .execute(pool)
         .await?;
     Ok(res.rows_affected())
 }
@@ -1696,7 +1649,7 @@ pub async fn find_recently_contradicted(
 ) -> Result<Vec<FactIndexRow>> {
     let sql = r#"
     SELECT fact_id, wiki_id, source_path, region_start, region_end,
-           "text", embedding, embedding_dim, subject_id, allow_ids, sender_id,
+           "text", embedding, subject_id, allow_ids, sender_id,
            fact_type, topics, created_at, updated_at, superseded_at,
            superseded_by, successor_fact_id, deleted_at, deleted_reason, last_recall_at,
            recall_count_30d, valid_from, valid_to, decay_reason,
@@ -1745,7 +1698,7 @@ pub async fn find_due_between(
 ) -> Result<Vec<FactIndexRow>> {
     let mut sql = String::from(
         r#"SELECT fact_id, wiki_id, source_path, region_start, region_end,
-                  "text", embedding, embedding_dim, subject_id, allow_ids, sender_id,
+                  "text", embedding, subject_id, allow_ids, sender_id,
                   fact_type, topics, created_at, updated_at, superseded_at,
                   superseded_by, successor_fact_id, deleted_at, deleted_reason, last_recall_at,
                   recall_count_30d, valid_from, valid_to, decay_reason,
@@ -1961,7 +1914,7 @@ pub async fn find_by_filters(
 ) -> Result<Vec<FactIndexRow>> {
     let mut sql = String::from(
         r#"SELECT fact_id, wiki_id, source_path, region_start, region_end,
-                  "text", embedding, embedding_dim, subject_id, allow_ids, sender_id,
+                  "text", embedding, subject_id, allow_ids, sender_id,
                   fact_type, topics, created_at, updated_at, superseded_at,
                   superseded_by, successor_fact_id, deleted_at, deleted_reason, last_recall_at,
                   recall_count_30d, valid_from, valid_to, decay_reason,
@@ -2095,7 +2048,7 @@ pub async fn find_behaviour_rules(
 ) -> Result<Vec<FactIndexRow>> {
     let mut sql = String::from(
         r#"SELECT fact_id, wiki_id, source_path, region_start, region_end,
-                  "text", embedding, embedding_dim, subject_id, allow_ids, sender_id,
+                  "text", embedding, subject_id, allow_ids, sender_id,
                   fact_type, topics, created_at, updated_at, superseded_at,
                   superseded_by, successor_fact_id, deleted_at, deleted_reason, last_recall_at,
                   recall_count_30d, valid_from, valid_to, decay_reason,
@@ -2964,7 +2917,7 @@ pub async fn set_wiki_id(
 
 const SELECT_ALL_COLUMNS_WHERE_ID: &str = r#"
     SELECT fact_id, wiki_id, source_path, region_start, region_end,
-           "text", embedding, embedding_dim, subject_id, allow_ids, sender_id,
+           "text", embedding, subject_id, allow_ids, sender_id,
            fact_type, topics, created_at, updated_at, superseded_at,
            superseded_by, successor_fact_id, deleted_at, deleted_reason, last_recall_at,
            recall_count_30d, valid_from, valid_to, decay_reason,
@@ -2976,7 +2929,7 @@ const SELECT_ALL_COLUMNS_WHERE_ID: &str = r#"
 
 const SELECT_ACTIVE_BY_SUBJECT: &str = r#"
     SELECT fact_id, wiki_id, source_path, region_start, region_end,
-           "text", embedding, embedding_dim, subject_id, allow_ids, sender_id,
+           "text", embedding, subject_id, allow_ids, sender_id,
            fact_type, topics, created_at, updated_at, superseded_at,
            superseded_by, successor_fact_id, deleted_at, deleted_reason, last_recall_at,
            recall_count_30d, valid_from, valid_to, decay_reason,
@@ -2991,7 +2944,7 @@ const SELECT_ACTIVE_BY_SUBJECT: &str = r#"
 
 const SELECT_ACTIVE_IN_WIKI: &str = r#"
     SELECT fact_id, wiki_id, source_path, region_start, region_end,
-           "text", embedding, embedding_dim, subject_id, allow_ids, sender_id,
+           "text", embedding, subject_id, allow_ids, sender_id,
            fact_type, topics, created_at, updated_at, superseded_at,
            superseded_by, successor_fact_id, deleted_at, deleted_reason, last_recall_at,
            recall_count_30d, valid_from, valid_to, decay_reason,
@@ -3006,7 +2959,7 @@ const SELECT_ACTIVE_IN_WIKI: &str = r#"
 
 const SELECT_ACTIVE_BY_SOURCE_PATH: &str = r#"
     SELECT fact_id, wiki_id, source_path, region_start, region_end,
-           "text", embedding, embedding_dim, subject_id, allow_ids, sender_id,
+           "text", embedding, subject_id, allow_ids, sender_id,
            fact_type, topics, created_at, updated_at, superseded_at,
            superseded_by, successor_fact_id, deleted_at, deleted_reason, last_recall_at,
            recall_count_30d, valid_from, valid_to, decay_reason,
@@ -3028,8 +2981,6 @@ struct RawFactRow {
     region_end: Option<i64>,
     text: String,
     embedding: Vec<u8>,
-    #[allow(dead_code)]
-    embedding_dim: i64,
     subject_id: String,
     allow_ids: Option<String>,
     sender_id: Option<String>,

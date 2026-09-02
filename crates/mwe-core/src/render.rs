@@ -94,9 +94,9 @@ const REDACTED_INLINE_MARKER: &str = "[redacted]";
 const FULLY_PRIVATE_CALLOUT: &str = "> [!redacted] This entire page is private.\n";
 
 // ---------------------------------------------------------------------
-// Admin-reveal wrappers (dashboard-only, see `render_admin_reveal`).
+// Admin-reveal wrappers (dashboard-only).
 //
-// These literal tags are emitted by [`render_admin_reveal`] around a
+// These literal tags are emitted by [`render_admin_reveal_segments`] around a
 // region the sender could NOT read but the operator chose to reveal, so
 // the dashboard markdown renderer can colour them differently. They are
 // `pub const` because the dashboard's `md_render` matches on these exact
@@ -136,8 +136,9 @@ pub struct RenderOutput {
     /// not "blocks" in the redaction sense and they always pass through anyway.
     pub blocks_redacted: usize,
     /// Number of regions the sender could NOT read but that were
-    /// *revealed* anyway — non-zero only for [`render_admin_reveal`], the
-    /// dashboard operator override. Always `0` for [`render_for_sender`]
+    /// *revealed* anyway — non-zero only for
+    /// [`render_admin_reveal_segments`], the dashboard operator override.
+    /// Always `0` for [`render_for_sender`]
     /// (where those regions are redacted, not revealed). The dashboard
     /// uses it to label "N fragments revealed" and to highlight them.
     pub blocks_revealed: usize,
@@ -343,7 +344,7 @@ pub fn render_for_sender_segments(
 }
 
 /// Render `text` for an **operator** who switched on the dashboard's
-/// admin ACL-reveal toggle.
+/// admin ACL-reveal toggle, one [`RenderSegment`] per ordered slice.
 ///
 /// Every region body is shown, but the ones the `sender_id` could *not*
 /// read are wrapped in the [`ACL_REVEAL_BLOCK_OPEN`] /
@@ -351,7 +352,7 @@ pub fn render_for_sender_segments(
 /// them differently. This is the counterpart of [`render_for_sender`] used
 /// **only** on the dashboard, gated server-side on the admin role — it is
 /// never reachable from the MCP tool surface, which always goes through
-/// [`render_for_sender`] and honours the ACL..
+/// [`render_for_sender`] and honours the ACL.
 ///
 /// Crucially this does **not** weaken the access predicate: it calls
 /// [`can_read`] exactly as `render_for_sender` does, only to *decide
@@ -359,29 +360,17 @@ pub fn render_for_sender_segments(
 /// authorization invariant ([`can_read`] has no admin bypass) is intact;
 /// the reveal lives entirely in this presentation layer.
 ///
-/// Arguments mirror [`render_for_sender`]. The returned
-/// [`RenderOutput::blocks_revealed`] counts the highlighted regions;
-/// `blocks_redacted` is always `0` (nothing is hidden) and there is no
-/// total-redaction collapse — the operator always sees the whole page.
-#[must_use]
-pub fn render_admin_reveal(
-    text: &str,
-    db_acl: &FactAclMap,
-    sender_id: &str,
-    sender_groups: &[String],
-) -> RenderOutput {
-    render_admin_reveal_segments(text, db_acl, sender_id, sender_groups).into_output()
-}
-
-/// Segment-emitting sibling of [`render_admin_reveal`].
+/// Every **shown** region arrives as its own segment carrying its fact id
+/// when the map covers it. Under the reveal that is *all* regions —
+/// readable and highlighted alike, retired residue included when the
+/// caller loaded the full ACL map — so the dashboard supervision lens can
+/// offer the click-through on everything it shows.
 ///
-/// Same policy, same joined text (highlight wrappers included in the
-/// segment bodies), but every **shown** region arrives as its own
-/// [`RenderSegment`] carrying its fact id when the map covers it. Under
-/// the reveal that is *all* regions — readable and highlighted alike,
-/// retired residue included when the caller loaded the full ACL map —
-/// so the dashboard supervision lens can offer the click-through on
-/// everything it shows.
+/// Arguments mirror [`render_for_sender`]. The
+/// [`RenderOutput::blocks_revealed`] of the joined output counts the
+/// highlighted regions; `blocks_redacted` is always `0` (nothing is
+/// hidden) and there is no total-redaction collapse — the operator always
+/// sees the whole page.
 #[must_use]
 pub fn render_admin_reveal_segments(
     text: &str,
@@ -439,7 +428,7 @@ pub fn render_admin_reveal_segments(
 /// line of prose rather than occupying whole lines on its own? True when
 /// there is non-whitespace content on the same source line before the
 /// opening marker or after the closing marker. Drives the block-vs-inline
-/// choice of reveal wrapper in [`render_admin_reveal`]. The byte offsets
+/// choice of reveal wrapper in [`render_admin_reveal_segments`]. The byte offsets
 /// are marker boundaries (`{{` / `}}`), always on char boundaries.
 fn is_inline_region(text: &str, start: usize, end: usize) -> bool {
     let prefix_has_content = text[..start]
@@ -957,13 +946,24 @@ caption {{{{embed=c-2026-05-10-foto-001.jpg}}}}{{{{/}}}} prose after"
 
     // ---------- admin reveal (dashboard operator override) ----------
 
+    /// The joined output of [`render_admin_reveal_segments`] — what the
+    /// dashboard shows once it has stitched the segments back together.
+    fn reveal(
+        text: &str,
+        db_acl: &FactAclMap,
+        sender_id: &str,
+        sender_groups: &[String],
+    ) -> RenderOutput {
+        render_admin_reveal_segments(text, db_acl, sender_id, sender_groups).into_output()
+    }
+
     #[test]
     fn admin_reveal_shows_every_region_and_counts_the_hidden_ones() {
         // Carol (an outsider) would normally see only the global region;
         // the operator reveal shows all three, highlighting the two she
         // could not read.
         let input = modello_memoria_5_input();
-        let out = render_admin_reveal(&input, &no_db(), "carol", &groups(&["sales"]));
+        let out = reveal(&input, &no_db(), "carol", &groups(&["sales"]));
         assert!(out.text.contains("Endpoint del Widget Pro"));
         assert!(out.text.contains("[codice + design decision storico]"));
         assert!(out.text.contains("parla di questa cosa"));
@@ -978,7 +978,7 @@ caption {{{{embed=c-2026-05-10-foto-001.jpg}}}}{{{{/}}}} prose after"
         // Alice owns everything — the operator viewing as Alice sees no
         // highlights because nothing was hidden from her.
         let input = modello_memoria_5_input();
-        let out = render_admin_reveal(&input, &no_db(), "alice", &[]);
+        let out = reveal(&input, &no_db(), "alice", &[]);
         assert_eq!(out.blocks_revealed, 0);
         assert!(!out.text.contains(ACL_REVEAL_BLOCK_OPEN));
         assert!(!out.text.contains(ACL_REVEAL_INLINE_OPEN));
@@ -993,7 +993,7 @@ caption {{{{embed=c-2026-05-10-foto-001.jpg}}}}{{{{/}}}} prose after"
             "Alice pesa {{{{subject=user:alice f={SAMPLE_UUID_V7}}}}}72 kg{{{{/}}}} \
 al 10 maggio, ha {{{{subject=global f={SAMPLE_UUID_V7}}}}}tagliato i capelli{{{{/}}}} ieri."
         );
-        let out = render_admin_reveal(&input, &no_db(), "bob", &[]);
+        let out = reveal(&input, &no_db(), "bob", &[]);
         assert!(out.text.contains(&format!(
             "{ACL_REVEAL_INLINE_OPEN}72 kg{ACL_REVEAL_INLINE_CLOSE}"
         )));
@@ -1010,7 +1010,7 @@ al 10 maggio, ha {{{{subject=global f={SAMPLE_UUID_V7}}}}}tagliato i capelli{{{{
         let input = format!(
             "# Heading\n\n{{{{subject=user:alice f={SAMPLE_UUID_V7}}}}}\n## Secret\nbody\n{{{{/}}}}\n"
         );
-        let out = render_admin_reveal(&input, &no_db(), "bob", &[]);
+        let out = reveal(&input, &no_db(), "bob", &[]);
         assert!(
             out.text
                 .contains(&format!("\n\n{ACL_REVEAL_BLOCK_OPEN}\n\n"))
@@ -1033,7 +1033,7 @@ al 10 maggio, ha {{{{subject=global f={SAMPLE_UUID_V7}}}}}tagliato i capelli{{{{
             "{{{{subject=user:alice f={SAMPLE_UUID_V7}}}}}body 1{{{{/}}}}\n\n\
 {{{{subject=user:alice f={SAMPLE_UUID_V7}}}}}body 2{{{{/}}}}\n"
         );
-        let out = render_admin_reveal(&input, &no_db(), "bob", &[]);
+        let out = reveal(&input, &no_db(), "bob", &[]);
         assert_ne!(out.text, FULLY_PRIVATE_CALLOUT);
         assert!(out.text.contains("body 1"));
         assert!(out.text.contains("body 2"));
@@ -1168,7 +1168,7 @@ al 10 maggio, ha {{{{f={public_key}}}}}tagliato i capelli{{{{/}}}} ieri."
             .find(|s| s.fact_id.as_ref() == Some(&public_fid))
             .expect("readable region segment");
         assert_eq!(readable.text, "tagliato i capelli");
-        let plain = render_admin_reveal(&input, &map, "bob", &[]);
+        let plain = reveal(&input, &map, "bob", &[]);
         assert_eq!(seg.text(), plain.text);
         assert_eq!(seg.blocks_revealed, plain.blocks_revealed);
         assert_eq!(seg.blocks_revealed, 1);

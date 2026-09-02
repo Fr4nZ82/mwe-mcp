@@ -25,14 +25,15 @@
 //! emitter is trusted to pre-select the right direction (the canonical
 //! convention is "newer survives").
 //!
-//! ## Two emitters, one authority model
+//! ## One emitter, act-first
 //!
-//! The REM revisor applies **act-first** via
-//! [`apply_dedup_merge_direct`]: supersede now, born-applied receipt, and
-//! nobody told — the same model as every other LLM-confirmed structural
-//! move. [`emit_dedup_merge`] (the
-//! `pending` + 24h auto-apply lifecycle) remains for emitters that
-//! genuinely want a review gate.
+//! The REM revisor applies via [`apply_dedup_merge_direct`]: supersede
+//! now, born-applied receipt, and nobody told — the same authority model
+//! as every other LLM-confirmed structural move. There is no emitter for
+//! the `pending` + auto-apply lifecycle; the chassis handler
+//! [`apply_dedup_merge`] stays reachable so a row already carrying
+//! `kind = "dedup_merge"` still applies through the manual and the
+//! auto-apply paths.
 
 use std::sync::Arc;
 
@@ -43,7 +44,7 @@ use sqlx::SqlitePool;
 use crate::embedder::Embedder;
 use crate::fact_index;
 use crate::promote::{DirectApplied, DirectPromoteError};
-use crate::proposals::{self, ApplyError, EmitParams, ProposalsError, kind};
+use crate::proposals::{self, ApplyError, EmitParams, kind};
 use crate::types::FactId;
 use crate::wiki::WikiTree;
 
@@ -213,14 +214,14 @@ fn dedup_merge_questions() -> Value {
 
 /// Metadata for a `dedup_merge` proposal.
 ///
-/// The REM Conciliatore (and any other emitter) attaches these hints
-/// for dashboard presentation. The handler ignores everything except
+/// The REM Conciliatore attaches these hints for dashboard
+/// presentation. The handler ignores everything except
 /// `loser_fact_id` + `winner_fact_id`, but the dashboard surfaces the
-/// rest to help the operator decide.
+/// rest so the operator can read what the merge was based on.
 #[derive(Debug, Clone, Default)]
 pub struct DedupMergeHints {
-    /// Jaccard-6gram score that triggered the proposal. `None` for
-    /// emitters that don't compute one (chat-side, manual).
+    /// Jaccard-6gram score that triggered the proposal. `None` when the
+    /// caller computes no score.
     pub jaccard: Option<f32>,
     /// `wiki_id` both facts live in. Useful when the operator wants
     /// to navigate to the page without first opening the proposal.
@@ -229,38 +230,7 @@ pub struct DedupMergeHints {
     pub reason: Option<String>,
 }
 
-/// Emit a pending `dedup_merge` structure proposal. The handler in this
-/// module applies it; the chassis manages the lifecycle.
-///
-/// `winner` is the survivor — the row that remains active. Convention
-/// from the REM Conciliatore is "newer wins", but emitters are free to
-/// pick any orientation.
-///
-/// # Errors
-///
-/// - [`ProposalsError::Db`] for SQL failures.
-/// - [`ProposalsError::Json`] for serialisation failures (would only
-///   happen on malformed `hints` payload).
-pub async fn emit_dedup_merge(
-    pool: &SqlitePool,
-    winner: &FactId,
-    loser: &FactId,
-    hints: &DedupMergeHints,
-    recipient: Option<String>,
-) -> Result<String, ProposalsError> {
-    proposals::emit_proposal(
-        pool,
-        EmitParams::new(
-            kind::DEDUP_MERGE,
-            dedup_context(winner, loser, hints),
-            dedup_merge_questions(),
-        )
-        .with_recipient(recipient),
-    )
-    .await
-}
-
-/// The `structure_proposals.context` payload both emitters share.
+/// The `structure_proposals.context` payload the receipt carries.
 fn dedup_context(winner: &FactId, loser: &FactId, hints: &DedupMergeHints) -> Value {
     let mut context = serde_json::Map::new();
     context.insert("loser_fact_id".into(), json!(loser.as_str()));
@@ -681,65 +651,5 @@ mod tests {
             .unwrap()
             .unwrap();
         assert!(row.superseded_at.is_some(), "the DB half landed");
-    }
-
-    // ---------- emit_dedup_merge ----------
-
-    #[tokio::test]
-    async fn emit_dedup_merge_writes_pending_row() {
-        let (_dir, tree, pool) = setup().await;
-        let loser = capture_one(&tree, &pool, "Alice has a dog").await;
-        let winner = capture_one(&tree, &pool, "Alice owns a dog").await;
-        let hints = DedupMergeHints {
-            jaccard: Some(0.72),
-            source_wiki_id: Some("alice".into()),
-            reason: Some("unit test".into()),
-        };
-        let proposal_id = emit_dedup_merge(&pool, &winner, &loser, &hints, None)
-            .await
-            .expect("emit");
-
-        let (kind, status, context, timeout_at): (String, String, String, String) = sqlx::query_as(
-            "SELECT kind, status, context, timeout_at FROM structure_proposals WHERE proposal_id = ?",
-        )
-        .bind(&proposal_id)
-        .fetch_one(&pool)
-        .await
-        .unwrap();
-        assert_eq!(kind, "dedup_merge");
-        assert_eq!(status, "pending");
-        let ctx: Value = serde_json::from_str(&context).unwrap();
-        assert_eq!(ctx["winner_fact_id"].as_str(), Some(winner.as_str()),);
-        assert_eq!(ctx["loser_fact_id"].as_str(), Some(loser.as_str()),);
-        assert!(
-            (ctx["jaccard"].as_f64().unwrap() - 0.72).abs() < 1e-3,
-            "jaccard must round-trip"
-        );
-        // 24h default — must parse and be in the future.
-        let parsed: chrono::DateTime<chrono::Utc> = timeout_at.parse().unwrap();
-        let delta = parsed - chrono::Utc::now();
-        assert!(delta.num_hours() >= 23 && delta.num_hours() <= 25);
-    }
-
-    #[tokio::test]
-    async fn emit_dedup_merge_then_apply_round_trips() {
-        let (_dir, tree, pool) = setup().await;
-        let loser = capture_one(&tree, &pool, "Bob has a cat").await;
-        let winner = capture_one(&tree, &pool, "Bob owns a cat").await;
-        let proposal_id =
-            emit_dedup_merge(&pool, &winner, &loser, &DedupMergeHints::default(), None)
-                .await
-                .unwrap();
-        // The chassis must accept the emitted proposal end-to-end.
-        let outcome =
-            crate::proposals::apply_proposal(&pool, &tree, &proposal_id, &json!({}), None, true)
-                .await
-                .expect("apply");
-        assert_eq!(outcome.kind, "dedup_merge");
-        let row = fact_index::find_by_id(&pool, &loser)
-            .await
-            .unwrap()
-            .unwrap();
-        assert!(row.superseded_at.is_some());
     }
 }

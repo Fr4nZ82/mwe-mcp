@@ -591,7 +591,7 @@ mod tests {
             ACL_REVEAL_BLOCK_CLOSE, ACL_REVEAL_BLOCK_OPEN, ACL_REVEAL_INLINE_CLOSE,
             ACL_REVEAL_INLINE_OPEN,
         };
-        // Shape mirrors what `render_admin_reveal` emits: a blank-line
+        // Shape mirrors what `render_admin_reveal_segments` emits: a blank-line
         // padded div around a block region, and a span inline.
         let input = format!(
             "Alice pesa {ACL_REVEAL_INLINE_OPEN}72 kg{ACL_REVEAL_INLINE_CLOSE} oggi.\n\n\

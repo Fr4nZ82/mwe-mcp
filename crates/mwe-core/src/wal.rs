@@ -1,32 +1,37 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
-//! Applicative WAL for structure-proposal apply and REM nightly cycles
-//! (see applicative WAL).
+//! Applicative WAL for the REM nightly cycle.
 //!
 //! ## Why an *applicative* `WAL` on top of `SQLite` WAL
 //!
 //! `SQLite`'s own WAL keeps the database file consistent across crashes,
-//! but a `structure_proposal_apply` (or a REM cycle) is not a single
-//! transaction: it interleaves filesystem writes (`.tmp` + rename
-//! dances), DB updates, marker propagation, and cross-link rewrites.
-//! No single SQL `COMMIT` can roll those back together.
+//! but a REM cycle is not a single transaction: it interleaves
+//! filesystem writes (`.tmp` + rename dances), DB updates, marker
+//! propagation, and cross-link rewrites. No single SQL `COMMIT` can roll
+//! those back together.
 //!
-//! The applicative WAL is the protocol on top: before each step we
-//! insert a row in `proposal_ops_log` (or `rem_ops_log`) with
-//! `status=pending`, perform the step, then flip to `done`. On startup
-//! we look for rows that never reached `done` (typically because the
-//! process crashed mid-step) and hand them to a rollback driver — the
-//! driver is supplied by the caller because the inverse of each step
-//! kind is step-kind specific (e.g. restore from `_snapshots/proposal/`,
-//! delete a half-applied DB row).
+//! The applicative WAL is the protocol on top: before each step
+//! [`begin_rem_op`] inserts a row in `rem_ops_log` with
+//! `status=pending`, the step runs, then [`complete_rem_op`] /
+//! [`fail_rem_op`] flips it to a terminal status. On startup
+//! [`rollback_stale_rems`] looks for rows that never reached `done`
+//! (typically because the process crashed mid-step) and hands them to a
+//! rollback driver — the driver is supplied by the caller because the
+//! inverse of each step kind is step-kind specific (e.g. restore from a
+//! snapshot, delete a half-applied DB row).
 //!
 //! ## Scope
 //!
-//! This module ships the **journaling primitives**: lifecycle helpers
-//! (`begin` → `complete`/`fail`) and the recovery scan that returns
-//! every stale row older than a configurable cutoff. The per-step-kind
-//! rollback logic lives next to the step it inverts — in
-//! `mwe-core::wiki` for filesystem writes, `mwe-core::rem` for REM ops,
-//! etc. — alongside the corresponding step implementations.
+//! This module ships the **journaling primitives**: the lifecycle
+//! helpers and the recovery scans that return every stale row older than
+//! a configurable cutoff. The per-step-kind rollback logic lives next to
+//! the step it inverts — `mwe-core::rem` for REM ops — alongside the
+//! corresponding step implementations.
+//!
+//! `proposal_ops_log` is a table nothing writes: the structural kinds
+//! reach disk through their own idempotent handlers, not through a
+//! journaled multi-step apply. The table is still created by the
+//! migrations (a migration is never edited) and
+//! [`scan_stale_proposal_ops`] reads it for the health report.
 
 use std::time::Duration;
 
@@ -42,7 +47,7 @@ pub const DEFAULT_STALE_AFTER: Duration = Duration::from_secs(5 * 60);
 ///
 /// Stored as `TEXT` in `SQLite` for human inspectability — the cost of
 /// one `VARCHAR` per row is negligible next to the operational benefit
-/// of being able to `SELECT … FROM proposal_ops_log` and read what
+/// of being able to `SELECT … FROM rem_ops_log` and read what
 /// happened.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
@@ -131,8 +136,7 @@ type RemOpTuple = (
 );
 
 /// A row from `proposal_ops_log`. Mirrors the table 1:1; `kind` and
-/// `payload_json` stay opaque at this layer (interpreted by the
-/// per-kind rollback driver).
+/// `payload_json` stay opaque at this layer.
 #[derive(Debug, Clone)]
 pub struct ProposalOpRow {
     /// Auto-increment primary key — server-generated.
@@ -179,101 +183,12 @@ pub struct RemOpRow {
     pub error_msg: Option<String>,
 }
 
-/// Insert a new `proposal_ops_log` row in `Pending` status.
-///
-/// Returns the generated `op_id`. The caller will flip it through
-/// [`mark_in_progress`] → [`complete_proposal_op`] /
-/// [`fail_proposal_op`] as the step runs.
-pub async fn begin_proposal_op(
-    pool: &SqlitePool,
-    proposal_id: &str,
-    step_idx: i64,
-    kind: &str,
-    payload_json: Option<&str>,
-) -> Result<i64, WalError> {
-    let now = chrono::Utc::now().to_rfc3339();
-    let row: (i64,) = sqlx::query_as(
-        "INSERT INTO proposal_ops_log
-             (proposal_id, step_idx, kind, payload_json, status, started_at)
-         VALUES (?, ?, ?, ?, ?, ?)
-         RETURNING op_id",
-    )
-    .bind(proposal_id)
-    .bind(step_idx)
-    .bind(kind)
-    .bind(payload_json)
-    .bind(OpStatus::Pending.as_str())
-    .bind(now)
-    .fetch_one(pool)
-    .await?;
-    Ok(row.0)
-}
-
-/// Flip a proposal op from `Pending` to `InProgress`. Returns the
-/// number of rows updated (0 if the row was already terminal — caller
-/// can treat that as a no-op).
-pub async fn mark_in_progress(pool: &SqlitePool, op_id: i64) -> Result<u64, WalError> {
-    let res = sqlx::query(
-        "UPDATE proposal_ops_log
-            SET status = ?
-          WHERE op_id = ? AND status = ?",
-    )
-    .bind(OpStatus::InProgress.as_str())
-    .bind(op_id)
-    .bind(OpStatus::Pending.as_str())
-    .execute(pool)
-    .await?;
-    Ok(res.rows_affected())
-}
-
-/// Mark a proposal op as `Done` and stamp `completed_at`.
-pub async fn complete_proposal_op(pool: &SqlitePool, op_id: i64) -> Result<u64, WalError> {
-    let now = chrono::Utc::now().to_rfc3339();
-    let res = sqlx::query(
-        "UPDATE proposal_ops_log
-            SET status = ?, completed_at = ?
-          WHERE op_id = ?",
-    )
-    .bind(OpStatus::Done.as_str())
-    .bind(now)
-    .bind(op_id)
-    .execute(pool)
-    .await?;
-    Ok(res.rows_affected())
-}
-
-/// Mark a proposal op as `Failed`, stamping `completed_at` and the
-/// error class.
-///
-/// Used both by the live step (when its SQL/IO surfaces an error) and
-/// by the recovery scan (when it gives up on a stale row).
-pub async fn fail_proposal_op(
-    pool: &SqlitePool,
-    op_id: i64,
-    reason: &str,
-) -> Result<u64, WalError> {
-    let now = chrono::Utc::now().to_rfc3339();
-    let res = sqlx::query(
-        "UPDATE proposal_ops_log
-            SET status = ?, completed_at = ?, error_msg = ?
-          WHERE op_id = ?",
-    )
-    .bind(OpStatus::Failed.as_str())
-    .bind(now)
-    .bind(reason)
-    .bind(op_id)
-    .execute(pool)
-    .await?;
-    Ok(res.rows_affected())
-}
-
 /// Recovery scan over `proposal_ops_log`.
 ///
 /// Returns every row whose `status IN ('pending', 'in_progress')` and
-/// whose `started_at < now - older_than`. The expected caller is the
-/// startup path of `mwe-mcp serve`, which then drives the per-kind
-/// rollback and ultimately calls [`fail_proposal_op`] on each
-/// returned row so the cycle is closed.
+/// whose `started_at < now - older_than`. The caller is
+/// [`crate::diagnostics::collect_db`], which counts them for the health
+/// report.
 pub async fn scan_stale_proposal_ops(
     pool: &SqlitePool,
     older_than: Duration,
@@ -310,8 +225,11 @@ pub async fn scan_stale_proposal_ops(
         .collect()
 }
 
-/// Insert a new `rem_ops_log` row in `Pending` status. Mirror of
-/// [`begin_proposal_op`] for REM cycles.
+/// Insert a new `rem_ops_log` row in `Pending` status.
+///
+/// Returns the generated `op_id`. The caller flips it to a terminal
+/// status through [`complete_rem_op`] / [`fail_rem_op`] as the step
+/// runs.
 pub async fn begin_rem_op(
     pool: &SqlitePool,
     cycle_id: &str,
@@ -337,8 +255,7 @@ pub async fn begin_rem_op(
     Ok(row.0)
 }
 
-/// Mark a REM op as `Done`. See [`complete_proposal_op`] for the
-/// equivalent on the proposal side.
+/// Mark a REM op as `Done` and stamp `completed_at`.
 pub async fn complete_rem_op(pool: &SqlitePool, op_id: i64) -> Result<u64, WalError> {
     let now = chrono::Utc::now().to_rfc3339();
     let res = sqlx::query(
@@ -354,8 +271,11 @@ pub async fn complete_rem_op(pool: &SqlitePool, op_id: i64) -> Result<u64, WalEr
     Ok(res.rows_affected())
 }
 
-/// Mark a REM op as `Failed`. See [`fail_proposal_op`] for the
-/// equivalent on the proposal side.
+/// Mark a REM op as `Failed`, stamping `completed_at` and the error
+/// class.
+///
+/// Called both by the live step (when its SQL/IO surfaces an error) and
+/// by [`rollback_stale_rems`] (when it gives up on a stale row).
 pub async fn fail_rem_op(pool: &SqlitePool, op_id: i64, reason: &str) -> Result<u64, WalError> {
     let now = chrono::Utc::now().to_rfc3339();
     let res = sqlx::query(
@@ -417,10 +337,8 @@ pub async fn scan_stale_rem_ops(
 /// [`Self::invert`] is called once per stale row before the driver
 /// flips the row to `Failed`. Returning `Err` does **not** stop the
 /// scan — the driver records the error class in the row's `error_msg`
-/// and moves to the next row. The closure-shaped variant
-/// [`NoopInverse`] is what every caller uses today, because both
-/// ops sources (structure-proposal apply and REM) ship only idempotent
-/// sub-steps in this phase.
+/// and moves to the next row. [`NoopInverse`] is what the boot sweep
+/// passes, because every REM sub-step is idempotent.
 #[allow(clippy::module_name_repetitions)]
 pub trait OpInverse: Send + Sync {
     /// Best-effort reversal for `kind` with `payload_json`. The driver
@@ -444,11 +362,11 @@ pub trait OpInverse: Send + Sync {
     ) -> Result<(), String>;
 }
 
-/// Inverse that does nothing — the no-op placeholder.
+/// Inverse that does nothing.
 ///
 /// Used when the caller's ops are all idempotent and a future re-run
-/// will simply re-do them. This is the baseline floor: REM cycles are
-/// restartable and structure-proposal apply is stubbed.
+/// will simply re-do them: a REM cycle is restartable, so undoing a
+/// half-finished sub-step buys nothing the next cycle does not.
 pub struct NoopInverse;
 
 impl OpInverse for NoopInverse {
@@ -474,7 +392,7 @@ pub struct RollbackReport {
     pub failed_rollbacks: usize,
 }
 
-/// Scan stale `proposal_ops_log` rows and run `inverse.invert` on each
+/// Scan stale `rem_ops_log` rows and run `inverse.invert` on each
 /// before flipping it to `Failed`. Returns a [`RollbackReport`] summary.
 ///
 /// Recovery semantics:
@@ -482,52 +400,6 @@ pub struct RollbackReport {
 /// - Inverse `Err(reason)` ⇒ `Failed` with `reason = "rollback_failed: <reason>"`.
 /// - SQL flip failure is logged + counted as a failed rollback; the
 ///   scan does not abort.
-///
-/// # Errors
-///
-/// - [`WalError::Db`] only when the initial `scan_stale_proposal_ops`
-///   call fails. Per-row SQL failures are absorbed into the report.
-pub async fn rollback_stale_proposals(
-    pool: &SqlitePool,
-    older_than: Duration,
-    inverse: &dyn OpInverse,
-) -> Result<RollbackReport, WalError> {
-    let rows = scan_stale_proposal_ops(pool, older_than).await?;
-    let mut report = RollbackReport::default();
-    for row in rows {
-        let payload = row.payload_json.as_deref();
-        let reason = match inverse.invert(&row.kind, payload, None) {
-            Ok(()) => {
-                report.rolled_back += 1;
-                "rolled_back_by_startup".to_owned()
-            },
-            Err(detail) => {
-                report.failed_rollbacks += 1;
-                format!("rollback_failed: {detail}")
-            },
-        };
-        if let Err(e) = fail_proposal_op(pool, row.op_id, &reason).await {
-            tracing::warn!(
-                op_id = row.op_id,
-                proposal_id = %row.proposal_id,
-                err = %e,
-                "wal recovery: SQL flip failed",
-            );
-            if report.rolled_back > 0 {
-                report.rolled_back -= 1;
-            }
-            report.failed_rollbacks += 1;
-        }
-    }
-    tracing::info!(
-        rolled_back = report.rolled_back,
-        failed_rollbacks = report.failed_rollbacks,
-        "wal recovery: proposal ops swept",
-    );
-    Ok(report)
-}
-
-/// Mirror of [`rollback_stale_proposals`] for REM ops.
 ///
 /// # Errors
 ///
@@ -584,6 +456,30 @@ mod tests {
         crate::test_db::TestWorkdir::with_db().await
     }
 
+    /// Plant a `pending` row in `proposal_ops_log` at the given
+    /// `started_at`. Raw SQL because the table has no writer in the
+    /// engine — the scan is what the health report reads.
+    async fn plant_proposal_op(
+        pool: &SqlitePool,
+        proposal_id: &str,
+        kind: &str,
+        started_at: &str,
+    ) -> i64 {
+        let row: (i64,) = sqlx::query_as(
+            "INSERT INTO proposal_ops_log
+                 (proposal_id, step_idx, kind, status, started_at)
+             VALUES (?, 0, ?, 'pending', ?)
+             RETURNING op_id",
+        )
+        .bind(proposal_id)
+        .bind(kind)
+        .bind(started_at)
+        .fetch_one(pool)
+        .await
+        .expect("plant proposal op");
+        row.0
+    }
+
     #[test]
     fn status_roundtrip() {
         for s in [
@@ -600,51 +496,22 @@ mod tests {
         ));
     }
 
-    /// Full proposal op lifecycle: begin → `in_progress` → complete.
-    /// Verifies the row is left in `Done` with a `completed_at`.
-    #[tokio::test]
-    async fn proposal_op_happy_path() {
-        let (_workdir, pool) = fresh_pool().await;
-        let op_id = begin_proposal_op(&pool, "prop-1", 0, "file_write", Some(r#"{"path":"x"}"#))
-            .await
-            .expect("begin");
-        assert_eq!(
-            mark_in_progress(&pool, op_id).await.expect("in_progress"),
-            1
-        );
-        assert_eq!(complete_proposal_op(&pool, op_id).await.expect("done"), 1);
-
-        let (status, completed_at): (String, Option<String>) =
-            sqlx::query_as("SELECT status, completed_at FROM proposal_ops_log WHERE op_id = ?")
-                .bind(op_id)
-                .fetch_one(&pool)
-                .await
-                .expect("fetch");
-        assert_eq!(status, "done");
-        assert!(completed_at.is_some(), "completed_at must be stamped");
-    }
-
     /// Stale rows surface from the recovery scan; fresh rows do not.
-    /// Forces `started_at` backwards via an UPDATE because the
-    /// real-world cutoff is 5 minutes and we do not want to sleep.
+    /// The rows are planted with raw SQL — nothing in the engine writes
+    /// `proposal_ops_log` — and `started_at` is forced backwards because
+    /// the real-world cutoff is 5 minutes and we do not want to sleep.
     #[tokio::test]
     async fn scan_picks_up_only_stale_rows() {
         let (_workdir, pool) = fresh_pool().await;
-        let stale = begin_proposal_op(&pool, "p-stale", 0, "file_write", None)
-            .await
-            .unwrap();
-        let _fresh = begin_proposal_op(&pool, "p-fresh", 0, "db_update", None)
-            .await
-            .unwrap();
-
-        // Backdate the stale row by 1 hour.
         let old = (chrono::Utc::now() - chrono::Duration::hours(1)).to_rfc3339();
-        sqlx::query("UPDATE proposal_ops_log SET started_at = ? WHERE op_id = ?")
-            .bind(&old)
-            .bind(stale)
-            .execute(&pool)
-            .await
-            .expect("backdate");
+        let stale = plant_proposal_op(&pool, "p-stale", "file_write", &old).await;
+        let _fresh = plant_proposal_op(
+            &pool,
+            "p-fresh",
+            "db_update",
+            &chrono::Utc::now().to_rfc3339(),
+        )
+        .await;
 
         let rows = scan_stale_proposal_ops(&pool, Duration::from_secs(60))
             .await
@@ -655,35 +522,17 @@ mod tests {
         assert_eq!(rows[0].status, OpStatus::Pending);
     }
 
-    /// `fail_proposal_op` stamps both `completed_at` and `error_msg`,
-    /// and the row stops being visible to the recovery scan afterwards.
+    /// A terminal row is invisible to the recovery scan whatever its age.
     #[tokio::test]
-    async fn fail_records_reason_and_clears_from_scan() {
+    async fn scan_skips_terminal_rows() {
         let (_workdir, pool) = fresh_pool().await;
-        let op_id = begin_proposal_op(&pool, "p", 0, "file_write", None)
-            .await
-            .unwrap();
-
         let old = (chrono::Utc::now() - chrono::Duration::hours(1)).to_rfc3339();
-        sqlx::query("UPDATE proposal_ops_log SET started_at = ? WHERE op_id = ?")
-            .bind(&old)
+        let op_id = plant_proposal_op(&pool, "p", "file_write", &old).await;
+        sqlx::query("UPDATE proposal_ops_log SET status = 'failed' WHERE op_id = ?")
             .bind(op_id)
             .execute(&pool)
             .await
-            .expect("backdate");
-
-        fail_proposal_op(&pool, op_id, "crash_during_apply")
-            .await
-            .expect("fail");
-
-        let (status, err_msg): (String, Option<String>) =
-            sqlx::query_as("SELECT status, error_msg FROM proposal_ops_log WHERE op_id = ?")
-                .bind(op_id)
-                .fetch_one(&pool)
-                .await
-                .expect("fetch");
-        assert_eq!(status, "failed");
-        assert_eq!(err_msg.as_deref(), Some("crash_during_apply"));
+            .expect("flip");
 
         let rows = scan_stale_proposal_ops(&pool, Duration::from_secs(60))
             .await
@@ -691,8 +540,8 @@ mod tests {
         assert!(rows.is_empty(), "failed rows must not be returned");
     }
 
-    /// Same happy-path coverage for REM ops, since the two pipelines
-    /// share the same protocol and we want a regression net for both.
+    /// Full REM op lifecycle: begin → complete. A completed row stops
+    /// being visible to the recovery scan.
     #[tokio::test]
     async fn rem_op_happy_path() {
         let (_workdir, pool) = fresh_pool().await;
@@ -707,87 +556,9 @@ mod tests {
         assert!(rows.is_empty(), "completed rows must not be returned");
     }
 
-    /// Default `NoopInverse` is enough for the baseline floor (REM cycle
-    /// idempotency + stubbed proposal apply): every stale row is
-    /// flipped to `Failed` with the canned reason.
-    #[tokio::test]
-    async fn rollback_stale_proposals_with_noop_flips_to_failed() {
-        let (_workdir, pool) = fresh_pool().await;
-        let stale = begin_proposal_op(&pool, "p-stale", 0, "file_write", None)
-            .await
-            .unwrap();
-        let old = (chrono::Utc::now() - chrono::Duration::hours(1)).to_rfc3339();
-        sqlx::query("UPDATE proposal_ops_log SET started_at = ? WHERE op_id = ?")
-            .bind(&old)
-            .bind(stale)
-            .execute(&pool)
-            .await
-            .unwrap();
-
-        let report = rollback_stale_proposals(&pool, Duration::from_secs(60), &NoopInverse)
-            .await
-            .unwrap();
-        assert_eq!(report.rolled_back, 1);
-        assert_eq!(report.failed_rollbacks, 0);
-
-        let (status, reason): (String, Option<String>) =
-            sqlx::query_as("SELECT status, error_msg FROM proposal_ops_log WHERE op_id = ?")
-                .bind(stale)
-                .fetch_one(&pool)
-                .await
-                .unwrap();
-        assert_eq!(status, "failed");
-        assert_eq!(reason.as_deref(), Some("rolled_back_by_startup"));
-    }
-
-    /// An inverse that returns `Err` records the reason in `error_msg`
-    /// without bailing out of the sweep.
-    #[tokio::test]
-    async fn rollback_stale_proposals_records_inverse_failures() {
-        struct AlwaysFails;
-        impl OpInverse for AlwaysFails {
-            fn invert(
-                &self,
-                _kind: &str,
-                _payload_json: Option<&str>,
-                _snapshot_path: Option<&str>,
-            ) -> Result<(), String> {
-                Err("snapshot vanished".into())
-            }
-        }
-
-        let (_workdir, pool) = fresh_pool().await;
-        let stale = begin_proposal_op(&pool, "p-stale", 0, "file_write", None)
-            .await
-            .unwrap();
-        let old = (chrono::Utc::now() - chrono::Duration::hours(1)).to_rfc3339();
-        sqlx::query("UPDATE proposal_ops_log SET started_at = ? WHERE op_id = ?")
-            .bind(&old)
-            .bind(stale)
-            .execute(&pool)
-            .await
-            .unwrap();
-
-        let report = rollback_stale_proposals(&pool, Duration::from_secs(60), &AlwaysFails)
-            .await
-            .unwrap();
-        assert_eq!(report.rolled_back, 0);
-        assert_eq!(report.failed_rollbacks, 1);
-        let reason: Option<String> =
-            sqlx::query_scalar("SELECT error_msg FROM proposal_ops_log WHERE op_id = ?")
-                .bind(stale)
-                .fetch_one(&pool)
-                .await
-                .unwrap();
-        assert!(
-            reason
-                .unwrap_or_default()
-                .starts_with("rollback_failed: snapshot vanished"),
-            "reason must carry the inverse failure detail",
-        );
-    }
-
-    /// Same coverage for the REM side.
+    /// [`NoopInverse`] is enough because every REM sub-step is
+    /// idempotent: each stale row is flipped to `Failed` with the canned
+    /// reason.
     #[tokio::test]
     async fn rollback_stale_rems_with_noop_flips_to_failed() {
         let (_workdir, pool) = fresh_pool().await;

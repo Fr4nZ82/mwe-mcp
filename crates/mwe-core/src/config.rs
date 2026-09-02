@@ -1776,11 +1776,9 @@ impl RecallConfig {
 /// `embedding:` config section — which [`Embedder`](crate::embedder::Embedder)
 /// backend drives recall / capture / dedup.
 ///
-/// Until this section existed the embedder was hardcoded to
-/// `OllamaEmbedder::local_bge_m3()` at the server construction sites.
-/// The section is honoured by
-/// [`EmbeddingConfig::build_embedder`], the single factory those sites now
-/// call. An absent section deserializes to [`EmbeddingConfig::default`]:
+/// [`EmbeddingConfig::build_embedder`] is the single factory every server
+/// construction site calls, so the choice lives here and nowhere else.
+/// An absent section deserializes to [`EmbeddingConfig::default`]:
 /// `bge-m3` / 1024-dim, with the backend chosen by the build — `bundled`
 /// on a release build (compiled with `local-embedder`), `ollama` otherwise.
 ///

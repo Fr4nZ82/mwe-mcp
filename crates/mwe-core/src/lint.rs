@@ -18,11 +18,10 @@
 //!   blob is gone (media pipeline).
 //!
 //! The other three (`broken_crosslinks`, `acl_inconsistent`,
-//! `superseded_chain`) ship in later
-//! milestones; calling them today returns zero issues — the
-//! `summary.by_check` map still lists them so a future operator can
-//! tell at a glance which checks evaluated to "nothing wrong" vs "not
-//! yet implemented" (see [`Issue::message`] for the canned line).
+//! `superseded_chain`) walk nothing: [`run`] has no arm for them, so
+//! asking for one costs nothing and yields no issue. They stay in
+//! [`Check::all`] and in the `summary.by_check` map at zero, because the
+//! tool's advertised check list is part of its wire shape.
 //!
 //! ## Output ordering
 //!
@@ -127,17 +126,6 @@ impl Check {
             "superseded_chain" => Some(Self::SupersededChain),
             _ => None,
         }
-    }
-
-    /// `true` when this check actually walks the corpus today; `false`
-    /// when it ships in a later milestone (the dispatcher still lists
-    /// it in the summary but returns zero issues).
-    #[must_use]
-    pub const fn is_implemented(self) -> bool {
-        matches!(
-            self,
-            Self::MarkerMalformed | Self::OrphanFacts | Self::MetaInvalid | Self::EmbedMissing
-        )
     }
 }
 
