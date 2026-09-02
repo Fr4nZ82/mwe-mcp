@@ -638,7 +638,7 @@ async fn edit_submit(
         "budget_exhausted": turn.budget_exhausted,
         "ts": chrono::Utc::now().timestamp_millis(),
     });
-    let payload_js = serde_json::to_string(&payload).unwrap_or_else(|_| "null".into());
+    let payload_js = components::script_json(&payload);
     let body = html! {
         h2 { "Fact edit " code { (fact_id.as_str()) } " opened in chat" }
         p {

@@ -45,7 +45,7 @@ http = "1"
 # HTTP / web — `multipart` backs the `POST /media` upload endpoint.
 axum = { version = "0.7", features = ["macros", "multipart"] }
 tower = { version = "0.5", features = ["full"] }
-tower-http = { version = "0.6", features = ["trace", "compression-gzip", "fs", "normalize-path"] }
+tower-http = { version = "0.6", features = ["trace", "compression-gzip", "fs", "normalize-path", "limit"] }
 
 # Templating server-side
 maud = { version = "0.26", features = ["axum"] }

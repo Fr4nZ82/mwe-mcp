@@ -25,7 +25,9 @@
 //! authenticated request. It:
 //!
 //! 1. Reads the cookie, calls [`mwe_core::jwt::verify`] (signature +
-//!    `exp` + blacklist).
+//!    `exp` + blacklist), and refuses any token whose `device_label` is
+//!    not [`SESSION_DEVICE_LABEL`] — the same secret signs MCP bearer
+//!    tokens and OAuth access tokens, and none of those is a session.
 //! 2. On success, attaches a [`SessionUser`] to the request extensions
 //!    so the extractor can hand it back to the handler.
 //! 3. Mints a fresh JWT with the same `sender_id`+`is_admin` but a new
@@ -60,8 +62,11 @@ use crate::state::DashboardState;
 /// Name of the cookie that holds the session JWT.
 pub const SESSION_COOKIE_NAME: &str = "mwe_session";
 
-/// `device_label` claim baked into every session JWT, so an admin
-/// listing tokens can tell dashboard sessions apart from MCP tokens.
+/// `device_label` claim baked into every session JWT.
+///
+/// It is what makes a JWT a session: [`verify_session`] refuses every
+/// other label, and an admin listing tokens can tell dashboard sessions
+/// apart from MCP tokens.
 pub const SESSION_DEVICE_LABEL: &str = "dashboard-session";
 
 /// Placeholder `rate_limit_id` for session JWTs. May later be wired
@@ -180,9 +185,19 @@ async fn verify_session(
     let cookie = jar
         .get(SESSION_COOKIE_NAME)
         .ok_or(DashboardError::Unauthenticated)?;
-    jwt::verify(&state.secret, cookie.value(), &state.pool, &state.blacklist)
+    let claims = jwt::verify(&state.secret, cookie.value(), &state.pool, &state.blacklist)
         .await
-        .map_err(|_| DashboardError::Unauthenticated)
+        .map_err(|_| DashboardError::Unauthenticated)?;
+    // Every JWT this deployment issues is signed with the same secret: MCP
+    // bearer tokens (a year long, carrying the owner's admin flag), OAuth
+    // access tokens, magic links. Only the ones minted *for a browser* are
+    // a session — an MCP token pasted into the cookie would otherwise walk
+    // into the panel past the second factor, which only the login and the
+    // magic-link paths ask for.
+    if claims.device_label != SESSION_DEVICE_LABEL {
+        return Err(DashboardError::Unauthenticated);
+    }
+    Ok(claims)
 }
 
 /// Tower middleware: gate the wrapped routes on a valid session and
@@ -320,6 +335,21 @@ mod tests {
             .refresh(&state.pool)
             .await
             .expect("blacklist refresh");
+
+        let err = verify_session(&state, &jar).await.expect_err("must reject");
+        assert!(matches!(err, DashboardError::Unauthenticated));
+    }
+
+    /// A token that was not minted as a browser session — an MCP bearer
+    /// token here, the same secret and a valid signature — is not a
+    /// session, however it reached the cookie jar.
+    #[tokio::test]
+    async fn a_non_session_token_in_the_cookie_is_rejected() {
+        let (state, _workdir) = make_state().await;
+        let mut claims = TokenClaims::new("frodo", "mcp", "default", Duration::from_secs(3600));
+        claims.is_admin = true;
+        let token = jwt::issue(&state.secret, &claims).expect("issue");
+        let jar = CookieJar::new().add(cookie_for_claims(&state, token));
 
         let err = verify_session(&state, &jar).await.expect_err("must reject");
         assert!(matches!(err, DashboardError::Unauthenticated));

@@ -840,7 +840,7 @@ fn embed_config_data(catalog: &Catalog, auth: &ProviderAuth) -> Markup {
             "openrouter": auth.openrouter,
         },
     });
-    let json = serde_json::to_string(&data).unwrap_or_else(|_| "{}".to_owned());
+    let json = components::script_json(&data);
     html! {
         script type="application/json" id="llm-config-data" { (maud::PreEscaped(json)) }
     }

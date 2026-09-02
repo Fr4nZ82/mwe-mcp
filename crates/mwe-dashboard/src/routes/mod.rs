@@ -170,9 +170,18 @@ pub fn build(state: DashboardState) -> Router {
     // `/accept-invite`, `/reset-password`, the OAuth consent) that sit
     // outside the session layer by design and would otherwise be the way
     // in. Inert unless `instance.read_only` is set.
+    // The browser guards go over the whole tree as well: a cross-site POST
+    // is refused before any handler sees it, and every page leaves with the
+    // hardening headers.
     public
         .merge(authenticated)
         .layer(from_fn_with_state(state, crate::read_only::guard))
+        .layer(axum::middleware::from_fn(
+            crate::browser_guard::same_origin_guard,
+        ))
+        .layer(axum::middleware::from_fn(
+            crate::browser_guard::security_headers,
+        ))
 }
 
 /// Standalone router exposing only the `/cite/:bi_id` resolver.

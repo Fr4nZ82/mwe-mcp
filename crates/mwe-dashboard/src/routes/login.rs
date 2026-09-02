@@ -17,13 +17,17 @@
 //! email-only, and a user with no email simply cannot sign in until the
 //! admin sets one.
 
+use std::sync::LazyLock;
+use std::time::Duration as StdDuration;
+
 use axum::extract::{Query, State};
+use axum::http::HeaderMap;
 use axum::response::{Html, IntoResponse, Redirect, Response};
 use axum_extra::extract::cookie::CookieJar;
 use serde::Deserialize;
 
 use crate::auth::{password, session::issue_session_cookie};
-use crate::error::Result;
+use crate::error::{DashboardError, Result};
 use crate::routes::redirect::admin_exists;
 use crate::routes::welcome::user_already_initialized;
 use crate::state::DashboardState;
@@ -37,6 +41,19 @@ pub struct LoginQuery {
     #[serde(default)]
     pub next: Option<String>,
 }
+
+/// Login attempts allowed per email inside [`LOGIN_WINDOW`].
+const LOGIN_MAX_PER_EMAIL: u32 = 10;
+/// Login attempts allowed per client address inside [`LOGIN_WINDOW`].
+const LOGIN_MAX_PER_IP: u32 = 50;
+/// Fixed window for both login limits.
+const LOGIN_WINDOW: StdDuration = StdDuration::from_secs(15 * 60);
+
+/// A hash to verify against when the email is unknown, so that path costs
+/// the same Argon2 work as a real check. `None` only if hashing failed at
+/// first use, in which case the unknown-email path simply answers faster.
+static TIMING_EQUALISER_PHC: LazyLock<Option<String>> =
+    LazyLock::new(|| password::hash("mwe-mcp-login-timing-equaliser").ok());
 
 /// GET `/dashboard/login`.
 ///
@@ -81,6 +98,7 @@ fn safe_next(next: Option<&str>) -> Option<String> {
 pub async fn submit(
     State(state): State<DashboardState>,
     jar: CookieJar,
+    headers: HeaderMap,
     axum::Form(form): axum::Form<LoginSubmission>,
 ) -> Result<Response> {
     let identifier = form.email.trim();
@@ -97,6 +115,24 @@ pub async fn submit(
 
     if identifier.is_empty() || password.is_empty() {
         return Ok(generic());
+    }
+
+    // Throttle guesses on two axes, both always counted (the limiter never
+    // short-circuits): per email, so a distributed guess at one account
+    // runs into the same cap, and per client address, so one address
+    // cannot spray many accounts.
+    let email_key = format!("login:email:{}", identifier.to_ascii_lowercase());
+    let ip_key = format!("login:ip:{}", crate::ratelimit::client_ip(&headers));
+    let email_ok = crate::ratelimit::check(&email_key, LOGIN_MAX_PER_EMAIL, LOGIN_WINDOW);
+    let ip_ok = crate::ratelimit::check(&ip_key, LOGIN_MAX_PER_IP, LOGIN_WINDOW);
+    if !email_ok || !ip_ok {
+        return Ok(render_form(
+            &state,
+            Some("Too many attempts. Wait a few minutes and try again."),
+            identifier,
+            form.next.as_deref(),
+        )
+        .into_response());
     }
 
     // Email-only lookup. The email lives on `enrollment_users` (the row
@@ -117,13 +153,31 @@ pub async fn submit(
     .fetch_optional(&state.pool)
     .await?;
 
-    let Some((user_id, phc, is_admin_raw)) = row else {
-        // Unknown email, or known user with no credentials (system
-        // identity for a consumer token) — same opaque flash.
-        return Ok(generic());
+    // Argon2id is CPU-bound by design (tens of milliseconds and 19 MiB per
+    // check), so it runs off the async workers: a burst of logins must not
+    // stall every other request, `/mcp` included. An unknown email — or a
+    // known user with no credentials, the system identity behind a consumer
+    // token — is checked too, against a fixed hash, so the response time
+    // does not say whether the address exists; the flash is the same
+    // opaque one either way.
+    let phc = row.as_ref().map_or_else(
+        || TIMING_EQUALISER_PHC.clone(),
+        |(_, phc, _)| Some(phc.clone()),
+    );
+    let matched = match phc {
+        Some(phc) => {
+            let password = password.to_owned();
+            tokio::task::spawn_blocking(move || password::verify(&password, &phc))
+                .await
+                .map_err(|e| DashboardError::Internal(format!("password check: {e}")))??
+        },
+        None => false,
     };
 
-    if !password::verify(password, &phc)? {
+    let Some((user_id, _, is_admin_raw)) = row else {
+        return Ok(generic());
+    };
+    if !matched {
         return Ok(generic());
     }
 

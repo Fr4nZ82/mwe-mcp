@@ -2400,6 +2400,19 @@ pub struct InstanceConfig {
     #[serde(default)]
     pub admin_reveal_locked: bool,
 
+    /// Emit the dashboard's cookies (session, reveal, the 2FA challenge)
+    /// with the `Secure` attribute, so a browser only ever sends them over
+    /// HTTPS.
+    ///
+    /// Off by default because the documented first run is plain
+    /// `http://127.0.0.1:8742`, where a `Secure` cookie would never come
+    /// back and the setup wizard could not hold a session. Turn it on once
+    /// the dashboard is reached through a TLS proxy or tunnel — which is
+    /// where every deployment exposed beyond the host should already be
+    /// (INSTALL.md, hardening checklist).
+    #[serde(default)]
+    pub cookie_secure: bool,
+
     /// The identities a visitor may enter as **without a password**, in
     /// the order the buttons should appear.
     ///

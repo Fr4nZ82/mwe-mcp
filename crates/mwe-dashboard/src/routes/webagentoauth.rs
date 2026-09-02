@@ -223,7 +223,29 @@ struct RegisterReq {
     redirect_uris: Vec<String>,
 }
 
-async fn register(State(state): State<DashboardState>, Json(req): Json<RegisterReq>) -> Response {
+/// Client registrations allowed per address inside [`REGISTER_WINDOW`].
+/// Registration is anonymous by the protocol (RFC 7591), so the cap is what
+/// keeps the client table from being filled by anyone who finds the port.
+const REGISTER_MAX_PER_IP: u32 = 20;
+/// Fixed window for [`REGISTER_MAX_PER_IP`].
+const REGISTER_WINDOW: std::time::Duration = std::time::Duration::from_secs(3600);
+
+async fn register(
+    State(state): State<DashboardState>,
+    headers: axum::http::HeaderMap,
+    Json(req): Json<RegisterReq>,
+) -> Response {
+    let ip_key = format!(
+        "oauth-register:ip:{}",
+        crate::ratelimit::client_ip(&headers)
+    );
+    if !crate::ratelimit::check(&ip_key, REGISTER_MAX_PER_IP, REGISTER_WINDOW) {
+        return oauth_error(
+            StatusCode::TOO_MANY_REQUESTS,
+            "invalid_client_metadata",
+            "too many registrations from this address; try again later",
+        );
+    }
     if req.redirect_uris.is_empty() {
         return oauth_error(
             StatusCode::BAD_REQUEST,
@@ -585,6 +607,25 @@ async fn authorize_post(
             Some("That connection name can't be used — try letters, digits and dashes."),
         );
     };
+    // The connection name becomes the token's `consumer_id`, and a standard
+    // consumer's `consumer_id` is the key its delegations and its event
+    // queue hang off. A name that is already a bot's identity would hand
+    // this connection that bot's queue; refuse it rather than share it.
+    match consumers::system_user_for(&state.pool, &connection).await {
+        Ok(Some(_)) => {
+            return render_consent(
+                &p,
+                &client,
+                &sender,
+                Some("That connection name belongs to a registered consumer — pick another."),
+            );
+        },
+        Ok(None) => {},
+        Err(e) => {
+            tracing::error!(error = %e, "webagentoauth: consumer lookup failed");
+            return consent_error("Could not check the connection name.");
+        },
+    }
 
     let wiki_id =
         match ensure_dedicated_wiki(&state, &sender, &connection, &slug, &client.client_name).await
@@ -741,6 +782,15 @@ fn render_consent(
             "memory as a " strong { "smart agent" } ", acting as " strong { (sender) }
             ". It will read and write its own dedicated wiki."
         }
+        // The name above is whatever the client called itself at
+        // registration, which anyone may do. Where the approval sends the
+        // credential is the one thing the person can check, so it is said
+        // out loud rather than left in a hidden field.
+        p.muted {
+            "After you approve, the connection is handed to "
+            strong { (redirect_target_label(&p.redirect_uri)) }
+            ". If that is not where you expect this application to live, deny."
+        }
         form action="/dashboard/webagentoauth/authorize" method="post" {
             (components::text_field("connection", "Name this connection", "text", &default_conn, true))
             p.muted {
@@ -779,6 +829,22 @@ fn render_consent(
         }
     };
     Html(layout::anonymous_page("Approve connection", &body)).into_response()
+}
+
+/// What to tell the person the approval will be handed to: "this computer"
+/// for an RFC 8252 loopback callback, otherwise the scheme and host of the
+/// redirect (never the path or query, which say nothing a person can judge).
+fn redirect_target_label(redirect_uri: &str) -> String {
+    if is_loopback_redirect(redirect_uri) {
+        return "an application on this computer".to_owned();
+    }
+    let (scheme, rest) = redirect_uri.split_once("://").unwrap_or(("", redirect_uri));
+    let authority = rest.split(['/', '?', '#']).next().unwrap_or(rest);
+    if scheme.is_empty() {
+        authority.to_owned()
+    } else {
+        format!("{scheme}://{authority}")
+    }
 }
 
 /// Pick the connection slug: the user's input when given, else the client name;

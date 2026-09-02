@@ -1243,9 +1243,11 @@ async fn dispatch_wiki_get_fact(
         })?;
     // ACL invariant (per-fragment ACL): never reveal a fact the operator may
     // not read. An unreadable — or absent — id is reported as plain "not
-    // found". Admins bypass, like every other ACL-projected read here.
+    // found". The bypass is admin *reveal* — the switch the machine
+    // operator can lock — never the admin role by itself, exactly as
+    // `wiki_recall` and `wiki_facts_for` below project it.
     let visible = row.as_ref().is_some_and(|r| {
-        ctx.is_admin
+        ctx.reveal
             || mwe_core::acl::can_read(
                 &mwe_core::types::Acl {
                     subject: Some(r.subject_id.clone()),

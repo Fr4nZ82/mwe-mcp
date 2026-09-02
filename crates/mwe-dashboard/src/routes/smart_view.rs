@@ -24,9 +24,12 @@
 //! - `/dashboard/wiki/:id/sharing`       — show + edit the
 //!   `_meta.md.shared_with` roster. Owner-only.
 //!
-//! All routes session-gated; sharing additionally checks the caller is the
-//! wiki's owner (the derived scope principal is `user:<caller>`); the
-//! revert POST is gated [`AdminUser`].
+//! All routes session-gated. The briefing and the op-log are the wiki's own
+//! inbox and history, so both ask [`super::wiki_view::wiki_readable`] — the
+//! same wiki-level read gate `wiki_read` and the Wikis pages apply — and
+//! answer *not found* to a reader the wiki's ACL does not admit. Sharing
+//! additionally checks the caller is the wiki's owner (the derived scope
+//! principal is `user:<caller>`); the revert POST is gated [`AdminUser`].
 
 use std::path::Path;
 use std::str::FromStr;
@@ -216,6 +219,9 @@ async fn view_briefing(
     let memory = require_memory(&state)?;
     let wiki_id = WikiId::parse(&id).map_err(|e| DashboardError::BadRequest(format!("{e}")))?;
     let _meta = wiki_get_meta(&memory.tree, &wiki_id).map_err(map_wiki_err)?;
+    if !super::wiki_view::wiki_readable(&state, memory, &wiki_id, &user.sender_id).await? {
+        return Err(DashboardError::NotFound);
+    }
 
     let body_md = match wiki_read(&memory.tree, &wiki_id, Path::new("_briefing.md")) {
         Ok(s) => Some(s),
@@ -340,6 +346,9 @@ async fn view_op_log(
     let memory = require_memory(&state)?;
     let wiki_id = WikiId::parse(&id).map_err(|e| DashboardError::BadRequest(format!("{e}")))?;
     let _meta = wiki_get_meta(&memory.tree, &wiki_id).map_err(map_wiki_err)?;
+    if !super::wiki_view::wiki_readable(&state, memory, &wiki_id, &user.sender_id).await? {
+        return Err(DashboardError::NotFound);
+    }
 
     let rows: Vec<OpLogRow> = sqlx::query_as(
         "SELECT op_id, op_kind, op_mode, actor_kind, sender_id, consumer_id,

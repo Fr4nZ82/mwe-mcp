@@ -7,6 +7,31 @@ use std::fmt::Write;
 
 use maud::{Markup, html};
 
+/// Serialise `value` for an inline `<script>` block: JSON, with `<`, `>`,
+/// `&` and the two Unicode line separators written as `\uXXXX` escapes.
+///
+/// The parser ends a script element at the first `</script` it meets
+/// whatever the JavaScript around it says, so a string that carries one —
+/// a fact body another user wrote, a model reply — would otherwise close
+/// the block and start its own. The escapes are valid JSON and valid
+/// JavaScript, so `JSON.parse` and a bare object literal both read them.
+#[must_use]
+pub fn script_json(value: &serde_json::Value) -> String {
+    let raw = serde_json::to_string(value).unwrap_or_else(|_| "null".to_owned());
+    let mut out = String::with_capacity(raw.len());
+    for c in raw.chars() {
+        match c {
+            '<' => out.push_str("\\u003c"),
+            '>' => out.push_str("\\u003e"),
+            '&' => out.push_str("\\u0026"),
+            '\u{2028}' => out.push_str("\\u2028"),
+            '\u{2029}' => out.push_str("\\u2029"),
+            _ => out.push(c),
+        }
+    }
+    out
+}
+
 /// Render a flash banner. `kind` should be `"error"`, `"success"`,
 /// or `"info"`; the CSS in `tailwind/app.css` covers the first two.
 #[must_use]

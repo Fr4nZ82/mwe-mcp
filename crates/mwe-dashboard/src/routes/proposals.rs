@@ -35,7 +35,7 @@ use crate::auth::SessionUser;
 use crate::error::{DashboardError, Result};
 use crate::routes::chat;
 use crate::state::DashboardState;
-use crate::ui::layout;
+use crate::ui::{components, layout};
 
 /// The single operational surface the action routes hand back to.
 const CHAT_SURFACE: &str = "/dashboard/chat";
@@ -238,7 +238,7 @@ fn land_turn_in_chat(
         "budget_exhausted": turn.budget_exhausted,
         "ts": chrono::Utc::now().timestamp_millis(),
     });
-    let payload_js = serde_json::to_string(&payload).unwrap_or_else(|_| "null".into());
+    let payload_js = components::script_json(&payload);
     let body = html! {
         (intro)
         script {

@@ -171,13 +171,18 @@ pub fn router() -> Router<DashboardState> {
 /// own ACL inline, so the tar stands alone without `engine.db` next to
 /// it. Served with `Content-Disposition: attachment` — the dashboard's
 /// first download surface.
+///
+/// The archive carries every fragment in clear, whoever its subject is,
+/// so it is the one thing the reveal lock exists to keep from the panel
+/// admin: on a deployment where `instance.admin_reveal_locked` is set
+/// the download is refused outright, like the reveal switch itself.
 async fn export_archive(
     State(state): State<DashboardState>,
     user: SessionUser,
     AxumPath(id): AxumPath<String>,
 ) -> Result<Response> {
     let memory = require_memory(&state)?;
-    if !user.is_admin {
+    if !user.is_admin || state.config.admin_reveal_locked {
         return Err(DashboardError::Forbidden);
     }
     let wiki_id = WikiId::parse(&id).map_err(|e| DashboardError::BadRequest(format!("{e}")))?;

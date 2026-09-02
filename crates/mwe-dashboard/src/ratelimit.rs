@@ -1,13 +1,16 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 //! Tiny process-global fixed-window rate limiter.
 //!
-//! Shared by the password-recovery request route and the 2FA challenge.
-//! A single-process server, so an in-memory map is enough; entries are
-//! pruned opportunistically so it cannot grow without bound.
+//! Shared by the login form, the password-recovery request route, the 2FA
+//! challenge and OAuth client registration. A single-process server, so an
+//! in-memory map is enough; entries are pruned opportunistically so it
+//! cannot grow without bound.
 
 use std::collections::HashMap;
 use std::sync::{LazyLock, Mutex};
 use std::time::{Duration, Instant};
+
+use axum::http::HeaderMap;
 
 struct Window {
     start: Instant,
@@ -46,6 +49,29 @@ pub fn check(key: &str, max: u32, window: Duration) -> bool {
     let allowed = w.count <= max;
     drop(g);
     allowed
+}
+
+/// Best-effort client IP from the proxy headers Cloudflare / nginx set,
+/// for rate limiting.
+///
+/// Falls back to a shared `unknown` bucket on a direct localhost hit (no
+/// header) — acceptable, because every caller also limits on a second
+/// axis (the email, the challenge id) that does not depend on the
+/// address. The headers are trusted as they arrive: the listener is
+/// documented as loopback-only behind a fronting proxy, and a forged
+/// header can only ever move a caller into a *different* bucket, never
+/// past the limit of the one it lands in.
+#[must_use]
+pub fn client_ip(headers: &HeaderMap) -> String {
+    for h in ["cf-connecting-ip", "x-real-ip", "x-forwarded-for"] {
+        if let Some(v) = headers.get(h).and_then(|v| v.to_str().ok())
+            && let Some(first) = v.split(',').next()
+            && !first.trim().is_empty()
+        {
+            return first.trim().to_owned();
+        }
+    }
+    "unknown".to_owned()
 }
 
 #[cfg(test)]

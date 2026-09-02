@@ -309,14 +309,37 @@ fn hash_args(args: &Value) -> String {
 
 /// Per-tool result summary written to `tool_executions.result_summary`.
 /// We bound the length so the audit row stays short.
+/// The first characters of a tool result, for the audit row. Any field
+/// whose name says it is a credential is blanked first: `consumer_register`
+/// answers with a `consumer_secret`, and an audit table that keeps
+/// secrets in clear for good is a second, unguarded store of them.
 fn short_result_summary(value: &Value) -> String {
-    let serialised = value.to_string();
+    let mut scrubbed = value.clone();
+    scrub_credentials(&mut scrubbed);
+    let serialised = scrubbed.to_string();
     if serialised.len() > 240 {
         let mut out = serialised.chars().take(237).collect::<String>();
         out.push_str("...");
         out
     } else {
         serialised
+    }
+}
+
+fn scrub_credentials(value: &mut Value) {
+    match value {
+        Value::Object(map) => {
+            for (key, v) in map.iter_mut() {
+                let k = key.to_ascii_lowercase();
+                if k.contains("secret") || k.contains("token") || k.contains("password") {
+                    *v = Value::String("[redacted]".to_owned());
+                } else {
+                    scrub_credentials(v);
+                }
+            }
+        },
+        Value::Array(items) => items.iter_mut().for_each(scrub_credentials),
+        _ => {},
     }
 }
 

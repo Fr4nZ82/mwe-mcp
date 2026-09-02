@@ -27,6 +27,7 @@
 pub mod agentic;
 pub mod assets;
 pub mod auth;
+pub mod browser_guard;
 pub mod email;
 pub mod error;
 pub mod form;

@@ -82,7 +82,7 @@ async fn request_submit(
 
     // Evaluate BOTH rate-limit keys (each call advances its counter), then
     // combine — a short-circuit would let one axis escape accounting.
-    let ip = client_ip(&headers);
+    let ip = crate::ratelimit::client_ip(&headers);
     let email_ok = rate_ok(&format!("email:{}", addr.to_lowercase()));
     let ip_ok = rate_ok(&format!("ip:{ip}"));
     let within_limit = email_ok && ip_ok;
@@ -254,21 +254,6 @@ async fn lookup_live_reset(state: &DashboardState, token: &str) -> Result<Option
     .fetch_optional(&state.pool)
     .await?;
     Ok(row.map(|(id,)| id))
-}
-
-/// Best-effort client IP from the proxy headers Cloudflare / nginx set,
-/// for rate limiting. Falls back to a shared `unknown` bucket on a direct
-/// localhost hit (no header) — acceptable, the email-key axis still bites.
-fn client_ip(headers: &HeaderMap) -> String {
-    for h in ["cf-connecting-ip", "x-real-ip", "x-forwarded-for"] {
-        if let Some(v) = headers.get(h).and_then(|v| v.to_str().ok())
-            && let Some(first) = v.split(',').next()
-            && !first.trim().is_empty()
-        {
-            return first.trim().to_owned();
-        }
-    }
-    "unknown".to_owned()
 }
 
 // ---------- render ----------

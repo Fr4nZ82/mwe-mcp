@@ -324,7 +324,7 @@ fn render_welcome_landing(chrome: layout::Chrome, user: &SessionUser, turn: &Cha
         "response_html": response_html,
         "ts": chrono::Utc::now().timestamp_millis(),
     });
-    let payload_js = serde_json::to_string(&payload).unwrap_or_else(|_| "null".into());
+    let payload_js = components::script_json(&payload);
 
     let body = html! {
         h2 { "All set." }

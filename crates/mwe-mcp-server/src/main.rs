@@ -96,7 +96,9 @@ enum Command {
 
         /// Overwrite `mwe-mcp.config.yaml` even if it already exists.
         /// Off by default to keep `init` idempotent on populated
-        /// workdirs.
+        /// workdirs. `mwe-mcp.env` is never overwritten: it holds the
+        /// token secret, and rewriting it would invalidate every token,
+        /// session and 2FA enrollment the deployment has issued.
         #[arg(long, default_value_t = false)]
         force_config: bool,
     },
@@ -543,13 +545,14 @@ async fn cmd_init(workdir: &Path, llm_profile: &str, force_config: bool) -> Resu
     let prompts_seed = core_prompts.merged(&dash_prompts);
 
     // Always generate a fresh secret candidate; the helper below
-    // decides whether to actually persist it. We mint here (rather
+    // persists it only when no env file exists yet. We mint here (rather
     // than inside the helper) so the env-file lookup path stays a
-    // pure I/O concern.
+    // pure I/O concern. `--force-config` is about the config file and
+    // stops here: the secret in an existing `mwe-mcp.env` signs every
+    // token, session and 2FA enrollment already issued.
     let candidate = TokenSecret::generate();
-    let env_outcome =
-        env_loader::write_env_file_if_needed(workdir, &candidate.export_hex(), force_config)
-            .context("writing mwe-mcp.env")?;
+    let env_outcome = env_loader::write_env_file_if_needed(workdir, &candidate.export_hex(), false)
+        .context("writing mwe-mcp.env")?;
     let env_status = match &env_outcome {
         WriteOutcome::Wrote { path, chmod_0600 } => {
             if *chmod_0600 {
@@ -1568,11 +1571,14 @@ fn dedicated_user_refusal(workdir: &Path, running_as: &str) -> String {
     )
 }
 
+/// Largest request body `/mcp` accepts. See the limit layer in
+/// [`cmd_serve_http`] for why it exists and how the number was sized.
+const MCP_REQUEST_BODY_LIMIT_BYTES: usize = 32 * 1024 * 1024;
+
 // A linear bootstrap: resolve exposure, enforce the dedicated-user gate,
 // assemble the router tree (each `.nest`/`.merge` carries a why-comment),
 // bind, and serve with graceful shutdown. Splitting it would scatter that
-// single startup narrative; the body is just over the 100-line lint after
-// stable's line-counting drifted (101/100).
+// single startup narrative.
 #[allow(
     clippy::too_many_lines,
     reason = "linear server bootstrap; see comment above"
@@ -1665,6 +1671,14 @@ async fn cmd_serve_http(
 
     let mcp_router = Router::new()
         .fallback_service(streamable)
+        // rmcp collects the whole request body before it parses it, and
+        // axum's default limit only guards its own extractors — so without
+        // this layer a token holder could stream an unbounded body into the
+        // process. The cap leaves room for a turn's attachments (four images,
+        // eight mebibytes of bytes, base64 on the wire) with margin.
+        .layer(tower_http::limit::RequestBodyLimitLayer::new(
+            MCP_REQUEST_BODY_LIMIT_BYTES,
+        ))
         .layer(axum::middleware::from_fn_with_state(
             mcp_state_for_router.clone(),
             mcp::auth::jwt_auth_middleware,
@@ -2181,6 +2195,7 @@ fn dashboard_config_from(config: &Config) -> mwe_dashboard::DashboardConfig {
     mwe_dashboard::DashboardConfig {
         read_only: config.instance.read_only,
         admin_reveal_locked: config.instance.admin_reveal_locked,
+        cookie_secure: config.instance.cookie_secure,
         demo_identities: config.instance.demo_identities.as_slice().into(),
         ..mwe_dashboard::DashboardConfig::default()
     }

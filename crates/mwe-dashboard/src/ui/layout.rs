@@ -238,7 +238,14 @@ fn shell(
                     // Per-user namespace for the chat panel's localStorage —
                     // history must not leak across accounts on a shared
                     // browser. Set before the deferred chat.js runs.
-                    script { (PreEscaped(format!("window.__mweUser={:?};", u.sender_id))) }
+                    script {
+                        (PreEscaped(format!(
+                            "window.__mweUser={};",
+                            super::components::script_json(&serde_json::Value::String(
+                                u.sender_id.clone()
+                            ))
+                        )))
+                    }
                     script src="/dashboard/static/ui.js" defer {}
                     // chat.js only ever drives the chat panel, which a frozen
                     // deployment does not render.

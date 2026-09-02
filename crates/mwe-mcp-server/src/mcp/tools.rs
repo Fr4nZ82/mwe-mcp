@@ -1596,9 +1596,15 @@ struct WikiLintScope {
 
 pub(super) async fn call_wiki_lint(
     state: &McpState,
-    _identity: &IdentityProfile,
+    identity: &IdentityProfile,
     args: Value,
 ) -> Result<Value, ToolError> {
+    // An integrity report names wikis, page files and fact ids — a page name
+    // is a topic, so it is memory in its own right. A guest turn gets none of
+    // it, and every other caller gets the report of the wikis they could read
+    // anyway; the tree-level lines (duplicate wiki ids, a malformed `_meta.md`)
+    // are the operator's and stay admin-only.
+    forbid_guest(identity, "wiki_lint")?;
     let args: WikiLintArgs = parse_args(&args)?;
     let scope = LintScope {
         wiki_ids: args.scope.map(|s| s.wiki_ids).filter(|v| !v.is_empty()),
@@ -1618,6 +1624,11 @@ pub(super) async fn call_wiki_lint(
     let report = lint::run(&state.pool, &state.tree, &scope, &checks)
         .await
         .map_err(|e| ToolError::new(ToolErrorClass::InternalError, e.to_string()))?;
+    let report = if identity.is_admin {
+        report
+    } else {
+        lint_report_readable_by(state, identity, report).await?
+    };
     Ok(json!({
         "issues": report.issues,
         "summary": {
@@ -1626,6 +1637,67 @@ pub(super) async fn call_wiki_lint(
             "by_check": report.by_check,
         },
     }))
+}
+
+/// Cut a lint report down to the wikis `identity` may read, through the
+/// same wiki-level gate `wiki_read` applies (`wiki_admin::wiki_readable_by`,
+/// which answers for both families), and recount the summary over what is
+/// left. Issues that name no wiki are dropped: they describe the tree.
+async fn lint_report_readable_by(
+    state: &McpState,
+    identity: &IdentityProfile,
+    report: lint::LintReport,
+) -> Result<lint::LintReport, ToolError> {
+    let internal = |e: String| ToolError::new(ToolErrorClass::InternalError, e);
+    let sender_groups = enrollment::groups_for(&state.pool, &identity.sender_id)
+        .await
+        .map_err(|e| internal(e.to_string()))?;
+    let mut readable: std::collections::HashMap<String, bool> = std::collections::HashMap::new();
+    let mut kept = Vec::with_capacity(report.issues.len());
+    for issue in report.issues {
+        let Some(wiki_id) = issue.wiki_id.clone() else {
+            continue;
+        };
+        let visible = if let Some(v) = readable.get(&wiki_id) {
+            *v
+        } else {
+            let v = match WikiId::parse(&wiki_id)
+                .ok()
+                .and_then(|id| state.tree.locate(&id).ok())
+            {
+                Some(handle) => mwe_core::wiki_admin::wiki_readable_by(
+                    &state.pool,
+                    &state.tree,
+                    &handle,
+                    &identity.sender_id,
+                    &sender_groups,
+                )
+                .await
+                .map_err(|e| internal(e.to_string()))?,
+                None => false,
+            };
+            readable.insert(wiki_id, v);
+            v
+        };
+        if visible {
+            kept.push(issue);
+        }
+    }
+    let mut by_severity = std::collections::BTreeMap::new();
+    let mut by_check: std::collections::BTreeMap<String, usize> =
+        report.by_check.keys().map(|k| (k.clone(), 0)).collect();
+    for issue in &kept {
+        *by_severity
+            .entry(issue.severity.as_str().to_owned())
+            .or_insert(0) += 1;
+        *by_check.entry(issue.check.as_str().to_owned()).or_insert(0) += 1;
+    }
+    Ok(lint::LintReport {
+        total: kept.len(),
+        issues: kept,
+        by_severity,
+        by_check,
+    })
 }
 
 // ============================================================
@@ -1654,6 +1726,25 @@ pub(super) async fn call_consumer_register(
     // system user, corrupting the diagonal binding below.
     forbid_guest(identity, "consumer_register")?;
     let args: ConsumerRegisterArgs = parse_args(&args)?;
+    // A `consumer_id` is an identity: its delegations, its event queue and
+    // its callback hang off it. Registering a fresh one is open to any
+    // enrolled caller; re-registering one that exists — rewriting its
+    // callback, its subscriptions, the system user it is bound to — is the
+    // consumer's own act, so the token must carry that very `consumer_id`,
+    // or belong to an admin.
+    let already = consumers::is_registered(&state.pool, &args.consumer_id)
+        .await
+        .map_err(|e| ToolError::new(ToolErrorClass::InternalError, e.to_string()))?;
+    if already && !identity.is_admin && identity.consumer_id.as_deref() != Some(&args.consumer_id) {
+        return Err(ToolError::new(
+            ToolErrorClass::SenderUnauthorized,
+            format!(
+                "consumer `{}` is already registered; only a token minted for that consumer \
+                 (or an admin) may change its registration",
+                args.consumer_id
+            ),
+        ));
+    }
     // Diagonal identity model: a *standard* consumer *is* a system user, so
     // bind its own `sender_id` as this registration's `system_user_id`
     // (migration 0029). A standard caller registers as itself — it has not
