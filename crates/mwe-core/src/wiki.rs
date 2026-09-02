@@ -280,10 +280,18 @@ pub const PROJECTS_FILENAME: &str = "@projects.md";
 /// 2026-08-18, asking which files the engine names: *«forse ce ne sono
 /// altre?»* — there was one.
 ///
-/// One list, read by both sides of that decision: the planner's placement
-/// flattener and the ingest list-page inventory
-/// ([`crate::fact_index::list_pages_readable_by`]). They must never disagree
-/// about what a classifier is allowed to name.
+/// One list, read by every gate where a model names a page — the planner's
+/// three, the REM split, the ingest list-page inventory
+/// ([`crate::fact_index::list_pages_readable_by`]) and the path-shaped twin
+/// below. They must never disagree about what a classifier is allowed to name.
+///
+/// **Four prompts recite it in words**, because a model cannot call a
+/// function: `ingest.md`, `cartografo.md`, `rem-promotions.md`, and
+/// `conciliatore.md` in its runtime contract. Adding a stem here means adding
+/// it there in the same commit — a prompt that calls a free name reserved, or
+/// a reserved name free, teaches the model the wrong thing every time it runs.
+/// `every_reserved_stem_is_named_in_the_prompts_that_teach_them` catches the
+/// half of that a test can catch: a stem added here and nowhere else.
 #[must_use]
 pub fn is_reserved_page_stem(stem: &str) -> bool {
     // The marker settles it whatever follows: `@` is the engine's, so no
@@ -291,12 +299,21 @@ pub fn is_reserved_page_stem(stem: &str) -> bool {
     // stay refused beside it — a page called `rules.md` next to `@rules.md`
     // would read as the same thing to a human and be a different thing to
     // the engine, and a receipt written before the marker still names them.
-    stem.starts_with('@')
-        || matches!(
-            stem,
-            "rules" | "projects" | "project_diary" | "projects_diary" | "profile"
-        )
+    stem.starts_with('@') || RESERVED_PAGE_STEMS.contains(&stem)
 }
+
+/// The bare words [`is_reserved_page_stem`] refuses, beside the `@` marker.
+///
+/// Enumerable because four prompts have to say it in words and a test has to
+/// check that they do — see [`is_reserved_page_stem`], which is the predicate
+/// and the explanation.
+pub const RESERVED_PAGE_STEMS: &[&str] = &[
+    "rules",
+    "projects",
+    "project_diary",
+    "projects_diary",
+    "profile",
+];
 
 /// True when `page` — a **model-coined** page name — names a reserved page.
 ///
@@ -2286,6 +2303,31 @@ mod tests {
         assert!(!names_reserved_page(Path::new("index.md")));
         assert!(!names_reserved_page(Path::new("notes.md")));
         assert!(!names_reserved_page(Path::new("")));
+    }
+
+    /// Four prompts recite the reserved list in words, because a model cannot
+    /// call [`is_reserved_page_stem`]. A stem named here and not there leaves
+    /// the model free to coin a page the engine will then refuse, with the
+    /// facts meant for it left waiting.
+    ///
+    /// It checks that the word is present, not that the sentence around it is
+    /// right — which is the cheapest guard against the drift that actually
+    /// happens: a stem added to the list, the prompts untouched.
+    #[test]
+    fn every_reserved_stem_is_named_in_the_prompts_that_teach_them() {
+        for (prompt_name, prompt) in [
+            ("ingest", crate::ingest::BUNDLED_INGEST_PROMPT_MD),
+            ("cartografo", crate::planner::BUNDLED_CARTOGRAFO_MD),
+            ("conciliatore", crate::planner::BUNDLED_CONCILIATORE_MD),
+            ("rem-promotions", crate::rem::BUNDLED_REM_PROMOTIONS_MD),
+        ] {
+            for stem in RESERVED_PAGE_STEMS {
+                assert!(
+                    prompt.contains(stem),
+                    "{prompt_name}.md never names the reserved page `{stem}`"
+                );
+            }
+        }
     }
 
     // ---------- MarkdownDoc ----------

@@ -1,7 +1,7 @@
 ---
 name: ingest
 description: Classifier driving `wiki_ingest_message` — one JSON object per turn (intent + an `extractions[]` array of atomic facts, the SOLE fact container; every fact is prose, each carrying a per-fact validity interval `valid_from`/`valid_to`, a per-fact `style` (and, for `lista` material or a requested container, a `target_page` + `page_description`), a `requested_container` live-write flag, a per-fact `salience`, and an `engine_rule` flag routing a standing governance directive to `@rules.md` instead of `fact_index`, a `behaviour_rule` flag (with a `behaviour_scope` of `per-user`/`agent-wide`/`user-global`, read from the addressee) routing a how-an-agent-converses-or-operates directive to the calling consumer's own wiki — or, user-global, to the sender's identity wiki for every assistant serving them — and an `attachments` claim list linking the turn's media to the fact that describes them); targets the strong-model tier
-version: 2.71
+version: 2.72
 default_version_at_bootstrap: v2.62
 source_of_truth: crates/mwe-core/src/ingest.rs (fn wiki_ingest_message)
 ---
@@ -530,7 +530,7 @@ A fact you emit about yourself on your own turn needs no destination either — 
 - **The extraction is a requested container that is not `lista`** → `list_pages` has nothing to offer (it lists only `lista` pages), and you name the page the user gave it, from the turn itself.
 - **The extraction is neither** → `list_pages` says nothing about it, and you name no page at all (Part 4).
 
-Never name one of the reserved pages (`@profile.md`, `@rules.md`, `@projects.md`, `@projects_diary.md`, or any name starting with `@` or `_`). The engine enforces this rather than trusting it, and what it costs depends on the material. **Prose**: the name is discarded and the fact waits to be placed with everything else — nothing is lost. **A list item**: there is no list to put it on, so the whole extraction is REFUSED and the user is told it was not saved. Name a list's page from `list_pages`, or a plain new name — never a reserved one.
+Never name one of the reserved pages — `profile`, `rules`, `projects`, `project_diary`, `projects_diary`, with or without the engine's `@` marker, and nothing else starting with `@` or `_`. The engine enforces this rather than trusting it, and what it costs depends on the material. **Prose**: the name is discarded and the fact waits to be placed with everything else — nothing is lost. **A list item**: there is no list to put it on, so the whole extraction is REFUSED and the user is told it was not saved. Name a list's page from `list_pages`, or a plain new name — never a reserved one.
 
 ## `fact_type` — closed enum, semantic hint for dedup and recall (per extraction)
 

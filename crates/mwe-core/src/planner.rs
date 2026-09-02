@@ -2171,10 +2171,12 @@ pub async fn subject_scopes_for(
 /// the model re-emits `slug` while it decides merges, so it can come back
 /// changed.
 ///
-/// **A reserved page name is refused outright** (`rules`, `projects`,
-/// `profile`). A page keyed by one of those stems compiles to the same file
-/// as the wiki's card or one of its channels — two plan pages, one path. The
-/// facts meant for it fall through to the orphan pass.
+/// **A reserved page name is refused outright** —
+/// [`crate::wiki::is_reserved_page_stem`] holds the list, and it is not
+/// restated here so the two cannot drift. A page keyed by one of those stems
+/// compiles to the same file as the wiki's card or one of its channels — two
+/// plan pages, one path. The facts meant for it fall through to the orphan
+/// pass.
 fn vet_accepted(mut np: NewPage, _foundation: &BTreeMap<String, PagePlan>) -> Option<NewPage> {
     let slug = slugify(&np.slug);
     if crate::wiki::is_reserved_page_stem(&slug) {
@@ -2553,10 +2555,11 @@ impl NewFactPlacement<'_> {
 /// - `@profile.md` — the wiki's card, a per-wiki **foundation node**; minting
 ///   a concept page here would put the same file in the plan under a second,
 ///   forest-wide key;
-/// - `@rules.md` ([`crate::wiki::RULES_FILENAME`]) and `@projects.md`
-///   ([`crate::wiki::PROJECTS_FILENAME`]) — written by a deterministic
-///   channel, so a fact mis-targeted there must not land among the policy or
-///   the signposts.
+/// - `@rules.md` ([`crate::wiki::RULES_FILENAME`]), `@projects.md`
+///   ([`crate::wiki::PROJECTS_FILENAME`]) and `@projects_diary.md`
+///   ([`crate::wiki::PROJECT_DIARY_FILENAME`]) — each written by a
+///   deterministic channel, so a fact mis-targeted there must not land among
+///   the policy, the signposts or the owner's diary.
 ///
 /// In every case the fact falls through to [`identity_card_target`], which
 /// homes it on its wiki's card when the fact is card material and leaves it

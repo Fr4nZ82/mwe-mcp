@@ -44,8 +44,9 @@ The system prompt for the **Conciliatore** (planner stage 1.5,
     mint a blank page under that name, turning *merge into X* into *create an
     empty X*, style and all;
   - a redirect onto a wiki's identity card (`@profile.md`) is **dropped**;
-  - an accepted page whose slug is a reserved name (`rules`, `projects`,
-    `profile`) is **dropped** — it would compile onto a file the engine owns;
+  - an accepted page whose slug is a reserved name (`profile`, `rules`,
+    `projects`, `project_diary`, `projects_diary`, or anything starting with
+    `@`) is **dropped** — it would compile onto a file the engine owns;
   - an accepted page of any type other than `concept_leaf` is filed as one.
 
   A dropped redirect is not a lost page: the proposal stays its own page and the

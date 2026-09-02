@@ -1,7 +1,7 @@
 ---
 name: rem-promotions
 description: REM auto-promote scorer — per-page paragraph→page split decision (whole page in, moved facts out)
-version: 2.7
+version: 2.8
 default_version_at_bootstrap: v2.4
 source_of_truth: crates/mwe-core/src/rem.rs (fn paragraph_split_prompt)
 ---
@@ -112,7 +112,7 @@ You are reading the whole page `{page}`, which has accumulated {page_facts} atom
 Decide whether ONE sub-topic on this page has outgrown its siblings — grown disproportionately in mass — and/or is frequently recalled, enough to deserve its own dedicated page. Weigh mass and recall together; a sub-topic that is both big and hot is the clearest candidate.
 Split ONLY a coherent sub-topic that reads as a self-contained subject. Never name every fact on the page: a full move is not a split.
 Reply STRICT JSON: {"split": true|false, "fact_ids": ["n1", "n3", ...], "target_page": "<filename.md>"}
-List in fact_ids exactly the handles of the facts that move to the new page, copied as shown (`n1`, `n2`, ...) without the brackets. The target_page must end with `.md`, be lowercase, and use hyphens, and must never be one of the reserved pages (`@profile.md`, `@rules.md`, `@projects.md`) — a split that names one is refused outright and the page stays as it is, so you lose the split. Use {"split": false} when the page is fine as it is.
+List in fact_ids exactly the handles of the facts that move to the new page, copied as shown (`n1`, `n2`, ...) without the brackets. The target_page must end with `.md`, be lowercase, and use hyphens, and must never be one of the reserved page names — `profile`, `rules`, `projects`, `project_diary`, `projects_diary`, with or without the engine's `@` marker — a split that names one is refused outright and the page stays as it is, so you lose the split. Use {"split": false} when the page is fine as it is.
 No prose.
 
 Page facts:
