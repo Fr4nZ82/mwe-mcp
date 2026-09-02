@@ -218,9 +218,10 @@ type.
 | `core` | always | identity claims, dispatcher, token lifecycle, auth error codes |
 | `core-globalmemory` | smart consumer, **no** cwd marker | transversal recall on first prompt (forked-subagent pattern) |
 | `smart-consumer` | smart consumer + `.mwe/state.json` in cwd | `smart_bootstrap`, `wiki_admin_*`, cooperative lease, `_briefing.md` lifecycle, graceful degradation on token revoke |
-| `smart-codebase` | `smart-consumer` + software project | modules/decisions/runbooks/architecture layout, module + decision + change-log page conventions, `source_ref` + `last_synced` discipline |
+| `smart-codebase` | `smart-consumer` + software project | modules/decisions/runbooks/architecture layout, module + decision + change-log page conventions, `source_ref` |
 | `smart-onboarding` | on demand: `smart_bootstrap` answered that this project has no wiki, or the user asks | **first connect, once per project**: the intro (three questions, and the ones never to ask), importing existing docs faithfully, the `CLAUDE.md` doc-rules resolution, the post-import shape report, the cut-never-rewrite page repair |
 | `standard-conversational` | standard consumer (or absent claim) | `wiki_ingest_message` loop, wire shape, disambiguation, `pending_votes`, `events_poll`, structural notices and their routing, consumer self-configuration |
+| `web-smart-consumer` | a hosted web client connected over `webagentoauth` (the `Web` profile, which has no `skill_fetch`: the consent page offers the file for upload, and `/skills/web-smart-consumer.md` serves it) | the trimmed tool surface of a client with no local filesystem: push page by page, pull before a batch of writes, `expected_op_log_head` |
 
 How to consume skills (three modes, by preference):
 
