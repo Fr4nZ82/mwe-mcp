@@ -80,13 +80,15 @@ and no upstream patch:
   documented `gateway:startup` seam) + `scripts/mwe-daily-digest.py` (a
   cron `--script`): the consumer-push leg of `INTEGRATING.md` step 8.
   The hook polls `events_poll` every ~30 s from inside the gateway and
-  turns each **`fact_minted_for_you`** notice (facts another user's
-  conversation minted for an enrolled recipient — the payload carries
-  the fact bodies) into a **one-shot cron job** through hermes's own
-  `cron.jobs` API: the agent composes the message in the recipient's
-  language and hermes delivers it to their private Telegram chat
-  (`deliver: telegram:<chat>`). The digest script batches every other
-  event kind into a once-a-day recap. See §Reverse channel below.
+  turns each **person-addressed** notice — **`fact_minted_for_you`**
+  (facts another user's conversation minted for an enrolled recipient)
+  and **`reminder_due`** (a dated commitment in their memory has come
+  round), both carrying their content inline — into a **one-shot cron
+  job** through hermes's own `cron.jobs` API: the agent composes the
+  message in the recipient's language and hermes delivers it to their
+  private Telegram chat (`deliver: telegram:<chat>`). The digest script
+  batches every other event kind into a once-a-day recap. See §Reverse
+  channel below.
 
 All bridge pieces are stdlib-only — no pip dependencies.
 
@@ -334,24 +336,36 @@ skipped (one warning, the turn proceeds).
 ## Reverse channel — proactive delivery to the affected human
 
 Everything above fires when a user speaks. mwe-mcp also emits notices on
-its event queue when memory changes and a **different** human should
-know — the flagship being `fact_minted_for_you`: Anna's conversation
-with the assistant produced facts that belong to Bruno (a checklist for
-him, a plan he must act on), and Bruno should *hear about it*, content
-included, not stumble on it at his next recall. The reverse-channel half
-closes that loop, all on supported hermes surface:
+its event queue addressed to one person, who should *hear about it*,
+content included, rather than stumble on it at their next recall — and
+the bridge delivers the two of that shape:
+
+- `fact_minted_for_you`: Anna's conversation with the assistant produced
+  facts that belong to Bruno (a checklist for him, a plan he must act
+  on), and Bruno took no part in that conversation.
+- `reminder_due`: a dated commitment Bruno's memory already holds has
+  come round. Only the memory knows the appointment moved, which is why
+  it rings and a job written when he first asked cannot.
+
+The reverse-channel half closes that loop, all on supported hermes
+surface:
 
 - **`hooks/mwe-events/`** — discovered from `~/.hermes/hooks/` at
   gateway start (no config needed), it runs one daemon thread that polls
-  `events_poll` (~30 s, kind-filtered to `fact_minted_for_you`) with the
-  bridge token; the consumer id is read from the token's own payload.
-  Each notice routes recipient → chat through `senderMap` **in
-  reverse** — explicit `telegram:<id>` entries only, the `primaryUser`
-  fallback never applies (a personal notice must not land in someone
-  else's chat) — and becomes a **one-shot cron job** (hermes's own
-  `cron.jobs` API): the job's prompt carries the fact bodies and the
-  delivery rules (recipient's language; the content came *through* the
-  sender — never imply the recipient took part; add nothing), its
+  `events_poll` (~30 s, kind-filtered to the two person-addressed
+  kinds) with the bridge token; the consumer id is read from the
+  token's own payload. Each notice routes recipient → chat through
+  `senderMap` **in reverse** — explicit `telegram:<id>` entries only,
+  the `primaryUser` fallback never applies (a personal notice must not
+  land in someone else's chat) — and becomes a **one-shot cron job**
+  (hermes's own `cron.jobs` API): the job's prompt carries the bodies
+  and the delivery rules (recipient's language; add nothing of your
+  own), in the wording its kind calls for — a minted notice says the
+  content came *through* the sender and that the recipient took no part,
+  a reminder says their own commitment has come round and when it falls
+  due — and it ends by offering the page the notice names
+  (`dashboard_path` hung on `dashboardUrl`, or on the MCP `url` without
+  its `/mcp`; no base means no link rather than a broken one). Its
   `deliver` targets the recipient's private chat, and the gateway's own
   scheduler runs it within its ≤60 s tick. `events_ack` fires only
   **after** the job is durably in `jobs.json` — at-least-once, end to

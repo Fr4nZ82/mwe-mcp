@@ -590,21 +590,25 @@ def main():
             "url": stub2.url, "primaryUser": "anna",
             "senderMap": {"telegram:42": "bruno"}, "locale": "it-IT"}))
         client = hook._load_client_class(HOME)(stub2.url, fake_jwt)
+        dashboard = "https://mwe.example"
         minted = {
             "event_id": 7, "kind": "fact_minted_for_you", "wiki_id": "casa",
             "payload": {
                 "recipient_id": "user:bruno", "from_user_id": "anna",
                 "origin": "assistant_turn",
+                "dashboard_path": "/dashboard/wiki/casa",
                 "facts": [{"fact_id": "f1", "wiki_id": "casa",
                            "body": "bruno deve controllare il libretto"}]},
         }
         stub2.responses["events_poll"] = {"events": [minted], "has_more": False}
         attempts = {}
-        delivered, pending = hook._tick_once(client, "smokebot", routes, "it-IT", attempts)
+        delivered, pending = hook._tick_once(
+            client, "smokebot", routes, "it-IT", dashboard, attempts)
         ok("routable notice → delivery enqueued", delivered == 1 and pending == 0)
         polls = stub2.calls("events_poll")
-        ok("poll is kind-filtered to fact_minted_for_you",
-           polls[0]["arguments"].get("kinds") == ["fact_minted_for_you"])
+        ok("poll is kind-filtered to the two person-addressed kinds",
+           polls[0]["arguments"].get("kinds")
+           == ["fact_minted_for_you", "reminder_due"])
         acks = stub2.calls("events_ack")
         ok("acked only after the durable enqueue",
            len(acks) == 1 and acks[0]["arguments"]["event_ids"] == [7])
@@ -617,17 +621,53 @@ def main():
            "bruno deve controllare il libretto" in job["prompt"]
            and "through anna" in job["prompt"]
            and "took no part" in job["prompt"])
+        ok("job prompt offers the notice's own page, hung on the dashboard base",
+           f"{dashboard}/dashboard/wiki/casa" in job["prompt"])
+
+        # A due commitment rings with its own wording: it is the
+        # recipient's own commitment coming round, not material relayed
+        # from somebody else's conversation.
+        reminder = {
+            "event_id": 9, "kind": "reminder_due", "wiki_id": "casa",
+            "payload": {
+                "recipient_id": "user:bruno",
+                "due_at": "2026-08-06T17:00:00Z",
+                "dashboard_path": "/dashboard/wiki/casa",
+                "facts": [{"fact_id": "f2", "wiki_id": "casa",
+                           "body": "dentista giovedì alle cinque"}]},
+        }
+        stub2.responses["events_poll"] = {"events": [reminder], "has_more": False}
+        delivered, pending = hook._tick_once(
+            client, "smokebot", routes, "it-IT", dashboard, attempts)
+        ok("due reminder → delivery enqueued", delivered == 1 and pending == 0)
+        ok("reminder acked after its enqueue",
+           stub2.calls("events_ack")[-1]["arguments"]["event_ids"] == [9])
+        rjob = next((j for j in cron_jobs.list_jobs()
+                     if str(j.get("name", "")).startswith("mwe-notice-9-")), None)
+        ok("reminder job persisted for the recipient's chat",
+           rjob is not None and rjob["deliver"] == "telegram:42")
+        ok("reminder prompt carries the commitment, its due time and the reminder framing",
+           "dentista giovedì alle cinque" in rjob["prompt"]
+           and "2026-08-06T17:00:00Z" in rjob["prompt"]
+           and "come round" in rjob["prompt"]
+           and "took no part" not in rjob["prompt"])
+        ok("no dashboard base → no link rather than a broken one",
+           "/dashboard/wiki/casa"
+           not in hook._build_job_prompt(reminder, "bruno", "it-IT", ""))
 
         # Unroutable recipient: retried without ack, acked away at the cap.
         stub2.responses["events_poll"] = {
             "events": [{"event_id": 8, "kind": "fact_minted_for_you",
                         "payload": {"recipient_id": "user:zoe", "facts": []}}],
             "has_more": False}
-        delivered, pending = hook._tick_once(client, "smokebot", routes, "", attempts)
+        acked_before = len(stub2.calls("events_ack"))
+        delivered, pending = hook._tick_once(
+            client, "smokebot", routes, "", dashboard, attempts)
         ok("unroutable notice is NOT acked (retries next tick)",
-           delivered == 0 and pending == 1 and len(stub2.calls("events_ack")) == 1)
+           delivered == 0 and pending == 1
+           and len(stub2.calls("events_ack")) == acked_before)
         attempts[8] = hook._MAX_ROUTE_ATTEMPTS - 1
-        hook._tick_once(client, "smokebot", routes, "", attempts)
+        hook._tick_once(client, "smokebot", routes, "", dashboard, attempts)
         ok("unroutable notice acked away at the attempt cap",
            stub2.calls("events_ack")[-1]["arguments"]["event_ids"] == [8]
            and 8 not in attempts)
@@ -651,9 +691,9 @@ def main():
            and "structure_applied: 2" in digest.stdout
            and "paragraph_split×2" in digest.stdout, digest.stdout + digest.stderr)
         ok("digest offers the dashboard link", "/dashboard" in digest.stdout)
-        ok("digest polls only the system kinds (minted stays with the hook)",
-           "fact_minted_for_you"
-           not in stub2.calls("events_poll")[-1]["arguments"]["kinds"])
+        ok("digest polls only the system kinds (the personal ones stay with the hook)",
+           set(stub2.calls("events_poll")[-1]["arguments"]["kinds"])
+           .isdisjoint(hook._KINDS))
         ok("digest acks what it summarised",
            stub2.calls("events_ack")[-1]["arguments"]["event_ids"] == [21, 22, 23])
         stub2.responses["events_poll"] = {"events": [], "has_more": False}

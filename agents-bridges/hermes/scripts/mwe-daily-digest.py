@@ -1,12 +1,12 @@
 #!/usr/bin/env python3
 """mwe daily digest — cron `--script` for the mwe-mcp bridge.
 
-Drains the SYSTEM notices from the reverse channel (everything except
-`fact_minted_for_you`, which the `mwe-events` gateway hook delivers
-per-recipient in near-real-time) and prints a compact summary: how many
-memory changes, of what type, plus the dashboard link. The agent riding
-the cron job phrases it for the operator — or stays [SILENT] when the
-day was quiet.
+Drains the SYSTEM notices from the reverse channel (everything except the
+person-addressed kinds — `fact_minted_for_you` and `reminder_due` — which
+the `mwe-events` gateway hook delivers per-recipient in near-real-time)
+and prints a compact summary: how many memory changes, of what type, plus
+the dashboard link. The agent riding the cron job phrases it for the
+operator — or stays [SILENT] when the day was quiet.
 
 Install (once, from the operator's chat or shell):
 
@@ -36,10 +36,11 @@ from collections import Counter
 from datetime import date
 from pathlib import Path
 
-# The system kinds this digest owns. `fact_minted_for_you` is EXCLUDED —
-# the gateway hook delivers it per-recipient; the two drains share one
-# consumer and stay disjoint by kind filter. A future server kind joins
-# the digest by being added here.
+# The system kinds this digest owns. The person-addressed kinds
+# (`fact_minted_for_you`, `reminder_due`) are EXCLUDED — the gateway hook
+# delivers those per-recipient; the two drains share one consumer and stay
+# disjoint by kind filter. A future server kind joins the digest by being
+# added here.
 KINDS = [
     "structure_applied",
     "auto_applied",
