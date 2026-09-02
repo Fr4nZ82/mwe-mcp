@@ -20,7 +20,8 @@ The confirmation prompt for the REM **completion sweep** sub-job
   tier, shared by every REM confirmer sweep) — REM-only.
 - **Placeholders**: `{evidence_text}`, `{evidence_date}` (the instant the
   evidence began being true), `{candidates}` (numbered open items:
-  `fact_id · began · text`, dated the same way), `{subject_note}` — empty
+  `fact_id · began · text`, the claim whole rather than previewed, dated the
+  same way), `{subject_note}` — empty
   for an ordinary family; on an **agent's own** family (the scope root
   carries the `is_agent` marker) it says that the corpus narrates the
   agent's service, so helping with an item never completes it. Resolved

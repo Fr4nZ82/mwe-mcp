@@ -27,20 +27,20 @@ The system prompt for the document-ingest **reduce** phase
 - **Input** (assembled in code): the numbered candidate bodies.
 - **Output**: one strict JSON object (Rust binding `CandidateFact`); the
   model rewrites only the body, so every other field — routing, ACL,
-  taxonomy (`fact_type` / `topics`), validity, salience, and the testata
-  seeds — is re-stamped unconditionally from the first cluster member in
+  taxonomy (`fact_type` / `topics`), validity, salience, and the `style`
+  seed — is re-stamped unconditionally from the first cluster member in
   code (anything the model emits beyond the body is discarded). A parse
   failure falls back to the first member verbatim.
-- Design narrative:
-  document ingest.
 
 **`{locale}`** — substituted before the prompt reaches the model with the
-single-line `LANGUAGE` directive from
-`mwe_core::locale::memory_directive_for_user`: the person who submitted
-the document names the language, which is why a foreign-language
-document still lands in memory in the reader's own language. This slot **writes memory** rather than
-answering a live turn, so an undeclared locale resolves to **English**
-— not to the "mirror the user's message" clause the conversational
+single-line `LANGUAGE` directive `crate::locale::render_memory_language_directive`
+builds from the job's **subject principal** (`enrollment::locale_for_principal`
+— a user's own declared locale, or the one every member of a group declared).
+`document::process_job` resolves it once and hands the same directive to all
+three document slots, which is why a foreign-language document still lands in
+memory in the language of the person it is about. This slot **writes memory**
+rather than answering a live turn, so an undeclared locale resolves to
+**English** — not to the "mirror the user's message" clause the conversational
 slots fall back to.
 
 ```text

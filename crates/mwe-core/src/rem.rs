@@ -1008,6 +1008,7 @@ pub async fn run_cycle(
     // topic words live in `fact_index` alone.
     let topic_merge = crate::topic_rank::merge_near_duplicates(
         pool,
+        tree.workdir(),
         &embedder,
         llms.revisor,
         policy.topic_merge_cap,
@@ -4113,6 +4114,10 @@ async fn run_structure_review(
     } else {
         String::new()
     };
+    // The applier below takes the first `structure_review_cap` moves, so the
+    // model is told that number rather than a copy of it written into the
+    // prompt body: a second number is a number that drifts.
+    let cap = policy.structure_review_cap.to_string();
     let prompt = prompts::render(
         "rem-structure",
         tree.workdir(),
@@ -4120,6 +4125,7 @@ async fn run_structure_review(
         &[
             ("forest", render_forest(tree, &all[..shown]).as_str()),
             ("dropped", dropped_note.as_str()),
+            ("cap", cap.as_str()),
         ],
     )?;
     let memo_key = rem_verdicts::key(llm.model_id(), &prompt);
@@ -4516,15 +4522,36 @@ fn fact_began(row: &FactIndexRow) -> &str {
     }
 }
 
-/// Short single-line preview of a fact's claim for receipts and logs.
-fn fact_preview(text: &str) -> String {
+/// A claim on one line, cut at `cap` characters with an ellipsis.
+fn one_line_capped(text: &str, cap: usize) -> String {
     let one_line = text.replace('\n', " ");
-    let mut out: String = one_line.chars().take(120).collect();
-    if one_line.chars().count() > 120 {
+    let mut out: String = one_line.chars().take(cap).collect();
+    if one_line.chars().count() > cap {
         out.push('…');
     }
     out
 }
+
+/// Short single-line preview of a fact's claim for receipts and logs.
+fn fact_preview(text: &str) -> String {
+    one_line_capped(text, 120)
+}
+
+/// A claim as a **confirmer** must read it: whole, on one line.
+///
+/// The completion and contradiction sweeps decide by comparing a candidate
+/// against the evidence sentence for sentence — a paraphrase is a duplicate
+/// and not a completion, a standing condition is not a consumable intention —
+/// and a candidate cut at [`fact_preview`]'s length asks for that judgement on
+/// half a claim. Facts are short, so the cap here is a runaway guard rather
+/// than a budget; [`fact_preview`] stays what a receipt and a log line carry,
+/// where a brief quotation is the point.
+fn fact_claim(text: &str) -> String {
+    one_line_capped(text, CLAIM_FOR_JUDGEMENT_CHARS)
+}
+
+/// How much of a claim [`fact_claim`] hands a confirmer.
+const CLAIM_FOR_JUDGEMENT_CHARS: usize = 600;
 
 /// Nominate completion cases: fresh evidence facts (created inside
 /// `policy.closure_sweep_window`) paired with the most similar
@@ -4709,7 +4736,7 @@ async fn judge_completion_case(
                 i + 1,
                 c.fact_id.as_str(),
                 fact_began(c),
-                fact_preview(&c.text)
+                fact_claim(&c.text)
             )
         })
         .collect::<Vec<_>>()
@@ -4917,10 +4944,10 @@ pub const BUNDLED_REM_REFILE_MD: &str = include_str!("../prompts/rem-refile.md")
 /// How much closer-to-foreign-than-home a fact must embed before the
 /// cosine pre-filter nominates it. A pure **resource** margin (skip the
 /// LLM on facts that sit at least as close to home as to anything
-/// foreign), NOT a semantic "belongs elsewhere" gate — the LLM still
-/// makes the verdict ([[feedback-no-hardcoded-gates-llm-decides]]). The
-/// margin keeps a fact home unless a foreign wiki is materially more
-/// similar, so a fact merely adjacent to two subjects is never nominated.
+/// foreign), NOT a semantic "belongs elsewhere" gate — the LLM still makes
+/// the verdict. The margin keeps a fact home unless a foreign wiki is
+/// materially more similar, so a fact merely adjacent to two subjects is
+/// never nominated.
 const REFILE_COSINE_MARGIN: f32 = 0.05;
 
 /// Per-wiki view used to score + present refile candidates: the
@@ -5253,11 +5280,10 @@ fn refile_candidate_block(offer: &ForeignOffer<'_>) -> String {
 /// misfiled fact into a different existing wiki.
 ///
 /// A deterministic cosine pre-filter nominates facts that embed
-/// materially closer to a foreign wiki than to home (a **resource** cap —
-/// it only nominates, never decides
-/// [[feedback-no-hardcoded-gates-llm-decides]]); the revisor LLM
-/// (`llms.revisor` — the low binary-classifier confirmer tier)
-/// decides whether (and where) each really belongs. A confirmed move
+/// materially closer to a foreign wiki than to home (a **resource** cap — it
+/// only nominates, never decides); the revisor LLM (`llms.revisor` — the low
+/// binary-classifier confirmer tier) decides whether (and where) each really
+/// belongs. A confirmed move
 /// lands **act-first** via [`promote::apply_fact_refile_direct`] with the
 /// same born-applied receipt the other REM act-first sub-jobs write. Smart
 /// wikis are skipped as **both** source and destination: the smart-family
@@ -5739,7 +5765,7 @@ async fn judge_contradiction_case(
                 i + 1,
                 c.fact_id.as_str(),
                 fact_began(c),
-                fact_preview(&c.text)
+                fact_claim(&c.text)
             )
         })
         .collect::<Vec<_>>()

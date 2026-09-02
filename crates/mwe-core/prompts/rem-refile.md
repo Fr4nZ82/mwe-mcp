@@ -19,8 +19,7 @@ The judgment prompt for the REM **cross-wiki refile sweep** sub-job
   its home wiki), and the **reviewer bridge** — a fact last night's review
   parked as `cross_subject_bloat`, which skips the margin because the
   reviewer already nominated it. Either way the pre-filter only NOMINATES
-  (a resource cap); this prompt makes the decision
-  ([[feedback-no-hardcoded-gates-llm-decides]]).
+  (a resource cap); this prompt makes the decision.
 - **Model**: the `rem_dedup_semantic` / revisor slot (low binary-classifier
   tier, shared by every REM confirmer sweep) — REM-only.
 - **Placeholders**: `{fact_text}` (the candidate fact's claim),

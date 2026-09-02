@@ -14,7 +14,7 @@
 //! 2. enumerate wikis       WikiTree::walk        (engine-internal — the classifier is shown NO wikis)
 //! 3. LLM intent + plan     llm::complete         (`ingest` slot, JSON out)
 //! 4. route by intent       capture::wiki_capture | recall snippet | dashboard hint | noop
-//! 5. legacy closure path  confirm_topic_closures (`ingest` slot — see below: the SHIPPED prompt never reaches it)
+//! 5. closure confirmer     confirm_topic_closures (`ingest` slot — see below: only an operator's own classifier reaches it)
 //! 6. recall-block tail     recall_nav::navigate  (`navigator` slot, optional) + recall::recall_due_soon
 //! 7. reconcile what was read  reconcile_after_reading (`ingest` slot — supersede / close / re-date / re-share)
 //! 8. assemble response     IngestResponse        (context_snippet + suggested_seed + capture_id)
@@ -29,11 +29,11 @@
 //! latency inside the conversational budget. Step 7 is separate on purpose:
 //! it acts on **what the turn has since read**, which step 3 had not seen.
 //!
-//! **Step 5 is a compatibility path, not a phase.** The shipped classifier
-//! prompt emits neither `closures` nor `closure_topics` — reconciling against
-//! stored facts is the reconciler's job — so `plan.closures` is empty and
-//! this step does nothing. It stays wired for a deployment whose operator
-//! overrode `prompts/ingest.md` with a version that still emits them.
+//! **Step 5 is an operator path, not a phase.** The bundled classifier prompt
+//! emits neither `closures` nor `closure_topics` — reconciling against stored
+//! facts is the reconciler's job — so `plan.closures` is empty and this step
+//! does nothing. It stays wired for a deployment whose own override of
+//! `prompts/ingest.md` emits them.
 //!
 //! ## Fallback policy
 //!
@@ -915,7 +915,11 @@ pub const MAX_FACT_TOPICS: usize = 2;
 const ENGINE_TOPIC_PREFIXES: &[&str] = &["signpost-", "project-signpost"];
 
 /// Normalises what the classifier wrote into the pair, dropping the rest.
-fn normalize_fact_topics(raw: &[String]) -> Vec<String> {
+///
+/// Shared with the document path (`crate::document`), which files facts a
+/// different model wrote from a segment: one pair means one rule about what a
+/// pair is, wherever the words came from.
+pub(crate) fn normalize_fact_topics(raw: &[String]) -> Vec<String> {
     let mut out: Vec<String> = Vec::with_capacity(MAX_FACT_TOPICS);
     for word in raw {
         let word = word.trim().to_lowercase();
@@ -7782,21 +7786,20 @@ pub async fn wiki_ingest_message(
             // Reconciliation against facts already stored — closing,
             // replacing, re-dating, re-sharing.
             //
-            // **Nothing populates these today.** The bundled prompt stopped
-            // asking the classifier for them (v2.59): all four decide the fate
-            // of a fact that already exists, which cannot be judged from the
-            // ten-hit sample the classifier is shown. The rule the founder
-            // drew: a slot may reconcile against a set it sees COMPLETE (the
-            // list inventory, the agent's behaviour rules, the sender's own
-            // policy) and never against a sample.
+            // **The bundled classifier populates none of these.** All four
+            // decide the fate of a fact that already exists, which cannot be
+            // judged from the ten-hit sample the classifier is shown. The rule
+            // the founder drew: a slot may reconcile against a set it sees
+            // COMPLETE (the list inventory, the agent's behaviour rules, the
+            // sender's own policy) and never against a sample.
             //
             // The machinery below is kept ON PURPOSE, not stranded: it is the
             // substrate of the recall-side **reconciliation stage** — one
             // cheap call after the navigator, judging against the union of the
             // flat hits, the fresh captures and the facts on every page whose
-            // prose the turn injected. See
-            // §"The reconciliation stage". An operator-overridden prompt that
-            // still emits the fields keeps working meanwhile.
+            // prose the turn injected. An operator override of
+            // `<workdir>/prompts/ingest.md` that emits the fields runs through
+            // here instead.
             //
             // A pure gesture (closures, no extractions) is real activity: it
             // must not demote to the skip fallback. `closure_topics` widens

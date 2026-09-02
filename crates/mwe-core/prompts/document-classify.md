@@ -1,7 +1,7 @@
 ---
 name: document-classify
 description: document-ingest phase 1 — proposes the disposition dial (consult / dossier / dissolve) plus the document's identity (title, page, target wiki, summary, and the page testata seeds — page_description, style, topics) from a policy-capped prefix
-version: 1.4
+version: 1.5
 default_version_at_bootstrap: v1.4
 ---
 
@@ -9,7 +9,7 @@ default_version_at_bootstrap: v1.4
 
 The system prompt for the document-ingest **classify** phase
 (`crate::document::classify_document`). Loaded via
-`mwe_core::prompts::load("document-classify", workdir, BUNDLED_DOCUMENT_CLASSIFY_MD)`.
+`mwe_core::prompts::render("document-classify", workdir, BUNDLED_DOCUMENT_CLASSIFY_MD, vars)`.
 
 ## Runtime contract
 
@@ -25,16 +25,16 @@ The system prompt for the document-ingest **classify** phase
 - A caller-forced disposition/format **overrides** the proposal in code;
   an unparseable reply degrades to `consult` (the conservative fail-safe:
   nothing scatters).
-- Design narrative:
-  document ingest.
 
 **`{locale}`** — substituted before the prompt reaches the model with the
-single-line `LANGUAGE` directive from
-`mwe_core::locale::memory_directive_for_user`: the person who submitted
-the document names the language, which is why a foreign-language
-document still lands in memory in the reader's own language. This slot **writes memory** rather than
-answering a live turn, so an undeclared locale resolves to **English**
-— not to the "mirror the user's message" clause the conversational
+single-line `LANGUAGE` directive `crate::locale::render_memory_language_directive`
+builds from the job's **subject principal** (`enrollment::locale_for_principal`
+— a user's own declared locale, or the one every member of a group declared).
+`document::process_job` resolves it once and hands the same directive to all
+three document slots, which is why a foreign-language document still lands in
+memory in the language of the person it is about. This slot **writes memory**
+rather than answering a live turn, so an undeclared locale resolves to
+**English** — not to the "mirror the user's message" clause the conversational
 slots fall back to.
 
 ```text
@@ -51,7 +51,7 @@ Also decide "format":
 
 IDENTITY — always provide:
 - "title": a short human title, in the language named under LANGUAGE below.
-- "page_slug": a lowercase_underscore page name for the document page (e.g. "pellet_stove_manual.md").
+- "page_slug": a lowercase_underscore page name for the document page (e.g. "pellet_stove_manual.md"). Never one of the reserved page names — "profile", "rules", "projects", "project_diary", "projects_diary", with or without the engine's "@" marker: those are files the engine owns, and a document page named after one is refused and replaced by a slug of the title.
 - "target_wiki_id": one wiki_id from available_wikis — where the document page (and the default fact routing) belongs.
 - "summary": 2-5 sentences, in the language named under LANGUAGE below: what this document is, who/what it involves, why it matters. OPEN BY NAMING the document — its type, title and date ("The eye examination report of 10 June 2026 for Bruno…"), never a blind "this document": the summary becomes the document page's body AND a standalone memory fact, so it must identify WHICH document it describes even read alone. Write it as prose someone would be glad to find.
 - "page_description": one line saying what belongs on that page. It is the page's CARD: the recall navigator is shown this line and nothing else when it decides whether to open the page, and for a page no link points at it is the only thing that can bring a reader there. Describe the page's TOPIC in the words someone would use to look for it — never just a restatement of this one document.

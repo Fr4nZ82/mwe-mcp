@@ -1809,9 +1809,8 @@ pub async fn recall_named_project_docs(
 /// (0.608 vs 0.602 on the raw turn; distilling the claim first made it
 /// worse, 0.622 vs 0.586). Two sentences about a client and a screen sit
 /// at the same distance from the corpus whether they concern a payment
-/// or a fault. So the model decides, per
-/// `[[feedback-no-hardcoded-gates-llm-decides]]`, and it costs nothing:
-/// the classifier already runs and already returns JSON.
+/// or a fault. So the model decides, and it costs nothing: the classifier
+/// already runs and already returns JSON.
 ///
 /// `floor` stays as a cheap backstop under that judgement — an unrelated
 /// turn scores far below it — not as the discriminator.

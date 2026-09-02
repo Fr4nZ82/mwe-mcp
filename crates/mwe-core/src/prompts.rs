@@ -260,6 +260,11 @@ pub const BUNDLED: &[(&str, &str)] = &[
         "rem-page-grouping",
         crate::rem::BUNDLED_REM_PAGE_GROUPING_MD,
     ),
+    ("rem-rails", crate::rem::BUNDLED_REM_RAILS_MD),
+    (
+        "rem-topic-merge",
+        crate::topic_rank::BUNDLED_REM_TOPIC_MERGE_MD,
+    ),
     (
         "document-classify",
         crate::document::BUNDLED_DOCUMENT_CLASSIFY_MD,
@@ -357,6 +362,8 @@ pub const PROSE_REGISTRY: &[(&str, PromptOutput)] = &[
     ("rem-recall-repair", PromptOutput::Internal),
     ("rem-merge", PromptOutput::Internal),
     ("rem-structure", PromptOutput::Internal),
+    ("rem-rails", PromptOutput::Internal),
+    ("rem-topic-merge", PromptOutput::Internal),
 ];
 
 /// The placeholder a [`PromptOutput::Prose`] prompt must carry.

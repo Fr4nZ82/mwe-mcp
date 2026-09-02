@@ -18,7 +18,10 @@ REM. Loaded via
   `recall_misses` row (the judge-free restated-known-fact signal — the
   user re-said something memory already held and that turn's recall did
   not surface it). The miss detection is deterministic; this prompt only
-  proposes the repair ([[feedback-no-hardcoded-gates-llm-decides]]).
+  proposes the repair.
+- **Cap**: `RemPolicy::recall_repair_cap` (default 3) — `recall_log::pending_misses`
+  fetches at most that many rows per cycle, so a night proposes at most that
+  many repairs and the rest wait for the next one.
 - **The proposal is NOT the decision.** Every `move` verdict is replayed
   through the gold-set gate (`crate::recall_gate`) on a scratch copy:
   it commits only if the missed fact actually becomes reachable for the

@@ -438,10 +438,9 @@ pub async fn buffer_capture_with_source(
         // copied into fact_index by promote_one (dream_light.rs).
         valid_from,
         valid_to,
-        // How the claim should READ (never where it goes):
-        // `page` field above); `style`/`page_description` are now staged
-        // alongside it so promote_one copies the whole placement onto the fact
-        // and the light cadence can settle it without re-running the Cartografo.
+        // How the claim should READ, never where it goes. Staged on the buffer
+        // so promote_one copies it onto the fact and the light cadence can
+        // settle the page's register without re-running the Cartografo.
         style,
         // Per-fact salience, staged on the buffer so promote_one copies it onto
         // the fact.

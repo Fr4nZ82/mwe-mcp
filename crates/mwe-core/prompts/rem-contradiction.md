@@ -21,7 +21,8 @@ The confirmation prompt for the REM **contradiction sweep** sub-job
 - **Placeholders**: `{contradicted_text}` (the seed — the fact that just
   fell), `{successor_text}` (what replaced it, or `(none)` for a pure
   closure), `{candidates}` (numbered open items:
-  `fact_id · began · text` — the instant each began being true),
+  `fact_id · began · text`, the claim whole rather than previewed — the instant
+  each began being true),
   `{subject_note}` — empty for an ordinary family; on an **agent's own**
   family (the scope root carries the `is_agent` marker) it fences the
   satellites to the same relationship thread as the seed. Resolved per

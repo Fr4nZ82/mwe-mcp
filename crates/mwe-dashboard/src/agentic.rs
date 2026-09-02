@@ -568,8 +568,9 @@ fn move_fact_tool_descriptors() -> Vec<Tool> {
         name: AgenticTool::WikiMoveFact.name().to_owned(),
         description: "Move ONE fact to a different page of the same wiki, or into \
             another wiki, following the operator's instruction (e.g. 'sposta \
-            questo fatto su salute'). Cross-wiki lands on the destination wiki's \
-            main page; the destination wiki reorganises it. Act-first and final. \
+            questo fatto su salute'). A cross-wiki move names the destination wiki \
+            AND the page the fact lands on — there is no per-wiki inbox to drop it \
+            in. Act-first and final. \
             WRITE TOOL — call this only after the operator has \
             explicitly confirmed in the current turn both which fact (by fact_id \
             surfaced from `wiki_recall` / `wiki_facts_for`) and where it should go. \

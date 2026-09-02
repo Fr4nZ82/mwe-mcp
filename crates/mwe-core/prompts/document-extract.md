@@ -1,7 +1,7 @@
 ---
 name: document-extract
 description: document-ingest map phase — extracts atomic facts from one segment, each with its subject (subject_id) and audience (allow_ids) decided under the ingest rules; the {selectivity} placeholder switches the dossier posture (only what transcends the document) vs the dissolve posture (everything worth remembering)
-version: 1.9
+version: 1.10
 default_version_at_bootstrap: v1.6
 ---
 
@@ -20,7 +20,10 @@ The system prompt for the document-ingest **extraction (map)** phase
   `max_tokens 8192`.
 - **Placeholders**: `{selectivity}` — substituted in code from the job's
   disposition (`dossier` → transcend-only; `dissolve` → everything worth
-  remembering). The two instruction constants live next to the call site.
+  remembering); the two instruction constants live next to the call site.
+  `{max_facts}` — `DocumentPolicy::max_facts_per_segment`, rendered rather than
+  written into the body so the number the model is given and the number the
+  loop enforces are one value.
 - **Input** (assembled in code): `document_title`, `document_summary`,
   `current_time` (the segment's instant, else the document's clock —
   relative dates resolve against it), `sender_id`, the `known_users`
@@ -32,19 +35,21 @@ The system prompt for the document-ingest **extraction (map)** phase
   the `available_wikis` window (each with the wiki's `scope` prose), and the
   `segment` text. The same assembly `ingest`'s `build_prompt` uses.
 - **Output**: one strict JSON object `{"facts": [...]}` (Rust binding
-  `CandidateFact`); unknown `target_wiki_id` values are re-routed to the
-  job's anchor wiki in code; the per-segment fact cap is a code-side
-  resource cap.
-- Design narrative:
-  document ingest.
+  `CandidateFact`). In code: an unknown `target_wiki_id` is re-routed to the
+  job's anchor wiki, a fact with no body is skipped, everything past
+  `{max_facts}` is dropped, a `target_page` naming a reserved page leaves the
+  claim for the queue to place, and `topics` is cut to the two words every
+  fact carries (`ingest::normalize_fact_topics`).
 
 **`{locale}`** — substituted before the prompt reaches the model with the
-single-line `LANGUAGE` directive from
-`mwe_core::locale::memory_directive_for_user`: the person who submitted
-the document names the language, which is why a foreign-language
-document still lands in memory in the reader's own language. This slot **writes memory** rather than
-answering a live turn, so an undeclared locale resolves to **English**
-— not to the "mirror the user's message" clause the conversational
+single-line `LANGUAGE` directive `crate::locale::render_memory_language_directive`
+builds from the job's **subject principal** (`enrollment::locale_for_principal`
+— a user's own declared locale, or the one every member of a group declared).
+`document::process_job` resolves it once and hands the same directive to all
+three document slots, which is why a foreign-language document still lands in
+memory in the language of the person it is about. This slot **writes memory**
+rather than answering a live turn, so an undeclared locale resolves to
+**English** — not to the "mirror the user's message" clause the conversational
 slots fall back to.
 
 ```text
@@ -70,7 +75,7 @@ EACH FACT:
 - "topics": EXACTLY TWO lower-case words, in this order: the macrotopic (what a reader would file the fact under) then the microtopic (the particular thing inside it that makes this fact not its neighbour). ["salute", "creatinina"]. They are for COUNTING — a word earns its place by coming back — so reach for the ordinary word the subject is usually called by rather than minting a synonym for this one document. They are NOT parent and child: the same word is a macrotopic on one fact and a microtopic on the next, decided by how many facts hang off it. Neither is a person and neither is a named object — those are "subject_id" and "subject_external". Anything past the second word is dropped.
 - "valid_from"/"valid_to": ISO-8601 validity interval when the fact is time-bound (a commitment's window, a stay, an appointment); omit both for open-ended knowledge.
 - "salience": high | normal | low — high only for facts the memory must surface in every interaction.
-- "style"/"page_description": only when target_page would be a NEW page. "style" is "prosa" | "prosa-tecnica" | "lista" — the page's writing register (any other value is coerced to "prosa"); "page_description" is a one-line description of what belongs on that page. It is the page's CARD: the recall navigator is shown this line and nothing else when it decides whether to open the page, and for a page no link points at it is the only thing that can bring a reader there. Describe the page's TOPIC in the words someone would use to look for it — never just a restatement of this one fact.
+- "style": only when target_page would be a NEW page — "prosa" | "prosa-tecnica" | "lista", the page's writing register (any other value is coerced to "prosa").
 
 RULES:
 - Facts must come from the segment, never invented, never from your general knowledge.
@@ -78,6 +83,7 @@ RULES:
 - A claim NEVER carries a source citation or a [[wikilink]]: no "(from the meeting)", no "([[wiki/page]])" suffix. The engine records provenance separately — your body is pure prose about the world.
 - Do not extract the same claim twice; near-duplicates within the segment collapse into the best phrasing.
 - People mentioned in the document are knowledge: write facts ABOUT them, attributed naturally in prose ("Gimli offers to book the trip").
+- At most {max_facts} facts from this segment. The engine keeps the first {max_facts} and drops the rest, so when the segment holds more, name the ones worth remembering rather than working through it in order.
 - An empty array is a valid answer.
 
 Reply with ONE JSON object only:

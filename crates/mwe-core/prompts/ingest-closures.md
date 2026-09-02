@@ -16,7 +16,15 @@ The system prompt for the ingest **closure confirmer**
 - **Call site**: `crate::ingest::confirm_topic_closures`, at most ONE call per
   ingest turn, and only when the classifier returned a non-empty
   `closure_topics` (a closure gesture whose targets it could not see in the
-  turn's `recalled_memory`). The orchestrator re-recalls each topic as its own
+  turn's `recalled_memory`).
+- **Which turns those are**: none, with the bundled classifier. `ingest.md`
+  asks for no `closure_topics` — judging a stored fact's fate belongs to the
+  reconciliation stage (`ingest-reconcile.md`), which is shown its candidate
+  set complete instead of the classifier's ten-hit sample. So this prompt is
+  reached only on a deployment whose operator override of
+  `<workdir>/prompts/ingest.md` emits the field, and the path stays wired for
+  exactly that. Everything below describes such a turn.
+- On one, the orchestrator re-recalls each topic as its own
   focused query — the whole-message embedding is what washed the topic out
   (dogfood re-run 2026-06-11: "forget the greenhouse…" ranked a dozen shopping
   items above the greenhouse facts) — and shows the candidate union to this

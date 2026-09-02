@@ -1,7 +1,7 @@
 ---
 name: rem-structure
 description: REM structural review — shown the whole forest from above (every standard wiki, its pages, each page's card and the principal its facts are mostly about), name the pages that sit in the wrong wiki and where each belongs; strict JSON out; act-first page re-home, revertible
-version: 1.0
+version: 1.1
 default_version_at_bootstrap: v1.0
 ---
 
@@ -20,7 +20,10 @@ The judgment prompt for the REM **structural review** sub-job
   other sub-job and it is the only one asked to weigh a whole forest.
 - **Placeholders**: `{forest}` (every standard wiki with its pages — the
   inventory below), `{dropped}` (what the cap left out, named so the model
-  knows its view is partial). **No locale directive**: the answer is a page
+  knows its view is partial), `{cap}` (`RemPolicy::structure_review_cap`, the
+  number of moves the applier will take — rendered rather than written into the
+  body so the sentence the model reads and the number the code enforces are one
+  value). **No locale directive**: the answer is a page
   address, a wiki id and one short sentence that never leaves the receipt —
   internal by the `PromptOutput` rule, exactly like its sibling `rem-refile`.
 - **Runtime parameters**: temperature 0.1, max_tokens 900.
@@ -56,7 +59,7 @@ RULES:
 - A page moves WHOLE or not at all. You cannot split it here; if only part of a page belongs elsewhere, leave the page alone and say nothing — the pass that moves facts will get to it.
 - `to_wiki` must be a wiki_id copied EXACTLY from the inventory. Never invent one, never name a smart wiki (they are not in the list), never name the wiki the page is already in.
 - `reason` is one short sentence saying what the page is about and whose wiki that makes it. It is kept on the receipt and read by a person deciding whether to undo the move — "misplaced" tells them nothing.
-- Name at most 5 moves. If more look wrong, take the 5 you are surest of; the next cycle sees the rest.
+- Name at most {cap} moves. If more look wrong, take the {cap} you are surest of; the next cycle sees the rest.
 
 {dropped}
 

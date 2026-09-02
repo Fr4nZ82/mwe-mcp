@@ -913,8 +913,11 @@ fn page_wiki_relative(handle: &WikiHandle, source_path: &str) -> String {
 /// **owner** (`owner` is the page's resolved scope principal):
 ///
 /// - **other wikis** that owner can write — every **non-smart** wiki whose
-///   resolved scope principal equals `owner`, except the source wiki itself
-///   (cross-wiki moves, which must name their destination page);
+///   resolved scope principal equals `owner`, except the source wiki itself —
+///   each with **the pages it already holds**, because a cross-wiki move names
+///   a wiki *and* one of its pages (see [`RawOp::dest_page`], and [`apply_move`]
+///   which refuses a dest wiki with no page). A wiki with no page yet is shown
+///   as such: it has nothing a fact can land on;
 /// - **this wiki's other pages** (same-wiki page moves), the source page
 ///   excluded.
 ///
@@ -942,7 +945,25 @@ fn describe_destinations(
                 .resolve_scope_principal(&d.meta)
                 .is_ok_and(|p| &p == owner)
             {
-                wikis.push(format!("{} · {}", d.meta.wiki_id.as_str(), d.meta.title));
+                let pages = crate::wiki::list_wiki_pages(&d.abs_dir).map_or_else(
+                    |_| Vec::new(),
+                    |infos| {
+                        infos
+                            .iter()
+                            .map(|p| p.rel_path.to_string_lossy().replace('\\', "/"))
+                            .collect::<Vec<_>>()
+                    },
+                );
+                let pages = if pages.is_empty() {
+                    "(none yet — this wiki cannot take a fact until it has a page)".to_owned()
+                } else {
+                    pages.join(", ")
+                };
+                wikis.push(format!(
+                    "{} · {}\n    pages: {pages}",
+                    d.meta.wiki_id.as_str(),
+                    d.meta.title
+                ));
             }
         }
     }
@@ -973,7 +994,7 @@ fn describe_destinations(
         pages.join("\n")
     };
     format!(
-        "OTHER WIKIS (move the fact into one of these — it will land on that wiki's main page):\n{wikis_block}\n\nOTHER PAGES OF THIS WIKI (move the fact to one of these pages):\n{pages_block}"
+        "OTHER WIKIS (a move into one of these names the wiki AND one of the pages listed under it):\n{wikis_block}\n\nOTHER PAGES OF THIS WIKI (move the fact to one of these pages):\n{pages_block}"
     )
 }
 

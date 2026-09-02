@@ -1,7 +1,7 @@
 ---
 name: conciliatore
 description: planner stage 1.5 — folds semantically-duplicate proposed concept pages into existing ones (dedup with redirect bias)
-version: 1.11
+version: 1.12
 default_version_at_bootstrap: v1.8
 ---
 
@@ -47,7 +47,9 @@ The system prompt for the **Conciliatore** (planner stage 1.5,
   - an accepted page whose slug is a reserved name (`profile`, `rules`,
     `projects`, `project_diary`, `projects_diary`, or anything starting with
     `@`) is **dropped** — it would compile onto a file the engine owns;
-  - an accepted page of any type other than `concept_leaf` is filed as one.
+  - an accepted page's `slug` is slugified again on the way in — the model
+    re-emits it while it decides the merges, so `Sport & Leisure` and
+    `sport_leisure` cannot come back as two pages.
 
   A dropped redirect is not a lost page: the proposal stays its own page and the
   next cycle can still merge it correctly.
@@ -78,7 +80,7 @@ RULES:
 - REDIRECT BIAS: when in doubt, prefer the redirect (consolidation). Fewer well-populated pages beat many scattered ones.
 - EXISTING PAGES spans the whole memory; a page in another wiki says `wiki: <id>`. Redirecting onto one is allowed and is sometimes the point — a duplicate is a duplicate wherever it sits, and who may read a fact does not depend on the page holding it. Between two equally good targets prefer the one in the proposal's own wiki, which is the wiki of the pages listed first.
 - A redirect target MUST be one of the pages under EXISTING PAGES, or a page you are keeping in "accepted_new" this same run. A name you invent is not a destination: such a redirect is discarded and the proposed page stays separate, so you lose the very consolidation you were after.
-- NEVER redirect onto a person's identity card, nor onto a wiki's notes page. They are not topics: a card holds who someone is, and the notes page is where a fact waits until it has a home. They are not listed above, and naming one anyway is discarded.
+- NEVER redirect onto a person's identity card. It is not a topic: a card holds who someone is. It is not listed above, and naming one anyway is discarded.
 
 OUTPUT — one strict JSON object, no prose around it:
 {

@@ -1,7 +1,7 @@
 ---
 name: comment-apply
 description: turns parked dashboard comments on a narrative page into precise fact ops (correct / remove / add / move) over that page's facts; an `add` carries its own subject_id/allow_ids decided under the ingest rules (subject + audience from the comment, the page's wiki scope, and the commenter's group scopes)
-version: 1.5
+version: 1.6
 default_version_at_bootstrap: v1.5
 ---
 
@@ -25,8 +25,9 @@ an operator override at `<workdir>/prompts/comment-apply.md` wins.
   page, numbered), `{scope}` (the commenter's id, this page's wiki `scope` prose,
   and the commenter's group scopes — the audience signals an `add`'s
   `subject_id`/`allow_ids` are decided from, mirroring `ingest`'s assembly),
-  `{destinations}` (the wikis + pages a `move` op may target —
-  the other non-smart wikis of the source wiki's owner, and this wiki's other pages).
+  `{destinations}` (the wikis + pages a `move` op may target — the other
+  non-smart wikis of the source wiki's owner, **each followed by the pages it
+  already holds**, and this wiki's other pages).
 - **Output**: one strict JSON object — `{ "ops": [...] }` — parsed into
   `crate::comment_apply::InterpretedOps`. Each op is `correct` (with `fact_id`
   + full `text`), `remove` (with `fact_id`), `add` (with `text` + its own
@@ -63,7 +64,7 @@ RULES:
   - "subject_id": WHO the new fact is ABOUT — the subject, NOT who may read it. "user:<commenter>" (the comment's author, shown in CONTEXT below) is the DEFAULT; "user:<X>" for a different named person the comment is about; "group:<id>" ONLY when the subject is the collective itself; "global" for a world fact. The subject stays the subject even when the fact is shared.
   - "allow_ids": WHO may read it — independent of subject_id. The fact is ALWAYS readable by its subject and the commenter, so [] (the DEFAULT) means exactly "only them". Widen it from the CONTEXT scopes below and the comment's own cues, the more specific overriding the more general: a group whose scope names the kind of thing the fact is → add that "group:<id>", matching on meaning rather than on shared wording, and never withholding the group because the fact strikes you as too private — that call belongs to the commenter's cue, below, not to you; the page's wiki scope (the category's audience); an explicit cue in the comment — public → add "global", private/"just us" → []. allow_ids only ever WIDENS reading, and naming a group does not make the fact public — it makes it private to that group; only "global" opens it to everyone.
 - A comment saying a fact BELONGS SOMEWHERE ELSE → "move" that fact (e.g. "this would be better on the health wiki", "this is really about work", "move this to the contacts page"). Choose the destination ONLY from the DESTINATIONS list:
-  - to move it into ANOTHER WIKI: set "dest_wiki_id" to that wiki's id (leave "dest_page" null — a cross-wiki move always lands on the destination wiki's main page, which then re-files it itself).
+  - to move it into ANOTHER WIKI: set "dest_wiki_id" to that wiki's id AND "dest_page" to one of the pages listed under it, copied character for character. A page is where a fact lands, so a cross-wiki move without one is refused; a wiki whose pages line says "(none yet)" has nowhere for the fact to go — do not name it.
   - to move it to ANOTHER PAGE of this same wiki: leave "dest_wiki_id" null and set "dest_page" to that page.
   - Never invent a wiki or page that is not in the list. If no destination fits, do not move — leave the fact where it is.
 - A comment that is praise, a question, chit-chat, or otherwise not actionable produces NO op. Do not force an edit.
@@ -75,7 +76,7 @@ OUTPUT — one strict JSON object, no prose around it:
     { "action": "correct", "fact_id": "<id from the list>", "text": "<full corrected claim>" },
     { "action": "remove",  "fact_id": "<id from the list>" },
     { "action": "add",     "text": "<new claim>", "subject_id": "user:<commenter>", "allow_ids": [] },
-    { "action": "move",    "fact_id": "<id from the list>", "dest_wiki_id": "<wiki id from DESTINATIONS | null = this wiki>", "dest_page": "<page from DESTINATIONS | null>" }
+    { "action": "move",    "fact_id": "<id from the list>", "dest_wiki_id": "<wiki id from DESTINATIONS | null = this wiki>", "dest_page": "<page from DESTINATIONS, under that wiki>" }
   ]
 }
 

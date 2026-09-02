@@ -43,11 +43,13 @@
 //! every user is what an existing deployment does to keep its pages
 //! in their own language.
 //!
-//! [`memory_directive_for_wiki`] and [`memory_directive_for_user`] are
-//! the two ways a memory-writing slot gets there — a compiled page
-//! belongs to a wiki, an ingested document belongs to whoever
-//! uploaded it. Both are best-effort: any lookup failure logs and
-//! degrades to the English fallback rather than failing the job.
+//! [`memory_directive_for_wiki`] is how a memory-writing slot gets
+//! there when it is compiling a page — the wiki's scope principal names
+//! the language. A slot with no wiki in hand resolves the principal
+//! itself and calls [`render_memory_language_directive`]: document
+//! ingest does that once per job, from the job's subject. Both are
+//! best-effort — any lookup failure logs and degrades to the English
+//! fallback rather than failing the job.
 
 /// Render the body the prompt's `{locale}` placeholder is replaced with.
 ///
@@ -163,28 +165,6 @@ pub async fn memory_directive_for_wiki_meta(
                 wiki_id = %meta.wiki_id,
                 error = %e,
                 "locale: principal locale lookup failed, falling back to English"
-            );
-            None
-        },
-    };
-    render_memory_language_directive(resolved.as_deref())
-}
-
-/// Resolve `user_id`'s declared language and render it as the
-/// `{locale}` directive for a memory-writing slot.
-///
-/// The document-ingest slots use this: a document has no wiki until
-/// the classify phase has decided one, but it always has the person
-/// who submitted it. Best-effort, same as
-/// [`memory_directive_for_wiki`].
-pub async fn memory_directive_for_user(pool: &sqlx::SqlitePool, user_id: &str) -> String {
-    let resolved = match crate::enrollment::locale_for(pool, user_id).await {
-        Ok(loc) => loc,
-        Err(e) => {
-            tracing::warn!(
-                user_id,
-                error = %e,
-                "locale: user locale lookup failed, falling back to English"
             );
             None
         },

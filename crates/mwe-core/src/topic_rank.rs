@@ -28,6 +28,7 @@
 //! macrotopic non "contiene" microtopics raggruppati»*). So this module ranks
 //! **words**, not levels: it reads both slots of every fact into one count.
 
+use std::path::Path;
 use std::sync::Arc;
 
 use sqlx::Row;
@@ -205,25 +206,30 @@ pub struct TopicMergeReport {
     pub errors: Vec<String>,
 }
 
-const MERGE_SYSTEM: &str =
-    "You are shown two words used to tag facts in one household's memory, with how
-many facts carry each. Say whether they NAME THE SAME THING.
+/// Bundled default for the word-merge confirmer's system prompt.
+///
+/// Operator override: `<workdir>/prompts/rem-topic-merge.md`.
+pub const BUNDLED_REM_TOPIC_MERGE_MD: &str = include_str!("../prompts/rem-topic-merge.md");
 
-Yes only when one is a spelling, an inflection or a wordier form of the other,
-so that a reader would never choose between them on purpose: `pressione` and
-`pressione arteriosa`, `finanziamento` and `finanziamento auto`, `nutrizione`
-and `alimentazione`.
-
-No when they are two different things that happen to live in the same subject.
-`nutrizione` and `idratazione` are both about food and drink and are NOT the
-same word. `prezzo` and `garanzia` are both about buying a car. Merging those
-loses the distinction the narrower word exists to make, and nothing gives it
-back.
-
-When you are unsure, answer no. A duplicate left standing costs one wasted
-word; a wrong merge costs a distinction, silently, forever.
-
-Answer with JSON and nothing else: {\"same\": true|false}";
+/// Every pair of words near enough to be worth asking about, richest first.
+///
+/// Nomination only: the threshold decides who gets ASKED, never what the answer
+/// is. The order is what a capped night spends its calls on — the pair that
+/// would move the most facts (the smaller of the two counts is what a merge
+/// actually moves) is worth the first call.
+fn nominate_pairs(words: &[WordCount], vectors: &[Vec<f32>]) -> Vec<(usize, usize, f32)> {
+    let mut pairs: Vec<(usize, usize, f32)> = Vec::new();
+    for i in 0..words.len() {
+        for j in (i + 1)..words.len() {
+            let near = crate::recall::cosine_similarity(&vectors[i], &vectors[j]);
+            if near >= MERGE_THRESHOLD {
+                pairs.push((i, j, near));
+            }
+        }
+    }
+    pairs.sort_by_key(|(i, j, _)| std::cmp::Reverse(words[*i].facts.min(words[*j].facts)));
+    pairs
+}
 
 /// Merges the vocabulary's near-duplicates: the vector proposes the pairs,
 /// the model decides, and the loser's facts are rewritten to the winner.
@@ -239,6 +245,7 @@ Answer with JSON and nothing else: {\"same\": true|false}";
 /// a night, on words, and touches no turn.
 pub async fn merge_near_duplicates(
     pool: &SqlitePool,
+    workdir: &Path,
     embedder: &Arc<dyn Embedder>,
     llm: &dyn LlmBackend,
     cap: usize,
@@ -265,18 +272,21 @@ pub async fn merge_near_duplicates(
         }
     }
 
-    // Every pair above the threshold, richest first: the pair that would move
-    // the most facts is the one worth the night's first call.
-    let mut pairs: Vec<(usize, usize, f32)> = Vec::new();
-    for i in 0..words.len() {
-        for j in (i + 1)..words.len() {
-            let near = crate::recall::cosine_similarity(&vectors[i], &vectors[j]);
-            if near >= MERGE_THRESHOLD {
-                pairs.push((i, j, near));
-            }
-        }
-    }
-    pairs.sort_by_key(|(i, j, _)| std::cmp::Reverse(words[*i].facts.min(words[*j].facts)));
+    let pairs = nominate_pairs(&words, &vectors);
+
+    // One load for the night: the system half is the same text on every pair,
+    // and an operator override at `<workdir>/prompts/rem-topic-merge.md` wins
+    // over the bundled body. A prompt that cannot be read is a sweep that
+    // cannot run — reported, like the embedder failure above, and left for
+    // tomorrow.
+    let system =
+        match crate::prompts::render("rem-topic-merge", workdir, BUNDLED_REM_TOPIC_MERGE_MD, &[]) {
+            Ok(s) => s,
+            Err(e) => {
+                report.errors.push(format!("merge: prompt unreadable: {e}"));
+                return Ok(report);
+            },
+        };
 
     // A word already merged away this night must not be argued about again:
     // its facts have moved and its count is stale.
@@ -301,7 +311,7 @@ pub async fn merge_near_duplicates(
         );
         let request = CompletionRequest {
             prompt,
-            system: Some(MERGE_SYSTEM.to_string()),
+            system: Some(system.clone()),
             max_tokens: Some(60),
             temperature: Some(0.0),
             stop: Vec::new(),
@@ -566,7 +576,8 @@ mod tests {
         let embedder: Arc<dyn Embedder> =
             Arc::new(FakeEmbedder::with_fixed_embedding("fake", vec![1.0, 0.0]));
         let llm = FakeLlmBackend::new("fake", r#"{"same": true}"#);
-        let report = merge_near_duplicates(&pool, &embedder, &llm, 1)
+        let dir = tempfile::tempdir().unwrap();
+        let report = merge_near_duplicates(&pool, dir.path(), &embedder, &llm, 1)
             .await
             .unwrap();
 
@@ -601,7 +612,8 @@ mod tests {
         let embedder: Arc<dyn Embedder> =
             Arc::new(FakeEmbedder::with_fixed_embedding("fake", vec![1.0, 0.0]));
         let llm = FakeLlmBackend::new("fake", r#"{"same": false}"#);
-        let report = merge_near_duplicates(&pool, &embedder, &llm, 4)
+        let dir = tempfile::tempdir().unwrap();
+        let report = merge_near_duplicates(&pool, dir.path(), &embedder, &llm, 4)
             .await
             .unwrap();
 
@@ -628,7 +640,8 @@ mod tests {
         let embedder: Arc<dyn Embedder> =
             Arc::new(FakeEmbedder::with_fixed_embedding("fake", vec![1.0, 0.0]));
         let llm = FakeLlmBackend::new("fake", r#"{"same": false}"#);
-        let report = merge_near_duplicates(&pool, &embedder, &llm, 2)
+        let dir = tempfile::tempdir().unwrap();
+        let report = merge_near_duplicates(&pool, dir.path(), &embedder, &llm, 2)
             .await
             .unwrap();
         assert_eq!(report.examined, 2, "{report:?}");
@@ -641,7 +654,8 @@ mod tests {
         fact(&pool, "01", &["salute"]).await;
         let embedder: Arc<dyn Embedder> = Arc::new(FakeEmbedder::new("fake", 4));
         let llm = FakeLlmBackend::new("fake", r#"{"same": true}"#);
-        let report = merge_near_duplicates(&pool, &embedder, &llm, 4)
+        let dir = tempfile::tempdir().unwrap();
+        let report = merge_near_duplicates(&pool, dir.path(), &embedder, &llm, 4)
             .await
             .unwrap();
         assert_eq!(report.examined, 0);

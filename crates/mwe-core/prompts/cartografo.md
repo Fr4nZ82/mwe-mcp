@@ -38,7 +38,8 @@ an operator override at `<workdir>/prompts/cartografo.md` wins.
   collision guard, and nothing else now that the pages themselves are
   offered), `{facts}` (the batch's facts:
   `[id:<uuid>] "<text>" type=<fact_type> subject=<principal>
-  identity_pages=<slugs|any|none>`, plus ` SPENT=<why>` on a fact whose
+  identity_pages=<slugs|any|none>`, plus ` external=<name>` on a fact about
+  somebody or something that is not a principal, plus ` SPENT=<why>` on a fact whose
   claim has stopped holding — the engine closed it, or its horizon is behind
   `CartografoSignals::now`). Every page line carries a `facts: N`
   fact-mass count and every fact line an `identity_pages=` scope tag: the structural

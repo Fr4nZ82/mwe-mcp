@@ -1232,9 +1232,10 @@ pub struct ClassifyInput<'a> {
     pub subject: &'a Principal,
     /// The rendered `LANGUAGE` directive for the `{locale}` placeholder:
     /// the title and summary this phase coins are memory a person reads,
-    /// so they follow the submitter's declared language rather than the
-    /// document's own. Built by
-    /// [`crate::locale::memory_directive_for_user`].
+    /// so they follow the declared language of the job's subject rather than
+    /// the document's own. Built once per job by the job processor, from
+    /// [`crate::enrollment::locale_for_principal`] +
+    /// [`crate::locale::render_memory_language_directive`].
     pub language_directive: &'a str,
 }
 
@@ -1469,13 +1470,7 @@ pub async fn classify_document(
         },
     };
 
-    // Page slug: the proposal (normalized through the same safety funnel
-    // as ingest), else a code-side slug of the title.
-    let fallback = crate::slug::derive_slug(&title).map_or_else(
-        |_| PathBuf::from("documento.md"),
-        |s| PathBuf::from(format!("{s}.md")),
-    );
-    let page = normalize_capture_page(plan.page_slug.as_deref()).unwrap_or(fallback);
+    let page = document_page_name(plan.page_slug.as_deref(), &title);
 
     let summary = plan
         .summary
@@ -1495,6 +1490,33 @@ pub async fn classify_document(
     })
 }
 
+/// The document page's own file name: the model's proposal when it is usable,
+/// else a slug of the title.
+///
+/// The proposal goes through the same funnel as the live capture path
+/// (`normalize_capture_page`) and is held to the same reserved list: the
+/// document page is a page like any other, and a proposal called `profile`
+/// would put the job's anchor on a file the engine owns. A refused name falls
+/// back to the title's slug, which is a page nobody else claims.
+fn document_page_name(proposed: Option<&str>, title: &str) -> PathBuf {
+    let fallback = crate::slug::derive_slug(title).map_or_else(
+        |_| PathBuf::from("documento.md"),
+        |s| PathBuf::from(format!("{s}.md")),
+    );
+    normalize_capture_page(proposed)
+        .filter(|coined| {
+            let ok = !crate::wiki::names_reserved_page(coined);
+            if !ok {
+                tracing::warn!(
+                    page = %coined.display(),
+                    "document: classify named a reserved page — using the title slug"
+                );
+            }
+            ok
+        })
+        .unwrap_or(fallback)
+}
+
 // ---------- Extraction (map) ----------
 
 /// One candidate fact the map phase extracted — the reduce input and the
@@ -1502,6 +1524,13 @@ pub async fn classify_document(
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct CandidateFact {
     /// Atomic prose claim.
+    ///
+    /// Defaulted rather than required: the whole reply is parsed in one go
+    /// (`parse_first_json(…).unwrap_or_default()`), so a single fact that came
+    /// back without a body would otherwise void every other fact of the
+    /// segment. Empty is skipped by the extraction loop, which is the cost
+    /// this field should have.
+    #[serde(default)]
     pub body: String,
     /// Routing target (validated against the standard-wiki window).
     #[serde(default)]
@@ -1546,9 +1575,6 @@ pub struct CandidateFact {
     /// Testata seed for a fresh page.
     #[serde(default)]
     pub style: Option<String>,
-    /// Testata seed for a fresh page.
-    #[serde(default)]
-    pub page_description: Option<String>,
 }
 
 #[derive(Debug, Default, Deserialize)]
@@ -1596,11 +1622,19 @@ async fn extract_segment(
         Disposition::Dissolve => SELECTIVITY_DISSOLVE,
         Disposition::Consult => return Ok(Vec::new()),
     };
+    // The loop below keeps the first `max_facts_per_segment` and drops the
+    // rest, so the model is told the number instead of discovering it by
+    // having its tail thrown away.
+    let max_facts = policy.max_facts_per_segment.to_string();
     let system = prompts::render(
         "document-extract",
         workdir,
         BUNDLED_DOCUMENT_EXTRACT_MD,
-        &[("selectivity", selectivity), ("locale", language_directive)],
+        &[
+            ("selectivity", selectivity),
+            ("locale", language_directive),
+            ("max_facts", max_facts.as_str()),
+        ],
     )?;
     let current_time = seg_occurred_at
         .or(job.occurred_at.as_deref())
@@ -1811,7 +1845,6 @@ async fn reduce_candidates(
                 m.valid_to.clone_from(&first.valid_to);
                 m.salience.clone_from(&first.salience);
                 m.style.clone_from(&first.style);
-                m.page_description.clone_from(&first.page_description);
                 out.push(m);
             },
             _ => out.push(members[0].clone()),
@@ -2362,7 +2395,11 @@ async fn process_job(
                     allow: fact_allow,
                     sender: sender.clone(),
                     fact_type: cand.fact_type.clone(),
-                    topics: cand.topics.clone(),
+                    // The same two words the message path keeps: lowercased,
+                    // deduplicated, the engine's own bookkeeping prefixes
+                    // refused, everything past the second dropped. The prompt
+                    // tells the model that; this is what does it.
+                    topics: crate::ingest::normalize_fact_topics(&cand.topics),
                     dedup_threshold: None,
                     // Through the same door the message path uses: a bound
                     // naming a DAY becomes that day's edge, an offset becomes
@@ -3436,7 +3473,6 @@ mod tests {
             subject_id: Some("user:gimli".into()),
             allow_ids: vec!["group:team".into()],
             fact_type: Some("plan".into()),
-            page_description: Some("il viaggio in Norvegia".into()),
             topics: vec!["viaggio".into()],
             valid_from: Some("2026-06-12T00:00:00Z".into()),
             valid_to: Some("2026-06-19T00:00:00Z".into()),
@@ -3468,10 +3504,6 @@ mod tests {
         assert_eq!(m.valid_to.as_deref(), Some("2026-06-19T00:00:00Z"));
         assert_eq!(m.salience.as_deref(), Some("high"));
         assert_eq!(m.style.as_deref(), Some("lista"));
-        assert_eq!(
-            m.page_description.as_deref(),
-            Some("il viaggio in Norvegia")
-        );
         // Routing / ACL still the first member's.
         assert_eq!(m.target_wiki_id.as_deref(), Some("alice"));
         assert_eq!(m.target_page.as_deref(), Some("viaggio_norvegia.md"));

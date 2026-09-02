@@ -201,9 +201,8 @@ struct PromptRow {
     part_of: Option<(String, String)>,
 }
 
-/// Iterate over every bundled prompt this deployment ships — the
-/// `mwe-core` slice (4 entries at the time of writing) chained with
-/// the `mwe-dashboard` slice (1 entry). The loader module stays
+/// Iterate over every bundled prompt this deployment ships — the `mwe-core`
+/// slice chained with the `mwe-dashboard` one. The loader module stays
 /// unaware of which prompts live where (matches the `seed_bundled_into`
 /// invariant), so the dashboard explicitly chains both slices when it
 /// needs the full picture.

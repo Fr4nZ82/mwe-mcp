@@ -69,13 +69,14 @@ information).
 | `think:false` | implicit | Applies when the revisor slot runs on a local Qwen 3.x backend (the local-workhorse profiles reuse the already-loaded workhorse for this slot); see the REM cycle page, runtime section. |
 
 **Upstream filter** (decides when the model sees the prompt at all).
-Four **structural** gates run first, and the model never sees what they
+Three **structural** gates run first, and the model never sees what they
 refuse — a rule it could weigh is a rule that fails on the day it matters:
 
-- the two facts must sit on the same **class** of page (a channel page
-  never pairs with an ordinary one);
-- a **rules-page** fact is never a candidate — a standing directive leaves
-  the channel only by supersede, tombstone or its subject's own closure;
+- the two facts must sit on the same **class** of page. A channel page never
+  pairs with an ordinary one, so a rules-page fact pairs only with another
+  rules-page fact — and those pairs DO reach the model. What the gate refuses
+  is the mixed pair: were the rule the loser, its content would survive only
+  off `@rules.md`, outside the behaviour-rules channel;
 - the would-be loser is never **identity-core** (`bio` + `salience: high`):
   a role or a relationship is changed by an explicit correction, never
   consolidated away in the background;

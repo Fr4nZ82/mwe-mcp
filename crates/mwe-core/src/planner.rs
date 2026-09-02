@@ -3730,17 +3730,36 @@ fn describe_facts(batch: &[FactForPage], signals: &CartografoSignals) -> String 
         .iter()
         .map(|f| {
             format!(
-                "[id:{}] \"{}\" type={} subject={} identity_pages={}{}",
+                "[id:{}] \"{}\" type={} subject={} identity_pages={}{}{}",
                 f.fact_id,
                 f.text.replace('\n', " "),
                 f.fact_type.as_deref().unwrap_or("other"),
                 f.subject,
                 signals.identity_scope_tag(&f.subject),
+                external_tag(f),
                 spent_tag(f, &signals.now),
             )
         })
         .collect::<Vec<_>>()
         .join("\n")
+}
+
+/// ` external=<name>` for a fact about somebody — or something — that is not a
+/// principal, empty for the ordinary fact.
+///
+/// The prompt turns on it: such a fact never goes on an identity card, because
+/// a card carries one subject and this one is about a different one. The engine
+/// enforces that anyway (`new_page_to_plan` refuses the assignment), so what
+/// the tag buys is the model filing the fact on the right concept page in the
+/// first place instead of having its choice thrown away.
+fn external_tag(f: &FactForPage) -> String {
+    f.subject_external
+        .as_deref()
+        .map(str::trim)
+        .filter(|n| !n.is_empty())
+        .map_or_else(String::new, |n| {
+            format!(" external={}", n.replace('\n', " "))
+        })
 }
 
 /// ` SPENT=<why>` for a fact that has stopped holding, empty while it holds.

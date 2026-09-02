@@ -324,10 +324,10 @@ pub const RESERVED_PAGE_STEMS: &[&str] = &[
 /// ingest prompt makes that promise to the model, and this is what keeps
 /// it — a promise nothing enforces is a promise kept by nobody.
 ///
-/// **Every place a model names a page calls this**, and there are four: the
+/// **Every place a model names a page calls this**, and there are five: the
 /// live capture path (`ingest::validate_capture_plan`), the document
-/// extractor's per-fact target and its per-segment plan
-/// (`crate::document`), the Cartografo's coined slug
+/// classifier's page for the document itself and the document extractor's
+/// per-fact target (both `crate::document`), the Cartografo's coined slug
 /// (`planner::new_page_to_plan`), and REM's split target
 /// (`rem::run_auto_promote`). A refused name leaves the claim with **no
 /// page**, which is what waiting in the capture buffer looks like.
