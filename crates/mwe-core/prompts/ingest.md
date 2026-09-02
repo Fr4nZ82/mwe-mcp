@@ -1,7 +1,7 @@
 ---
 name: ingest
 description: Classifier driving `wiki_ingest_message` — one JSON object per turn (intent + an `extractions[]` array of atomic facts, the SOLE fact container; every fact is prose, each carrying a per-fact validity interval `valid_from`/`valid_to`, a per-fact `style` (and, for `lista` material or a requested container, a `target_page` + `page_description`), a `requested_container` live-write flag, a per-fact `salience`, and an `engine_rule` flag routing a standing governance directive to `@rules.md` instead of `fact_index`, a `behaviour_rule` flag (with a `behaviour_scope` of `per-user`/`agent-wide`/`user-global`, read from the addressee) routing a how-an-agent-converses-or-operates directive to the calling consumer's own wiki — or, user-global, to the sender's identity wiki for every assistant serving them — and an `attachments` claim list linking the turn's media to the fact that describes them); targets the strong-model tier
-version: 2.72
+version: 2.73
 default_version_at_bootstrap: v2.62
 source_of_truth: crates/mwe-core/src/ingest.rs (fn wiki_ingest_message)
 ---
@@ -14,16 +14,14 @@ embedded by `include_str!` is the floor; an override at
 `<workdir>/prompts/ingest.md` wins when present.
 
 The orchestrator drives this prompt from `wiki_ingest_message`
-(`crates/mwe-core/src/ingest.rs`); see also the
-ingest pipeline wiki page
-for the design narrative.
+(`crates/mwe-core/src/ingest.rs`), where each decision is explained in
+the doc comment beside the code that makes it.
 
 ## Runtime contract
 
 Operational specs that ship next to the prompt body so they can't
-drift from it. Code is the source of truth; the
-ingest pipeline wiki page
-keeps the design narrative.
+drift from it. Code is the source of truth: where a line here needs a
+reason, the reason is beside the function that makes the decision.
 
 **Call site**: `crates/mwe-core/src/ingest.rs::wiki_ingest_message` —
 search for `prompts::load("ingest", …)`. The user message itself is
@@ -45,7 +43,10 @@ block lives right after.
 
 **Output schema**: one strict JSON object. The turn-level fields are
 `intent`, `suggested_seed`, `needs_disambig`, `needs_project_docs`,
-`disambig_candidates`. Reconciling the turn against facts already
+`disambig_candidates`, `completed_message` (the turn's message with
+what the speaker left implicit written in) and `fact_scores` (a
+multiplier per recalled fact, saying which of them answers this turn).
+Reconciling the turn against facts already
 stored — closing, replacing, re-dating, re-sharing — is **not** emitted
 here: the engine keeps `apply_plan_closures` / `apply_plan_validity_edits`
 / `apply_plan_acl_changes` and the `LlmIngestPlan` fields that drive them,
@@ -55,13 +56,16 @@ decides against the pages actually read for the turn instead of the
 ten-fact sample this prompt is shown. Captured facts live **only** in the
 `extractions` array — one element per atomic fact, each a
 self-contained capture plan with its own
-`subject_id`, `allow_ids`, `fact_type`, the validity
+`subject_id` (or `subject_external` when what the fact is about is not a
+principal), `allow_ids`, `fact_type`, the validity
 interval `valid_from`/`valid_to`, the per-fact `style` (with
 `target_page` + `page_description` on `lista` material and on a
 requested container — Part 4's two cases), the
-`requested_container` live-write flag, the
-`engine_rule` governance flag, `topics`, `body`, and `supersede_target`
-(narrowed to `agent_behaviour_rules` — the one set the model sees whole).
+`requested_container` live-write flag, the per-fact `salience`, the
+`engine_rule` and `behaviour_rule` governance flags (the second with its
+`behaviour_scope`), `topics`, `body`, the `attachments` claim list, and
+`supersede_target` (narrowed to `agent_behaviour_rules` — the one set
+the model sees whole).
 **There are no top-level fact fields**: the
 model always emits the array (a single atomic message ⇒ a one-element
 array). The Rust binding is `LlmIngestPlan` (with `LlmExtraction`) in
@@ -86,7 +90,7 @@ the code decides *how*.
 |---|---|---|
 | `temperature` | `0.1` (call site) | Structured deterministic classification on the Ollama/Anthropic path. **On the Gemini backend this is ignored**: Gemini 3 mandates `temperature: 1.0` (sub-1 values loop/degrade) and the backend clamps to it. |
 | `max_tokens` | `4096` (call site) | A multi-fact `extractions` array with verbose per-fact objects must not be clipped on the Anthropic/Ollama path. **On the Gemini backend this is ignored**: it forces `maxOutputTokens: 65536` (combined thinking+output budget). |
-| `format:"json"` | not set (call site) | Robustness comes from `parse_plan`'s brace scanner, not a GBNF grammar constraint. The Gemini `complete()` path additionally does **not** set `responseMimeType` (`want_json=false`) — see the ingest pipeline wiki page. |
+| `format:"json"` | not set (call site) | Robustness comes from `parse_plan`'s brace scanner, not a GBNF grammar constraint. The Gemini `complete()` path additionally does **not** set `responseMimeType` (`want_json=false`). |
 | `think:false` | mandatory on Qwen 3.x; `thinkingLevel:"minimal"` on Gemini Flash | thinking-leak evidence; Gemini's combined budget would otherwise be eaten by reasoning. |
 
 **Upstream context** (assembled by `build_prompt`, bounded by policy):
@@ -98,12 +102,13 @@ resolves every relative date against, load-bearing for a dated
 commitment's resolved date), the optional `disambig_choice`
 (when the user is resolving a prior disambig), the `sender_groups`
 section (the groups the sender belongs to, each with its operator-set
-`scope` prose; cap `policy.max_groups_in_prompt`, default `8`, each
-scope truncated to `policy.max_group_scope_chars`, default `1000`) —
-this is the context the `subject_id` group-routing rule decides on
-(see the memory model wiki page),
-the `known_users` roster
-(id + aliases, cap `policy.max_users_in_prompt`, default `24`; the
+`scope` prose; shown WHOLE — `enrollment::MAX_GROUPS_PER_USER` refuses
+the ninth group where it is created, so there is nothing left to cut
+here — each scope truncated to `policy.max_group_scope_chars`, default
+`1000`) — this is the context the `subject_id` group-routing rule
+decides on, the `known_users` roster
+(id + aliases, also shown WHOLE — `enrollment::MAX_ENROLLED_USERS`
+refuses the 25th person at enrolment; the
 assistant's own entry carries `is_agent: true`) for
 cross-user attribution, the `list_pages` inventory (cap
 `policy.max_list_pages_in_prompt`, default `32`; the `lista`-style pages
@@ -602,25 +607,19 @@ These anchor the boundaries between `structural` (reshape a container), `capture
 
 ## Worked examples — who the fact is about (each a single-element `extractions` array)
 
-These anchor the `subject_id` rule above: the subject is what the fact is ABOUT, and it is what the engine files the fact by. Each maps the discriminator (whose thing is it) to a concrete extraction.
+These anchor the `subject_id` rule above: the subject is what the fact is ABOUT, and it is what the engine files the fact by. Each maps the discriminator (whose thing is it) to a concrete extraction. **The sender is always a person**: a group is something a fact can be about, never who is speaking.
 
-**Case 1 — sender is `group:<scope>` (device-channel)**
-- Input: `sender_id`: `group:family`; `current_message`: "Riccardo, remember the pasta after dinner".
-- Output: `intent`: `"capture"`, `extractions`: one element →
-  - `subject_id`: `"group:family"`, `allow_ids`: `[]`, `fact_type`: `"plan"`, `target_page`: `"promemoria.md"`, `style`: `"lista"`, `topics`: `["reminder", "pasta"]`, `body`: `"Reminder for Riccardo: pasta after dinner."`
-- Reasoning: the capture comes through a shared family device, no individual is the steward → the family owns it, and the engine files it in the family's memory. `allow_ids` is empty because it has nothing left to add: a fact is always readable by its SUBJECT, and the subject here IS the family. Empty means "nobody beyond them" — it never means the question was skipped.
-
-**Case 2 — collective list, no single steward (emergent collective entity)**
+**Case 1 — collective list, no single steward (emergent collective entity)**
 - Input: `sender_id`: `user:frodo`; `current_message`: "I am adding detergent to the shopping list"; `list_pages` includes `spesa.md` (`holds`: "what the family still needs to buy").
 - Output: `intent`: `"capture"`, `extractions`: one element →
   - `subject_id`: `"group:family"`, `allow_ids`: `[]`, `fact_type`: `"plan"`, `target_page`: `"spesa.md"`, `style`: `"lista"`, `requested_container`: `true`, `topics`: `["shopping", "detergent"]`, `body`: `"Detergent is needed."`
-- Reasoning: the sender is one user but the entity ("the family shopping list") is intrinsically collective, so the family owns it — and, being the subject, already reads it, which is why `allow_ids` adds nothing. The engine still records `sender=user:frodo`. `target_page` is copied verbatim from `list_pages` — inventing a name here would mint a second shopping list.
+- Reasoning: the sender is one user but the entity ("the family shopping list") is intrinsically collective, so the family owns it. `allow_ids` is empty because it has nothing left to add: a fact is always readable by its SUBJECT, and the subject here IS the family. Empty means "nobody beyond them" — it never means the question was skipped. The engine still records `sender=user:frodo`. `target_page` is copied verbatim from `list_pages` — inventing a name here would mint a second shopping list.
 
-**Case 3 — single steward, group reads (announcement-to-group)**
+**Case 2 — single steward, group reads (announcement-to-group)**
 - Input: `sender_id`: `user:frodo`; `current_message`: "I have organised a picnic for Saturday at 3".
 - Output: `intent`: `"capture"`, `extractions`: one element →
   - `subject_id`: `"user:frodo"`, `allow_ids`: `["group:family"]`, `fact_type`: `"plan"`, `style`: `"prosa-tecnica"`, `topics`: `["outings", "picnic"]`, `body`: `"Picnic organised for Saturday at 15:00."`
-- Reasoning: Frodo is the steward → he owns it, and the engine files it in his memory. The family is the audience, so `group:family` is widened in `allow_ids`. Contrast with case 1: same family, but the fact lands elsewhere, because its subject is a different person.
+- Reasoning: Frodo is the steward → he owns it, and the engine files it in his memory. The family is the audience, so `group:family` is widened in `allow_ids`. Contrast with case 1: same family, same sender, but the fact lands elsewhere, because what it is ABOUT is a person and not the collective.
 
 ## Worked example — one message, several facts, independent subjects
 

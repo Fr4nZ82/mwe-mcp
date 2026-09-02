@@ -559,6 +559,14 @@ pub type RecallResult<T> = std::result::Result<T, RecallError>;
 /// against the raw id). For "global" / anonymous queries pass an
 /// empty `sender_id` and an empty group list; only regions naming the
 /// builtin `global` group will pass.
+///
+/// **A sender is always a USER.** A group appears here only as membership,
+/// never in `sender_id`: the whole message path builds the reader as
+/// `Principal::User(sender_id)` — the visibility test, the rule that drops the
+/// sender from an allow list, the speaker's identity card and the guest gate
+/// all read it that way. A group id put in `sender_id` is not a group speaking,
+/// it is a user by that name who belongs to nothing, and every one of those
+/// four answers comes back wrong.
 #[derive(Debug, Clone)]
 pub struct SenderContext {
     /// Bare user id (`"alice"`, not `"user:alice"`).

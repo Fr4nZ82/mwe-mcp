@@ -817,10 +817,12 @@ pub async fn reject_if_agent(pool: &SqlitePool, user_id: &str) -> Result<(), Str
 /// How many people one memory may hold (founder, 2026-08-09).
 ///
 /// A **product** limit, not a scalability one: it is enforced by refusing the
-/// 25th enrolment rather than by cutting a list at render time. The prompt
-/// caps (`IngestPolicy::max_users_in_prompt` and friends) cannot stand in for
-/// it: they truncate alphabetically, so the person the cut hides is whoever
-/// sorts late, and their facts are then filed under the sender.
+/// 25th enrolment, and the classifier's roster is then rendered whole. Cutting
+/// the list where the prompt is built cannot stand in for this. Such a cut
+/// sorts alphabetically, so the person it hides is whoever sorts late — and a
+/// person missing from the roster does not lose their fact, it files the fact
+/// about them under the sender instead, which is a wrong answer that looks
+/// like a right one.
 pub const MAX_ENROLLED_USERS: usize = 24;
 
 /// How many groups one person may belong to (founder, 2026-08-09). Same

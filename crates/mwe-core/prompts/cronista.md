@@ -75,9 +75,9 @@ The system prompt for **Il Cronista** (compiler stage 3,
   writes — and **backfills** any fact the model failed to tag (see
   `compile_leaf_page`).
   `description` + `style` become the page's **testata**:
-  `description` is the page's **card** — the single line `reader_page_card`
-  serves the recall navigator, which never sees the page text and decides from
-  the card alone whether to open it. A page is reachable **only** by a fact
+  `description` is the page's **card** — the single line stored in
+  `page_card` and served to the recall navigator, which never sees the page
+  text and decides from the card alone whether to open it. A page is reachable **only** by a fact
   hit, a match on this line, or an inbound `[[wikilink]]` — there is no
   directory listing of neighbouring pages, so nothing offers a page merely for
   sitting in the same folder. That is why the body's DESCRIPTION
