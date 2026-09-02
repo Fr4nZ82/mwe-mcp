@@ -81,7 +81,11 @@ const CANDIDATE_WINDOW_HOURS: i64 = 48;
 
 /// Idempotence horizon for the `(kind, fact_id)` probe. A dated commitment
 /// rings once, full stop; a year is "once" with room to spare.
-const ALREADY_RUNG_DAYS: i64 = 365;
+///
+/// Read here and by [`crate::housekeeping`], which keeps `reminder_due`
+/// rows this long against the shorter retention it applies to the rest of
+/// the queue: the probe can only answer while the row is still there.
+pub(crate) const ALREADY_RUNG_DAYS: i64 = 365;
 
 /// Operator knobs for the due sweep — the runtime half of the
 /// `reminders:` config section.

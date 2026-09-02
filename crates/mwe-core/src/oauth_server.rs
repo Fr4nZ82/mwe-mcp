@@ -236,7 +236,7 @@ pub struct AuthCodeGrant {
 ///
 /// Redemption deletes the row (single-use), so only **abandoned** flows
 /// leave rows behind — purged opportunistically here on every issue (and
-/// by the boot-time [`crate::housekeeping`] sweep).
+/// by the [`crate::housekeeping`] sweep).
 pub async fn issue_auth_code(
     pool: &SqlitePool,
     grant: &AuthCodeGrant,
@@ -366,7 +366,7 @@ pub async fn issue_refresh_token(
 /// value is lost: the active row carries the same grant. Keeps rotation
 /// from accumulating one revoked row per turn (34 observed on one client
 /// before this existed); connections that go stale *without* a fresh row
-/// are the boot-time [`crate::housekeeping`] sweep's job, which preserves
+/// are the [`crate::housekeeping`] sweep's job, which preserves
 /// one binding row per connection.
 async fn prune_connection_stale(
     executor: impl sqlx::Executor<'_, Database = sqlx::Sqlite>,

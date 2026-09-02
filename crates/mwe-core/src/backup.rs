@@ -369,6 +369,41 @@ impl BackupReport {
     }
 }
 
+/// Restrict a path this module just created to its owner: `0o700` for a
+/// directory, `0o600` for a file.
+///
+/// A snapshot carries the same cleartext memory as the workdir — the
+/// markdown tree and a `VACUUM INTO` copy of `engine.db` — but it lives
+/// **outside** the workdir, so it does not inherit the workdir's own
+/// owner-only gate: it gets whatever the process umask leaves, and the
+/// service unit's `UMask=0022` leaves a world-traversable directory and a
+/// world-readable database. Per-reader ACL is enforced when the server
+/// renders a response and nowhere else (see [`crate::workdir_security`]),
+/// so the byte store's boundary has to travel with the bytes.
+///
+/// Best-effort on purpose: a destination that carries no POSIX modes is a
+/// normal backup target (a removable drive), and losing the backup would
+/// cost more than the loose mode it warns about.
+#[cfg(unix)]
+fn own_only(path: &Path, mode: u32) {
+    use std::os::unix::fs::PermissionsExt;
+
+    if let Err(error) = std::fs::set_permissions(path, std::fs::Permissions::from_mode(mode)) {
+        tracing::warn!(
+            path = %path.display(),
+            mode = format!("{mode:#o}"),
+            %error,
+            "backup: snapshot path left at the process umask — it holds cleartext memory outside \
+             the workdir, so restrict it by hand"
+        );
+    }
+}
+
+/// Non-unix: Windows carries ACLs rather than POSIX mode bits, and the
+/// snapshot inherits the destination's inherited ACEs.
+#[cfg(not(unix))]
+fn own_only(_path: &Path, _mode: u32) {}
+
 /// Take a hot workdir snapshot into `dest` (created if missing; must be
 /// empty and disjoint from the workdir). See the module docs for the
 /// two-step order and why it is safe next to a live server.
@@ -384,10 +419,14 @@ pub async fn snapshot_workdir(workdir: &Path, dest: &Path) -> Result<BackupRepor
     if !db_path.is_file() {
         return Err(BackupError::NoEngineDb(workdir.to_path_buf()));
     }
-    // Whether the destination is ours to remove should the snapshot
-    // abort — an operator-made directory is not.
+    // Whether this run made the destination: it is then ours to lock
+    // down, and ours to remove should the snapshot abort. A directory the
+    // operator prepared is neither — it keeps the mode they chose.
     let dest_was_created = !dest.exists();
     std::fs::create_dir_all(dest)?;
+    if dest_was_created {
+        own_only(dest, 0o700);
+    }
     if std::fs::read_dir(dest)?.next().is_some() {
         return Err(BackupError::DestNotEmpty(dest.to_path_buf()));
     }
@@ -425,6 +464,7 @@ async fn write_snapshot(workdir: &Path, dest: &Path, db_path: &Path) -> Result<B
     // mutate the source (no migrations, no pragma rewrites).
     let db_dest = dest.join(ENGINE_DB_FILENAME);
     vacuum_into(db_path, &db_dest).await?;
+    own_only(&db_dest, 0o600);
     let db_bytes = std::fs::metadata(&db_dest)?.len();
 
     // Step 2 — the file tree.
@@ -553,6 +593,7 @@ fn copy_tree(
         let ft = entry.file_type()?;
         if ft.is_dir() {
             std::fs::create_dir_all(&to)?;
+            own_only(&to, 0o700);
             copy_tree(&from, &to, root, false, report)?;
         } else if ft.is_file() {
             match std::fs::copy(&from, &to) {
@@ -910,5 +951,31 @@ mod tests {
         let home = tempfile::tempdir().unwrap();
         let gone = home.path().join("never-created");
         assert!(list_snapshots(&gone).unwrap().is_empty());
+    }
+
+    /// The snapshot is cleartext memory sitting outside the workdir's own
+    /// owner-only gate, so it carries its own: every directory this run
+    /// creates is `0700` and the vacuumed database `0600`, whatever the
+    /// process umask would have left.
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn snapshot_paths_are_owner_only() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let work = tempfile::tempdir().unwrap();
+        let out = tempfile::tempdir().unwrap();
+        let dest = out.path().join("snap");
+        let pool = seed_workdir(work.path()).await;
+
+        snapshot_workdir(work.path(), &dest)
+            .await
+            .expect("snapshot");
+        pool.close().await;
+
+        let mode = |p: &Path| std::fs::metadata(p).unwrap().permissions().mode() & 0o777;
+        assert_eq!(mode(&dest), 0o700, "snapshot root");
+        assert_eq!(mode(&dest.join("wikis")), 0o700, "copied directory");
+        assert_eq!(mode(&dest.join("wikis/alice")), 0o700, "nested directory");
+        assert_eq!(mode(&dest.join(ENGINE_DB_FILENAME)), 0o600, "database copy");
     }
 }

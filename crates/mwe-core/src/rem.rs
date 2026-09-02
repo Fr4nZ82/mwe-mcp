@@ -1894,13 +1894,49 @@ async fn run_auto_apply_sweep(
     })
 }
 
-// ---------- Revisor jaccard semantic sub-job ----------
+// ---------- Shared LLM-failure discipline ----------
 
-/// Consecutive dedup-confirm failures that mean the backend is down rather
-/// than one response being malformed. Below it the pair is skipped and the
-/// cycle carries on; at it the cycle aborts, because nothing downstream
-/// (promotions, page merge, the compile) would work either.
-const REVISOR_LLM_FAILURE_ABORT: usize = 5;
+/// Consecutive failed model calls that mean the backend is down rather than
+/// one reply being malformed.
+///
+/// Below it a sub-job records the failure, skips that candidate and carries
+/// on; at it it gives up, with the disposition its own call site documents.
+/// Each sub-job counts its own run and resets the count on the first
+/// success.
+const LLM_FAILURE_ABORT: usize = 5;
+
+/// Record one failed model call and say whether the run of them is long
+/// enough to give up.
+///
+/// A REM sub-job that turns a transport error into an `Err` costs the whole
+/// night: `run_cycle` propagates it and [`crate::dream::run_full`] then
+/// skips the compile and the closing pass, so the captures queued today are
+/// not drained and the retry is a day away. One flaky reply must therefore
+/// cost its candidate and nothing more — the candidate stays nominable, with
+/// no verdict memoised, and the next cycle asks again.
+///
+/// A backend that is actually down is the other case, and
+/// [`LLM_FAILURE_ABORT`] separates them. What that costs is the caller's
+/// call: the structural sub-jobs return the partial report they have built
+/// and the night continues into whatever is behind them, while the revisor
+/// takes the cycle with it and says there why.
+fn note_llm_failure(errors: &mut Vec<String>, consecutive: &mut usize, note: String) -> bool {
+    *consecutive += 1;
+    let stop = *consecutive >= LLM_FAILURE_ABORT;
+    if stop {
+        tracing::warn!(
+            consecutive = *consecutive,
+            note,
+            "rem: consecutive model-call failures reached the abort threshold"
+        );
+    } else {
+        tracing::warn!(note, "rem: candidate skipped, the cycle continues");
+    }
+    errors.push(note);
+    stop
+}
+
+// ---------- Revisor jaccard semantic sub-job ----------
 
 #[allow(
     clippy::too_many_lines,
@@ -2083,17 +2119,14 @@ async fn run_revisor_jaccard(
                     break;
                 }
                 report.pairs_examined += 1;
-                // A single bad response must not cost the whole night.
-                // `dream::run_full` aborts the cycle on an error out of here,
-                // so propagating one flaky candidate's reply ("gemini response
-                // has no `text` part") would skip the promote, the reorg and
-                // every page compile queued behind it — and the retry is a day
-                // away.
-                // Skip the pair (it stays nominable next cycle, unrecorded)
-                // and keep going, exactly as the completion / contradiction
-                // confirmers already do. A real backend outage still aborts:
-                // past `REVISOR_LLM_FAILURE_ABORT` consecutive failures
-                // nothing downstream would work either.
+                // One flaky reply ("gemini response has no `text` part")
+                // costs the pair and not the night: it stays nominable next
+                // cycle, unrecorded, exactly as the completion and
+                // contradiction confirmers already do ([`note_llm_failure`]).
+                // Where the other sub-jobs stop themselves, an outage here
+                // aborts the whole cycle — the promote, the merge and the
+                // compile read this same slot, so none of them would work
+                // either.
                 let resp = match llm
                     .complete(
                         CompletionRequest::new(prompt)
@@ -2112,14 +2145,11 @@ async fn run_revisor_jaccard(
                             facts[new_idx].fact_id.as_str(),
                             facts[old_idx].fact_id.as_str()
                         );
-                        llm_failures += 1;
-                        if llm_failures >= REVISOR_LLM_FAILURE_ABORT {
+                        if note_llm_failure(&mut report.errors, &mut llm_failures, note.clone()) {
                             return Err(RemError::Llm(format!(
                                 "{note} ({llm_failures} consecutive revisor failures — backend down)"
                             )));
                         }
-                        tracing::warn!(error = %e, "rem revisor: pair skipped, cycle continues");
-                        report.errors.push(note);
                         continue;
                     },
                 };
@@ -2610,7 +2640,8 @@ const fn mass_floor_for_style(
 /// count and ask whether one sub-topic outgrew its siblings; on a
 /// split verdict **apply the move directly** (act-first: born-applied
 /// receipt, no pending proposal, no notice).
-/// Hard-capped by `policy.auto_promote_cap`.
+/// Hard-capped by `policy.auto_promote_cap`. A failed model call costs its
+/// page and not the night — see [`note_llm_failure`].
 ///
 /// No LLM → the sub-job short-circuits cleanly with
 /// `disabled_reason = Some("no rem_promotions LLM wired")`. See the
@@ -2637,6 +2668,10 @@ async fn run_auto_promote(
     // existing sub-wikis to prefer filing pages into them over founding
     // a second home for the same subject.
     let all_wikis = tree.walk()?;
+    // One run of failures for the whole sub-job, shared with the grouping
+    // pass below: both call the same slot, so a backend that has stopped
+    // answering one has stopped answering the other.
+    let mut llm_failures = 0usize;
     for d in &all_wikis {
         if report.applied.len() >= policy.auto_promote_cap {
             break;
@@ -2672,9 +2707,13 @@ async fn run_auto_promote(
             smart_wiki_index,
             &facts,
             &page_mass,
+            &mut llm_failures,
             &mut report,
         )
         .await?;
+        if llm_failures >= LLM_FAILURE_ABORT {
+            return Ok(report);
+        }
         // Paragraph → page split, **per page** (rule 2 of the forma
         // scale): the LLM reads the whole page — every fact annotated
         // with its 30-day recall count — and decides whether one
@@ -2783,18 +2822,26 @@ async fn run_auto_promote(
             let mass = page_facts.len();
             let prompt =
                 paragraph_split_prompt(tree, &source_page_rel, &page_facts, style, policy)?;
-            let resp = llm
+            let resp = match llm
                 .complete(
                     CompletionRequest::new(prompt)
                         .with_temperature(0.2)
                         .with_max_tokens(4_000),
                 )
                 .await
-                .map_err(|e| {
-                    RemError::Llm(format!(
-                        "auto_promote failed on page {source_page_rel}: {e}"
-                    ))
-                })?;
+            {
+                Ok(r) => {
+                    llm_failures = 0;
+                    r
+                },
+                Err(e) => {
+                    let note = format!("auto_promote failed on page {source_page_rel}: {e}");
+                    if note_llm_failure(&mut report.errors, &mut llm_failures, note) {
+                        return Ok(report);
+                    }
+                    continue;
+                },
+            };
             let Some(decision) = parse_split_decision(&resp.text) else {
                 report.errors.push(format!(
                     "auto_promote llm returned unparseable verdict for page {source_page_rel}",
@@ -3275,6 +3322,10 @@ const GROUPING_SNIPPET_CHARS: usize = 110;
 /// Returns the workdir-relative `source_path`s the pass moved, so the
 /// paragraph pass below can skip them: its `facts` snapshot predates
 /// the move and still points at the old home.
+///
+/// `llm_failures` is the caller's run of consecutive failed model calls,
+/// shared because both passes call the same slot — a failed call here costs
+/// this wiki and not the night ([`note_llm_failure`]).
 #[allow(
     clippy::too_many_arguments,
     reason = "mirrors run_auto_promote's orchestrator bag; threading a struct would just hide the same fields"
@@ -3294,6 +3345,7 @@ async fn run_page_grouping_for_wiki(
     smart_wiki_index: &SmartWikiIndex,
     facts: &[FactIndexRow],
     page_mass: &HashMap<&str, usize>,
+    llm_failures: &mut usize,
     report: &mut AutoPromoteReport,
 ) -> Result<HashSet<String>> {
     let mut moved: HashSet<String> = HashSet::new();
@@ -3360,19 +3412,32 @@ async fn run_page_grouping_for_wiki(
     }
     report.grouping_wikis_examined += 1;
 
-    let resp = llm
+    let resp = match llm
         .complete(
             CompletionRequest::new(prompt)
                 .with_temperature(0.2)
                 .with_max_tokens(1_200),
         )
         .await
-        .map_err(|e| {
-            RemError::Llm(format!(
-                "page grouping failed on {wiki}: {e}",
-                wiki = d.meta.wiki_id.as_str()
-            ))
-        })?;
+    {
+        Ok(r) => {
+            *llm_failures = 0;
+            r
+        },
+        Err(e) => {
+            // The caller reads the counter and stops the sub-job when the
+            // run is long enough; this wiki is skipped either way.
+            note_llm_failure(
+                &mut report.errors,
+                llm_failures,
+                format!(
+                    "page grouping failed on {wiki}: {e}",
+                    wiki = d.meta.wiki_id.as_str()
+                ),
+            );
+            return Ok(moved);
+        },
+    };
     let Some(groups) = parse_page_groups(&resp.text) else {
         report.errors.push(format!(
             "page grouping llm returned unparseable verdict for {wiki}",
@@ -4249,7 +4314,8 @@ async fn apply_structure_moves(
 /// line), husk file deleted, persisted plan re-homed — with a
 /// born-applied receipt the dashboard can show. Capped by [`RemPolicy::page_merge_cap`]
 /// confirmation calls per cycle; a pair with any prior page-merge receipt
-/// is never re-judged.
+/// is never re-judged. A failed confirmer call costs its pair and not the
+/// night — see [`note_llm_failure`].
 #[allow(
     clippy::too_many_lines,
     clippy::too_many_arguments,
@@ -4309,6 +4375,7 @@ async fn run_page_merge(
     // night and every night after, with the report saying
     // `candidates_examined: 0` and raising no error.
     let mut budget = policy.page_merge_cap;
+    let mut llm_failures = 0usize;
     for (slug_a, slug_b, signal) in
         merge_candidates(&plan, &duplicate_prose, &family, day, split_targets)
     {
@@ -4336,16 +4403,26 @@ async fn run_page_merge(
         }
         budget -= 1;
         report.candidates_examined += 1;
-        let resp = llm
+        let resp = match llm
             .complete(
                 CompletionRequest::new(prompt)
                     .with_temperature(0.1)
                     .with_max_tokens(200),
             )
             .await
-            .map_err(|e| {
-                RemError::Llm(format!("page merge failed on {slug_a} vs {slug_b}: {e}"))
-            })?;
+        {
+            Ok(r) => {
+                llm_failures = 0;
+                r
+            },
+            Err(e) => {
+                let note = format!("page merge failed on {slug_a} vs {slug_b}: {e}");
+                if note_llm_failure(&mut report.errors, &mut llm_failures, note) {
+                    return Ok(report);
+                }
+                continue;
+            },
+        };
         let Some(verdict) = parse_merge_decision(&resp.text) else {
             report.errors.push(format!(
                 "merge: unparseable verdict for {slug_a} vs {slug_b}",
@@ -8435,6 +8512,65 @@ mod tests {
         drop(dir);
     }
 
+    /// A confirmer that has stopped answering costs the pair, not the
+    /// night: the merge sub-job returns its partial report and the pages
+    /// stay as they were, unjudged, for the next cycle to ask again.
+    #[tokio::test]
+    async fn page_merge_survives_a_failing_confirmer() {
+        let (dir, mut tree, pool) = setup_workdir().await;
+        write_wiki(&tree, "alice", "Alice", "wiki-user");
+        tree = WikiTree::open(dir.path()).unwrap();
+        let f1 = plant_fact_on_page(&tree, &pool, "alice", "viaggi.md", "trip note", "alice").await;
+        let f2 = plant_fact_on_page(
+            &tree,
+            &pool,
+            "alice",
+            "viaggi_lavoro.md",
+            "work travel policy",
+            "alice",
+        )
+        .await;
+        save_leaf_plan(
+            &tree,
+            &pool,
+            &[("viaggi", &[f1] as &[FactId]), ("viaggi_lavoro", &[f2])],
+        )
+        .await;
+
+        let llm = FlakyLlm {
+            fail_first: std::sync::atomic::AtomicUsize::new(usize::MAX),
+            answer: String::new(),
+        };
+        let index = load_smart_wiki_index(&tree).expect("index");
+        let report = run_page_merge(
+            &pool,
+            &tree,
+            &llm,
+            "cycle-down",
+            &day::DayPerimeter::default(),
+            &RemPolicy::default(),
+            &index,
+            &BTreeSet::new(),
+            Utc::now(),
+        )
+        .await
+        .expect("a dead confirmer costs the sub-job, never the cycle");
+
+        assert_eq!(report.candidates_examined, 1, "the pair was nominated");
+        assert_eq!(report.errors.len(), 1, "the skip is recorded: {report:?}");
+        assert_eq!(report.candidates_confirmed, 0);
+        assert!(report.applied.is_empty());
+        assert!(tree.wikis_dir().join("alice/viaggi.md").exists());
+        assert!(tree.wikis_dir().join("alice/viaggi_lavoro.md").exists());
+        // Unjudged: the pair comes back tomorrow.
+        assert!(
+            !merge_already_judged(&pool, "alice", "viaggi.md", "alice", "viaggi_lavoro.md")
+                .await
+                .unwrap()
+        );
+        drop(dir);
+    }
+
     /// A fact-bearing concept leaf for the merge-nomination fixtures.
     fn kin_leaf(slug: &str, wiki: &str, n_facts: usize) -> PagePlan {
         let facts = (0..n_facts)
@@ -9077,6 +9213,97 @@ mod tests {
         assert_eq!(report.auto_promote.candidates_promoted, 0);
         assert!(report.auto_promote.applied.is_empty());
         assert!(report.auto_promote.errors.is_empty());
+        drop(dir);
+    }
+
+    /// A model that has stopped answering costs the auto-promote sub-job
+    /// and nothing behind it: the failures land in the report, the pages
+    /// stay nominable, and `run_cycle` still returns — so `dream::run_full`
+    /// reaches the compile and drains the night's captures.
+    #[tokio::test]
+    async fn auto_promote_survives_a_backend_that_keeps_failing() {
+        let (dir, mut tree, pool) = setup_workdir().await;
+        write_wiki(&tree, "alice", "Alice", "wiki-user");
+        tree = WikiTree::open(dir.path()).unwrap();
+        // Six pages over the mass floor: more split candidates than the
+        // sub-job will spend calls on before it stops.
+        for page in [
+            "orto.md",
+            "potatura.md",
+            "compost.md",
+            "semina.md",
+            "innesti.md",
+            "serra.md",
+        ] {
+            plant_on_page(&tree, &pool, "alice", page, 3, "alice").await;
+        }
+
+        let llm = FlakyLlm {
+            fail_first: std::sync::atomic::AtomicUsize::new(usize::MAX),
+            answer: String::new(),
+        };
+        let report = run_auto_promote(
+            &pool,
+            &tree,
+            Some(&llm),
+            "cycle-down",
+            &day::DayPerimeter::default(),
+            &mass_policy(),
+            &load_smart_wiki_index(&tree).expect("index"),
+        )
+        .await
+        .expect("a dead backend costs the sub-job, never the cycle");
+
+        assert_eq!(
+            report.errors.len(),
+            LLM_FAILURE_ABORT,
+            "it stops at the abort threshold with a partial report: {report:?}"
+        );
+        assert!(report.applied.is_empty(), "nothing split: {report:?}");
+        // Nothing was memoised, so every page is nominable again tomorrow.
+        let settled: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM rem_verdicts")
+            .fetch_one(&pool)
+            .await
+            .unwrap();
+        assert_eq!(settled, 0);
+        drop(dir);
+    }
+
+    /// The grouping pass reads the same rule: one failed call costs its
+    /// wiki, the sub-job returns, and the split loop behind it runs on.
+    #[tokio::test]
+    async fn page_grouping_survives_a_failing_model() {
+        let (dir, mut tree, pool) = setup_workdir().await;
+        write_wiki(&tree, "alice", "Alice", "wiki-user");
+        tree = WikiTree::open(dir.path()).unwrap();
+        for page in ["orto.md", "potatura.md", "compost.md"] {
+            plant_on_page(&tree, &pool, "alice", page, 2, "alice").await;
+        }
+
+        let llm = FlakyLlm {
+            fail_first: std::sync::atomic::AtomicUsize::new(usize::MAX),
+            answer: String::new(),
+        };
+        let report = run_auto_promote(
+            &pool,
+            &tree,
+            Some(&llm),
+            "cycle-flaky",
+            &day::DayPerimeter::default(),
+            &grouping_policy(),
+            &load_smart_wiki_index(&tree).expect("index"),
+        )
+        .await
+        .expect("a fumbled grouping call is a soft error, never a cycle abort");
+
+        assert_eq!(report.grouping_wikis_examined, 1);
+        assert_eq!(report.errors.len(), 1, "one call, one skip: {report:?}");
+        assert_eq!(report.grouping_groups_applied, 0);
+        assert!(report.applied.is_empty());
+        // The pages stay where they were, so the next cycle asks again.
+        for page in ["orto.md", "potatura.md", "compost.md"] {
+            assert!(tree.wikis_dir().join("alice").join(page).exists());
+        }
         drop(dir);
     }
 
@@ -13302,16 +13529,17 @@ mod tests {
 
     /// A backend that fails the first `fail_first` calls and then answers.
     /// The shape of the live 2026-07-29 incident: one malformed Gemini
-    /// candidate in the middle of an otherwise healthy night.
-    struct FlakyRevisor {
+    /// candidate in the middle of an otherwise healthy night. Shared by
+    /// every sub-job's failure test, because they all read one rule.
+    struct FlakyLlm {
         fail_first: std::sync::atomic::AtomicUsize,
         answer: String,
     }
 
     #[async_trait::async_trait]
-    impl LlmBackend for FlakyRevisor {
+    impl LlmBackend for FlakyLlm {
         fn model_id(&self) -> &'static str {
-            "flaky-revisor"
+            "flaky"
         }
 
         async fn complete(
@@ -13367,7 +13595,7 @@ mod tests {
         )
         .await;
 
-        let llm = FlakyRevisor {
+        let llm = FlakyLlm {
             fail_first: std::sync::atomic::AtomicUsize::new(1),
             answer: "{\"same\": true}".to_owned(),
         };
@@ -13403,7 +13631,7 @@ mod tests {
         tree = WikiTree::open(dir.path()).unwrap();
         // Five near-variants of one claim: every pair lands inside the
         // jaccard nomination band, so the sweep has more than
-        // `REVISOR_LLM_FAILURE_ABORT` confirms to attempt.
+        // `LLM_FAILURE_ABORT` confirms to attempt.
         for tail in [
             "in centro",
             "da molti anni",
@@ -13421,7 +13649,7 @@ mod tests {
             )
             .await;
         }
-        let llm = FlakyRevisor {
+        let llm = FlakyLlm {
             fail_first: std::sync::atomic::AtomicUsize::new(usize::MAX),
             answer: String::new(),
         };

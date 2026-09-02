@@ -758,7 +758,8 @@ pub const LIST_ITEMS_MAX_LIMIT: i64 = 200;
 /// Ordered by `ts DESC` so the freshest item is first — matches the
 /// triage flow the smart consumer follows at `smart_bootstrap`. Rows
 /// with an unknown `kind` value land with `item.kind == None` rather
-/// than being dropped silently.
+/// than being dropped silently; a row whose `wiki_id` does not parse is
+/// skipped with a warning naming it (see [`BriefingItem::from_row`]).
 ///
 /// # Errors
 ///
@@ -797,7 +798,10 @@ pub async fn list_items(
     }
     q = q.bind(limit);
     let rows = q.fetch_all(pool).await?;
-    Ok(rows.into_iter().map(BriefingItem::from_row).collect())
+    Ok(rows
+        .into_iter()
+        .filter_map(BriefingItem::from_row)
+        .collect())
 }
 
 /// Bucket the wiki's briefing items by [`BriefingKind`] in a single
@@ -857,15 +861,29 @@ struct BriefingItemRow {
 }
 
 impl BriefingItem {
-    fn from_row(row: BriefingItemRow) -> Self {
-        // Every row in `wiki_briefing_items` was written through
-        // `notify_append`, which serialises a validated `WikiId` —
-        // the parse cannot fail except on DB corruption. We expect on
-        // failure so the caller sees a loud error rather than silent
-        // truncation.
-        let wiki_id = WikiId::parse(&row.wiki_id)
-            .expect("wiki_briefing_items.wiki_id is always a validated WikiId");
-        Self {
+    /// Project one stored row, or `None` when it cannot be read as one.
+    ///
+    /// The invariant is that every row was written through
+    /// `notify_append`, which serialises a validated [`WikiId`], and
+    /// [`list_items`] then selects by an id that already parsed — so no
+    /// row the engine wrote can fail here. This is the guard for one that
+    /// arrived another way (a database edited from outside), and it is
+    /// worth one row: a warning naming it keeps the rest of the list
+    /// readable, where a panic would take the whole reader down.
+    fn from_row(row: BriefingItemRow) -> Option<Self> {
+        let wiki_id = match WikiId::parse(&row.wiki_id) {
+            Ok(id) => id,
+            Err(error) => {
+                tracing::warn!(
+                    briefing_item_id = row.id,
+                    wiki_id = row.wiki_id,
+                    %error,
+                    "briefing: row carries an unparseable wiki_id — skipped"
+                );
+                return None;
+            },
+        };
+        Some(Self {
             briefing_item_id: format!("bi_{}", row.id),
             wiki_id,
             source_kind: match row.source_kind.as_str() {
@@ -881,7 +899,7 @@ impl BriefingItem {
             target_cite: row.target_cite,
             ts: row.ts,
             processed_at: row.processed_at,
-        }
+        })
     }
 }
 
@@ -1640,6 +1658,26 @@ mod tests {
         assert_eq!(items[0].kind, Some(BriefingKind::Reasoning));
         assert_eq!(items[1].topic, "First obs");
         assert_eq!(items[1].kind, Some(BriefingKind::Observation));
+    }
+
+    /// One unreadable row is skipped, never fatal: `wiki_id` is the field
+    /// the projection has to parse, and a reader that panics over it loses
+    /// every other item in the list.
+    #[test]
+    fn from_row_skips_an_unparseable_wiki_id() {
+        let row = BriefingItemRow {
+            id: 7,
+            wiki_id: "Alice Smart".to_owned(),
+            source_kind: "consumer".to_owned(),
+            source_ref: "consumer:probe".to_owned(),
+            topic: "topic".to_owned(),
+            body: "body".to_owned(),
+            kind: None,
+            target_cite: None,
+            ts: "2026-01-01T00:00:00Z".to_owned(),
+            processed_at: None,
+        };
+        assert!(BriefingItem::from_row(row).is_none());
     }
 
     #[tokio::test]

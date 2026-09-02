@@ -1,9 +1,10 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 //! Runtime housekeeping — the hygiene sweeps the hot paths defer.
 //!
-//! One entry point, [`run`], invoked at `serve` boot and after a dashboard
-//! wiki deletion. It drains three kinds of residue that otherwise
-//! accumulate unbounded (each observed live on the dogfood deployment):
+//! One entry point, [`run`], invoked at `serve` boot, once a day while the
+//! server is up, and after a dashboard wiki deletion. It drains five kinds
+//! of residue that otherwise accumulate unbounded — the first three
+//! observed live on the dogfood deployment:
 //!
 //! - **Expired authorization codes** — a code self-deletes on redemption
 //!   (single-use), but an abandoned OAuth flow leaves its row behind
@@ -24,6 +25,14 @@
 //!   token-registered consumers (`system_user_id` set — they own no
 //!   OAuth rows) are never touched, and a consumer whose wiki still
 //!   exists survives disconnection (a reconnect reuses it).
+//! - **Expired revocations** — `token_revoke` appends a `jti` to
+//!   `token_blacklist` and nothing takes it out again, while
+//!   [`crate::jwt::BlacklistCache`] reloads the whole table every 60 s.
+//!   A row past its `expires_at` names a token the signature check
+//!   already refuses, so keeping it only makes that reload bigger.
+//! - **Aged `wiki_events`** — the queue is append-only and every
+//!   `events_poll` scans it, so an unswept row costs every consumer on
+//!   every poll for ever.
 
 use std::collections::{BTreeMap, HashSet};
 
@@ -31,9 +40,20 @@ use sqlx::SqlitePool;
 use tracing::{info, warn};
 
 use crate::error::Result;
+use crate::events::EventKind;
 use crate::oauth_server::now_iso;
+use crate::reminders::ALREADY_RUNG_DAYS;
 use crate::types::WikiId;
 use crate::wiki::WikiTree;
+
+/// Age past which a `wiki_events` row is deleted.
+///
+/// Thirty days is what the queue's readers need. A consumer drains it
+/// continuously ([`crate::events::poll_events`]), so a row a month old is
+/// one nobody came for, and it is scanned on every poll from then on. The
+/// one reader that looks further back is honoured where the sweep runs —
+/// see [`purge_aged_events`].
+const EVENT_RETENTION_DAYS: i64 = 30;
 
 /// What one [`run`] swept. All counts are rows removed.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
@@ -46,6 +66,11 @@ pub struct HousekeepingReport {
     pub dangling_consumers_removed: u64,
     /// `consumer_delegations` rows removed with their consumer.
     pub delegations_removed: u64,
+    /// `token_blacklist` rows dropped because the token they revoke has
+    /// expired on its own.
+    pub expired_revocations_purged: u64,
+    /// `wiki_events` rows dropped past their retention.
+    pub events_purged: u64,
 }
 
 impl HousekeepingReport {
@@ -70,11 +95,15 @@ pub async fn run(pool: &SqlitePool, tree: &WikiTree) -> Result<HousekeepingRepor
     let (dangling_consumers_removed, delegations_removed) =
         sweep_dangling_consumers(pool, tree).await?;
     let stale_refresh_pruned = prune_stale_refresh_rows(pool, &now).await?;
+    let expired_revocations_purged = purge_expired_revocations(pool, &now).await?;
+    let events_purged = purge_aged_events(pool, chrono::Utc::now()).await?;
     Ok(HousekeepingReport {
         auth_codes_purged,
         stale_refresh_pruned,
         dangling_consumers_removed,
         delegations_removed,
+        expired_revocations_purged,
+        events_purged,
     })
 }
 
@@ -84,6 +113,47 @@ async fn purge_expired_auth_codes(pool: &SqlitePool, now: &str) -> Result<u64> {
         .bind(now)
         .execute(pool)
         .await?;
+    Ok(res.rows_affected())
+}
+
+/// Delete revocations whose token has expired anyway.
+///
+/// The blacklist answers one question — "was this live token revoked?" —
+/// and a token past its `exp` fails the signature check before the
+/// blacklist is ever consulted, so its row can only make
+/// [`crate::jwt::BlacklistCache`]'s 60-second reload larger.
+async fn purge_expired_revocations(pool: &SqlitePool, now: &str) -> Result<u64> {
+    let res = sqlx::query("DELETE FROM token_blacklist WHERE expires_at < ?")
+        .bind(now)
+        .execute(pool)
+        .await?;
+    Ok(res.rows_affected())
+}
+
+/// Delete `wiki_events` rows past [`EVENT_RETENTION_DAYS`], except
+/// `reminder_due` rows, which are kept for the whole horizon their own
+/// idempotence probe reads ([`ALREADY_RUNG_DAYS`]).
+///
+/// The exception is the rule, not a special case: a row may go once
+/// nothing can still read it, and the reminder sweep reads a year back to
+/// decide whether a dated commitment already rang. Deleting its row sooner
+/// would let the same commitment ring twice.
+///
+/// The cost of the retention is a consumer that has been away longer than
+/// the window: notices it never polled are gone rather than waiting.
+async fn purge_aged_events(pool: &SqlitePool, now: chrono::DateTime<chrono::Utc>) -> Result<u64> {
+    let cutoff = (now - chrono::Duration::days(EVENT_RETENTION_DAYS)).to_rfc3339();
+    let reminder_cutoff = (now - chrono::Duration::days(ALREADY_RUNG_DAYS)).to_rfc3339();
+    let res = sqlx::query(
+        "DELETE FROM wiki_events
+          WHERE created_at < ?
+            AND (kind <> ? OR created_at < ?)",
+    )
+    .bind(&cutoff)
+    .bind(EventKind::ReminderDue.as_str())
+    .bind(&reminder_cutoff)
+    .execute(pool)
+    .await?;
     Ok(res.rows_affected())
 }
 
@@ -473,5 +543,77 @@ mod tests {
         let (pool, tree, _dir) = fixture().await;
         let report = run(&pool, &tree).await.unwrap();
         assert!(report.is_noop());
+    }
+
+    /// A revoked token whose own `exp` has passed is refused by the
+    /// signature check, so its row buys nothing and goes; a revocation
+    /// still covering a live token stays.
+    #[tokio::test]
+    async fn expired_revocations_are_purged_and_live_ones_kept() {
+        let (pool, tree, _dir) = fixture().await;
+        for (jti, expires) in [
+            ("dead", "2000-01-01T00:00:00+00:00"),
+            ("live", "2999-01-01T00:00:00+00:00"),
+        ] {
+            sqlx::query(
+                "INSERT INTO token_blacklist (jti, revoked_at, expires_at, reason)
+                 VALUES (?, ?, ?, 'test')",
+            )
+            .bind(jti)
+            .bind(now_iso())
+            .bind(expires)
+            .execute(&pool)
+            .await
+            .unwrap();
+        }
+
+        let report = run(&pool, &tree).await.unwrap();
+        assert_eq!(report.expired_revocations_purged, 1);
+        let left: Vec<String> = sqlx::query_scalar("SELECT jti FROM token_blacklist")
+            .fetch_all(&pool)
+            .await
+            .unwrap();
+        assert_eq!(left, vec!["live".to_owned()]);
+    }
+
+    /// The queue is swept at [`EVENT_RETENTION_DAYS`], and a `reminder_due`
+    /// row outlives it: the reminder sweep reads a year back to decide
+    /// whether a commitment already rang.
+    #[tokio::test]
+    async fn aged_events_are_purged_and_reminders_kept_for_their_probe() {
+        let (pool, tree, _dir) = fixture().await;
+        let now = chrono::Utc::now();
+        let insert = |kind: EventKind, age_days: i64| {
+            let created = (now - chrono::Duration::days(age_days)).to_rfc3339();
+            sqlx::query(
+                "INSERT INTO wiki_events (kind, wiki_id, fact_id, payload, created_at)
+                 VALUES (?, 'alice', ?, '{}', ?)",
+            )
+            .bind(kind.as_str())
+            .bind(format!("{}-{age_days}d", kind.as_str()))
+            .bind(created)
+            .execute(&pool)
+        };
+        insert(EventKind::StructureApplied, 1).await.unwrap();
+        insert(EventKind::StructureApplied, 31).await.unwrap();
+        insert(EventKind::ReminderDue, 31).await.unwrap();
+        insert(EventKind::ReminderDue, ALREADY_RUNG_DAYS + 1)
+            .await
+            .unwrap();
+
+        let report = run(&pool, &tree).await.unwrap();
+        assert_eq!(report.events_purged, 2);
+        let mut left: Vec<String> = sqlx::query_scalar("SELECT fact_id FROM wiki_events")
+            .fetch_all(&pool)
+            .await
+            .unwrap();
+        left.sort();
+        assert_eq!(
+            left,
+            vec![
+                "reminder_due-31d".to_owned(),
+                "structure_applied-1d".to_owned()
+            ]
+        );
     }
 }

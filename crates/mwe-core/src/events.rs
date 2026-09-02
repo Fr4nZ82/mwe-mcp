@@ -22,12 +22,13 @@
 //! cheap pre-check used by lifecycle: if a matching `(kind, fact_id)`
 //! row already exists in the past N days, skip the insert.
 //!
-//! The dedup window is 30 days (the same as the
-//! consumer-ack retention default in engine DB and
-//! migrations). A consumer that acks an
-//! event and wants to be re-notified later flips the underlying state
-//! (e.g. resets `status: pending` → `done` → `pending`), at which point
-//! the natural cadence resumes.
+//! The window is the caller's to choose, and it is bounded by the queue's
+//! retention: [`crate::housekeeping`] keeps each kind of row at least as
+//! long as the probe that reads it, because a row swept early is a notice
+//! that fires a second time. A consumer that acks an event and wants to be
+//! re-notified later flips the underlying state (e.g. resets
+//! `status: pending` → `done` → `pending`), at which point the natural
+//! cadence resumes.
 //!
 //! ## Consumer-side queue
 //!
@@ -278,8 +279,10 @@ pub async fn insert_event(
 /// Idempotency probe used by the lifecycle interpreter.
 ///
 /// Returns `true` when a row with the same `(kind, fact_id)` was
-/// emitted within `window` (typically 30 days). The caller short-
-/// circuits to skip the insert.
+/// emitted within `window`. The caller short-circuits to skip the insert,
+/// and owns `window`: a span longer than the retention
+/// [`crate::housekeeping`] gives that kind reads rows that are already
+/// gone, so the two are set together.
 ///
 /// `fact_id` is required — global events are not deduplicated by this
 /// helper (they have no natural key beyond `kind`, and the lifecycle

@@ -371,10 +371,10 @@ pub async fn verify(
 
 /// Insert a revocation row in `token_blacklist`.
 ///
-/// `original_exp` is the token's `exp` claim — stored as
-/// `expires_at` so a periodic GC job can drop entries that could no
-/// longer authenticate anyway. `revoked_by` is the actor (user id or
-/// `"system"` for automated cleanups).
+/// `original_exp` is the token's `exp` claim — stored as `expires_at`,
+/// which is how the [`crate::housekeeping`] sweep knows the row can go: a
+/// token past its `exp` could not authenticate anyway. `revoked_by` is the
+/// actor (user id or `"system"` for automated cleanups).
 pub async fn revoke(
     pool: &SqlitePool,
     jti: &str,

@@ -470,12 +470,16 @@ async fn delete_apply(
     }
     // The deleted subtree may have been a web-agent consumer's smart wiki:
     // drain the now-dangling consumer (and its OAuth rows) right away
-    // instead of waiting for the next boot sweep. Best-effort.
+    // instead of waiting for the next scheduled sweep. Best-effort.
     match mwe_core::housekeeping::run(&state.pool, &memory.tree).await {
         Ok(hk) if hk.is_noop() => {},
         Ok(hk) => tracing::info!(
             dangling_consumers_removed = hk.dangling_consumers_removed,
             stale_refresh_pruned = hk.stale_refresh_pruned,
+            auth_codes_purged = hk.auth_codes_purged,
+            delegations_removed = hk.delegations_removed,
+            expired_revocations_purged = hk.expired_revocations_purged,
+            events_purged = hk.events_purged,
             "dashboard: post-delete housekeeping swept"
         ),
         Err(error) => tracing::warn!(%error, "dashboard: post-delete housekeeping failed"),

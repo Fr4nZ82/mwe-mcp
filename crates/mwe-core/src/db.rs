@@ -10,6 +10,9 @@
 //! and runs every pending migration under
 //! [`migrations/`](../../migrations/).
 //!
+//! [`open_existing`] is the same connection without either write, for a
+//! command that runs beside a live server and holds no lockfile.
+//!
 //! The 15 migration files (see `0001_*` through `0015_*`) cover the 8
 //! core tables of the
 //! engine DB schema,
@@ -74,6 +77,70 @@ pub async fn open_or_init(workdir: &Path) -> Result<SqlitePool> {
         .await
         .map_err(|e| Error::Other(format!("seeding global group: {e}")))?;
     Ok(pool)
+}
+
+/// Open the engine database under `workdir` **without changing it**: the
+/// same pragmas as [`open_or_init`], no migration, no seed.
+///
+/// This is the connection a command that runs *beside* a live `mwe-mcp
+/// serve` needs. Such a command takes no lockfile, and `open_or_init`
+/// would have it apply every pending migration and re-seed the builtin
+/// group — schema writes into a database another process holds open and
+/// is writing to. The migrations then belong to whoever does hold the
+/// lock, so a schema older than this binary's is reported rather than
+/// repaired.
+///
+/// # Errors
+///
+/// [`Error::Other`] when `workdir` holds no `engine.db`, or when the
+/// schema on disk is behind this binary's migrations; [`Error::Db`] for a
+/// connection or query failure.
+pub async fn open_existing(workdir: &Path) -> Result<SqlitePool> {
+    let db_path = engine_db_path(workdir);
+    if !db_path.is_file() {
+        return Err(Error::Other(format!(
+            "no engine database at {} — run `mwe-mcp init` or start the server once",
+            db_path.display()
+        )));
+    }
+
+    let opts = SqliteConnectOptions::new()
+        .filename(&db_path)
+        .create_if_missing(false)
+        .journal_mode(sqlx::sqlite::SqliteJournalMode::Wal)
+        .foreign_keys(true)
+        .busy_timeout(std::time::Duration::from_secs(5))
+        .log_statements(tracing::log::LevelFilter::Trace);
+
+    let pool = SqlitePool::connect_with(opts).await?;
+    let latest = MIGRATOR.iter().map(|m| m.version).max().unwrap_or(0);
+    let applied = applied_migration_version(&pool).await?;
+    if applied < latest {
+        return Err(Error::Other(format!(
+            "engine.db at {path} is at migration {applied} and this binary carries {latest}: \
+             run a command that owns the workdir (`mwe-mcp migrate`, or start the server) to \
+             apply the pending migrations first",
+            path = db_path.display(),
+        )));
+    }
+    Ok(pool)
+}
+
+/// Highest migration version recorded in `_sqlx_migrations`, or `0` when
+/// the table is absent (a database no migrator has ever touched).
+async fn applied_migration_version(pool: &SqlitePool) -> Result<i64> {
+    let table: Option<String> = sqlx::query_scalar(
+        "SELECT name FROM sqlite_master WHERE type = 'table' AND name = '_sqlx_migrations'",
+    )
+    .fetch_optional(pool)
+    .await?;
+    if table.is_none() {
+        return Ok(0);
+    }
+    let applied: Option<i64> = sqlx::query_scalar("SELECT MAX(version) FROM _sqlx_migrations")
+        .fetch_one(pool)
+        .await?;
+    Ok(applied.unwrap_or(0))
 }
 
 /// Canonical path of the engine database inside a workdir.
@@ -205,6 +272,58 @@ mod tests {
         .await
         .expect("count");
         assert_eq!(n, 1);
+    }
+
+    /// `open_existing` refuses a workdir with no database, and opens one
+    /// that is already at the binary's schema.
+    #[tokio::test]
+    async fn open_existing_needs_a_database_at_the_current_schema() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let err = open_existing(dir.path()).await.expect_err("no engine.db");
+        assert!(
+            format!("{err}").contains("no engine database"),
+            "the diagnostic must name the missing file: {err}"
+        );
+
+        let pool = open_or_init(dir.path()).await.expect("open_or_init");
+        pool.close().await;
+        let pool = open_existing(dir.path()).await.expect("open_existing");
+        let n: i64 = sqlx::query_scalar("SELECT count(*) FROM fact_index")
+            .fetch_one(&pool)
+            .await
+            .expect("query the opened schema");
+        assert_eq!(n, 0);
+    }
+
+    /// A database behind this binary is reported, not migrated: the
+    /// command that opens it this way holds no lockfile, so applying the
+    /// migrations would be a schema write into somebody else's database.
+    #[tokio::test]
+    async fn open_existing_refuses_a_schema_behind_the_binary() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let pool = open_or_init(dir.path()).await.expect("open_or_init");
+        let latest = MIGRATOR
+            .iter()
+            .map(|m| m.version)
+            .max()
+            .expect("migrations");
+        sqlx::query("DELETE FROM _sqlx_migrations WHERE version = ?")
+            .bind(latest)
+            .execute(&pool)
+            .await
+            .expect("drop the top migration row");
+        pool.close().await;
+
+        let err = open_existing(dir.path()).await.expect_err("schema behind");
+        let msg = format!("{err}");
+        assert!(
+            msg.contains(&latest.to_string()),
+            "names the version: {msg}"
+        );
+        assert!(
+            msg.contains("pending migrations"),
+            "says what to do about it: {msg}"
+        );
     }
 
     #[tokio::test]

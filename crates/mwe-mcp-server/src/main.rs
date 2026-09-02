@@ -10,6 +10,7 @@
 
 use mwe_mcp_server::backup_scheduler;
 use mwe_mcp_server::env_loader::{self, WriteOutcome};
+use mwe_mcp_server::housekeeping_scheduler;
 use mwe_mcp_server::mcp;
 use mwe_mcp_server::rem_scheduler;
 use mwe_mcp_server::reminder_scheduler;
@@ -297,9 +298,10 @@ enum Command {
 enum RecallCommand {
     /// Replay a YAML gold set against the workdir and score the flat-RAG
     /// baseline (hit@1 / hit@3 / coverage) against recall-as-navigation
-    /// (coverage + deviating catches). Read-only: no lockfile (it may
-    /// run next to a live `mwe-mcp serve`) and no recall-counter bumps
-    /// (synthetic queries must not pollute the recency signal).
+    /// (coverage + deviating catches). Leaves the memory as it found it,
+    /// so it may run next to a live `mwe-mcp serve`: no lockfile, no
+    /// migration, and no recall-counter bumps (synthetic queries must not
+    /// pollute the recency signal).
     Eval {
         /// Path to the gold-query YAML file (a `queries:` list; the loader
         /// in `mwe_core::recall_eval` defines the schema).
@@ -965,9 +967,14 @@ async fn cmd_rem_run_compile(workdir: &Path, config: &Config) -> Result<()> {
 
 /// `mwe-mcp recall eval` — replay a gold set and print the scoreboard:
 /// flat-RAG baseline (hit@1 / hit@3 / coverage) vs recall-as-navigation
-/// (coverage + deviating catches). Read-only by design: **no lockfile**
-/// (it may run next to a live `mwe-mcp serve`) and **no recall-counter
-/// bumps** (the harness uses the unrecorded search variant).
+/// (coverage + deviating catches).
+///
+/// It leaves the memory as it found it, which is what lets it run next to
+/// a live `mwe-mcp serve`: **no lockfile**, **no migration and no seed**
+/// (the schema belongs to whoever holds the lock — see
+/// [`db::open_existing`]), and **no recall-counter bumps** (the harness
+/// uses the unrecorded search variant). The model calls it makes are
+/// metered like any other, under their own `EvalCli` label.
 async fn cmd_recall_eval(
     workdir: &Path,
     config: &Config,
@@ -981,7 +988,10 @@ async fn cmd_recall_eval(
         bail!("gold file holds no queries");
     }
 
-    let pool = db::open_or_init(workdir)
+    // Opened, never migrated: this command is documented as running next
+    // to a live server, and it holds no lockfile — the schema belongs to
+    // whoever does.
+    let pool = db::open_existing(workdir)
         .await
         .context("opening engine.db")?;
     install_usage_ledger(&pool, config, usage::UsageSource::EvalCli);
@@ -1762,7 +1772,9 @@ async fn cmd_serve_http(
 
     // Runtime housekeeping: drain the residue the inline paths cannot
     // reach retroactively — expired authorization codes, stale refresh
-    // rows, web-agent consumers whose smart wiki was deleted.
+    // rows, web-agent consumers whose smart wiki was deleted, revocations
+    // of tokens that have expired anyway, aged `wiki_events`. The
+    // housekeeping scheduler below repeats it once a day.
     match mwe_core::housekeeping::run(&state.pool, &state.tree).await {
         Ok(report) if report.is_noop() => {},
         Ok(report) => info!(
@@ -1770,6 +1782,8 @@ async fn cmd_serve_http(
             stale_refresh_pruned = report.stale_refresh_pruned,
             dangling_consumers_removed = report.dangling_consumers_removed,
             delegations_removed = report.delegations_removed,
+            expired_revocations_purged = report.expired_revocations_purged,
+            events_purged = report.events_purged,
             "boot housekeeping: swept"
         ),
         Err(error) => warn!(%error, "boot housekeeping failed; serving anyway"),
@@ -1877,6 +1891,16 @@ async fn cmd_serve_http(
             let _ = reminder_shutdown_rx.recv().await;
         })
     };
+
+    // Housekeeping scheduler: re-runs the boot sweep once a day, because
+    // the residue it drains piles up while the process is up. Armed even
+    // on a frozen instance — it takes residue, never memory, which is why
+    // the boot sweep runs there too.
+    let mut housekeeping_shutdown_rx = shutdown_tx.subscribe();
+    let housekeeping_handle =
+        housekeeping_scheduler::spawn(state.pool.clone(), state.tree.clone(), async move {
+            let _ = housekeeping_shutdown_rx.recv().await;
+        });
 
     // Document worker: drives queued `wiki_ingest_external` jobs
     // (classify → segment → anchor → extract → reduce → file). Runs on
@@ -2030,6 +2054,11 @@ async fn cmd_serve_http(
             Ok(Err(e)) => warn!(error = %e, "reminder scheduler: task panicked on shutdown"),
             Err(_) => warn!("reminder scheduler: did not exit within 5s timeout"),
         }
+    }
+    match tokio::time::timeout(std::time::Duration::from_secs(5), housekeeping_handle).await {
+        Ok(Ok(())) => info!("housekeeping scheduler: joined cleanly"),
+        Ok(Err(e)) => warn!(error = %e, "housekeeping scheduler: task panicked on shutdown"),
+        Err(_) => warn!("housekeeping scheduler: did not exit within 5s timeout"),
     }
 
     // A dashboard-requested restart exits with the deliberate non-zero
