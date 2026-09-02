@@ -1130,6 +1130,18 @@ struct CaptureUnit<'a> {
     attachments: &'a [String],
 }
 
+/// A model-written name, or nothing — never the empty string.
+///
+/// `subject_external` is read as a QUESTION everywhere downstream: a fact that
+/// carries one is about a named thing, so it is refused from an identity card
+/// and it does not take the card route either. `Some("")` answers that
+/// question yes while naming nothing, which keeps a claim off the card its
+/// salience reserved for it. A field the model left blank is a field the model
+/// did not fill.
+fn named_or_absent(s: Option<&str>) -> Option<&str> {
+    s.map(str::trim).filter(|s| !s.is_empty())
+}
+
 impl LlmIngestPlan {
     /// The facts to file for a `capture` intent. Prefers the multi-fact
     /// `extractions` array; otherwise synthesises a single unit from the
@@ -1145,7 +1157,7 @@ impl LlmIngestPlan {
                     target_wiki_id: e.target_wiki_id.as_deref(),
                     target_page: e.target_page.as_deref(),
                     subject_id: e.subject_id.as_deref(),
-                    subject_external: e.subject_external.as_deref(),
+                    subject_external: named_or_absent(e.subject_external.as_deref()),
                     allow_ids: &e.allow_ids,
                     fact_type: e.fact_type.as_deref(),
                     valid_from: e.valid_from.as_deref(),
@@ -1182,7 +1194,7 @@ impl LlmIngestPlan {
                 target_wiki_id: self.target_wiki_id.as_deref(),
                 target_page: self.target_page.as_deref(),
                 subject_id: self.subject_id.as_deref(),
-                subject_external: self.subject_external.as_deref(),
+                subject_external: named_or_absent(self.subject_external.as_deref()),
                 allow_ids: &self.allow_ids,
                 fact_type: self.fact_type.as_deref(),
                 valid_from: self.valid_from.as_deref(),
@@ -8495,6 +8507,20 @@ mod tests {
                 usage: crate::llm::CompletionUsage::default(),
             })
         }
+    }
+
+    /// A blank `subject_external` is a field the model did not fill.
+    ///
+    /// Downstream it is read as a question — *is this fact about a named
+    /// thing?* — and an empty string answers yes while naming nothing, which
+    /// keeps a `high` claim off the card its salience reserved for it.
+    #[test]
+    fn a_blank_external_subject_is_no_subject() {
+        assert_eq!(named_or_absent(Some("Bilbo")), Some("Bilbo"));
+        assert_eq!(named_or_absent(Some("  Bilbo  ")), Some("Bilbo"));
+        assert_eq!(named_or_absent(Some("")), None);
+        assert_eq!(named_or_absent(Some("   ")), None);
+        assert_eq!(named_or_absent(None), None);
     }
 
     /// A cut verdict is asked again, not parsed and thrown away.
