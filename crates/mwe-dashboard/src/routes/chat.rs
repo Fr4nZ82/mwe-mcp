@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 //! The omnipresent chat — the single entry point for LLM calls from the
-//! dashboard (agentic chat).
+//! dashboard.
 //!
 //! - `GET /dashboard/chat`: stand-alone chat page (header + main + the
 //!   right-side panel rendered by the layout). The page itself only
@@ -24,8 +24,7 @@
 //! propose → confirm → act handshake: each submission replays a **bounded
 //! recent `{user, assistant}` window** (sent by `chat.js`, clamped by
 //! [`parse_chat_history`]) so a bare "sì" resolves against the
-//! assistant's prior proposal — see the
-//! agentic chat design.
+//! assistant's prior proposal.
 //! The full chat history lives in the browser's `localStorage` for the
 //! user's benefit (scrollback), trimmed FIFO at 100 entries by
 //! [`crate::assets`]' `chat.js`.
@@ -60,11 +59,9 @@ use crate::ui::{components, layout};
 /// operator override sits at `<workdir>/prompts/agentic-chat-panel.md`.
 /// The verbatim prompt body lives in
 /// `crates/mwe-dashboard/prompts/agentic-chat-panel.md` (frontmatter +
-/// a single ```text ... ``` fenced block); see the
-/// agentic chat design
-/// for the design narrative. Referenced
-/// from [`crate::BUNDLED_PROMPTS`] so `mwe-mcp init` materialises it
-/// under the workdir.
+/// a single ```text ... ``` fenced block). Referenced from
+/// [`crate::BUNDLED_PROMPTS`] so `mwe-mcp init` materialises it under
+/// the workdir.
 pub const BUNDLED_AGENTIC_PROMPT_MD: &str = include_str!("../../prompts/agentic-chat-panel.md");
 
 /// Mount under the authenticated tree.
@@ -171,9 +168,8 @@ async fn post_message(
 /// A processed user turn — the verbatim input plus the engine's response.
 ///
 /// Returned by [`process_submission`] so other routes (notably the
-/// welcome wizard's `Save` branch per the
-/// agentic chat design)
-/// can re-use the exact same ingest path the chat handler uses.
+/// welcome wizard's `Save` branch) can re-use the exact same ingest path
+/// the chat handler uses.
 #[derive(Debug)]
 pub struct ChatTurn {
     pub user_text: String,
@@ -182,8 +178,8 @@ pub struct ChatTurn {
 
 /// Run a single user turn through the ingest pipeline. This is the
 /// single chokepoint for every LLM call originating from the dashboard:
-/// the chat handler, the welcome wizard primer (agentic chat),
-/// and anything future wires through here instead of calling
+/// the chat handler, the welcome wizard primer, and anything future
+/// wires through here instead of calling
 /// [`ingest::wiki_ingest_message`] directly.
 ///
 /// # Errors
@@ -358,9 +354,7 @@ fn render_page_with_error(chrome: layout::Chrome, user: &SessionUser, error: &st
 /// One entry per tool call the LLM emitted, in dispatch order. The
 /// dashboard surfaces these as compact "tool" bubbles above the final
 /// assistant reply so the user sees exactly which `_internal.*`
-/// operations the LLM invoked on its behalf (see the
-/// agentic chat design —
-/// transparency).
+/// operations the LLM invoked on its behalf.
 #[derive(Debug, Serialize, Clone)]
 pub struct ToolCallTrace {
     /// Name of the tool that was invoked.
@@ -412,9 +406,8 @@ pub struct AgenticTurn {
 
 /// Run an agentic submission through the operational chat LLM backend
 /// (the `operator_chat` slot — see
-/// [`crate::state::MemoryHandles::backend_for_chat`])
-/// (agentic chat) with the dashboard's
-/// whitelisted tool registry.
+/// [`crate::state::MemoryHandles::backend_for_chat`]) with the
+/// dashboard's whitelisted tool registry.
 ///
 /// `history` is the recent `{user, assistant}` window the chat panel
 /// replays so a confirmation resolves against the prior proposal; pass
@@ -639,7 +632,7 @@ async fn post_agentic(
 
 /// Rendered representation of an [`IngestResponse`]. Exposed because
 /// the right-side chat panel injects this exact fragment into its
-/// scroll area on every turn (agentic chat).
+/// scroll area on every turn.
 #[must_use]
 pub fn response_panel(response: &IngestResponse) -> Markup {
     html! {

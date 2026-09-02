@@ -340,6 +340,7 @@ fn hermes_guide_body(consumer: &str, origin: &str) -> Markup {
             code { "~/.hermes/plugins/" } ", the reverse-channel gateway hook to "
             code { "~/.hermes/hooks/mwe-events/" }
             " (auto-discovered — it delivers " code { "fact_minted_for_you" }
+            " and " code { "reminder_due" }
             " notices to their recipients), the daily-digest script to "
             code { "~/.hermes/scripts/" } ", and the context-engine plugin goes "
             "into the hermes-agent checkout you run the command from. You normally "
@@ -705,7 +706,8 @@ fn render_install_md_hermes(origin: &str) -> String {
          \n\
          That places the four plugins, the `mwe-events` reverse-channel gateway\n\
          hook (auto-discovered from `~/.hermes/hooks/` — it delivers\n\
-         `fact_minted_for_you` notices to their recipients), and the daily-digest\n\
+         `fact_minted_for_you` and `reminder_due` notices to their recipients),\n\
+         and the daily-digest\n\
          cron script. It does **not** touch the token. Once the\n\
          files are in place, **tell your operator** to do these four things — do not\n\
          attempt them silently, and do not handle the token yourself:\n\

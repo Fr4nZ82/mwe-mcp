@@ -14,8 +14,7 @@
 //!
 //! **Test / personal use only.** This reuses the operator's own Claude
 //! subscription and presents requests as the Claude CLI — never a deployed
-//! product auth mode. SSOT:
-//! §"Anthropic Claude Code / OAuth auth".
+//! product auth mode.
 
 use std::path::{Path, PathBuf};
 use std::time::{SystemTime, UNIX_EPOCH};

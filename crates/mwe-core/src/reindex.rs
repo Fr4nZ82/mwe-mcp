@@ -43,9 +43,8 @@
 //! ## Safety net
 //!
 //! [`run_safety_net_loop`] re-runs [`reindex_full`] on a configurable
-//! interval (default 5 minutes per the
-//! reindex pipeline) so a
-//! missed event never permanently de-syncs the index.
+//! interval (default 5 minutes) so a missed event never permanently
+//! de-syncs the index.
 
 use std::collections::{BTreeMap, HashSet};
 use std::path::{Path, PathBuf};
@@ -67,8 +66,7 @@ use crate::wiki::{DiscoveredWiki, WikiError, WikiTree};
 
 /// Default cadence of [`run_safety_net_loop`] — the 5-minute window.
 ///
-/// The reindex pipeline calls it out as the
-/// REM-level full re-scan that catches anything the watcher misses.
+/// The REM-level full re-scan that catches anything the watcher misses.
 pub const SAFETY_NET_INTERVAL: Duration = Duration::from_secs(5 * 60);
 
 /// Errors raised by the reindex pipeline.
@@ -1139,13 +1137,12 @@ pub async fn reindex_full(
     // fact moved off page A whose row is repointed only when page B
     // compiles) and would tombstone a live row. So it section-indexes only
     // smart wikis (smart-consumer-owned, content-indexed plain markdown);
-    // "standard" = "not smart" now that the `wiki_type` registry is
-    // retired.
+    // "standard" = "not smart": `_meta.smart` is the whole axis.
     let discovered = tree.walk()?;
     for d in &discovered {
         // Nothing rebuilds the capture buffer here: `capture_buffer` is the
         // source of truth for a waiting claim, and there is no journal file to
-        // re-read (2026-08-18).
+        // re-read.
         //
         // Standard wikis: skip the content sweep (compiler output — see above).
         if !d.meta.smart {

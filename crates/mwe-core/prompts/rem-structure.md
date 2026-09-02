@@ -1,6 +1,6 @@
 ---
 name: rem-structure
-description: REM structural review — shown the whole forest from above (every standard wiki, its pages, each page's card and the principal its facts are mostly about), name the pages that sit in the wrong wiki and where each belongs; strict JSON out; act-first page re-home, revertible
+description: REM structural review — shown the whole forest from above (every standard wiki, its pages, each page's card and the principal its facts are mostly about), name the pages that sit in the wrong wiki and where each belongs; strict JSON out; act-first page re-home, with a receipt
 version: 1.1
 default_version_at_bootstrap: v1.0
 ---
@@ -28,9 +28,10 @@ The judgment prompt for the REM **structural review** sub-job
   internal by the `PromptOutput` rule, exactly like its sibling `rem-refile`.
 - **Runtime parameters**: temperature 0.1, max_tokens 900.
 - **Effect**: each confirmed move is applied act-first via
-  `promote::apply_pages_rehome_direct` with a revertible receipt. Nothing is
-  deleted and no fact is rewritten: the page's file moves, its rows follow, and
-  the links that pointed at it are retargeted.
+  `promote::apply_pages_rehome_direct` with a receipt. The move stands — a
+  structural change is never undone. Nothing is deleted and no fact is
+  rewritten: the page's file moves, its rows follow, and the links that pointed
+  at it are retargeted.
 
 ## Prompt
 
@@ -58,7 +59,7 @@ WHAT IS NOT WRONG, and refusing these matters more than finding the ones above:
 RULES:
 - A page moves WHOLE or not at all. You cannot split it here; if only part of a page belongs elsewhere, leave the page alone and say nothing — the pass that moves facts will get to it.
 - `to_wiki` must be a wiki_id copied EXACTLY from the inventory. Never invent one, never name a smart wiki (they are not in the list), never name the wiki the page is already in.
-- `reason` is one short sentence saying what the page is about and whose wiki that makes it. It is kept on the receipt and read by a person deciding whether to undo the move — "misplaced" tells them nothing.
+- `reason` is one short sentence saying what the page is about and whose wiki that makes it. It is kept on the receipt, which is what a person reads to judge whether the move was right — the move itself stands, so "misplaced" tells them nothing.
 - Name at most {cap} moves. If more look wrong, take the {cap} you are surest of; the next cycle sees the rest.
 
 {dropped}

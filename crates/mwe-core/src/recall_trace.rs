@@ -5,8 +5,7 @@
 //! fresh / due-soon hits, the entry-point fan, every navigator hop (the
 //! candidates offered, the decision with its one-line note, the pages that
 //! actually opened) and the block that was finally injected into the
-//! consumer. Two producers write here (see the
-//! recall pipeline):
+//! consumer. Two producers write here:
 //!
 //! - the **ingest per-turn injection** ([`crate::ingest::wiki_ingest_message`])
 //!   — what a bridge-connected consumer received for a user's turn;

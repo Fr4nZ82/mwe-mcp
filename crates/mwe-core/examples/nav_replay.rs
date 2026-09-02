@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
-//! Planning card 61 — the navigator counterfactual.
+//! The navigator counterfactual.
 //!
 //! Replays the funnel on a turn that never got one, against a **copy** of a
 //! workdir, and prints the entry fan, every hop's candidate cards, the

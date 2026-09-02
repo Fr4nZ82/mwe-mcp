@@ -20,18 +20,15 @@
 //!   under a HARD RULE explicit confirmation).
 //! - `POST /dashboard/facts/:fact_id/acl` — structured ACL change. Subject
 //!   -or-admin gated, refused on smart wikis (those carry wiki-level ACL,
-//!   not per-fragment — see
-//!   smart-wikis). Calls
+//!   not per-fragment). Calls
 //!   [`mwe_core::operator_edits::acl_change_operator`], posts the
 //!   `structure_applied` notice, and 303-redirects to the born-applied
 //!   receipt's open-in-chat page so the operator lands on a summary of
 //!   what changed.
 //! - `POST /dashboard/facts/:fact_id/validity` — structured validity edit
 //!   (`valid_from` / `valid_to`). **Subject-or-admin** gated (validity is the
-//!   subject's *update* of a fact about themselves — the write-authority
-//!   model, identity and ACL),
-//!   the same subject axis as the ACL action; same standard-wiki gate + paper
-//!   trail otherwise, via
+//!   subject's *update* of a fact about themselves), the same subject axis as
+//!   the ACL action; same standard-wiki gate + paper trail otherwise, via
 //!   [`mwe_core::operator_edits::validity_edit_operator`].
 //! - `POST /dashboard/facts/:fact_id/edit/submit` — the form-to-chat
 //!   bridge for the **body / topics / `fact_type`** supersede only: runs
@@ -483,11 +480,10 @@ async fn edit_form(
         FactId::parse(&fact_id_raw).map_err(|e| DashboardError::BadRequest(format!("{e}")))?;
     let reveal = crate::reveal::active(&state, &user, &jar);
     let row = load_visible_fact(&state, &user, &fact_id, reveal).await?;
-    // Both structured forms gate on the **subject** axis (the write-authority
-    // model — ): ACL (visibility) is the
-    // subject's privacy call, and
-    // validity (an *update* of the fact, not a destruction) is likewise the
-    // subject's act. Only `delete` keys on `sender` / a vote.
+    // Both structured forms gate on the **subject** axis: ACL (visibility) is
+    // the subject's privacy call, and validity (an *update* of the fact, not a
+    // destruction) is likewise the subject's act. Only `delete` keys on
+    // `sender` / a vote.
     let can_acl = subject_or_admin(&user, &row);
     let can_validity = subject_or_admin(&user, &row);
     let is_smart = wiki_is_smart(&state, &row.wiki_id);
@@ -510,23 +506,19 @@ async fn edit_form(
 
 /// The subject-or-admin predicate — the gate for the subject's acts on a fact
 /// about themselves: **`acl_change`** (visibility) and **`validity_edit`** (an
-/// *update* of the fact, not a destruction). Both are the subject's call (the
-/// write-authority model —
-/// identity and ACL).
-/// User-subject only (a group-owned fact's
-/// member updates it via ingest / admin), matching `acl_submit`.
+/// *update* of the fact, not a destruction). Both are the subject's call.
+/// User-subject only (a group-owned fact's member updates it via ingest /
+/// admin), matching `acl_submit`.
 fn subject_or_admin(user: &SessionUser, row: &FactIndexRow) -> bool {
     row.subject_id == Principal::User(user.sender_id.clone()) || user.is_admin
 }
 
-/// The sender-or-admin predicate — the **`delete`** (author-direct) gate
-/// (the write-authority model —
-/// identity and ACL):
-/// only the fact's `sender` (its author) **destroys** their
-/// own contribution directly; an admin may delete any fact. A non-sender subject's
-/// path is a request → vote, opened from the dashboard. *Updates* (edit /
-/// validity) are the subject's, not the sender's — see [`subject_or_admin`].
-/// Delegates to [`mwe_core::acl::can_delete`] so the policy stays in one place.
+/// The sender-or-admin predicate — the **`delete`** (author-direct) gate: only
+/// the fact's `sender` (its author) **destroys** their own contribution
+/// directly; an admin may delete any fact. A non-sender subject's path is a
+/// request → vote, opened from the dashboard. *Updates* (edit / validity) are
+/// the subject's, not the sender's — see [`subject_or_admin`]. Delegates to
+/// [`mwe_core::acl::can_delete`] so the policy stays in one place.
 fn sender_or_admin(user: &SessionUser, row: &FactIndexRow) -> bool {
     mwe_core::acl::can_delete(row.sender_id.as_ref(), &user.sender_id, user.is_admin)
 }
@@ -693,11 +685,10 @@ pub struct ValidityActionForm {
 /// per-fragment ACL change.
 ///
 /// Gated **subject-OR-admin** + **standard-wikis only** (smart wikis carry
-/// wiki-level ACL, not per-fragment — see
-/// smart-wikis). Calls the
-/// act-first wrapper, posts the `structure_applied` notice mirroring the
-/// chat paper-trail, and 303-redirects to the born-applied receipt's
-/// open-in-chat page so the operator lands on a summary of what changed.
+/// wiki-level ACL, not per-fragment). Calls the act-first wrapper, posts the
+/// `structure_applied` notice mirroring the chat paper-trail, and
+/// 303-redirects to the born-applied receipt's open-in-chat page so the
+/// operator lands on a summary of what changed.
 async fn acl_submit(
     State(state): State<DashboardState>,
     user: SessionUser,
@@ -770,9 +761,8 @@ async fn acl_submit(
 
 /// `POST /dashboard/facts/:fact_id/validity` — structured, engine-direct
 /// per-fragment validity edit. **Subject-or-admin** gated (validity is the
-/// subject's *update* of a fact about themselves — the write-authority model,
-/// identity and ACL), the
-/// same subject axis as [`acl_submit`]; same standard-wiki gate + paper trail.
+/// subject's *update* of a fact about themselves), the same subject axis as
+/// [`acl_submit`]; same standard-wiki gate + paper trail.
 async fn validity_submit(
     State(state): State<DashboardState>,
     user: SessionUser,
@@ -784,8 +774,8 @@ async fn validity_submit(
         FactId::parse(&fact_id_raw).map_err(|e| DashboardError::BadRequest(format!("{e}")))?;
     let reveal = crate::reveal::active(&state, &user, &jar);
     let row = load_visible_fact(&state, &user, &fact_id, reveal).await?;
-    // Validity is an *update* of the fact (not a destruction): the subject's act
-    // (the write-authority model), the same subject axis as ACL.
+    // Validity is an *update* of the fact (not a destruction): the subject's
+    // act, the same subject axis as ACL.
     enforce_subject_or_admin(&user, &row)?;
     enforce_standard_wiki(&state, &row.wiki_id)?;
 
@@ -837,10 +827,10 @@ async fn validity_submit(
 /// fact ([`mwe_core::capture::wiki_forget`]: the `deleted_at` tombstone
 /// plus the best-effort excision of the region's on-disk bytes).
 ///
-/// **Sender-or-admin** gated (the write-authority model): only the fact's author
-/// forgets it directly; a non-sender's path is a request → vote. The
-/// soft-delete flips `deleted_at` so the fact leaves recall at once and
-/// survives as an audit tombstone (visible under the "include inactive"
+/// **Sender-or-admin** gated: only the fact's author forgets it directly; a
+/// non-sender's path is a request → vote. The soft-delete flips `deleted_at`
+/// so the fact leaves recall at once and survives as an audit tombstone
+/// (visible under the "include inactive"
 /// filter). The button only appears on active promoted facts — a fresh
 /// capture has no `fact_index` row (404 here), and an already-tombstoned
 /// row is a no-op (the tombstone guards on `deleted_at IS NULL`).
@@ -1163,7 +1153,7 @@ fn split_csv(s: &str) -> Vec<String> {
 /// Deterministic mapper from the form delta to the textual instruction
 /// the agentic chat panel receives.
 ///
-/// Three macro-cases per the memory model:
+/// Three macro-cases:
 ///
 /// 1. **Metadata-only change** (topics / `fact_type`, no body): a single
 ///    sentence enumerating the new values. Drives
@@ -1549,11 +1539,10 @@ fn filter_form(filters: &FactsFilters, page_size: usize) -> Markup {
 
 fn action_cell(user: &SessionUser, row: &FactRow, frozen: bool) -> Markup {
     let wiki_link = format!("/dashboard/wiki/{}", row.wiki_id);
-    // The delete button is author-direct (the write-authority model —
-    // ): show it only to
-    // the fact's `sender` or an admin, so a viewer who can merely read the fact
-    // is not offered a "delete" that the POST would 403. The POST re-checks
-    // sender-or-admin regardless. The active/promoted guard is the outer `@if`.
+    // The delete button is author-direct: show it only to the fact's `sender`
+    // or an admin, so a viewer who can merely read the fact is not offered a
+    // "delete" that the POST would 403. The POST re-checks sender-or-admin
+    // regardless. The active/promoted guard is the outer `@if`.
     // (Reveal lists every user's facts as admin → the button shows.)
     let self_principal = format!("user:{}", user.sender_id);
     let can_delete = user.is_admin || row.sender_id.as_deref() == Some(self_principal.as_str());
@@ -1693,12 +1682,10 @@ fn filter_hidden_inputs(filters: &FactsFilters, page_size: usize) -> Markup {
 /// `flash` is shown above the form when set (the unchanged-submit branch
 /// in [`edit_submit`] uses it to nudge the user without forcing them off
 /// the page). `can_acl` (subject-or-admin) and `can_validity` (subject-or-admin)
-/// gate the two structured sub-forms per the write-authority model (both the
-/// subject's acts — visibility and update;
-/// identity and ACL), and
-/// `is_smart` is the fact's wiki family — together they decide whether each
-/// structured action renders as a live form or as a disabled note (smart wikis
-/// carry no per-fragment ACL / validity).
+/// gate the two structured sub-forms (both the subject's acts — visibility and
+/// update), and `is_smart` is the fact's wiki family — together they decide
+/// whether each structured action renders as a live form or as a disabled note
+/// (smart wikis carry no per-fragment ACL / validity).
 fn render_edit_form(
     state: &DashboardState,
     user: &SessionUser,
@@ -1873,10 +1860,9 @@ fn fact_summary_dl(fact_id: &FactId, row: &FactIndexRow, body_html: &Markup) -> 
 
 /// The structured engine-direct ACL + validity sub-forms. Renders a
 /// disabled note on smart wikis (no per-fragment governance); otherwise each
-/// form renders only for the principal who may submit it (the write-authority
-/// model):
-/// the **ACL** form needs `can_acl` (subject-or-admin — visibility is the
-/// subject's call), the **validity** form needs `can_validity` (subject-or-admin —
+/// form renders only for the principal who may submit it: the **ACL** form
+/// needs `can_acl` (subject-or-admin — visibility is the subject's call), the
+/// **validity** form needs `can_validity` (subject-or-admin —
 /// updating validity is the subject's act too, not a destruction). When the
 /// viewer can do neither, an axis-accurate refusal note replaces both.
 fn structured_actions_section(

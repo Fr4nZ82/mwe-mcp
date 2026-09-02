@@ -35,8 +35,8 @@ an operator override at `<workdir>/prompts/cartografo.md` wins.
   run — the dedup context and the destination list in one; past the ceiling a
   foreign line also carries `via: <source>`, see below),
   `{taken_slugs}` (bare page names of the pages **not** shown above — the
-  collision guard, and nothing else now that the pages themselves are
-  offered), `{facts}` (the batch's facts:
+  collision guard and nothing else: the pages themselves are offered
+  above), `{facts}` (the batch's facts:
   `[id:<uuid>] "<text>" type=<fact_type> subject=<principal>
   identity_pages=<slugs|any|none>`, plus ` external=<name>` on a fact about
   somebody or something that is not a principal, plus ` SPENT=<why>` on a fact whose

@@ -78,8 +78,7 @@ struct Cli {
 enum Command {
     /// Bootstrap workdir: create directories, apply migrations, generate
     /// a fresh `MWE_TOKEN_SECRET` if absent. Identity (users, groups,
-    /// admin) is created later through the dashboard first-run wizard
-    /// per the setup wizard and identity model.
+    /// admin) is created later through the dashboard first-run wizard.
     ///
     /// **Optional**: `serve` self-bootstraps the same workdir state on
     /// first boot (directories, migrations, secret). `init` exists for
@@ -89,9 +88,7 @@ enum Command {
     Init {
         /// Seed `mwe-mcp.config.yaml` with the chosen LLM profile.
         /// Skipped when the file already exists. Accepted values:
-        /// `all-local` (default), `hybrid`, `all-api`, `custom`. See
-        /// the config schema for the
-        /// profile presets.
+        /// `all-local` (default), `hybrid`, `all-api`, `custom`.
         #[arg(long, default_value = "all-local")]
         llm_profile: String,
 
@@ -207,8 +204,7 @@ enum Command {
     /// shares it with the user out of band; the user lands on
     /// `/dashboard/accept-invite/<id>`, picks a new password, and
     /// the existing `user_credentials` row (if any) is overwritten
-    /// when they submit. The admin never sees the password
-    /// (see the setup wizard and identity model).
+    /// when they submit. The admin never sees the password.
     AdminReset {
         /// User id whose credential is being reset. Must exist in
         /// `enrollment_users`.
@@ -2265,7 +2261,7 @@ async fn boot_smart_wiki_passes(pool: &sqlx::SqlitePool, tree: &mwe_core::wiki::
 ///
 /// Read once, here, and never refreshed from a dashboard save: the
 /// `instance:` section is the machine operator's and has no dashboard
-/// editor by design (see ), so
+/// editor by design, so
 /// hot-reloading it would mean the panel could reach it after all.
 fn dashboard_config_from(config: &Config) -> mwe_dashboard::DashboardConfig {
     mwe_dashboard::DashboardConfig {
@@ -2672,9 +2668,9 @@ type TokenBlacklistRow = (
     Option<String>,
 );
 
-/// List the contents of `token_blacklist`. Per the discussion
-/// captured in the maintainer notes: "active tokens" are not enumerable
-/// server-side: we list the revocations we persist.
+/// List the contents of `token_blacklist`. Active tokens are not
+/// enumerable server-side — nothing persists them — so what this lists is
+/// the revocations.
 async fn cmd_token_list(workdir: &Path) -> Result<()> {
     let _lock = lockfile::acquire(workdir).map_err(|e| anyhow!("lockfile: {e}"))?;
     let pool = db::open_or_init(workdir)

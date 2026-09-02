@@ -8,8 +8,7 @@
 //! wrong password, missing `user_credentials` row for a system user)
 //! so the visitor cannot enumerate accounts.
 //!
-//! Per the JWT & session model
-//! the **email** is the only login field. The admin sets every user's
+//! The **email** is the only login field. The admin sets every user's
 //! email when inviting them (the "Add user" form), so the email lives on
 //! `enrollment_users` and the handler resolves it to the canonical
 //! `user_id` via `SELECT user_id … WHERE enrollment_users.email = ?`,

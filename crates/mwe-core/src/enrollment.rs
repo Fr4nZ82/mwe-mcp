@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 //! Identity validation and DB mirror — invoked by the dashboard CRUD
-//! handlers (enrollment loader).
+//! handlers.
 //!
 //! The DDL for the two mirror tables (`enrollment_users` and
 //! `enrollment_groups`) lives in `migrations/0006_enrollment.sql`.
@@ -42,8 +42,7 @@ pub struct EnrollmentFile {
     pub groups: Vec<GroupEntry>,
 }
 
-/// A single user entry
-/// (identity and ACL §1.6).
+/// A single user entry.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct UserEntry {
     /// Stable identifier. Must match `^[a-z][a-z0-9°]*$`.
@@ -51,8 +50,7 @@ pub struct UserEntry {
     /// Alternative names accepted by `users_resolve` fuzzy match.
     #[serde(default)]
     pub aliases: Vec<String>,
-    /// UI gating hint for the built-in dashboard; **does not** bypass
-    /// ACL (identity and ACL).
+    /// UI gating hint for the built-in dashboard; **does not** bypass ACL.
     #[serde(rename = "isAdmin", default)]
     pub is_admin: bool,
     /// Optional BCP-47 locale tag (`it-IT`, `en-US`, ...) used as the
@@ -71,8 +69,7 @@ pub struct UserEntry {
     pub timezone: Option<String>,
 }
 
-/// A single group entry
-/// (identity and ACL §1.6).
+/// A single group entry.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct GroupEntry {
     /// Stable identifier. Must match `^[a-z][a-z0-9]*$` (no `°` allowed
@@ -668,8 +665,7 @@ pub async fn is_system_user(pool: &SqlitePool, user_id: &str) -> Result<bool, sq
 ///
 /// One policy shared by the `mwe-mcp token-issue` CLI and the dashboard
 /// token form, so the two can never drift. The connection pattern is a
-/// function of `consumer_class`, not a free choice (see
-///  §1):
+/// function of `consumer_class`, not a free choice:
 ///
 /// - **`standard`** ⇒ Pattern B. `sender` must be a credential-less
 ///   **system user** (the bot's own identity) and a `consumer_id` must be
@@ -716,7 +712,7 @@ pub async fn validate_token_identity(
                 "standard consumer token must bind a system user (a credential-less bot \
                  identity), but {sender:?} is a human account with a login. Create a dedicated \
                  bot identity and issue the token for it; the bot reaches real users via \
-                 X-MWE-Act-As (diagonal identity model —  §1)"
+                 X-MWE-Act-As (diagonal identity model)"
             ));
         }
         if !has_consumer_id {
@@ -738,11 +734,11 @@ pub async fn validate_token_identity(
 /// True when `user_id` carries the explicit `is_agent` marker — a consumer
 /// agent's own system-user identity (migration 0050).
 ///
-/// The authoritative discriminator the diagonal-identity model deferred
-/// ( §1.5): it distinguishes a bot identity
-/// from a not-yet-onboarded human (both lack `user_credentials`), and is mutually
-/// exclusive with a login account. Set the moment a standard consumer token
-/// establishes its binding ([`crate::consumers::ensure_agent_identity`]).
+/// The authoritative discriminator the diagonal-identity model deferred:
+/// it distinguishes a bot identity from a not-yet-onboarded human (both
+/// lack `user_credentials`), and is mutually exclusive with a login
+/// account. Set the moment a standard consumer token establishes its
+/// binding ([`crate::consumers::ensure_agent_identity`]).
 ///
 /// # Errors
 /// - [`sqlx::Error`] for any SQL failure.
@@ -807,8 +803,8 @@ pub async fn reject_if_agent(pool: &SqlitePool, user_id: &str) -> Result<(), Str
         return Err(format!(
             "{user_id:?} is a consumer-agent identity (is_agent) and cannot also hold a \
              dashboard login: an identity is either a human account with credentials or a \
-             bot's credential-less system user, never both (diagonal identity model — \
-              §1.5)"
+             bot's credential-less system user, never both (diagonal identity \
+             model)"
         ));
     }
     Ok(())

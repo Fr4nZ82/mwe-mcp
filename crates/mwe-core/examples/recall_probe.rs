@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
-//! Read-side diagnostic for planning card 61 — where the two corpora sit
-//! relative to each other, and what the merged view actually returns.
+//! Read-side diagnostic — where the two corpora sit relative to each other,
+//! and what the merged view actually returns.
 //!
 //! Throwaway measurement harness. Point it at a **copy** of a workdir (it
 //! bumps recall counters through the real orchestrators) and it reports,

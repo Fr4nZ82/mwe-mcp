@@ -36,7 +36,7 @@ thiserror = { workspace = true }
 chrono = { workspace = true }
 
 # Password hashing for /dashboard/setup, /dashboard/login,
-# /dashboard/accept-invite, /dashboard/settings/me (A.9 + A.12).
+# /dashboard/accept-invite, /dashboard/settings/me.
 argon2 = { workspace = true }
 password-hash = { workspace = true }
 time = { workspace = true }
@@ -53,7 +53,7 @@ sha2 = { workspace = true }
 base64 = { workspace = true }
 getrandom = { workspace = true }
 hex = { workspace = true }
-# C.8.a admin LLM-config editor serializes the live Config back into
+# The admin LLM-config editor serializes the live Config back into
 # mwe-mcp.config.yaml on save. Already a workspace dep (mwe-core uses
 # it for the load side); pulling it in here keeps the dashboard
 # self-contained.
@@ -61,8 +61,8 @@ serde_yaml = { workspace = true }
 
 # Markdown → HTML for the wiki page preview rendered at
 # `/dashboard/wiki/:id/view/*path`. Heading slugs are computed via
-# `mwe_core::briefing::slug_from_heading` so the C.11.f comment
-# anchors line up onto the rendered `<h*>` elements.
+# `mwe_core::briefing::slug_from_heading` so the comment anchors line up
+# onto the rendered `<h*>` elements.
 pulldown-cmark = { workspace = true }
 
 [dev-dependencies]

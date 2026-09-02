@@ -8,14 +8,13 @@
 //! live in a global content-addressed store at
 //! `<workdir>/media/<aa>/<sha256>` (sharded by the first two hex chars).
 //! Identical bytes are stored once regardless of how many catalog rows or
-//! wikis reference them. Design SSOT:
-//! media pipeline; table
-//! DDL in [`migrations/0039_media_catalog.sql`](../../../migrations/0039_media_catalog.sql).
+//! wikis reference them. Table DDL in
+//! [`migrations/0039_media_catalog.sql`](../../../migrations/0039_media_catalog.sql).
 //!
 //! Write ordering is load-bearing for the workdir snapshot
-//! (backup): the blob is
-//! written **before** the catalog row, so a row present in a snapshot's DB
-//! image always finds its blob in the later file copy. An orphan blob
+//! ([`crate::backup`]): the blob is written **before** the catalog row,
+//! so a row present in a snapshot's DB image always finds its blob in
+//! the later file copy. An orphan blob
 //! without a row is harmless garbage; a row without a blob would be a
 //! broken `GET` — the order rules it out.
 //!
@@ -424,9 +423,7 @@ async fn find_by_sha_and_subject(
 }
 
 /// Whether `sender_id` (with `sender_groups`) may read this media item —
-/// the same union rule as fact regions
-/// (redaction policy),
-/// no admin bypass.
+/// the same union rule as fact regions, no admin bypass.
 #[must_use]
 pub fn row_visible_to(row: &MediaRow, sender_id: &str, sender_groups: &[String]) -> bool {
     let acl = Acl {

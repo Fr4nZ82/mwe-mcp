@@ -828,24 +828,24 @@ async fn delete(
         );
     }
 
-    // 23d: a contribution outlives its author. Reassign any fact this user
-    // authored (sender = user:<id>) to its wiki's scope principal so no active
-    // fact is left pointing at a vanished sender (the sender-scrub invariant —
-    // ). Best-effort —
-    // a failure (or absent memory handles) is logged, never blocks the delete.
+    // A contribution outlives its author. Reassign any fact this user authored
+    // (sender = user:<id>) to its wiki's scope principal so no active fact is
+    // left pointing at a vanished sender (the sender-scrub invariant).
+    // Best-effort — a failure (or absent memory handles) is logged, never
+    // blocks the delete.
     if let Some(memory) = state.memory.as_ref() {
         let gone = mwe_core::types::Principal::User(user_id.clone());
         match mwe_core::fact_index::reassign_sender_to_scope(&state.pool, &memory.tree, &gone).await
         {
             Ok(n) => {
-                tracing::info!(user = %user_id, reassigned = n, "23d: user delete reassigned facts' sender to wiki scope");
+                tracing::info!(user = %user_id, reassigned = n, "user delete reassigned facts' sender to wiki scope");
             },
             Err(e) => {
-                tracing::warn!(user = %user_id, error = %e, "23d: sender reassignment failed after user delete");
+                tracing::warn!(user = %user_id, error = %e, "sender reassignment failed after user delete");
             },
         }
     } else {
-        tracing::warn!(user = %user_id, "23d: memory handles unavailable — facts' sender not reassigned");
+        tracing::warn!(user = %user_id, "memory handles unavailable — facts' sender not reassigned");
     }
 
     tracing::info!(actor = admin.sender_id(), user = %user_id, "dashboard deleted user");

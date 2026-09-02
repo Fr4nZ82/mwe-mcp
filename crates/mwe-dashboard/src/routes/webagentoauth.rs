@@ -22,8 +22,7 @@
 //! authorize consent page which needs the session cookie.
 //!
 //! No OAuth scopes: the token is "smart consumer owned by user X"; the wiki-level
-//! ACL + the smart-wiki owner-match govern what it can touch (see
-//! the web-agent bridge).
+//! ACL + the smart-wiki owner-match govern what it can touch.
 
 use std::time::Duration;
 

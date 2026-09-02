@@ -8,8 +8,7 @@ default_version_at_bootstrap: v1.3
 # Prompt: rem-page-grouping
 
 Prompt for the REM nightly **page-group → wiki** regrouping sub-pass
-(the second rung of the physical-form scale, see
-memory model). Once per wiki,
+(the second rung of the physical-form scale). Once per wiki,
 the `rem_promotions` strong slot reads the wiki's **whole page
 inventory** and cuts groups of pages that are **already** one subject
 area. A group either founds a new sub-wiki (floor:
@@ -23,15 +22,13 @@ page; a page that has merely accumulated mass belongs to the
 orchestrator calls the prompt through the hybrid loader
 [`mwe_core::prompts::render`]: the override at
 `<workdir>/prompts/rem-page-grouping.md` wins when present, otherwise
-this bundled default. See the REM cycle page and
-`crates/mwe-core/src/rem.rs` (`run_page_grouping_for_wiki`) for the
-runtime parameters.
+this bundled default. See `crates/mwe-core/src/rem.rs`
+(`run_page_grouping_for_wiki`) for the runtime parameters.
 
 ## Runtime contract
 
 Operational specs that ship next to the prompt body so they can't drift
-from it. Code is the source of truth; the REM cycle page keeps the
-design.
+from it. Code is the source of truth.
 
 **Call site**: `crates/mwe-core/src/rem.rs::run_page_grouping_for_wiki`
 — search for `page_grouping_prompt(`. The
@@ -67,10 +64,9 @@ plus two real sentences is ground truth.
 and `description` are stamped onto the newborn wiki's `_meta`
 (`extra["style"]` validated to the closed palette, `extra["summary"]`)
 so it is **not born blind** to placement and recall navigation. `style`
-is a **hint, not a gate** (see the
-memory model): a page may
-still deviate with reason, and a value outside the palette leaves the
-wiki generic. Parsed by `parse_page_groups` in
+is a **hint, not a gate**: a page may still deviate with reason, and a
+value outside the palette leaves the wiki generic. Parsed by
+`parse_page_groups` in
 `crates/mwe-core/src/rem.rs` (brace-balanced scan, tolerant to prose
 around the JSON). A group missing its discriminator, its pages, or (for
 a birth) its slug is **dropped**, never guessed at; parse failure of the

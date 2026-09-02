@@ -41,10 +41,8 @@ reqwest = { workspace = true }
 rust-embed = { workspace = true }
 tempfile = { workspace = true }
 
-# Bundled local embedder. Heavy ML deps, so kept
-# optional and gated behind the off-by-default `local-embedder` feature
-# during the engine spike (18a); flips to a default feature once the
-# group lands (18b/18e).
+# Bundled local embedder. Heavy ML deps, so kept optional and gated
+# behind the off-by-default `local-embedder` feature.
 candle-core = { workspace = true, optional = true }
 candle-nn = { workspace = true, optional = true }
 candle-transformers = { workspace = true, optional = true }
@@ -53,8 +51,8 @@ tokenizers = { workspace = true, optional = true }
 [features]
 default = []
 # Expose `FakeEmbedder` / `FakeLlmBackend` so downstream test crates
-# (mwe-dashboard tests, integration suites in Phase B) can build a
-# recall/REM pipeline without hitting the network.
+# (mwe-dashboard tests, the integration suites) can build a recall/REM
+# pipeline without hitting the network.
 test-fakes = []
 # Bundled local embedder (Candle / bge-m3). Gates the
 # Candle stack (heavy ML deps + a build-time C compiler for onig), so it is
@@ -88,7 +86,9 @@ harness = false
 name = "embedder_spike"
 required-features = ["local-embedder"]
 
-# Read-side diagnostic for planning card 61 (throwaway measurement tool).
+# Read-side diagnostic: where the fact and section corpora sit relative
+# to each other, and what the merged view returns (throwaway measurement
+# tool).
 [[example]]
 name = "recall_probe"
 required-features = ["local-embedder"]
@@ -109,27 +109,27 @@ required-features = ["local-embedder"]
 name = "room_walk"
 required-features = ["local-embedder"]
 
-# Planning card 65 — the subject signal: is the asker in the query, and does
-# covering both subjects of a two-person question earn anything?
+# The subject signal: is the asker in the query, and does covering both
+# subjects of a two-person question earn anything?
 [[example]]
 name = "subject_signal"
 required-features = ["local-embedder"]
 
-# Planning card 66 — what shape is the navigator's candidate pool, and where
-# does `max_candidates` cut it?
+# What shape is the navigator's candidate pool, and where does
+# `max_candidates` cut it?
 [[example]]
 name = "pool_shape"
 required-features = ["local-embedder"]
 
-# Planning card 83 — the fact-and-nexus graph, built outside the engine over a
-# read-only corpus so the behavioural questions get answers before any engine
-# code moves (throwaway measurement tool).
+# The fact-and-nexus graph, built outside the engine over a read-only
+# corpus so the behavioural questions get answers before any engine code
+# moves (throwaway measurement tool).
 [[example]]
 name = "nexus_bench"
 required-features = ["local-embedder"]
 
-# Planning card 69d — should a third party's identity card be SERVED rather
-# than navigated to, and on what condition?
+# Should a third party's identity card be SERVED rather than navigated
+# to, and on what condition?
 [[example]]
 name = "subject_gate"
 required-features = ["local-embedder"]

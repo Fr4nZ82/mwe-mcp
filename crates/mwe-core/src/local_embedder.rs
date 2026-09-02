@@ -15,10 +15,10 @@
 //! [Candle](https://github.com/huggingface/candle) — a Rust ML stack whose
 //! CPU kernels compile into the binary with no external `onnxruntime` / `.so`
 //! at runtime, keeping the self-contained-binary invariant. GPU is an opt-in
-//! build feature; the shipped default runs on CPU. Caveat
-//! surfaced by the 18a spike: candle-core transitively pulls a vendored,
-//! statically-linked Oniguruma (`tokenizers[onig]`, a C regex engine) — the
-//! runtime binary stays self-contained, but the *build* needs a C compiler.
+//! build feature; the shipped default runs on CPU. Caveat: candle-core
+//! transitively pulls a vendored, statically-linked Oniguruma
+//! (`tokenizers[onig]`, a C regex engine) — the runtime binary stays
+//! self-contained, but the *build* needs a C compiler.
 //!
 //! ## Model
 //!

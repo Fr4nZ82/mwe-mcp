@@ -126,7 +126,7 @@ pub fn build(state: DashboardState) -> Router {
         .route("/", get(redirect::root))
         .route("/setup", get(setup::form).post(setup::submit))
         .route("/login", get(login::form).post(login::submit))
-        // Single-use magic-link redemption (0032). Anonymous like `cite`:
+        // Single-use magic-link redemption. Anonymous like `cite`:
         // it verifies + burns the link token, sets the session cookie,
         // and redirects to the deep-link. Must sit OUTSIDE the auth layer.
         .merge(auth_link::router())

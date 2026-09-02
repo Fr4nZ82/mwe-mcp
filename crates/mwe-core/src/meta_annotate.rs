@@ -38,7 +38,6 @@
 //! (offline, strong model, not latency-critical) so the recall-time navigator
 //! stays cheap. The remaining annotations (annotated `[[slug|hint]]` links, the
 //! typed link graph) attach to the compiler's output later.
-//! See the recall pipeline.
 //!
 //! Every write is **best-effort** (the caller logs failures, never fails the
 //! dream — a missing annotation degrades recall, it does not corrupt the wiki)
@@ -232,7 +231,6 @@ async fn collect_page_topics(
 // navigator rebuilds the card PER READER from `fact_index`: topics are the
 // union over the facts the reader `can_read`, and the wiki abstract is
 // gated to readers at the wiki's default visibility.
-// See the ACL card boundary.
 // ---------------------------------------------------------------------
 
 /// Per-reader projection of every wiki's card, recomputed from `fact_index`.

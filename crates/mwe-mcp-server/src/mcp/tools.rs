@@ -621,8 +621,8 @@ async fn governance_blocks(
 
 /// Build the `pending_votes` block surfaced in the
 /// [`call_wiki_ingest_message`] response when the acting member owes a vote on
-/// a pending **fact-forget request** (the write-authority model). Returns `None` when
-/// there is nothing to vote on, so the default wire shape stays quiet.
+/// a pending **fact-forget request**. Returns `None` when there is nothing to
+/// vote on, so the default wire shape stays quiet.
 ///
 /// Pull-only by design: the reminder appears the next time the member interacts
 /// with their agent; there is no push. A member who never looks consents by
@@ -3112,7 +3112,7 @@ struct SkillListArgs {
 
 #[allow(
     clippy::unused_async,
-    reason = "uniform async dispatch table in mcp/mod.rs awaits every tool handler; the bundled-only catalog read no longer needs to await"
+    reason = "uniform async dispatch table in mcp/mod.rs awaits every tool handler; the bundled-only catalog read does not need to await"
 )]
 pub(super) async fn call_skill_list(
     _state: &McpState,
@@ -3140,7 +3140,7 @@ struct SkillFetchArgs {
 
 #[allow(
     clippy::unused_async,
-    reason = "uniform async dispatch table in mcp/mod.rs awaits every tool handler; the bundled-only catalog read no longer needs to await"
+    reason = "uniform async dispatch table in mcp/mod.rs awaits every tool handler; the bundled-only catalog read does not need to await"
 )]
 pub(super) async fn call_skill_fetch(
     _state: &McpState,
@@ -3409,7 +3409,7 @@ fn forget_reason(mechanism: &str, note: Option<&str>) -> String {
 }
 
 /// `wiki_forget` — authority-routed forget of a single fact, the consumer-MCP
-/// half of the authority-routed forget model (tool reference).
+/// half of the authority-routed forget model.
 ///
 /// Routes by the caller's authority over the loaded fact:
 /// - **author or admin** ([`mwe_core::acl::can_delete`]) → tombstone it now
@@ -3417,10 +3417,8 @@ fn forget_reason(mechanism: &str, note: Option<&str>) -> String {
 /// - **subject who did not author it** (the fact is about them, or about a group they belong to;
 ///   [`mwe_core::acl::sender_is_subject`]) → forgetting needs an audience vote, and a
 ///   vote is opened **only from the dashboard**, never started in the background
-///   by the agent (the write-authority model —
-///   identity and ACL). So the tool does
-///   **not** open a request here — it returns `outcome: "request_from_dashboard"`
-///   to steer the user there.
+///   by the agent. So the tool does **not** open a request here — it returns
+///   `outcome: "request_from_dashboard"` to steer the user there.
 /// - **anyone else** → refused (`sender_unauthorized`).
 ///
 /// A missing fact is `not_found`; an already-tombstoned fact is an idempotent
@@ -3481,10 +3479,9 @@ pub(super) async fn call_wiki_forget(
     // Non-author path. Forgetting a fact you did not author needs an **audience
     // vote**, and a vote is opened **only from the dashboard**, where the
     // requester and the audience it polls can see why — never started in the
-    // background by the agent (the write-authority model). So we
-    // do NOT open a request here: if the caller owns the fact (its subject, or a
-    // member of an owning group) point them at the dashboard; otherwise they have
-    // no path at all → refused.
+    // background by the agent. So we do NOT open a request here: if the caller
+    // owns the fact (its subject, or a member of an owning group) point them
+    // at the dashboard; otherwise they have no path at all → refused.
     let caller_groups = mwe_core::enrollment::groups_for(&state.pool, caller)
         .await
         .map_err(|e| ToolError::new(ToolErrorClass::InternalError, e.to_string()))?;

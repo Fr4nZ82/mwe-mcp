@@ -21,12 +21,12 @@ allow = [
     "CC0-1.0",
     "Zlib",
     "MPL-2.0",
-    # `ksni` (the desktop-tray DBus crate, roadmap 14d) is released into the
+    # `ksni` (the desktop-tray DBus crate) is released into the
     # public domain under Unlicense — functionally the sibling of the CC0-1.0
     # dedication already allowed above, no copyleft on consumers.
     "Unlicense",
     # `quoted_printable` (pulled in by `lettre`, the SMTP client for
-    # password-recovery email — roadmap 28) is under 0BSD, the BSD Zero
+    # password-recovery email) is under 0BSD, the BSD Zero
     # Clause License: OSI-approved, public-domain-equivalent with no
     # attribution or copyleft requirement — the functional sibling of the
     # CC0-1.0 / Unlicense dedications already allowed above.

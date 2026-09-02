@@ -5,9 +5,7 @@
 //! reconstructible from the other: `engine.db` holds the facts (claim
 //! text, ACL, validity, embeddings, buffers) and the `.md` tree holds
 //! their prose renders, styles, and narrative links. The unit of backup
-//! is therefore the **workdir snapshot** — both halves taken together
-//! (discipline + restore procedure:
-//! backup & DR).
+//! is therefore the **workdir snapshot** — both halves taken together.
 //!
 //! [`snapshot_workdir`] takes a *hot* snapshot, safe next to a running
 //! `mwe-mcp serve` (no lockfile taken):

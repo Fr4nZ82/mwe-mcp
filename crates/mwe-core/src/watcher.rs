@@ -1,6 +1,5 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
-//! Cross-platform filesystem watcher for the memory-wiki SSOT
-//! (reindex pipeline).
+//! Cross-platform filesystem watcher for the memory-wiki SSOT.
 //!
 //! ## What it does
 //!
@@ -17,10 +16,10 @@
 //! that the watcher would otherwise pick up and forward, causing a
 //! re-index storm right after a self-write.
 //!
-//! The fix is the **per-file marker** R.1.2 specifies: before the
-//! write, the writer touches `<path>.mwe-write-in-progress`; after
-//! the atomic rename, the marker is removed (or it auto-expires after
-//! [`MARKER_TTL`]). The watcher applies two filters:
+//! The fix is a **per-file marker**: before the write, the writer
+//! touches `<path>.mwe-write-in-progress`; after the atomic rename, the
+//! marker is removed (or it auto-expires after [`MARKER_TTL`]). The
+//! watcher applies two filters:
 //!
 //! 1. Any event whose path *is* a marker file is dropped — the marker
 //!    is bookkeeping, not data.
@@ -53,8 +52,7 @@ pub const MARKER_SUFFIX: &str = ".mwe-write-in-progress";
 /// event on its target.
 ///
 /// After this window the marker is treated as a crashed-writer orphan
-/// and ignored — the underlying event is delivered normally. Matches
-/// the R.1.2 spec (30 s).
+/// and ignored — the underlying event is delivered normally.
 pub const MARKER_TTL: Duration = Duration::from_secs(30);
 
 /// Errors raised by the watcher subsystem.
@@ -142,7 +140,7 @@ fn sweep_recursive(dir: &Path, removed: &mut usize) -> Result<()> {
 
 /// RAII guard around a marker file. Built via [`WriteMarker::acquire`]
 /// and removes the marker on `drop`. Holding one across a write loop
-/// is the canonical way to honour the R.1.2 protocol.
+/// is the canonical way to honour the marker protocol.
 pub struct WriteMarker {
     path: PathBuf,
 }

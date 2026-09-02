@@ -211,7 +211,7 @@ pub(crate) fn window_closed_at(
 // ---------- Subject coverage as a ranking signal ----------
 
 /// Proportional uplift a hit earns for **each** of the turn's subjects it
-/// covers beyond the first (planning card 65).
+/// covers beyond the first.
 ///
 /// A question naming two people should be answered by a fact about both,
 /// and cosine alone cannot say so: measured on a live corpus, the fact
@@ -1638,7 +1638,7 @@ pub const DEFAULT_SMART_CORPUS_FLOOR: f32 = 0.45;
 /// unsearchable turn through is the wrong instrument on the wrong evidence.
 ///
 /// So this defaults to **disabled**. The upstream fix is the classifier's
-/// `skip` rule (planning card 61 §16); once that lands, a floor gets a number
+/// `skip` rule; once that lands, a floor gets a number
 /// only if a *complete* turn is measured doing harm — from the gold set
 /// growing on confirmed misses, not from a sweep of unlabelled turns.
 /// `recall.relevance_floor` on the operator panel turns it on; the value the
@@ -2264,7 +2264,7 @@ pub async fn recall_fresh_captures<S: std::hash::BuildHasher + Sync>(
         }
         // The staged vector, computed once when the claim was buffered over
         // this same marker-stripped text. The fallback embeds a row that has
-        // none — journal-recovered, or staged while the embedder was down —
+        // none — staged while the embedder was down —
         // and it is a fallback precisely because embedding every candidate on
         // every turn is the cost this staging exists to avoid.
         let emb = match cap.embedding.clone() {
@@ -2737,8 +2737,7 @@ mod tests {
     fn row_visible_to_cross_user_attribution() {
         // subject=alice, sender_of_region=bob — bob must be able to
         // read the region he himself authored on alice's wiki
-        // (cross-user attribution invariant, see
-        // memory model).
+        // (cross-user attribution invariant).
         let row = sample_row(
             "018f1234-5678-7abc-9def-0123456789ab",
             "user:alice",
@@ -3421,7 +3420,7 @@ mod tests {
         assert!(hits[0].score >= hits[1].score);
     }
 
-    // ---------- subject coverage (card 65) ----------
+    // ---------- subject coverage ----------
 
     fn person(id: &str, aliases: &[&str]) -> EnrolledUserLite {
         EnrolledUserLite {
@@ -3606,8 +3605,8 @@ mod tests {
         assert_eq!(with[1].fact_id, single.fact_id);
     }
 
-    /// §5's invariant: a ranking signal, never a gate. Covering nothing
-    /// costs a fact its position, never its presence.
+    /// The coverage uplift is a ranking signal, never a gate. Covering
+    /// nothing costs a fact its position, never its presence.
     #[test]
     fn coverage_reorders_and_never_removes() {
         let query = vec![1.0, 0.0];

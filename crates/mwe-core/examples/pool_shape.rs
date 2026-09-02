@@ -1,22 +1,21 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
-//! Planning card 66 — what shape is the candidate pool the navigator is
-//! actually offered, and where does `max_candidates` cut it?
+//! What shape is the candidate pool the navigator is actually offered, and
+//! where does `max_candidates` cut it?
 //!
-//! The card was opened on one traced turn and two counts taken off the
-//! filesystem (41 pages with no links, one page emitting 22). Those describe the
-//! *corpus*; they do not say how often a real turn meets either end of it. This
-//! measures the pool itself, over real turns, and answers the three questions
-//! the card's steps hang on:
+//! One traced turn and two counts off the filesystem (41 pages with no links,
+//! one page emitting 22) describe the *corpus*; they do not say how often a
+//! real turn meets either end of it. This measures the pool itself, over real
+//! turns, and answers three questions:
 //!
-//! - **66a — does the cap bite, and on what?** Every hop is run with the pool
+//! - **Does the cap bite, and on what?** Every hop is run with the pool
 //!   left uncapped, then the real cap is applied in the report, so what the
 //!   truncation *would* have dropped is visible by origin (`link` rail /
 //!   entry-point fan / card rail) instead of being invisible by
 //!   construction.
-//! - **66b — how often is an opened page a dead end?** The funnel already
+//! - **How often is an opened page a dead end?** The funnel already
 //!   journals how many candidates each opened page exposed
 //!   ([`OpenedPage::discovered`]); a zero is a room with no exits.
-//! - **66c — what pool size is the right one?** The uncapped distribution is
+//! - **What pool size is the right one?** The uncapped distribution is
 //!   the input that question needs, and it cannot be read off a capped run.
 //!
 //! **The navigator's own choice is not reproduced** — it is the one part of the
@@ -28,9 +27,9 @@
 //!
 //! One thing the harness asserts rather than derives: the ingest turn serves
 //! the sender's `cucina.md` in `WHO IS SPEAKING` and hands it to the funnel as
-//! already delivered, so the walk never opens it. This runs
-//! with that exclusion in place, because the ingest funnel is what is being
-//! measured. The engine additionally checks that the page carries a readable
+//! already delivered, so the walk never opens it. This runs with that
+//! exclusion in place, because the ingest funnel is what is being measured.
+//! The engine additionally checks that the page carries a readable
 //! fact before serving it; here it is assumed to, which holds for every
 //! enrolled person in the live corpus.
 //!

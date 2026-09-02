@@ -1,13 +1,13 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 //! Workdir permission auditing — defence-in-depth for the on-disk wiki bytes.
 //!
-//! Per-reader redaction (see redaction policy)
-//! is enforced when the server *renders* a response, but the markdown and
-//! `engine.db` under the workdir are cleartext on disk. The ACL is therefore
-//! only a real boundary when the operating system keeps every principal other
-//! than the `mwe-mcp` process away from the workdir bytes: a co-located
-//! consumer that can read the files reads the un-redacted union of every
-//! fragment, bypassing the governance entirely. Deployment guidance lives in
+//! Per-reader redaction is enforced when the server *renders* a response,
+//! but the markdown and `engine.db` under the workdir are cleartext on disk.
+//! The ACL is therefore only a real boundary when the operating system keeps
+//! every principal other than the `mwe-mcp` process away from the workdir
+//! bytes: a co-located consumer that can read the files reads the
+//! un-redacted union of every fragment, bypassing the governance entirely.
+//! Deployment guidance lives in
 //! `INTEGRATING.md` ("Deployment security — where to run the consumer").
 //!
 //! This module turns "remember to lock down the workdir" into something the

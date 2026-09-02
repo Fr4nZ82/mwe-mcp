@@ -51,7 +51,7 @@
 //!   defect the TS original had — it lost fact identity at render time).
 //! - The plan + registry persist as JSON under `wikis/_plan/` via crash-safe
 //!   `atomic_write`; they are a rebuildable cache (derivable from `fact_index` +
-//!   enrollment), preserving the captures-journal invariant.
+//!   enrollment), so losing them costs a recompile and nothing else.
 //! - Determinism: pages are keyed in a [`BTreeMap`] and every order-sensitive
 //!   step sorts explicitly, so the plan + its fingerprints are reproducible and
 //!   the dirty set does not churn spuriously.
@@ -1004,9 +1004,9 @@ pub fn build_compilation_plan(
         if !pages.contains_key(from) || !pages.contains_key(to) || from == to {
             continue;
         }
-        // Retired when THIS page says it. A link on the other page is a
-        // different link now that the graph is directed, and it does not
-        // discharge a rail this page was asked to write.
+        // Retired when THIS page says it. The graph is directed, so a link
+        // on the other page is a different link and does not discharge a rail
+        // this page was asked to write.
         if pages[from].outgoing_links.iter().any(|l| l == to) {
             continue;
         }
@@ -3377,7 +3377,7 @@ pub async fn build_wiki_plan(
 /// (`compiler::page_index_block`), its own line included.
 ///
 /// **That is how an invented frame becomes permanent.** Production,
-/// 2026-07-24 (card 57): a turn complaining that an assistant had signed the
+/// 2026-07-24: a turn complaining that an assistant had signed the
 /// sender up for a fair minted a page described as *«Progetti e attività
 /// relativi a …»* — a whole area of work nobody had described — and the
 /// description stayed in the plan, was fed back to the compiler, and grew into
@@ -4816,7 +4816,7 @@ mod tests {
         drop(dir);
     }
 
-    /// An invented frame must not outlive the page written from it (card 57).
+    /// An invented frame must not outlive the page written from it.
     ///
     /// The classifier proposes a page and describes it; that description used
     /// to be frozen in the registry forever, fed back to the writer on every

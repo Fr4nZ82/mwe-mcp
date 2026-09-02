@@ -1,6 +1,5 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
-//! REM-emitted archival proposals (`archive_proposals` table — see
-//! engine DB and migrations).
+//! REM-emitted archival proposals (`archive_proposals` table).
 //!
 //! Distinct from the `structure_proposals` flow (which carries forge /
 //! promote / `dedup_merge`): archive proposals target whole

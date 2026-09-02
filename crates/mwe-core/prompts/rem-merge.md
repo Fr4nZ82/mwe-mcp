@@ -14,14 +14,12 @@ may straddle the parent↔sub-wiki boundary) was *nominated* by structural
 signals (duplicate prose across the compiled bodies, or kinship between
 the page names); the `rem_dedup_semantic` / revisor slot (the low-tier
 confirmer shared by every REM verdict sweep) is asked the question the
-signals cannot answer: are these two pages **the same concept**, and if so which
-page name survives? A
-name resemblance is never sufficient on its own — this call is the
-mandatory confirmation. The orchestrator calls the prompt through the
+signals cannot answer: are these two pages **the same concept**, and if so
+which page name survives? A name resemblance is never sufficient on its
+own — this call is the mandatory confirmation. The orchestrator calls the prompt through the
 hybrid loader [`mwe_core::prompts::render`]: the override at
 `<workdir>/prompts/rem-merge.md` wins when present, otherwise this
-bundled default. See the REM cycle page
-for the narrative and `crates/mwe-core/src/rem.rs` (around the
+bundled default. See `crates/mwe-core/src/rem.rs` (around the
 `merge_prompt` call site) for the runtime parameters.
 
 ## Runtime contract

@@ -33,8 +33,7 @@
 //!
 //! ## Cross-link rewriting
 //!
-//! The narrative compiler
-//! calls for rewriting cross-link text when a `wiki_promote` ends up changing
+//! Cross-link text needs rewriting when a `wiki_promote` ends up changing
 //! the parts of the path the wikilink syntax depends on. The
 //! paragraph → file variant keeps the wiki id intact, so no
 //! cross-link rewriting is required. The file → sub-wiki variant
@@ -2070,8 +2069,7 @@ pub struct ParagraphToFileHints {
     /// Page mass the emitter recorded for the candidate — the number of
     /// active facts sharing the fact's page when the promotion fired.
     /// Surfaced for operator audit; the trigger is mass/ramification,
-    /// not a single fact's word count (see the
-    /// memory model).
+    /// not a single fact's word count.
     pub trigger_page_facts: Option<usize>,
     /// Recall hits in the last 30 days, when known.
     pub recall_count_30d: Option<i64>,
@@ -2948,9 +2946,9 @@ pub async fn apply_pages_to_subwiki_direct(
 /// listed first), so undoing it fact by fact asks the same question forty
 /// times and gets forty independent answers.
 ///
-/// `reason` is the judge's own sentence, kept on the receipt: this move is
-/// revertible and somebody reading the receipt has to be able to tell whether
-/// it was right.
+/// `reason` is the judge's own sentence, kept on the receipt. The move is
+/// never undone — the receipt is read, not reverted — so it has to say enough
+/// for somebody to tell whether it was right.
 ///
 /// # Errors
 ///

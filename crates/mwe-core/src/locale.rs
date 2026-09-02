@@ -4,17 +4,15 @@
 //! ## Why this module exists
 //!
 //! Both v2.0 prompts ship a single-line `LANGUAGE` directive at the
-//! end of their body. Before the P.14 plumbing landed, that directive
-//! was a hand-written paragraph telling the LLM to "mirror the
-//! language of the user's message". The mirror works when the
-//! message is unambiguous but is fragile in two regimes: short
-//! messages with a single foreign loanword (a one-token English
-//! interjection in an Italian sentence has flipped Qwen 3.5 to
-//! English replies in the field), and tool-call replies where the
-//! LLM has no fresh user prose to mirror.
+//! end of their body. A hand-written "mirror the language of the
+//! user's message" paragraph works when the message is unambiguous
+//! but is fragile in two regimes: short messages with a single
+//! foreign loanword (a one-token English interjection in an Italian
+//! sentence has flipped Qwen 3.5 to English replies in the field),
+//! and tool-call replies where the LLM has no fresh user prose to
+//! mirror.
 //!
-//! The fix the prompt locale plumbing
-//! calls for an **explicit injection** of `User locale: <code>.
+//! The fix is an **explicit injection** of `User locale: <code>.
 //! Respond in <Language>.` derived from one of three sources, in
 //! order:
 //!

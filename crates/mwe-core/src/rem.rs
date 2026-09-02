@@ -89,9 +89,7 @@ pub struct RemPolicy {
     /// Wall-clock anchor for lifecycle evaluation (`now` in the rule
     /// expressions). `None` ⇒ [`Utc::now`].
     pub now: Option<DateTime<Utc>>,
-    /// Maximum number of dedup supersedes per cycle. Mirrors the
-    /// `cap_promotions_per_night` figure in
-    /// engine DB and migrations — REM never
+    /// Maximum number of dedup supersedes per cycle — REM never
     /// silently rewrites the whole corpus in one tick.
     pub revisor_cap: usize,
     /// Lower bound for the jaccard-6gram pre-pass: pairs below this
@@ -117,10 +115,8 @@ pub struct RemPolicy {
     /// truncation is logged (never silent).
     pub revisor_examined_cap: usize,
     /// Maximum number of structural changes the auto-promote
-    /// sub-job applies per cycle. The spec
-    /// (memory model)
-    /// pins it at 5/night by default — REM never carpet-bombs the
-    /// operator's inbox.
+    /// sub-job applies per cycle. 5/night by default — REM never
+    /// carpet-bombs the operator's inbox.
     pub auto_promote_cap: usize,
     /// Minimum **page mass** for the paragraph-to-file deterministic
     /// filter: the number of active facts a fact must share its page
@@ -188,15 +184,14 @@ pub struct RemPolicy {
     pub structure_review_cap: usize,
     /// Maximum number of evidence facts the completion sweep sends to
     /// the LLM per cycle (the REM safety net behind the ingest closure
-    /// verb — see the REM cycle).
+    /// verb).
     /// A **resource** cap: embedding similarity only nominates open
     /// candidates per evidence fact, the LLM decides what completed.
     /// `0` disables the sub-job.
     pub completion_sweep_cap: usize,
     /// Maximum number of candidate facts the cross-wiki refile sweep
     /// sends to the LLM per cycle (the LLM-decided refile of a single
-    /// misfiled fact into a different existing wiki — see the
-    /// REM cycle). A
+    /// misfiled fact into a different existing wiki). A
     /// **resource** cap: a deterministic cosine pre-filter only nominates
     /// facts that embed materially closer to a foreign wiki than to home,
     /// the revisor LLM decides whether (and where) each really belongs.
@@ -243,9 +238,8 @@ pub struct RemPolicy {
     /// older than this duration. Default 365 days.
     pub archive_inactivity: chrono::Duration,
     /// Max notifications the Briefing dispatcher emits per wiki
-    /// per cycle. Per the memory model
-    /// the per-wiki cap is 10 — the global 50/h cap in
-    /// [`crate::briefing`] backstops at the inbox level. Default 10.
+    /// per cycle — the global 50/h cap in [`crate::briefing`] backstops
+    /// at the inbox level. Default 10.
     pub briefing_notify_cap: usize,
     /// Briefing dispatcher: a fact carrying `status: draft` (top-level
     /// YAML key) whose age exceeds this window triggers a stale-draft
@@ -892,8 +886,7 @@ pub enum RemError {
     /// collected in the sub-job report rather than bubbling here.
     #[error("rem briefing: {0}")]
     Briefing(#[from] BriefingError),
-    /// LLM call failed mid-cycle. Per the
-    /// REM cycle, this aborts
+    /// LLM call failed mid-cycle. This aborts
     /// the sub-job (and therefore the cycle) rather than being
     /// soft-collected: the operator configured a specific model and
     /// expects that quality bar, not a silently degraded run.
@@ -2656,8 +2649,7 @@ const fn mass_floor_for_style(
 /// page and not the night — see [`note_llm_failure`].
 ///
 /// No LLM → the sub-job short-circuits cleanly with
-/// `disabled_reason = Some("no rem_promotions LLM wired")`. See the
-/// REM cycle.
+/// `disabled_reason = Some("no rem_promotions LLM wired")`.
 #[allow(
     clippy::too_many_lines,
     reason = "filter + LLM call + dedup check + emit live as one orchestrator"
@@ -2733,7 +2725,7 @@ async fn run_auto_promote(
         // (recall), naming the facts that move out. The page floor is
         // the only deterministic gate, a cheap resource pre-filter so
         // tiny pages never reach the LLM; everything semantic is the
-        // LLM's call (memory model).
+        // LLM's call.
         // The floor depends on HOW the page is read, not just how big it is
         // (founder, 2026-08-04). See [`over_mass_floor`].
         let mut pages: Vec<&str> = page_mass
@@ -2920,12 +2912,12 @@ async fn run_auto_promote(
                 ));
                 continue;
             }
-            // Third and last of the model-coined page names. `index.md` and
-            // `@rules.md` survive `slugify` unchanged, and this variant's
-            // validator checks only traversal and "differs from the source" —
-            // the sibling variants refuse them (`apply_page_merge` on either
-            // side), this one never did. A split has no fallback page to
-            // fall through to, so the split is
+            // Third and last of the model-coined page names. A reserved
+            // stem (`rules`, `projects`, `project_diary`, `projects_diary`,
+            // `profile`, or anything starting with `@`) survives `slugify`
+            // unchanged, and the split validator below checks only traversal
+            // and "differs from the source" — so the reserved check has to be
+            // here. A split has no fallback page to fall through to, so it is
             // simply skipped: the facts stay where they are and the next cycle
             // asks again.
             if crate::wiki::is_reserved_page_stem(&target_slug) {
@@ -4143,17 +4135,17 @@ fn render_forest(tree: &WikiTree, pages: &[ForestPage]) -> String {
 /// repairs what it can see from there. None of them can see the mistake this
 /// one looks for: a page in the **wrong wiki**. That mistake is made once, in
 /// a second, when the page is born — a new page joins the wiki of whichever of
-/// its facts the classifier listed first — and until now nothing could undo it
-/// at the grain it was made. The refile sweep moves facts, one judgment each,
-/// which asks the same question forty times for a forty-fact page and gets
-/// forty independent answers.
+/// its facts the classifier listed first — and it has to be repaired at the
+/// grain it was made. The refile sweep moves facts, one judgment each, which
+/// asks the same question forty times for a forty-fact page and gets forty
+/// independent answers.
 ///
 /// Structural signals **nominate** (the inventory's order under the cap: pages
 /// whose facts are mostly about somebody other than their wiki's principal);
 /// the strong model **decides**, and it is shown the forest rather than a
 /// short-list so it can refuse. Confirmed moves land act-first via
-/// [`promote::apply_pages_rehome_direct`] with a revertible receipt carrying
-/// the judge's own sentence — somebody has to be able to read why.
+/// [`promote::apply_pages_rehome_direct`] with a receipt carrying the judge's
+/// own sentence — the move stands, so somebody has to be able to read why.
 async fn run_structure_review(
     pool: &SqlitePool,
     tree: &WikiTree,
@@ -4713,8 +4705,8 @@ fn completion_cases<'a>(
 /// The completion sweep — the REM safety net of the closure verb.
 ///
 /// The ingest path closes the open items its recall window shows it
-/// (see the ingest pipeline);
-/// this sub-job catches the rest with the global view: each fresh
+/// (see [`crate::ingest`]); this sub-job catches the rest with the
+/// global view: each fresh
 /// **evidence** fact is paired with the most similar open items of its
 /// wiki (embedding similarity **nominates only** — a resource cap, not
 /// a semantic gate), a dedicated LLM call decides what the evidence
@@ -6994,7 +6986,7 @@ async fn run_date_normalizer(
         // Marker guard: the rewrite may carry braces only as well-formed
         // self-closing embeds, and its embed set must equal the
         // original's — a date rewrite may never add, drop, or alter a
-        // media link (see media pipeline).
+        // media link.
         let embeds_ok = if new_text.contains("{{") || new_text.contains("}}") {
             crate::parser::embed_only_markers(new_text)
                 .is_some_and(|new_embeds| new_embeds == crate::parser::collect_embeds(&row.text))
@@ -9516,8 +9508,8 @@ mod tests {
 
     /// One page, several facts, several links — and each one names its fact.
     ///
-    /// The pass used to answer with a single destination per page, which is a
-    /// question about the page. A question asked of one fact at a time has as
+    /// A single destination per page would be an answer to a question about
+    /// the page. The question is asked of one fact at a time, so it has as
     /// many answers as there are facts that need one, and the page's own
     /// remaining room is what bounds them.
     #[tokio::test]

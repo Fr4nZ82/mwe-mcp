@@ -2,13 +2,12 @@
 //! Memory-wiki filesystem surface I/O.
 //!
 //! `mwe-core::wiki` is the single owner of the `<workdir>/wikis/…` directory
-//! tree — the memory's readable surface. Per the
-//! memory model, authority is
-//! split by wiki family: for standard wikis the `fact_index` is the
-//! authoritative fact store and the files are its prose render; for smart
-//! wikis the page content on disk is what gets indexed. Every internal API
-//! in this module either reads the tree or rewrites a file atomically,
-//! while the caller keeps the `fact_index` in step.
+//! tree — the memory's readable surface. Authority is split by wiki
+//! family: for standard wikis the `fact_index` is the authoritative fact
+//! store and the files are its prose render; for smart wikis the page
+//! content on disk is what gets indexed. Every internal API in this
+//! module either reads the tree or rewrites a file atomically, while the
+//! caller keeps the `fact_index` in step.
 //!
 //! ## What lives on disk
 //!
@@ -594,12 +593,10 @@ pub struct WikiChildEntry {
 
 /// Parsed `_meta.md` frontmatter.
 ///
-/// The canonical schema is documented in
-/// the engine DB and migrations page. All required fields are
-/// promoted to typed Rust fields; optional fields default to `None` / empty;
-/// every key the canonical schema does *not* know about is preserved
-/// verbatim in [`WikiMeta::extra`] so a forge-specific field round-trips
-/// through a read + write cycle without loss.
+/// All required fields are promoted to typed Rust fields; optional fields
+/// default to `None` / empty; every key this struct does *not* know about
+/// is preserved verbatim in [`WikiMeta::extra`] so a forge-specific field
+/// round-trips through a read + write cycle without loss.
 #[derive(Debug, Clone, PartialEq, Eq)]
 // The bools here mirror independent `_meta.md` YAML flags (no_archive, smart,
 // is_agent) — a flat frontmatter projection, not a state machine, so collapsing
@@ -2021,8 +2018,7 @@ pub fn append_engine_rule(handle: &WikiHandle, rule: &str) -> Result<()> {
 
 /// Create the on-disk scaffold for an identity wiki.
 ///
-/// (See the wiki filesystem surface.) Writes
-/// `<workdir>/wikis/<id>/_meta.md` (frontmatter) +
+/// Writes `<workdir>/wikis/<id>/_meta.md` (frontmatter) +
 /// [`@rules.md`](RULES_FILENAME) (default user-policy page). No content page:
 /// the wiki's pages arrive from what is written into it.
 ///

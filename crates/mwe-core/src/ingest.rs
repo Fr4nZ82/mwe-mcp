@@ -1,11 +1,10 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 //! Ingest pipeline — `wiki_ingest_message`.
 //!
-//! This is the flagship MCP tool (ingest pipeline):
-//! the single conversational entry point a consumer LLM agent talks to,
-//! every turn. The orchestrator owns the "messaggio raw → memoria
-//! gestita" loop end-to-end so the agent stays agnostic of structure,
-//! paths, and routing decisions.
+//! This is the flagship MCP tool: the single conversational entry point
+//! a consumer LLM agent talks to, every turn. The orchestrator owns the
+//! "messaggio raw → memoria gestita" loop end-to-end so the agent stays
+//! agnostic of structure, paths, and routing decisions.
 //!
 //! ## Pipeline (per call)
 //!
@@ -203,10 +202,9 @@ pub struct IngestRequest {
     /// breaking changes.
     pub metadata: IngestMetadata,
     /// Media items riding this turn, already uploaded out of band via
-    /// `POST /media` (media pipeline).
-    /// The dispatcher resolves each entry against the media catalog
-    /// (the row's `kind` is authoritative) and verifies the caller may
-    /// read it before threading it here. Empty for the common
+    /// `POST /media`. The dispatcher resolves each entry against the media
+    /// catalog (the row's `kind` is authoritative) and verifies the caller
+    /// may read it before threading it here. Empty for the common
     /// text-only turn.
     pub attachments: Vec<IngestAttachment>,
 }
@@ -288,8 +286,7 @@ pub struct IngestMetadata {
 
 /// Coarse intent classification for one ingest turn.
 ///
-/// Surfaced verbatim back to the consumer for audit / debug visibility
-/// (tool reference).
+/// Surfaced verbatim back to the consumer for audit / debug visibility.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum IntentKind {
     /// The message carried a new fact — captured into a wiki.
@@ -328,8 +325,7 @@ pub struct DisambigCandidate {
     pub description: String,
 }
 
-/// Output of [`wiki_ingest_message`]. Matches the JSON shape documented
-/// in tool reference.
+/// Output of [`wiki_ingest_message`].
 #[derive(Debug, Clone)]
 pub struct IngestResponse {
     /// What the orchestrator decided. Always present.
@@ -371,7 +367,7 @@ pub struct IngestResponse {
     /// disable the window.
     pub recent_window: Option<String>,
     /// `fact_id` of the newly captured row. Audit-only — the agent
-    /// must not cross-link to it in chat (ingest pipeline).
+    /// must not cross-link to it in chat.
     pub capture_id: Option<FactId>,
     /// True when the LLM flagged the message as ambiguous and the agent
     /// should ask the user to choose a candidate.
@@ -426,8 +422,10 @@ pub struct IngestPolicy {
     /// Size of the separate "fresh / unconsolidated" recall slot — how many
     /// un-promoted buffered captures the mid-range bridge surfaces per turn
     /// (see [`recall::recall_fresh_captures`]). `0` disables the slot. Small by
-    /// design: each candidate is re-embedded at recall time. PROVISIONAL —
-    /// revisit after the recall-strategy review.
+    /// design: it competes for the same block as the promoted hits. Each
+    /// candidate is ranked against the vector staged when the claim was
+    /// buffered ([`crate::capture_buffer::BufferStaging`]); only a row that
+    /// was staged while the embedder was down is embedded at recall time.
     pub recall_fresh_top_k: usize,
     /// Size of the **project-docs** slot: how many smart-wiki sections a
     /// turn may pull when the message *names* a project the sender can
@@ -626,10 +624,11 @@ impl Default for IngestPolicy {
             // ceiling REM curates toward are the same number: a card
             // within its authored bound is never cut here.
             max_sender_identity_chars: 2_500,
-            // Two: a turn naming three or more people is rare, and two cards
-            // at their authored target (~1 800) already cost more than the
-            // navigated prose budget. Raise it when the traces say turns name
-            // more people than that and the extra card earns its characters.
+            // Three: a turn naming four or more people is rare, and three
+            // cards at their authored target (~1 800 each) already cost more
+            // than the navigated prose budget. Raise it when the traces say
+            // turns name more people than that and the extra card earns its
+            // characters.
             max_mentioned_cards: 3,
             fallback_suggested_seed: "I've noted that.".to_owned(),
             degraded_suggested_seed: "Something went wrong on my side and I could not save that. \
@@ -1784,7 +1783,7 @@ fn validate_supersede_target(
     Ok(Some(fact_id))
 }
 
-// ---------- Attachment threading (media pipeline) ----------
+// ---------- Attachment threading ----------
 
 /// Resolve the catalog ids one extraction claims against the turn's
 /// attachment window. Unknown ids are dropped with a warning (the same
@@ -3871,10 +3870,9 @@ pub(crate) fn parse_first_json<T: serde::de::DeserializeOwned>(raw: &str) -> Opt
 /// Used by the hybrid loader [`prompts::load`] when no operator
 /// override sits at `<workdir>/prompts/ingest.md`. The verbatim
 /// prompt body lives in `crates/mwe-core/prompts/ingest.md`
-/// (frontmatter + a single ```text ... ``` fenced block); see
-/// ingest pipeline for the
-/// design narrative and version history. Referenced from [`prompts::BUNDLED`] so
-/// `mwe-mcp init` materialises it under the workdir.
+/// (frontmatter + a single ```text ... ``` fenced block). Referenced from
+/// [`prompts::BUNDLED`] so `mwe-mcp init` materialises it under the
+/// workdir.
 pub const BUNDLED_INGEST_PROMPT_MD: &str = include_str!("../prompts/ingest.md");
 
 /// The `ingest` classifier's own-turn rules (`ingest-assistant-turn.md`).
@@ -4874,7 +4872,8 @@ async fn capture_behaviour_rule(
 }
 
 /// File a fact the agent states about ITSELF — the self side of agent-authored
-/// memory (ingest pipeline).
+/// memory.
+///
 /// Which page a `self` fact lands on. The engine decides — not
 /// the model's proposed `target_page` — mirroring how a self-fact's wiki is
 /// already engine-pinned to the agent's own wiki. An IDENTITY fact
@@ -5490,9 +5489,9 @@ struct MentionedCards {
 /// gate that reads a paraphrase, and it is free: the hits are already in hand
 /// here, ranked, from the search that ran before the classifier.
 ///
-/// A person the turn names and the memory knows nothing about no longer
-/// spends a seat on an empty card — they only reach the first gate, and the
-/// second fills the seat with somebody the search actually found.
+/// A person the turn names and the memory knows nothing about spends no seat
+/// on an empty card — they only reach the first gate, and the second fills the
+/// seat with somebody the search actually found.
 ///
 /// What bounds the slot is the **count**
 /// ([`IngestPolicy::max_mentioned_cards`]), not a cleverer gate. It is the
@@ -5815,7 +5814,7 @@ const HDR_RELEVANT_MEMORY: &str =
 /// - rules-page hits are skipped — standing directives reach the consumer
 ///   through the dedicated `rules` field only, never as recalled memory.
 ///
-/// ## The turn-level relevance floor (card 61, §37-39)
+/// ## The turn-level relevance floor
 ///
 /// `relevance_floor` gates the **promoted** hits as a group, not one at a
 /// time: it is compared against the MAXIMUM score among the turn's
@@ -5824,7 +5823,7 @@ const HDR_RELEVANT_MEMORY: &str =
 /// outcome depends only on the turn's own recall scores, never on which
 /// pages the navigator happened to open this same turn or on whether a
 /// hit happens to be a rules-page hit. A per-hit threshold cannot do this
-/// job — measured (§37) on two real turns: on the one that NEEDED its
+/// job — measured on two real turns: on the one that NEEDED its
 /// recall the right answer scored `0.4813` / `0.4811`, while on the one
 /// that needed none the noise it recited ran to `0.4306` — the bands
 /// overlap, so any per-hit cut that removes one removes the other. Below
@@ -5836,7 +5835,7 @@ const HDR_RELEVANT_MEMORY: &str =
 /// because the turn's best was `0.5474`. See
 /// [`recall::DEFAULT_RELEVANCE_FLOOR`] for the measurement.
 ///
-/// Deliberately **NOT** gated by `relevance_floor` (§39):
+/// Deliberately **NOT** gated by `relevance_floor`:
 /// - the **fresh** (un-promoted) captures below — a different signal
 ///   (things said a few turns ago, not durable memory) that keeps
 ///   rendering even when every promoted hit is dropped;
@@ -7568,19 +7567,15 @@ pub async fn wiki_ingest_message(
                 // and a container the user asked for *this turn*. Everything
                 // else is accumulated knowledge and waits for the dream.
                 //
-                // The `lista` half landed on 2026-08-18 (founder: *«le liste
-                // non ci passano … il classificatore riceve appositamente tutte
-                // le liste che l'utente vede e aggiunge l'elemento direttamente
-                // lì»*). Until then only `requested_container` bypassed the
-                // buffer, so **creating** a shopping list was live while
-                // **adding to it** waited up to a dream interval — and the
-                // reasoning that kept the exception alive was about lists, not
-                // about creation. It was written for a list and hung on the
-                // wrong moment.
+                // The `lista` half is the founder's call: *«le liste non ci
+                // passano … il classificatore riceve appositamente tutte le
+                // liste che l'utente vede e aggiunge l'elemento direttamente
+                // lì»*. Creating a shopping list and adding to it are the same
+                // gesture, so both are live — an exception that covered only
+                // creation would hang on the wrong moment.
                 //
-                // That reasoning, from 2026-08-05, when removing the exception
-                // was considered and REJECTED on the founder's question.
-                // Recorded here so it is not re-proposed:
+                // Two arguments for removing the exception altogether, and why
+                // neither holds. Recorded here so they are not re-proposed:
                 //
                 // - "The buffered claim is recallable anyway, so the page can
                 //   lag." True for a fact, false for a LIST. The fresh slot is
@@ -7596,15 +7591,15 @@ pub async fn wiki_ingest_message(
                 //   called from the write path and from promotion. What differs
                 //   is when it runs, not what it decides.
                 //
-                // What the live path actually costs, now that the embedding is
-                // computed at staging time either way: one dedup scan over the
-                // facts about this subject, one atomic page write and one row
-                // insert, moved into the turn instead of into the dream. No
+                // What the live path actually costs, given that the embedding
+                // is computed at staging time either way: one dedup scan over
+                // the facts about this subject, one atomic page write and one
+                // row insert, moved into the turn instead of into the dream. No
                 // model call, no extra embedding.
                 //
-                // The test is the PAGE, and asking it here rather than
-                // re-deriving the two shapes keeps one answer where there
-                // were two. `validate_capture_plan` already resolved it: a
+                // The test is the PAGE. Asking it here rather than
+                // re-deriving the two shapes keeps the answer in one place.
+                // `validate_capture_plan` already resolved it: a
                 // claim that names its own page carries it, everything else
                 // carries none — and so does a name that was REFUSED, either
                 // as a reserved page or as the wiki's 33rd list. No page is
@@ -7784,14 +7779,19 @@ pub async fn wiki_ingest_message(
             }
 
             // Reconciliation against facts already stored — closing,
-            // replacing, re-dating, re-sharing.
+            // re-dating, re-sharing.
             //
-            // **The bundled classifier populates none of these.** All four
-            // decide the fate of a fact that already exists, which cannot be
+            // **The bundled classifier emits none of these three.** Each
+            // decides the fate of a fact that already exists, which cannot be
             // judged from the ten-hit sample the classifier is shown. The rule
             // the founder drew: a slot may reconcile against a set it sees
             // COMPLETE (the list inventory, the agent's behaviour rules, the
-            // sender's own policy) and never against a sample.
+            // sender's own policy) and never against a sample. Replacing is
+            // the exception the rule allows: `supersede_target` IS emitted,
+            // narrowed to `agent_behaviour_rules` — the one stored set the
+            // classifier is shown whole — and `validate_supersede_target`
+            // accepts a `recalled_memory` id only from a deployment whose own
+            // override asks for one.
             //
             // The machinery below is kept ON PURPOSE, not stranded: it is the
             // substrate of the recall-side **reconciliation stage** — one
@@ -8024,8 +8024,7 @@ pub async fn wiki_ingest_message(
     // judgement about an ALREADY-STORED fact can be made honestly. The
     // classifier cannot: it is shown a top-K similarity sample, and a
     // judgement that needs the store and gets a sample fails silently, by
-    // omission, and compounds. See
-    // §"The reconciliation stage".
+    // omission, and compounds.
     //
     // Runs on a turn that CAPTURED (a recall turn asks; it does not change
     // what is stored), and only when the turn actually read something — with
@@ -8234,12 +8233,12 @@ pub async fn wiki_ingest_message(
     // consumer's reply (the classifier above saw the pre-write set, which is
     // what it supersedes against).
     let behaviour = format_behaviour_rules(&recall_behaviour_rules(pool, &request).await, policy);
-    // Roadmap 27d (read side) + 41: the agent's own self-context — `WHO YOU
-    // ARE` (the agent wiki's abstract + identity self-facts) and `YOUR
-    // RECENT HISTORY WITH THIS USER` (facts partner-tagged with the sender)
-    // — so the consumer composes its reply conscious of itself and the
-    // relationship, not just of the user. Read from the agent's own wiki;
-    // best-effort, never blocks the turn.
+    // The agent's own self-context — `WHO YOU ARE` (the agent wiki's
+    // abstract + identity self-facts) and `YOUR RECENT HISTORY WITH THIS
+    // USER` (facts partner-tagged with the sender) — so the consumer
+    // composes its reply conscious of itself and the relationship, not
+    // just of the user. Read from the agent's own wiki; best-effort,
+    // never blocks the turn.
     let agent_self = recall_agent_self(pool, tree, &request).await;
     let who_you_are = format_who_you_are(&agent_self, policy);
     let history = format_history_with_user(&agent_self, policy);
@@ -11966,9 +11965,9 @@ mod tests {
         );
     }
 
-    // ---------- turn-level relevance floor (card 61, §37-39) ----------
+    // ---------- turn-level relevance floor ----------
 
-    /// Card 61 §37: on `il volume` the turn's best promoted hit — a
+    /// On `il volume` the turn's best promoted hit — a
     /// pushchair offer — scored `0.4306`, below the default floor; the
     /// weaker noise under it (a savings passbook, rank 5 near `0.41`)
     /// scored even lower. Below the floor NONE of the promoted hits
@@ -11990,7 +11989,7 @@ mod tests {
     }
 
     /// Same shut gate as above, but the fresh (un-promoted) slot is a
-    /// different signal (§39: things said a few turns ago, not durable
+    /// different signal (things said a few turns ago, not durable
     /// memory) and must keep rendering even when every promoted hit is
     /// dropped.
     #[test]
@@ -12013,7 +12012,7 @@ mod tests {
         assert!(snippet.contains(&fresh.text), "{snippet}");
     }
 
-    /// Card 61 §37, the guarantee the gate exists to preserve: on the
+    /// The guarantee the gate exists to preserve: on the
     /// measured turn the two facts that ARE the answer scored `0.4813` /
     /// `0.4811`, ranked below the turn's best hit (`0.5474`, an unrelated
     /// candidate). The gate reads only the turn's best score, so once it
@@ -13228,7 +13227,7 @@ mod tests {
         drop(dir);
     }
 
-    /// Roadmap 29c data migration: the `0052` page-rename re-homes legacy
+    /// The `0052` page-rename data migration re-homes legacy
     /// behaviour-rule facts off `behaviour_rules.md` onto `@rules.md`, preserving
     /// the workdir-relative path prefix. (On a live DB the migration runs at
     /// startup; here we exercise its exact statement on a planted legacy row.)
@@ -16351,12 +16350,9 @@ mod tests {
             asst_prompt.contains("author: assistant"),
             "an assistant turn injects the author line"
         );
-        // The rules themselves have to BE there, and only on this turn. They
-        // used to live in the trunk with the turn pointing at them by section
-        // number, and the pointer went stale on a renumbering while a test
-        // comparing the literal with itself stayed green. There is no pointer
-        // to go stale now: what the turn says about itself is either in the
-        // turn or nowhere.
+        // The rules themselves have to BE there, and only on this turn.
+        // There is no pointer into the trunk to go stale on a renumbering:
+        // what the turn says about itself is either in the turn or nowhere.
         let regole = prompts::render(
             "ingest-assistant-turn",
             std::path::Path::new("/nonexistent"),
@@ -16517,7 +16513,7 @@ mod tests {
                 .await
                 .unwrap(),
             0,
-            "the diary entry no longer lands in the user's wiki"
+            "the diary entry does not land in the user's wiki"
         );
         drop(dir);
     }
@@ -16770,7 +16766,7 @@ mod tests {
         .expect("plant the bio fact");
     }
 
-    /// Roadmap 41c + the `WHO IS SPEAKING` section: `WHO YOU ARE` opens with
+    /// The `WHO IS SPEAKING` section: `WHO YOU ARE` opens with
     /// the agent wiki's `_meta.summary` line and a `bio`-typed self-fact
     /// joins the identity bucket regardless of salience; the sender's own
     /// wiki summary renders as their identity card.
@@ -18060,7 +18056,7 @@ mod tests {
         drop(dir);
     }
 
-    /// Card 61 §39: the due-soon `UPCOMING` slot is time-driven
+    /// The due-soon `UPCOMING` slot is time-driven
     /// (`recall::recall_due_soon` ranks by `valid_to` imminence, never by
     /// cosine) and the relevance floor never touches it — only the
     /// promoted half of `RELEVANT MEMORY` is gated. Same fact seeds both

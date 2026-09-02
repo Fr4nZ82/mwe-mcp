@@ -35,7 +35,7 @@ use crate::ui::layout;
 /// slow per-slot LLM reachability probe. Splitting them keeps the page
 /// responsive: the shell paints immediately with a spinner where the
 /// slots go, and `ui.js` fetches the probe and swaps the table in. A
-/// slow or unreachable backend can no longer stall the whole page.
+/// slow or unreachable backend cannot stall the whole page.
 pub fn router() -> Router<DashboardState> {
     Router::new()
         .route("/admin/health", get(page))

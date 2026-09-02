@@ -2,8 +2,7 @@
 //! Wiki subtree export — the engine DB joined with the on-disk prose
 //! into a portable, self-describing archive.
 //!
-//! The runtime marker is the bare region key (`{{f=uuid}}` — see
-//! marker grammar); the
+//! The runtime marker is the bare region key (`{{f=uuid}}`); the
 //! per-fact ACL lives in the `fact_index` columns. An exported page must
 //! stand alone *without* the engine DB next to it, so export rewrites
 //! every DB-known region to the **full marker form**
@@ -29,8 +28,7 @@
 //!   (the id carries the extension, so the files open naturally), and
 //!   `_media/_catalog.json` carries each item's catalog row — kind,
 //!   MIME, sha256 and the per-media ACL — the media analogue of the
-//!   full marker, since an embed marker has no inline-attribute form
-//!   (media pipeline).
+//!   full marker, since an embed marker has no inline-attribute form.
 //!   A dangling embed (no catalog row, or a row whose blob is gone) is
 //!   counted in the report, never silently dropped.
 //! - Packaging is a plain uncompressed `tar` (`application/x-tar`):

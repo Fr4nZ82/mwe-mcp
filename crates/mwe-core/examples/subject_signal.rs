@@ -1,6 +1,5 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
-//! Planning card 65 — does flat recall get better when it knows WHO the turn
-//! is about?
+//! Does flat recall get better when it knows WHO the turn is about?
 //!
 //! Two defects, measured side by side against the ranking production actually
 //! serves (every variant is built on `wiki_search_unrecorded`, so the ACL
@@ -21,8 +20,7 @@
 //! that decides**: whether the answer climbs, AND whether facts about the
 //! asker that have nothing to do with the question climb with it. A variant
 //! that wins the first and loses the second has moved the crowding, not
-//! removed it — the same failure the navigator's principal seed had before its
-//! weight dropped to the ordinary rung (card 63).
+//! removed it.
 //!
 //! Read-only: recall counters are not bumped. Local embedder, no API spend.
 //!

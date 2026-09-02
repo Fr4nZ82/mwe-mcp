@@ -2,10 +2,9 @@
 //! Stable error-class mapping for the MCP dispatcher.
 //!
 //! Goal: every per-tool handler returns one of a small, audited set of
-//! error classes (tool reference)
-//! so the consumer can branch on the wire string instead of reading
-//! free-form messages. The dispatcher writes the same string into
-//! `tool_executions.error` and into the JSON-RPC error response.
+//! error classes so the consumer can branch on the wire string instead
+//! of reading free-form messages. The dispatcher writes the same string
+//! into `tool_executions.error` and into the JSON-RPC error response.
 //!
 //! `into_mcp_error` is the single conversion: it composes the `code` /
 //! `message` pair the rmcp layer needs while preserving the class

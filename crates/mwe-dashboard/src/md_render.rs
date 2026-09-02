@@ -28,8 +28,7 @@
 //!    browser). The page-level redaction already ran before this
 //!    renderer; per-blob denial happens at `GET` time (a denied byte
 //!    fetch shows as a broken image — the marker may be visible while
-//!    the bytes are not, by design of the
-//!    media pipeline).
+//!    the bytes are not, by design).
 //!    Markers inside code blocks and code spans stay literal so
 //!    documentation about the marker grammar renders as text.
 //!

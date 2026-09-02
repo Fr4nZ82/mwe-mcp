@@ -18,11 +18,10 @@ the bundled default embedded by `include_str!` is the floor; an override at
 - **Call site**: `crates/mwe-core/src/recall_nav.rs::extract_query_seeds` —
   the `wiki_navigate` tool's seed cascade, fallback **B**: used when the caller
   supplies no explicit `topics`/`subjects` (**C**), and before degrading to the
-  flat RAG hits alone (**A**, journalled as `rag_only`) — the `Principal`
-  seed family that rung was named after was deleted on 2026-08-03. One completion per `wiki_navigate` call,
-  not one per hop. Ingest gets these seeds from its classifier; the standalone
-  search tool has no classifier in the loop, so this is a small dedicated
-  extraction, not the heavy ingest classifier.
+  flat RAG hits alone (**A**, journalled as `rag_only`). One completion per
+  `wiki_navigate` call, not one per hop. Ingest gets these seeds from its
+  classifier; the standalone search tool has no classifier in the loop, so
+  this is a small dedicated extraction, not the heavy ingest classifier.
 - **Model**: the `navigator` LLM slot — **strong-but-cheap** tier (a light
   per-query extraction on the same slot the funnel uses).
 - **Placeholders**: none — rendered with an empty variable list.

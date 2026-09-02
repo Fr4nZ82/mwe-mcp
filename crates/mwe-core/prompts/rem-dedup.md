@@ -16,20 +16,16 @@ restated with the subject spelled out vs elided, invisible to
 n-grams) — and the `rem_dedup_semantic` / revisor slot (the low
 binary-classifier tier, shared by every REM confirmer sweep) is asked
 one binary question: do they encode the same fact, or are they
-distinct? The orchestrator calls the
-prompt through the hybrid loader [`mwe_core::prompts::render`]: the
-override at `<workdir>/prompts/rem-dedup.md` wins when present,
-otherwise this bundled default. See the
-REM cycle page
-for the narrative and `crates/mwe-core/src/rem.rs` (around the
+distinct? The orchestrator calls the prompt through the hybrid loader
+[`mwe_core::prompts::render`]: the override at
+`<workdir>/prompts/rem-dedup.md` wins when present, otherwise this
+bundled default. See `crates/mwe-core/src/rem.rs` (around the
 `run_revisor_jaccard` call site) for the runtime parameters.
 
 ## Runtime contract
 
 Operational specs that ship next to the prompt body so they can't
-drift from it. Code is the source of truth; the
-REM cycle page keeps the
-design narrative.
+drift from it. Code is the source of truth.
 
 **Call site**: `crates/mwe-core/src/rem.rs::run_revisor_jaccard` —
 search for `revisor_prompt(`. The `CompletionRequest::new(prompt)
@@ -66,7 +62,7 @@ information).
 |---|---|---|
 | `temperature` | `0.1` | Binary decision, jaccard pre-filter already did the heavy lifting; the model just confirms or denies. |
 | `max_tokens` | `60` | Reply is 18-20 tokens (`{"same": true}` / `{"same": false}`); 60 is comfortable headroom. |
-| `think:false` | implicit | Applies when the revisor slot runs on a local Qwen 3.x backend (the local-workhorse profiles reuse the already-loaded workhorse for this slot); see the REM cycle page, runtime section. |
+| `think:false` | implicit | Applies when the revisor slot runs on a local Qwen 3.x backend (the local-workhorse profiles reuse the already-loaded workhorse for this slot). |
 
 **Upstream filter** (decides when the model sees the prompt at all).
 Three **structural** gates run first, and the model never sees what they

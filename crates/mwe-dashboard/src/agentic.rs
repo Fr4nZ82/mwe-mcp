@@ -42,9 +42,8 @@
 //!   the root. The directly moved wiki's `_meta.md.parent_wiki_id` is
 //!   rewritten, the on-disk directory is renamed, and
 //!   `fact_index.source_path` is rebased for every affected row.
-//!   `wiki_id` stays stable per the memory model
-//!   invariant, so `wiki_id`-based cross-links never need rewriting (no-op
-//!   today).
+//!   `wiki_id` stays stable, so `wiki_id`-based cross-links never need
+//!   rewriting (no-op today).
 //! - **Single-fact move**: the write tool `wiki_move_fact` relocates
 //!   **one** fact on the operator's instruction ("sposta questo fatto su
 //!   salute") — to another page of the same wiki
@@ -168,26 +167,27 @@ pub enum AgenticTool {
     /// capture buffer, and the next placement pass writes it where its subject
     /// lives. The hand-back needs somebody with a home wiki to be placed into —
     /// its sender when one exists, its subject otherwise — and a fact whose
-    /// sender and subject both lack one is tombstoned. **Admin-only**: deleting structure is the operator's
-    /// act (see identity and ACL); a smart wiki is refused
+    /// sender and subject both lack one is tombstoned. **Admin-only**:
+    /// deleting structure is the operator's act; a smart wiki is refused
     /// (wiki-level governance). Act-first and final
     /// ([`mwe_core::page::delete_page_direct`]). Write tool.
     WikiDeletePage,
     /// Open a **forget request** for ONE fact the signed-in user does NOT author
-    /// — the non-sender subject's path ([`mwe_core::votes::open_forget_request`];
-    /// the write-authority model, identity and ACL). The signed-in user must be the fact's `subject`
-    /// (subject) or a member of an owning group; a **sender** is refused (they
-    /// delete directly via [`Self::WikiForget`]). Propose-first: the fact stays
-    /// active while the fact's audience votes ([`Self::StructureProposalVote`]) —
-    /// a NO-majority blocks it, silence is consent (it is then forgotten). If the
-    /// requester is the fact's only reader the forget applies immediately. A
-    /// smart-wiki target is refused (forget votes are per-fact governance;
-    /// smart governance is wiki-level). Write tool.
+    /// — the non-sender subject's path
+    /// ([`mwe_core::votes::open_forget_request`]). The signed-in user must be
+    /// the fact's `subject` (subject) or a member of an owning group; a
+    /// **sender** is refused (they delete directly via [`Self::WikiForget`]).
+    /// Propose-first: the fact stays active while the fact's audience votes
+    /// ([`Self::StructureProposalVote`]) — a NO-majority blocks it, silence is
+    /// consent (it is then forgotten). If the requester is the fact's only
+    /// reader the forget applies immediately. A smart-wiki target is refused
+    /// (forget votes are per-fact governance; smart governance is wiki-level).
+    /// Write tool.
     WikiRequestForget,
     /// Cast a vote on a pending **fact-forget request** — the audience-facing
-    /// half of the non-sender subject's forget vote (the write-authority model). The
-    /// dashboard chat acts as the signed-in member, so this votes **as
-    /// them** ([`mwe_core::votes::cast_vote`] with `sender_ctx.sender_id`):
+    /// half of the non-sender subject's forget vote. The dashboard chat acts as
+    /// the signed-in member, so this votes **as them**
+    /// ([`mwe_core::votes::cast_vote`] with `sender_ctx.sender_id`):
     /// the engine checks the caller is in the request's eligible set, records
     /// the (final) vote, and tallies — more than half of the **eligible set**
     /// (the fact's audience minus the requester) voting NO
@@ -715,7 +715,7 @@ pub struct AgenticContext<'a> {
     pub tree: &'a WikiTree,
     pub embedder: Arc<dyn Embedder>,
     pub sender_ctx: SenderContext,
-    /// Whether the chat operator holds the admin role (0032). Forwarded
+    /// Whether the chat operator holds the admin role. Forwarded
     /// to `apply_proposal` (admins may act on any proposal by id).
     pub is_admin: bool,
     /// Whether the admin ACL-reveal switch is active for this request
@@ -1002,7 +1002,7 @@ const CONTEXT_SUMMARY_CHARS: usize = 120;
 /// The admin ACL-reveal switch — dashboard-wide, explicit, bannered —
 /// lifts the scope (`recipient = None`, every recipient), the same posture
 /// the facts table and wiki pages already take. `ctx.reveal` is only ever
-/// `true` for an admin (`crate::reveal::active` gates on the role)..
+/// `true` for an admin (`crate::reveal::active` gates on the role).
 fn proposal_recipient_scope(ctx: &AgenticContext<'_>) -> Option<String> {
     (!ctx.reveal).then(|| format!("user:{}", ctx.sender_ctx.sender_id))
 }
@@ -1393,10 +1393,10 @@ async fn dispatch_wiki_forget(
         tool: AgenticTool::WikiForget.name(),
         detail: format!("invalid fact_id `{}`: {e}", args.fact_id),
     })?;
-    // Sender-direct authority (the write-authority model): only the fact's author
-    // (its `sender`) forgets it directly; an admin may forget any fact. A
-    // non-sender subject's path is `wiki_request_forget` (a request → audience
-    // vote), so refuse here and point them there.
+    // Sender-direct authority: only the fact's author (its `sender`) forgets it
+    // directly; an admin may forget any fact. A non-sender subject's path is
+    // `wiki_request_forget` (a request → audience vote), so refuse here and
+    // point them there.
     let row = mwe_core::fact_index::find_by_id(ctx.pool, &fact_id)
         .await
         .map_err(|e| AgenticToolError::InternalFailure {
@@ -1504,11 +1504,11 @@ async fn dispatch_wiki_supersede(
     // the consumer's plain-markdown page — refuse before the subject gate (a
     // smart row's owner is the scope principal, which the operator may match).
     ensure_standard_wiki(ctx, AgenticTool::WikiSupersede.name(), &old_row.wiki_id)?;
-    // Editing the CONTENT of a fact is an *update* — the subject's act (the
-    // write-authority model): the **subject** (subject, or a member of an
-    // owning group) or an admin may supersede it directly, the same subject axis the
-    // ingest supersede guards (`SupersedeCrossSubject`) and the validity closure
-    // use. Only *destroying* a fact keys on `sender` / a vote, not updating it.
+    // Editing the CONTENT of a fact is an *update* — the subject's act: the
+    // **subject** (subject, or a member of an owning group) or an admin may
+    // supersede it directly, the same subject axis the ingest supersede guards
+    // (`SupersedeCrossSubject`) and the validity closure use. Only *destroying*
+    // a fact keys on `sender` / a vote, not updating it.
     if !(mwe_core::acl::sender_is_subject(
         &old_row.subject_id,
         &ctx.sender_ctx.sender_id,
@@ -2082,9 +2082,9 @@ fn move_fact_wiki_relative_page(handle: &mwe_core::wiki::WikiHandle, source_path
 
 /// Admin-only gate for the single-fact move. Re-categorising a fact neither
 /// destroys it nor changes its visibility, so it is the operator's (admin's)
-/// act — and REM's, server-side — never the per-fact subject's (the structure
-/// authority of the write-authority model). The
-/// subject / sender axes gate `delete` / `edit` / `acl_change`, not `move`.
+/// act — and REM's, server-side — never the per-fact subject's (structure
+/// authority). The subject / sender axes gate `delete` / `edit` /
+/// `acl_change`, not `move`.
 fn enforce_move_admin(
     ctx: &AgenticContext<'_>,
     tool: &'static str,
@@ -2129,7 +2129,7 @@ struct WikiRequestForgetArgs {
 }
 
 /// Open a forget request for a fact the signed-in user does not author — the
-/// non-sender subject's path (the write-authority model).
+/// non-sender subject's path.
 ///
 /// Requests **as** `ctx.sender_ctx.sender_id`: the engine enforces that the
 /// caller is the fact's subject / an owning-group member (or admin), refuses a
@@ -3030,7 +3030,7 @@ mod tests {
     }
 
     /// A non-admin operator cannot move a fact — even the fact's own subject: a
-    /// move is admin-only structure authority (the write-authority model).
+    /// move is admin-only structure authority.
     #[tokio::test]
     async fn dispatch_wiki_move_fact_refuses_non_admin() {
         let (dir, pool, tree) = move_fact_tree().await;

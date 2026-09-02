@@ -1,9 +1,6 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 //! Admin-gated token management.
 //!
-//! Canonical references: dashboard,
-//! memory model.
-//!
 //! Five handlers:
 //!
 //! - GET  `/tokens`                                 — landing page with
@@ -23,8 +20,7 @@
 //!   existing consumer's `allowed_sender_ids`.
 //! - POST `/tokens/delegation/:consumer_id`         — apply the edit.
 //!
-//! Per the dashboard design the
-//! `is_admin` JWT claim is **derived, never toggled in the form**: for a
+//! The `is_admin` JWT claim is **derived, never toggled in the form**: for a
 //! smart token it inherits the chosen owner's `enrollment_users.is_admin`;
 //! a standard token is always non-admin (its sender is a credential-less
 //! bot identity). There is at most one admin per deployment, so the
@@ -588,8 +584,7 @@ async fn issue_submit(
 
     // Diagonal identity model: same shared validator as the CLI
     // (`mwe-mcp token-issue`) so the two never drift — standard ⇒ system
-    // user + consumer_id; smart ⇒ owner. See
-    //  §1.
+    // user + consumer_id; smart ⇒ owner.
     if let Err(msg) = enrollment::validate_token_identity(
         &state.pool,
         &claims.sender_id,

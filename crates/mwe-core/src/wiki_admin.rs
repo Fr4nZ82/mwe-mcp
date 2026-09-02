@@ -63,10 +63,9 @@ use crate::wiki::{META_FILENAME, WikiError, WikiHandle, WikiMeta, WikiTree, atom
 /// Who is performing the write — drives the gate matrix and the
 /// `actor_kind` column of `wiki_admin_op_log`.
 ///
-/// The op-log is no longer smart-wiki-only, so the
-/// dashboard textual editor and future system-generated compensation
-/// rows can be discriminated from a `wiki_admin_push` issued by a
-/// smart consumer over MCP.
+/// The op-log covers every wiki, so the dashboard textual editor and
+/// system-generated compensation rows have to be discriminable from a
+/// `wiki_admin_push` issued by a smart consumer over MCP.
 ///
 /// Gate matrix:
 ///
@@ -663,16 +662,14 @@ async fn push_create(
         ));
     }
 
-    // Smart-family gate. The `wiki_type` axis was already dissolved (the
-    // registry describe + the magic-string family sniff are both gone):
-    // smart-ness is now an **explicit request flag** the smart consumer
-    // sends — it decides to create (importing a previously-local wiki, or
-    // a new project wiki on user request). `wiki_type` survives only as a
-    // free-form tone/label (feeding `compiler::resolve_tone`) and no
-    // longer steers any gate. The flag is stamped into `WikiMeta.smart`
-    // below. The gate only fires on the smart-consumer path — dashboard
-    // creates are a power-user shortcut and the dashboard UI itself
-    // steers toward sensible templates.
+    // Smart-family gate. Smart-ness is an **explicit request flag** the
+    // smart consumer sends — it is the one that decides to create (importing
+    // a local wiki, or a new project wiki on user request). `wiki_type` is a
+    // free-form tone/label (feeding `compiler::resolve_tone`) and steers no
+    // gate. The flag is stamped into `WikiMeta.smart` below. The gate only
+    // fires on the smart-consumer path — dashboard creates are a power-user
+    // shortcut and the dashboard UI itself steers toward sensible
+    // templates.
     let is_smart_family = req.smart;
     if actor_kind == ActorKind::SmartConsumer && !is_smart_family {
         return Err(AdminError::WikiTypeNotAdminWritable {

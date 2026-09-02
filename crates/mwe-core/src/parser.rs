@@ -1,7 +1,6 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
-//! Inline marker parser. The canonical grammar lives in
-//! marker grammar; this
-//! hand-written scanner is the authoritative implementation.
+//! Inline marker parser. This hand-written scanner is the authoritative
+//! implementation.
 //!
 //! Pure function: takes a markdown string, returns a [`ParseOutput`] with an
 //! ordered list of [`ParseEvent`]s (prose / region / embed) and a list of
@@ -9,7 +8,7 @@
 //! — malformed markers turn into warnings and the offending bytes either
 //! become prose or are skipped, so the parser always makes forward progress.
 //!
-//! ## Grammar (informal — see the wiki page for the EBNF)
+//! ## Grammar (informal)
 //!
 //! - `{{` … `}}` — marker open or self-closing. Must stay on a single line
 //!   (newlines between `{{` and `}}` produce an `UnclosedMarker` warning).
@@ -154,12 +153,12 @@ pub fn parse(text: &str) -> ParseOutput {
             push_prose(&mut out.events, text, pos, open);
         }
 
-        // The opening `{{` exists. Find the next `}}`. Then enforce the
-        // single-line constraint of §3.2 by checking that no `\n` appears
-        // between `{{` and `}}`. Doing the line-end scan *before* the `}}`
-        // search is what makes that earlier draft accidentally O(n²) on
-        // newline-poor inputs — `unwrap_or(text.len())` falls back to a
-        // full-tail scan on every marker open.
+        // The opening `{{` exists. Find the next `}}`, and only then
+        // enforce the single-line constraint by checking that no `\n`
+        // appears between `{{` and `}}`. That order matters: a line-end
+        // scan run *first* is O(n²) on newline-poor inputs, because
+        // `unwrap_or(text.len())` falls back to a full-tail scan on every
+        // marker open.
         let after_open = open + 2;
         let Some(close_attr) = find_from(text, "}}", after_open) else {
             out.warnings.push(ParseWarning {
@@ -175,7 +174,7 @@ pub fn parse(text: &str) -> ParseOutput {
             out.warnings.push(ParseWarning {
                 offset: open,
                 kind: ParseWarningKind::UnclosedMarker,
-                detail: "marker open spans a newline (§3.2 forbids multi-line markers)".into(),
+                detail: "marker open spans a newline (markers are single-line)".into(),
             });
             // Recovery: keep `{{` as prose and advance past it so the
             // scanner can pick up later markers naturally. We do NOT
@@ -316,11 +315,9 @@ pub fn collect_embeds(text: &str) -> Vec<CatalogId> {
 /// passes.
 ///
 /// This is the relaxation gate the capture-body validators use: a fact
-/// body may carry its media embeds (rendered by code, see
-/// media pipeline) but
-/// never region markers, stray braces, or malformed marker fragments —
-/// those stay the LLM-injection failure mode the validators exist to
-/// block.
+/// body may carry its media embeds (rendered by code) but never region
+/// markers, stray braces, or malformed marker fragments — those stay the
+/// LLM-injection failure mode the validators exist to block.
 #[must_use]
 pub fn embed_only_markers(text: &str) -> Option<Vec<CatalogId>> {
     let parsed = parse(text);
@@ -652,7 +649,7 @@ mod tests {
     #[test]
     fn region_pure_acl_no_fact_id() {
         // A region without `f=` applies its ACL but creates no fact_index
-        // entry (see the marker-grammar wiki page).
+        // entry.
         let input = "{{allow=group:famiglia}}content{{/}}";
         let out = parse(input);
         assert!(out.warnings.is_empty());

@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
-//! Planning card 61 — choosing the smart-wiki admission rule on evidence.
+//! Choosing the smart-wiki admission rule on evidence.
 //!
 //! The founder's contract: *the project corpus stays out of recall unless the
 //! turn is explicitly about a project*, and the **signpost description** is the

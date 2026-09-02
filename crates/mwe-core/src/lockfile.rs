@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
-//! Single-writer lockfile (single-writer lockfile).
+//! Single-writer lockfile.
 //!
 //! Enforces the V1 invariant that **at most one `mwe-mcp` process owns a
 //! given workdir at a time**. The mechanism is a kernel advisory lock
@@ -159,11 +159,10 @@ impl Drop for LockfileGuard {
 /// must be kept alive for as long as the process expects to be the
 /// single writer. Re-entering this function with the same workdir from
 /// the same process while a guard is alive returns
-/// [`LockError::Held`] — `fs2` advisory locks do not detect
-/// same-process double-acquisition portably, but on the platforms we
-/// support (Linux/macOS/Windows) the second `try_lock_exclusive` call
-/// fails with `WouldBlock` because the OS treats the second open as a
-/// distinct lock holder.
+/// [`LockError::Held`]: `fs2` locks the open file *description*
+/// (`flock` on Unix, `LockFileEx` on Windows), so the second `open` in
+/// the same process is a distinct holder and its `try_lock_exclusive`
+/// fails with `WouldBlock`.
 pub fn acquire(workdir: &Path) -> Result<LockfileGuard, LockError> {
     if !workdir.exists() {
         std::fs::create_dir_all(workdir)?;
@@ -213,8 +212,8 @@ pub fn acquire(workdir: &Path) -> Result<LockfileGuard, LockError> {
 /// Discriminate kernel "lock already held" failures from generic IO
 /// errors across the three platforms we support.
 ///
-/// - POSIX (`fcntl`) surfaces contention as
-///   [`std::io::ErrorKind::WouldBlock`] (EAGAIN / EWOULDBLOCK).
+/// - Unix (`flock`, which is what `fs2` calls) surfaces contention as
+///   [`std::io::ErrorKind::WouldBlock`] (EWOULDBLOCK).
 /// - Windows (`LockFileEx`) surfaces it as raw OS error
 ///   [`WINDOWS_ERROR_LOCK_VIOLATION`] (33) or
 ///   [`WINDOWS_ERROR_SHARING_VIOLATION`] (32), neither of which the

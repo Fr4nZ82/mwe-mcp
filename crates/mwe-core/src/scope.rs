@@ -2,12 +2,11 @@
 //! Hierarchical scope changes — `_internal.wiki_change_scope`.
 //!
 //! Moves a wiki (and its subtree) to a new parent in the tree while
-//! keeping `wiki_id` stable per the
-//! memory model
-//! invariant that ids never get rewritten on rename. Sub-wikis ride
-//! along automatically — only the directly moved wiki's `_meta.md`
-//! needs its `parent_wiki_id` rewritten, since descendants reference
-//! parents by stable id and not by path.
+//! keeping `wiki_id` stable per the invariant that ids never get
+//! rewritten on rename. Sub-wikis ride along automatically — only the
+//! directly moved wiki's `_meta.md` needs its `parent_wiki_id`
+//! rewritten, since descendants reference parents by stable id and not
+//! by path.
 //!
 //! This is a composite operation (filesystem + DB), so it lives in
 //! its own module rather than inside [`crate::wiki`] which is the

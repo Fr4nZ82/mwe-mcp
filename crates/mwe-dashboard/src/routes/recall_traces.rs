@@ -39,10 +39,8 @@
 //! (`instance.admin_reveal_locked`).
 //!
 //! The journal itself is written by the two recall producers (see
-//! [`mwe_core::recall_trace`] and the
-//! recall pipeline): the
-//! ingest per-turn injection and the `wiki_navigate` tool. This surface only
-//! reads it.
+//! [`mwe_core::recall_trace`]): the ingest per-turn injection and the
+//! `wiki_navigate` tool. This surface only reads it.
 
 use axum::Router;
 use axum::extract::{Path as AxumPath, State};

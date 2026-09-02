@@ -18,9 +18,7 @@
 //! dashboard `/connect` page will link to these endpoints
 //! so the operator can copy-paste straight from the browser.
 //!
-//! See the tool reference
-//! for the design rationale and the explicit constraint that the MCP
-//! protocol has no way for the server to register hooks on the
+//! The MCP protocol has no way for the server to register hooks on the
 //! client — mwe-mcp can only *recommend* them.
 
 use axum::Router;

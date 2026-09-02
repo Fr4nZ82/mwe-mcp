@@ -33,12 +33,10 @@ the bundled default embedded by `include_str!` is the floor; an override at
   page-less request parses instead of failing the whole decision — it then
   matches no candidate and is dropped by `open_target`, and a hop whose every
   pick is dropped ends the walk with `NavStop::NothingOpened`.
-- **No wiki catalogue.** Until v1.3 every hop also carried a ROOT INDEX: one
-  line per visible wiki with its `_meta` abstract and topic union, ~13.5k
-  characters on the live corpus. Removed by the founder's ruling that the read
-  side has no concept of a wiki — it starts on the pages the turn's facts
-  landed on and travels by their `[[wikilinks]]`. `wiki_id` survives only as
-  the first half of a page's address.
+- **No wiki catalogue.** A hop is never shown a list of wikis. The read side
+  has no concept of a wiki: it starts on the pages the turn's facts landed on
+  and travels by their `[[wikilinks]]`, and `wiki_id` is only the first half of
+  a page's address.
 - **ACL**: the navigator never sees raw markers — every page it receives is
   already projected per-sender (`render::render_for_sender`), and the cards it
   chooses from carry only default-visibility topic words (the ACL card

@@ -1,8 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 //! Link fabric on the memory explorer's rendered page — the human
-//! surface of the canonical wikilink grammar
-//! plus the
-//! region → source-fact click-through:
+//! surface of the canonical wikilink grammar plus the region →
+//! source-fact click-through:
 //!
 //! - canonical `[[wiki_id]]` / `[[wiki_id/page-slug]]` wikilinks render
 //!   as in-dashboard navigation, the `|display` alias as the label, and

@@ -60,8 +60,6 @@
 //! an operator running a REM cycle or a recall evaluation by hand, and
 //! `tag` (from `MWE_USAGE_TAG`) marks a whole process as a deliberate
 //! experiment.
-//!
-//! See .
 
 use std::sync::atomic::{AtomicI64, Ordering};
 use std::sync::{Arc, OnceLock};

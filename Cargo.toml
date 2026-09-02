@@ -50,10 +50,9 @@ tower-http = { version = "0.6", features = ["trace", "compression-gzip", "fs", "
 # Templating server-side
 maud = { version = "0.26", features = ["axum"] }
 
-# Markdown → HTML for the dashboard wiki page preview (C.11.f
-# discoverability fix follow-up: replace the verbatim `<pre>` body
-# with a rendered preview where comments anchor onto real heading
-# elements). Pinned at 0.13 — current stable, fast, escape-aware.
+# Markdown → HTML for the dashboard wiki page preview: the body renders
+# as real heading elements, so comments anchor onto them. Pinned at
+# 0.13 — current stable, fast, escape-aware.
 pulldown-cmark = { version = "0.13", default-features = false, features = ["html"] }
 
 # Database — sqlx. NOTE: no compile-time SQL validation is in use here. There is no
@@ -69,7 +68,7 @@ tokio-util = { version = "0.7", features = ["io"] }
 
 # Desktop tray (mwe-mcp-tray only): KDE/freedesktop StatusNotifierItem over
 # DBus (zbus) — no GTK, no OpenSSL. Linux control surface for the systemd
-# service (roadmap 14d).
+# service.
 ksni = { version = "0.3", default-features = false, features = ["tokio"] }
 
 # Serialization
@@ -80,9 +79,9 @@ serde_yaml = "0.9"
 # Auth
 jsonwebtoken = "9"
 
-# Password hashing for the dashboard login (A.9 + A.12). PHC Argon2id
-# with OWASP-recommended defaults; tuning lands in mwe-mcp.config.yaml
-# in Phase B.
+# Password hashing for the dashboard login. PHC Argon2id with
+# OWASP-recommended defaults; the parameters are hardcoded, not tunable
+# from mwe-mcp.config.yaml.
 argon2 = "0.5"
 password-hash = { version = "0.5", features = ["getrandom"] }
 
@@ -99,7 +98,7 @@ uuid = { version = "1", features = ["v4", "v7", "serde"] }
 # RNG for secret material (HS256 token secret bootstrap)
 getrandom = "0.2"
 
-# SMTP client for self-service password recovery (roadmap 28). rustls
+# SMTP client for self-service password recovery. rustls
 # transport only — no OpenSSL (project dependency policy). Async over the tokio
 # executor; `builder` for the typed Message API.
 lettre = { version = "0.11", default-features = false, features = [
@@ -109,7 +108,7 @@ lettre = { version = "0.11", default-features = false, features = [
     "hostname",
 ] }
 
-# TOTP (RFC 6238) + QR enrollment for dashboard 2FA (roadmap 28).
+# TOTP (RFC 6238) + QR enrollment for dashboard 2FA.
 # Pure-Rust, MIT/Apache. `otpauth` builds the provisioning URI,
 # `gen_secret` mints the shared secret; we render the QR ourselves with
 # the `qrcode` crate (inline SVG) rather than totp-rs's `qr` feature,
@@ -117,7 +116,7 @@ lettre = { version = "0.11", default-features = false, features = [
 totp-rs = { version = "5", default-features = false, features = ["otpauth", "gen_secret"] }
 qrcode = { version = "0.14", default-features = false, features = ["svg"] }
 
-# Encrypt the TOTP shared secret at rest (roadmap 28). XChaCha20-Poly1305
+# Encrypt the TOTP shared secret at rest. XChaCha20-Poly1305
 # AEAD keyed off a SHA-256 derivation of MWE_TOKEN_SECRET — rotating the
 # token secret invalidates 2FA enrollments (documented). RustCrypto,
 # MIT/Apache. (`sha2` for the key derivation is already a workspace dep.)
@@ -130,14 +129,15 @@ notify = "6"
 clap = { version = "4", features = ["derive", "env"] }
 
 # .env loader — used by `mwe-mcp` to read `<workdir>/mwe-mcp.env` at
-# subcommand startup so operators no longer have to `source` an env
-# file in every shell. Maintained fork of the original `dotenv` crate.
+# subcommand startup, so an operator's keys reach the process without
+# `source`-ing an env file in every shell. Maintained fork of the
+# original `dotenv` crate.
 dotenvy = "=0.15.7"
 
 # Tracing — writer on stderr (rmcp stdio gotcha). `tracing-appender`
 # adds the rotating file sink so an operator running `mwe-mcp` detached
-# still has a `tail`-able log under `<workdir>/logs/` — extension of
-# decision O.1, not a revision (stderr stays as the second sink).
+# still has a `tail`-able log under `<workdir>/logs/` — stderr stays as
+# the second sink.
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter", "fmt", "registry"] }
 tracing-appender = "0.2"
@@ -145,24 +145,24 @@ tracing-appender = "0.2"
 # HTTP client (LLM/embedding backends)
 reqwest = { version = "0.12", default-features = false, features = ["rustls-tls", "json", "stream"] }
 
-# Bundled local embedder (roadmap group 18) — Candle, a Rust ML stack
-# whose CPU kernels compile into the binary (no external onnxruntime/.so
-# at runtime, the reason it was chosen over ONNX/ORT). CPU by default; a
-# CUDA feature is opt-in (18f).
+# Bundled local embedder — Candle, a Rust ML stack whose CPU kernels
+# compile into the binary (no external onnxruntime/.so at runtime, the
+# reason it was chosen over ONNX/ORT). CPU by default; a CUDA feature is
+# opt-in.
 #
-# Caveat surfaced by the 18a spike: candle-core 0.10.2 *unconditionally*
-# depends on `tokenizers` with the `onig` feature (Oniguruma), so the
-# build pulls a vendored C regex engine compiled by `cc`. It is statically
-# linked — the runtime binary stays self-contained — but the build now
-# needs a C compiler (matters for the cross-compile pipeline, 5m). Our own
-# `tokenizers` line is pinned to the same 0.22 + onig so the graph carries
-# one version, not two.
+# Caveat: candle-core 0.10.2 *unconditionally* depends on `tokenizers`
+# with the `onig` feature (Oniguruma), so the build pulls a vendored C
+# regex engine compiled by `cc`. It is statically linked — the runtime
+# binary stays self-contained — but the build needs a C compiler, which
+# matters for the cross-compile pipeline. Our own `tokenizers` line is
+# pinned to the same 0.22 + onig so the graph carries one version, not
+# two.
 candle-core = "=0.10.2"
 candle-nn = "=0.10.2"
 candle-transformers = "=0.10.2"
 tokenizers = { version = "0.22", default-features = false, features = ["onig"] }
 
-# Lockfile (R.1.6)
+# Lockfile
 fs2 = "0.4"
 
 # Wiki export archive (dashboard export feature). Plain uncompressed
@@ -190,7 +190,7 @@ unicode-normalization = "0.1"
 sha2 = "0.10"
 hex = "0.4"
 
-# Base64 — image bytes riding the multimodal ingest call (media pipeline)
+# Base64 — image bytes riding the multimodal ingest call
 base64 = "0.22"
 
 # Async traits

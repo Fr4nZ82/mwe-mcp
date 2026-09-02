@@ -851,7 +851,7 @@ mod tests {
     #[tokio::test]
     async fn promotion_carries_validity_into_fact_index() {
         // The validity interval the classifier deduced (carried on the
-        // CaptureRequest) must survive buffer → journal → promote and land in
+        // CaptureRequest) must survive buffer → promote and land in
         // fact_index — the gap on the standard-wiki path.
         let (_dir, tree, pool) = setup().await;
         let mut req = cap_req("Sono a Berlino questa settimana.");

@@ -2,16 +2,14 @@
 //! Operator-facing act-first wrappers for the per-fragment **ACL change**
 //! and **validity edit** verbs.
 //!
-//! The chat ingest path applies these two verbs from a conversational turn
-//! (ingest pipeline); the
-//! dashboard applies the SAME two verbs from a structured operator form. To
-//! keep the act-first orchestration in one place — load nothing extra, write
-//! the engine column (probing the promoted fact row first, then the
-//! still-buffered capture), compute the disclosure-widening signal, record
-//! the audit row, and mint ONE born-applied receipt — the dashboard route
-//! is kept thin: it enforces
-//! authorisation (it owns the session) and calls one of the two wrappers
-//! here.
+//! The chat ingest path applies these two verbs from a conversational turn;
+//! the dashboard applies the SAME two verbs from a structured operator
+//! form. To keep the act-first orchestration in one place — load nothing
+//! extra, write the engine column (probing the promoted fact row first,
+//! then the still-buffered capture), compute the disclosure-widening
+//! signal, record the audit row, and mint ONE born-applied receipt — the
+//! dashboard route is kept thin: it enforces authorisation (it owns the
+//! session) and calls one of the two wrappers here.
 //!
 //! These wrappers do **not** enforce authorisation: the chat path gates on
 //! the fact's subject from the recall window; the dashboard route gates on

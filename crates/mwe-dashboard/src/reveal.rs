@@ -14,7 +14,7 @@
 //! The toggle lives on the **Settings** page ([`crate::routes::settings`])
 //! as a single control that governs every reveal-aware surface; a new
 //! surface opts in simply by consulting [`active`] and skipping its ACL
-//! projection when it returns true..
+//! projection when it returns true.
 //!
 //! # The machine operator can take the switch away
 //!

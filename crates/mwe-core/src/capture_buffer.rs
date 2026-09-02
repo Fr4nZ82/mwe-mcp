@@ -32,9 +32,9 @@
 //! truth** for a claim between the turn that captured it and the compile that
 //! writes it onto a page, exactly as the product's principle says it should be
 //! (*authority follows the author*: engine-curated memory is DB-authoritative,
-//! the pages are its render — see the memory model). Durability is the
-//! workdir snapshot's job ([`crate::backup`]), which takes the DB image and
-//! the file tree together because neither reconstructs the other.
+//! the pages are its render). Durability is the workdir snapshot's job
+//! ([`crate::backup`]), which takes the DB image and the file tree
+//! together because neither reconstructs the other.
 //!
 //! **There is no on-disk capture journal, and nothing may coin one.** A file
 //! every capture reads and rewrites whole, that nothing prunes, and whose
@@ -289,9 +289,10 @@ pub fn origin_fingerprint(message: &str) -> String {
 
 /// Material computed for a capture at buffer time, beside the claim itself.
 ///
-/// Both fields are optional and both default to absent, so a caller with
-/// neither an embedder nor an originating message stages nothing and the row
-/// behaves exactly as it did before these columns existed.
+/// Both fields are optional and both default to absent: a caller with neither
+/// an embedder nor an originating message stages nothing, and the readers fall
+/// back — the fresh slot embeds the body itself, and the already-in-context
+/// suppression simply does not fire.
 #[derive(Debug, Clone, Default, PartialEq)]
 pub struct BufferStaging {
     /// See [`BufferedCapture::embedding`].
@@ -400,8 +401,7 @@ pub async fn buffer_capture_staged(
 ///
 /// `source_kind` names the producer (`ingest` | `document` | …) and
 /// `source_ref` carries the source-document provenance (catalog id / url)
-/// that promotion copies onto `fact_index.source_ref`
-/// (document ingest).
+/// that promotion copies onto `fact_index.source_ref`.
 ///
 /// # Errors
 ///
@@ -502,7 +502,7 @@ fn validate_buffer_body(body: &str) -> Result<()> {
     }
     // `<!--` stays reserved unconditionally; braces are admitted only as
     // well-formed self-closing `{{embed=…}}` markers, mirroring
-    // `capture::validate_body` (see media pipeline).
+    // `capture::validate_body`.
     if body.contains("<!--") {
         return Err(CaptureBufferError::BodyContainsReserved);
     }

@@ -15,22 +15,17 @@ split pass. A page that passed the mass pre-filter
 recall count — and the LLM decides whether one sub-topic has outgrown its
 siblings (mass) and/or is frequently recalled (recall), naming the
 facts that move to a new dedicated page. The trigger is **page mass +
-recall weighed together by the model**, never a hardcoded recall
-floor — see the memory model.
+recall weighed together by the model**, never a hardcoded recall floor.
 The orchestrator calls the prompt through the hybrid loader
 [`mwe_core::prompts::render`]: the override at
 `<workdir>/prompts/rem-promotions.md` wins when present, otherwise
-this bundled default. See the
-REM cycle for the narrative
-and `crates/mwe-core/src/rem.rs` (around the `paragraph_split_prompt`
-call site) for the runtime parameters.
+this bundled default. See `crates/mwe-core/src/rem.rs` (around the
+`paragraph_split_prompt` call site) for the runtime parameters.
 
 ## Runtime contract
 
 Operational specs that ship next to the prompt body so they can't
-drift from it. Code is the source of truth; the
-REM cycle keeps only the
-design log (changelog, narrative).
+drift from it. Code is the source of truth.
 
 **Call site**: `crates/mwe-core/src/rem.rs::run_auto_promote` —
 search for `paragraph_split_prompt(`. The `CompletionRequest::new(prompt)
@@ -94,7 +89,7 @@ moves — see [`mwe_core::rem_verdicts`].
 |---|---|---|
 | `temperature` | `0.2` | Deterministic output with a small dose of variance to avoid the classifier collapsing onto a single pattern. |
 | `max_tokens` | `4000` | The JSON carries a list of fact UUIDs (~40 tokens each is generous); 4000 covers a large page's worth of moved facts with headroom. |
-| `think:false` | implicit | Applies when the strong slot runs on a local Qwen 3.x backend (the all-local profile); cloud strong backends reason via `reasoning_effort` instead. See the REM cycle. |
+| `think:false` | implicit | Applies when the strong slot runs on a local Qwen 3.x backend (the all-local profile); cloud strong backends reason via `reasoning_effort` instead. |
 
 **Upstream filter** (decides when the model sees the prompt at all):
 a page reaches the LLM only when

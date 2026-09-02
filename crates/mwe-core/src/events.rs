@@ -72,9 +72,8 @@ pub enum EventKind {
     /// lifecycle — the payload carries the `proposal_id`, `path`, and
     /// `reason` so a consumer can surface it.
     ArchiveProposed,
-    /// A document-ingest job finished
-    /// (document ingest).
-    /// The payload carries `job_id`, the resolved `disposition` and
+    /// A document-ingest job finished. The payload carries `job_id`, the
+    /// resolved `disposition` and
     /// `title`, the anchor `document_page` (consult/dossier — absent on
     /// dissolve), `facts_buffered`, and the `source_ref`, so the consumer
     /// that enqueued the job can tell the user what the memory now holds.
@@ -360,11 +359,10 @@ pub struct AckOutcome {
     pub unknown: Vec<i64>,
 }
 
-/// Default `top_k` for [`poll_events`] — matches the
-/// tool reference for `events_poll`.
+/// Default `top_k` for [`poll_events`].
 pub const DEFAULT_POLL_TOP_K: i64 = 20;
 
-/// Maximum `top_k` accepted by [`poll_events`] — same spec.
+/// Maximum `top_k` accepted by [`poll_events`].
 pub const MAX_POLL_TOP_K: i64 = 50;
 
 /// Drain pending events for `consumer_id`.
@@ -489,7 +487,7 @@ pub async fn poll_events(
 ///   and the consumer never sees the event again.
 /// - Unknown `event_id` values are returned in [`AckOutcome::unknown`];
 ///   the caller surfaces them as the `unknown` field of the tool
-///   response per the tool reference for `events_ack`.
+///   response.
 ///
 /// ## Concurrency — why this transaction writes first
 ///

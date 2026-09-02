@@ -20,10 +20,6 @@
 //!
 //! Everything else is captured verbatim in [`Config::extra`].
 //!
-//! The canonical schema lives in
-//! the config schema reference;
-//! this module follows it.
-//!
 //! ## Lookup order
 //!
 //! - `<workdir>/mwe-mcp.config.yaml` if present.
@@ -221,7 +217,7 @@ impl LogLevel {
 
 // ---------- LLM ----------
 
-/// One of the canonical LLM functions (see the config schema reference).
+/// One of the canonical LLM functions.
 ///
 /// Used both as a config sub-section name and as the suffix for the
 /// env-var override convention: `MWE_LLM_<UPPER>_MODEL` /
@@ -267,8 +263,7 @@ pub enum LlmFunction {
     Cronista,
     /// `navigator` — the recall navigator: per-turn, reads the destination
     /// **page** cards and the prose collected so far and decides which page to
-    /// open next (the recall pipeline). It is shown no wikis and no catalogue
-    /// of them.
+    /// open next. It is shown no wikis and no catalogue of them.
     /// Wants a **strong-but-cheap** model: it runs on every turn
     /// (latency + cost bound) but its link choices are the recall
     /// quality bar.
@@ -678,9 +673,8 @@ where
 /// reach into the runtime config by `Config::llm.ingest` (etc.) and
 /// build the backend lazily.
 ///
-/// Env-var overrides (see the config schema reference)
-/// are applied by [`Self::apply_env_overrides`] after YAML parse:
-/// `MWE_LLM_INGEST_MODEL` overrides `llm.ingest.model`,
+/// Env-var overrides are applied by [`Self::apply_env_overrides`] after
+/// YAML parse: `MWE_LLM_INGEST_MODEL` overrides `llm.ingest.model`,
 /// `MWE_LLM_INGEST_BACKEND` overrides `llm.ingest.backend`, and so on
 /// for the other slots. An override that names a function
 /// not present in YAML creates the entry (with `model` falling back to
@@ -715,8 +709,8 @@ pub struct LlmConfig {
 
 /// Profile presets seeded by `mwe-mcp init`.
 ///
-/// The three canned profiles in the config schema reference
-/// plus the catch-all `custom` (empty skeleton — operator fills in).
+/// The three canned profiles plus the catch-all `custom` (empty
+/// skeleton — operator fills in).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum LlmProfile {
     /// Every slot points to a local Ollama instance. Optimised for
@@ -765,8 +759,7 @@ impl LlmProfile {
 
     /// Build the canonical [`LlmConfig`] for this profile.
     ///
-    /// Picks per slot follow the tier table in
-    /// the ingest pipeline notes:
+    /// Picks per slot follow the tier table:
     ///
     /// - `ingest`, `operator_chat` — workhorse tier. Local where
     ///   possible (latency matters for chat).
@@ -1257,8 +1250,7 @@ impl LoggingConfig {
 /// Drives the scheduler that runs [`crate::rem::run_cycle`] inside the
 /// long-lived HTTP server. The default profile is **enabled** with a
 /// 24-hour cadence so a fresh deployment auto-organises memory without
-/// the operator having to flip a switch (closes
-/// `open-questions.md §13 rem-cycle-not-scheduled`). Operators who run
+/// the operator having to flip a switch. Operators who run
 /// `rem::run_cycle` from an external scheduler (systemd timer, cron,
 /// cloud scheduler) should set `schedule.mode: disabled` and invoke
 /// `mwe-mcp rem run-cycle` on their own cadence.
@@ -1408,8 +1400,7 @@ impl RemConfig {
     }
 }
 
-/// `document:` section — resource knobs of the document-ingest pipeline
-/// (document ingest).
+/// `document:` section — resource knobs of the document-ingest pipeline.
 ///
 /// Every knob is a resource cap (segment sizing, job cadence, merge
 /// threshold), never a semantic gate — the disposition and the extraction

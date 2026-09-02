@@ -67,8 +67,7 @@
 //! sees a raw marker. Both call sites (the ingest recall-block tail and the
 //! `wiki_navigate` tool) run gather → navigate; the funnel also journals its
 //! own route ([`NavigationOutcome::trace`]) for the recall-trace surface
-//! ([`crate::recall_trace`]). See
-//! the recall pipeline.
+//! ([`crate::recall_trace`]).
 
 use std::collections::{BTreeMap, BTreeSet, btree_map::Entry};
 use std::path::{Path, PathBuf};
@@ -1385,14 +1384,13 @@ fn initial_pool(
         .filter_map(|ep| {
             by_id.get(ep.wiki_id.as_str()).map(|d| {
                 // The **destination page's** card, never its wiki's. Every
-                // seed has named a page since 63 §8, and the wiki-level card
-                // is what the fan used when a seed could still name a wiki
-                // alone: it describes the subject, not the page, so N hits in
-                // one wiki reached the navigator as N candidates carrying the
-                // *same* sentence and the *same* keyword union, separable
-                // only by their file name. The card is the sole input to
-                // every choice the funnel makes, so that was the fan handing
-                // it a constant.
+                // seed names a page, and a wiki-level card describes the
+                // subject rather than the page: N hits in one wiki would
+                // reach the navigator as N candidates carrying the *same*
+                // sentence and the *same* keyword union, separable only by
+                // their file name. The card is the sole input to every
+                // choice the funnel makes, so that would be handing it a
+                // constant.
                 Candidate {
                     wiki_id: ep.wiki_id.clone(),
                     page: ep.page.clone(),
@@ -3025,8 +3023,8 @@ mod tests {
 
         // The funnel journal mirrors the run: hop 1 offered the fan card and
         // opened the pick (note captured), and the walk then stopped because
-        // the page it read exposed no further door — which is the ordinary
-        // shape of a walk now that nothing offers a page nobody linked.
+        // the page it read exposed no further door — the ordinary shape of a
+        // walk, since nothing offers a page nobody linked.
         assert_eq!(out.stop, NavStop::PoolExhausted);
         assert_eq!(out.trace.len(), 1);
         let hop = &out.trace[0];
@@ -3164,7 +3162,7 @@ mod tests {
             "# Rails\n\nSee [[bob]] and [[bob/hobbies]].\n",
         );
         write_page(&tree, "bob", "hobbies.md", "# Hobbies\n\nBob sails.\n");
-        // What `[[bob]]` means is *bob*, and since 63 §8 bob is his card.
+        // What `[[bob]]` means is *bob*, and bob is his card.
         write_page(
             &tree,
             "bob",
@@ -3624,8 +3622,8 @@ mod tests {
         // The navigator asks for the rules page **verbatim**, which is the
         // case that matters: `open_target`'s gate is the central fail-safe and
         // refuses it whatever door the funnel found. The offer side is checked
-        // below on the same walk — with the directory listing retired, nothing
-        // can put a reserved page in front of the navigator by accident, so
+        // below on the same walk — nothing lists a wiki's pages, so nothing
+        // can put a reserved page in front of the navigator by accident, and
         // the remaining risk is exactly a navigator that names one itself.
         let llm = ScriptedLlm::new(&[
             r#"{"open":[{"wiki_id":"alice","page":"@rules.md"},{"wiki_id":"alice","page":"rails.md"}],"done":false}"#,

@@ -26,13 +26,12 @@ use sqlx::SqlitePool;
 pub struct DashboardConfig {
     /// Minimum password length accepted by the setup wizard,
     /// `/dashboard/accept-invite`, and the self-service password
-    /// change. Pinned to 12 by the memory model.
+    /// change. Pinned to 12.
     pub min_password_len: usize,
 
-    /// TTL for fresh `user_invitations` rows. Per the
-    /// engine DB and migrations
-    /// the default is 24h; the dashboard form does not expose this knob
-    /// (only the CLI `mwe-mcp admin-reset` does), so it lives here.
+    /// TTL for fresh `user_invitations` rows. The default is 24h; the
+    /// dashboard form does not expose this knob (only the CLI
+    /// `mwe-mcp admin-reset` does), so it lives here.
     pub invitation_ttl_hours: i64,
 
     /// TTL for self-service password-reset links (`password_resets`).
@@ -45,14 +44,13 @@ pub struct DashboardConfig {
     /// every authenticated request with a fresh `exp`, and a small
     /// keepalive ping (`/dashboard/session/keepalive`) refreshes it on
     /// user activity so a long form (the welcome primer) never lapses
-    /// mid-fill. See the
-    /// JWT & session model.
+    /// mid-fill.
     pub session_ttl_minutes: i64,
 
     /// When set, the session cookie is emitted with the `Secure`
     /// attribute. Default is `false` so `mwe-mcp serve` on `127.0.0.1`
-    /// works out of the box; production deployments behind a TLS proxy
-    /// flip this on via the operator-facing config.
+    /// works out of the box; a deployment behind a TLS proxy flips it on
+    /// with `instance.cookie_secure` in `mwe-mcp.config.yaml`.
     pub cookie_secure: bool,
 
     /// The deployment is frozen (`mwe-mcp.config.yaml >
@@ -160,7 +158,7 @@ pub struct MemoryHandles {
     /// leaves it empty and the live `LlmConfig` does the work.
     ///
     /// This is the seam that enables the e2e ingest test with a fake
-    /// LLM backend (see the dashboard).
+    /// LLM backend.
     pub llm_overrides: LlmBackendOverrides,
     /// Workdir root, exposed for handlers that need to construct
     /// `<workdir>/...` paths (today only used by the chat handler's

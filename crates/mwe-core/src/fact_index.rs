@@ -2,17 +2,13 @@
 //! `fact_index` — SQLite-backed region-level index.
 //!
 //! One row per region delimited by `{{f=<UUIDv7>}}…{{/}}` markers in the
-//! memory-wiki filesystem (memory model).
-//! The `.md` files stay authoritative for the prose; for the **region
-//! ACL** the DB is the authoritative source on the read side — redaction
-//! resolves it by fact key via [`page_acl_map`], with the inline marker
-//! attributes as the transition fallback
-//! (redaction policy).
+//! memory-wiki filesystem. The `.md` files stay authoritative for the
+//! prose; for the **region ACL** the DB is the authoritative source on the
+//! read side — redaction resolves it by fact key via [`page_acl_map`],
+//! with the inline marker attributes as the transition fallback.
 //!
 //! See the table DDL in
-//! [`migrations/0001_fact_index.sql`](../../migrations/0001_fact_index.sql)
-//! and the schema reference in
-//! engine DB and migrations.
+//! [`migrations/0001_fact_index.sql`](../../migrations/0001_fact_index.sql).
 //!
 //! This module is the data-access layer: insert, find-active, mark
 //! superseded/forgotten, find-by-id, drop-by-source-path. The full
@@ -118,8 +114,8 @@ pub struct FactIndexRow {
     pub successor_fact_id: Option<FactId>,
     /// Set when `wiki_forget` (or filesystem removal) tombstones the row.
     pub deleted_at: Option<String>,
-    /// Free-form reason matching engine DB and migrations:
-    /// `filesystem_removed`, `user_request`, `gdpr_erasure`, …
+    /// Free-form reason: `filesystem_removed`, `user_request`,
+    /// `gdpr_erasure`, …
     pub deleted_reason: Option<String>,
     /// Last wall-clock the row appeared in `wiki_recall` / `wiki_search`
     /// top-K. Used by REM for rolling recall counters.
@@ -127,9 +123,8 @@ pub struct FactIndexRow {
     /// Rolling 30-day recall counter maintained by REM. Defaults to 0.
     pub recall_count_30d: i64,
     /// Start of the fact's validity interval (ISO 8601). `None` = unknown /
-    /// "since forever". Part of the per-fact validity model
-    /// (memory model).
-    /// Additive + inert until the writer populates it.
+    /// "since forever". Part of the per-fact validity model. Additive +
+    /// inert until the writer populates it.
     pub valid_from: Option<String>,
     /// End of the validity interval (ISO 8601). `None` = OPEN — true now, with
     /// no horizon; a set value is a claim that holds for a while and then stops.
@@ -161,9 +156,9 @@ pub struct FactIndexRow {
     /// unproposed. See [`Self::target_page`].
     pub style: Option<crate::wiki::PageStyle>,
     /// Provenance of an extracted fact: the media-catalog id or URL of the
-    /// source document (document ingest).
-    /// `None` for ordinary conversational captures. DB-authoritative
-    /// metadata — audit/citation surface, never rendered into the page.
+    /// source document. `None` for ordinary conversational captures.
+    /// DB-authoritative metadata — audit/citation surface, never rendered
+    /// into the page.
     pub source_ref: Option<String>,
     /// Project-wiki pages this fact's originating turn authored, as plain
     /// `[[wiki_id/page]]` wikilinks (a smart consumer carried them in via
@@ -966,14 +961,13 @@ pub async fn mark_forgotten_in_wiki(pool: &SqlitePool, wiki_id: &str, reason: &s
     Ok(res.rows_affected())
 }
 
-/// Reassign a removed principal's facts to their wiki's scope principal (23d).
+/// Reassign a removed principal's facts to their wiki's scope principal.
 ///
 /// Substitute every active fact's dangling `sender_id` — equal to the
-/// just-removed principal `gone` — with that fact's wiki **scope principal**
-/// (the write-authority model), so a contribution
-/// outlives its author as the category's: a fact `franz` authored in the family
-/// wiki becomes `sender = group:famiglia` once `franz` is gone, instead of
-/// pointing at a principal that no longer exists.
+/// just-removed principal `gone` — with that fact's wiki **scope principal**,
+/// so a contribution outlives its author as the category's: a fact `franz`
+/// authored in the family wiki becomes `sender = group:famiglia` once `franz`
+/// is gone, instead of pointing at a principal that no longer exists.
 ///
 /// Facts are grouped by wiki and each wiki's scope is resolved from topology
 /// ([`crate::wiki::WikiTree::resolve_scope_principal`]). A wiki whose scope is
@@ -1003,7 +997,7 @@ pub async fn reassign_sender_to_scope(
     let mut reassigned = 0u64;
     for (wiki_id,) in wikis {
         let Ok(id) = crate::types::WikiId::parse(&wiki_id) else {
-            tracing::warn!(wiki_id = %wiki_id, "23d: unparsable wiki_id — sender left dangling");
+            tracing::warn!(wiki_id = %wiki_id, "unparsable wiki_id — sender left dangling");
             continue;
         };
         let scope = match tree
@@ -1014,7 +1008,7 @@ pub async fn reassign_sender_to_scope(
             Err(e) => {
                 tracing::warn!(
                     wiki_id = %wiki_id, error = %e,
-                    "23d: could not resolve wiki scope — sender left dangling"
+                    "could not resolve wiki scope — sender left dangling"
                 );
                 continue;
             },
@@ -1040,7 +1034,7 @@ pub async fn reassign_sender_to_scope(
     Ok(reassigned)
 }
 
-/// Bulk self-delete: tombstone every still-active fact `sender` authored (23d).
+/// Bulk self-delete: tombstone every still-active fact `sender` authored.
 ///
 /// The bulk primitive of the forget model — a contributor clears their own
 /// contributions in one act, no vote —
@@ -1320,8 +1314,7 @@ pub async fn latest_page_activity(
 /// its last-known ACL rather than silently falling back to the page
 /// default. The render path resolves each region against this map by
 /// fact key first; inline marker attributes are only the fallback for
-/// regions the DB does not know
-/// (redaction policy).
+/// regions the DB does not know.
 ///
 /// The key is `source_path` **alone**, not `(wiki_id, source_path)`: the
 /// redaction unit is the **file**, and `source_path` is workdir-relative
@@ -1592,10 +1585,8 @@ pub async fn find_active_by_subject(
 
 /// Whether `wiki_id` **surfaces** to a reader under derived visibility.
 ///
-/// The enforcement of the
-/// identity-and-acl §5 rule that a
-/// wiki the reader can read nothing in surfaces nowhere (`sender_id` is the
-/// reader, `sender_groups` their groups).
+/// Enforces the rule that a wiki the reader can read nothing in surfaces
+/// nowhere (`sender_id` is the reader, `sender_groups` their groups).
 ///
 /// A wiki with **no active facts** surfaces to everyone — there is nothing to
 /// hide, and a just-created or not-yet-promoted wiki must not 404 for its own
@@ -2120,8 +2111,7 @@ pub async fn find_active_by_source_path(
 ///
 /// Mirrors the subset of [`NewFact`] that may be mutated in place when
 /// an existing region's body / offsets changed on disk. **Deliberately
-/// carries no ACL fields**: the ACL columns are the authoritative
-/// source (redaction policy)
+/// carries no ACL fields**: the ACL columns are the authoritative source
 /// and are never rewritten from what a file says — only a dedicated
 /// ACL-edit operation may touch them. `created_at` and the recall
 /// counters are preserved.
@@ -3586,7 +3576,7 @@ mod tests {
         assert_eq!(back, ps);
     }
 
-    // ---------- 23d: deleted-principal sender reassignment ----------
+    // ---------- deleted-principal sender reassignment ----------
 
     #[tokio::test]
     async fn reassign_sender_to_scope_substitutes_gone_author() {

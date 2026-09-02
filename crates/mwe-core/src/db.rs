@@ -2,26 +2,19 @@
 //! `engine.db` access layer — connection pool + migrations.
 //!
 //! [`open_or_init`] opens (or creates) the sqlite file at
-//! `<workdir>/engine.db`, applies the canonical pragmas
-//! (`journal_mode=WAL`, `foreign_keys=ON`, plus a generous `busy_timeout`
-//! for the brief contention window between writers and concurrent
-//! readers; see
-//! engine DB and migrations),
-//! and runs every pending migration under
-//! [`migrations/`](../../migrations/).
+//! `<workdir>/engine.db`, sets three pragmas on every connection —
+//! `journal_mode=WAL`, `foreign_keys=ON` and `busy_timeout=5s` — and runs
+//! every pending migration from the embedded `migrations/` directory.
+//! `synchronous` is left at `SQLite`'s own default: the engine's durability
+//! boundary is the workdir snapshot ([`crate::backup`]), which takes the
+//! DB image and the file tree together, not the per-commit fsync.
 //!
 //! [`open_existing`] is the same connection without either write, for a
 //! command that runs beside a live server and holds no lockfile.
 //!
-//! The 15 migration files (see `0001_*` through `0015_*`) cover the 8
-//! core tables of the
-//! engine DB schema,
-//! the three op-log additions (`proposal_ops_log`, `rem_ops_log`,
-//! `token_blacklist`), the alignment column (`0011_revoked_by`), the
-//! three identity tables (`user_credentials`,
-//! `user_invitations`, `consumer_delegations`), and the single-admin
-//! partial unique index. The two enrollment tables share migration
-//! `0006`.
+//! The migration files are numbered and applied in order; the schema they
+//! build is the tables the modules that own them describe, and
+//! [`crate::recovery`] carries the list of the ones that hold memory.
 
 use std::path::{Path, PathBuf};
 

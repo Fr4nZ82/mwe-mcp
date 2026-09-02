@@ -68,15 +68,17 @@
 //! When the file has at least one region, every region was redacted,
 //! and there is no prose with non-whitespace content to anchor the
 //! output, the result collapses internally to the single callout
-//! "This entire page is private." The collapse keeps the privacy
-//! guarantee ("avoid leaking the exact count of hidden
-//! regions") without forcing the caller to special-case the response:
-//! `text` simply contains the callout and `blocks_redacted` still
-//! reflects the per-region count for telemetry. There is no
-//! `fully_redacted: bool` field on [`RenderOutput`]
-//! — the detection lives entirely inside
-//! `render_for_sender` and is observable to consumers only via the
-//! returned `text` (collapsed callout) + `blocks_redacted > 0`.
+//! "This entire page is private." What the collapse withholds is the
+//! **shape** of the page: a body of bare `[redacted]` markers would show
+//! the sender how many private fragments there are and where each sits,
+//! and the callout shows neither. The number itself is not a secret —
+//! `blocks_redacted` carries it, and `wiki_read` ships it to the caller
+//! as `redacted_count`.
+//!
+//! There is no `fully_redacted: bool` field on [`RenderOutput`] — the
+//! detection lives entirely inside `render_for_sender` and is observable
+//! to consumers only via the returned `text` (collapsed callout) +
+//! `blocks_redacted > 0`.
 
 use crate::acl::{FactAclMap, can_read};
 use crate::parser::{ParseEvent, parse};
@@ -118,15 +120,17 @@ pub const ACL_REVEAL_INLINE_CLOSE: &str = "</span>";
 /// Result of rendering one input for one sender.
 ///
 /// `text` is ready to ship to the sender (markdown). `blocks_redacted`
-/// counts how many *regions* were replaced by a callout — useful to
-/// populate a UI badge or telemetry. The total-redaction collapse
-/// described in the module docs is folded into `text` itself: when no
-/// region survived and there is no anchoring prose, `text` contains
-/// the single `> [!redacted] This entire page is private.` callout.
-/// There is no `fully_redacted: bool` field — the detection
-/// lives internally inside `render_for_sender` and is observable only
-/// through `text` (the collapsed callout) plus `blocks_redacted > 0`,
-/// which keeps the exact count of hidden regions private.
+/// counts how many *regions* were replaced by a callout — `wiki_read`
+/// ships it as `redacted_count`, and a UI can badge it. The
+/// total-redaction collapse described in the module docs is folded into
+/// `text` itself: when no region survived and there is no anchoring
+/// prose, `text` contains the single
+/// `> [!redacted] This entire page is private.` callout, so the body
+/// reveals neither how the page is laid out nor where its private
+/// fragments sit. There is no `fully_redacted: bool` field — the
+/// detection lives internally inside `render_for_sender` and is
+/// observable only through `text` (the collapsed callout) plus
+/// `blocks_redacted > 0`.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct RenderOutput {
     /// Declassified markdown for the sender.

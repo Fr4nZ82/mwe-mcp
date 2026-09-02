@@ -1,7 +1,5 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
-//! Invitation acceptance: `/dashboard/accept-invite/:invitation_id`
-//! (dashboard +
-//! engine DB and migrations).
+//! Invitation acceptance: `/dashboard/accept-invite/:invitation_id`.
 //!
 //! Publicly reachable: anyone with the URL can land here. The guard
 //! is the invitation itself — `UUIDv7` random, single-use, 24h TTL.

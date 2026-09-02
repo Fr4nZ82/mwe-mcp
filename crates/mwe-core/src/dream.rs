@@ -828,9 +828,8 @@ mod tests {
     ///
     /// This is the ordering the whole pass turns on (founder, 2026-08-26):
     /// review what is already written while tonight's claims wait, then do
-    /// the work once. Reviewing at the build's tail instead — where the
-    /// reviewer used to be the last thing to run — meant the Cartografo that
-    /// could act on a finding had already finished, and the card stayed
+    /// the work once. Reviewing at the build's tail instead would leave the
+    /// Cartografo that could act on a finding already finished, and the card
     /// wrong for a day.
     ///
     /// What the test pins is that the park is on the plan when the build

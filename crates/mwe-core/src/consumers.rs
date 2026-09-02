@@ -36,7 +36,7 @@ pub type Result<T> = std::result::Result<T, ConsumersError>;
 
 /// Request shape for [`register`].
 ///
-/// Mirrors the `consumer_register` tool reference.
+/// Mirrors the input shape of the `consumer_register` tool.
 #[derive(Debug, Clone)]
 pub struct RegisterRequest<'a> {
     /// Stable consumer id, chosen by the consumer.
@@ -213,9 +213,8 @@ pub async fn system_user_for(pool: &SqlitePool, consumer_id: &str) -> Result<Opt
 /// (2) stamps `enrollment_users.is_agent` — WITHOUT the consumer having to call
 /// `consumer_register` separately (the setup step a conversational bridge skips and
 /// which left agents like Hermes unbound). This is the un-deferred "explicit
-/// `is_system` marker" of the diagonal identity model
-/// ( §1.5): the agent is wired by *connecting*,
-/// not by a registration that can be forgotten.
+/// `is_system` marker" of the diagonal identity model: the agent is wired
+/// by *connecting*, not by a registration that can be forgotten.
 ///
 /// Guarded: when the binding is already correct it is a single read and returns, so
 /// the hot path pays one indexed `SELECT` after the first connection. Best-effort by

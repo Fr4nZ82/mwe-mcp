@@ -1,8 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 //! Structure-proposal lifecycle: list + apply / auto-apply chassis.
 //!
-//! Wraps the `structure_proposals` table (engine DB and migrations) and
-//! ships a 3-state lifecycle:
+//! Wraps the `structure_proposals` table and ships a 3-state lifecycle:
 //!
 //! ```text
 //!  pending ── apply (manual, apply_mode='manual') ──────────────────► applied
@@ -59,8 +58,7 @@ use crate::wiki::WikiTree;
 
 /// Canonical `structure_proposals.kind` string constants.
 ///
-/// Pinned by the proposal apply engine;
-/// the chassis rejects any other value as `unknown_kind`.
+/// The chassis rejects any other value as `unknown_kind`.
 pub mod kind {
     /// Promote facts paragraph→file or file→sub-wiki (3-stage auto-promotion building block).
     pub const WIKI_PROMOTE: &str = "wiki_promote";
@@ -174,7 +172,7 @@ pub enum ApplyError {
     #[error("handler data: {0}")]
     HandlerData(String),
     /// The caller is neither the proposal's `recipient_id` (addressee)
-    /// nor an admin (0032). Surfaced when a non-admin tries to apply a
+    /// nor an admin. Surfaced when a non-admin tries to apply a
     /// proposal addressed to a different user. Maps to MCP `forbidden`.
     #[error("caller {caller} not authorized to apply {proposal_id}")]
     NotAuthorized {
@@ -249,7 +247,7 @@ pub struct ListFilters {
     pub status: Option<ProposalStatus>,
     /// Optional kind filter (e.g. `"wiki_promote"`).
     pub kind: Option<String>,
-    /// Optional recipient scope (0032). When `Some(principal)` — a
+    /// Optional recipient scope. When `Some(principal)` — a
     /// `Principal` wire string like `"user:frodo"` — the listing is
     /// narrowed to rows addressed to that principal **or** unaddressed
     /// (`recipient_id IS NULL`, the admin-fallback bucket). `None` lifts
@@ -314,9 +312,8 @@ pub struct ProposalRow {
     pub applied_at: Option<String>,
     /// `sender_id` that applied, or `None` for auto-apply at timeout.
     pub applied_by: Option<String>,
-    /// Addressee of the proposal (0032): a `Principal` wire string like
-    /// `"user:frodo"`, or `None` for unaddressed / admin-fallback rows
-    /// (every pre-0032 row reads as `None`).
+    /// Addressee of the proposal: a `Principal` wire string like
+    /// `"user:frodo"`, or `None` for unaddressed / admin-fallback rows.
     pub recipient_id: Option<String>,
 }
 
@@ -422,7 +419,7 @@ fn parse_status_lenient(s: &str) -> ProposalStatus {
 /// Count the `pending` rows — the proposals still waiting on somebody.
 ///
 /// The only rows anybody can still act on: once a proposal is applied
-/// the change stands. Scoped by `recipient` (0032): pass
+/// the change stands. Scoped by `recipient`: pass
 /// `Some("user:<id>")` to count only the rows addressed to that user
 /// plus the unaddressed/admin-fallback ones, or `None` for the
 /// deployment-wide count (admin view).
@@ -445,7 +442,7 @@ pub async fn count_pending(pool: &SqlitePool, recipient: Option<&str>) -> Result
     Ok(q.fetch_one(pool).await?)
 }
 
-// ---------- Recipient (addressee) derivation + authorization (0032) ----------
+// ---------- Recipient (addressee) derivation + authorization ----------
 
 /// Derive the recipient (addressee) of a proposal from the fact that
 /// triggered it.
@@ -946,9 +943,7 @@ pub(crate) async fn mark_auto_applied(
 
 // ---------- Emit path ----------
 
-/// Default timeout for newly emitted proposals
-/// (the proposal apply engine):
-/// 24 h from `proposed_at`.
+/// Default timeout for newly emitted proposals: 24 h from `proposed_at`.
 pub const DEFAULT_EMIT_TIMEOUT: chrono::Duration = chrono::Duration::hours(24);
 
 /// Parameters for [`emit_proposal`].
@@ -971,7 +966,7 @@ pub struct EmitParams {
     /// Window before auto-apply fires (default
     /// [`DEFAULT_EMIT_TIMEOUT`]).
     pub timeout: chrono::Duration,
-    /// Addressee of the proposal (0032): a `Principal` wire string like
+    /// Addressee of the proposal: a `Principal` wire string like
     /// `"user:frodo"`, or `None` for unaddressed / admin-fallback.
     /// Emitters derive it with [`recipient_from_fact`].
     pub recipient: Option<String>,
@@ -990,7 +985,7 @@ impl EmitParams {
         }
     }
 
-    /// Set the recipient (addressee) of the proposal (0032).
+    /// Set the recipient (addressee) of the proposal.
     #[must_use]
     pub fn with_recipient(mut self, recipient: Option<String>) -> Self {
         self.recipient = recipient;
@@ -1448,7 +1443,7 @@ mod tests {
         assert!(!kind::is_canonical(""));
     }
 
-    // ---- recipient derivation + authorization (0032) ----
+    // ---- recipient derivation + authorization ----
 
     #[test]
     fn recipient_from_fact_prefers_sender_then_subject_else_none() {

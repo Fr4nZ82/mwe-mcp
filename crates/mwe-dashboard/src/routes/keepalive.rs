@@ -9,8 +9,7 @@
 //! no request between load and final submit; a user who lingers past the
 //! TTL would otherwise have the submit bounced to `/login` with their work
 //! lost. The shell layout pings this on user interaction (throttled), so
-//! an active tab keeps its session alive. See the
-//! JWT & session model.
+//! an active tab keeps its session alive.
 
 use axum::Router;
 use axum::http::StatusCode;

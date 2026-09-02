@@ -1,6 +1,5 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
-//! Admin-gated group management (see dashboard +
-//! memory model).
+//! Admin-gated group management.
 //!
 //! Groups are metadata-only — no invitation, no credentials. The form
 //! shows a checkbox for each existing user so the admin builds the
@@ -394,25 +393,25 @@ async fn delete(
         return Err(DashboardError::NotFound);
     }
 
-    // 23d: reassign any fact whose `sender` is this group (e.g. one a prior 23d
-    // pass auto-attributed to the collective) to its wiki's scope principal, so
-    // no active fact points at a vanished sender (the sender-scrub invariant —
-    // ). Subject/allow that
-    // name this group are out of 23d's scope (sender only). Best-effort — a
-    // failure (or absent memory handles) is logged, never blocks the delete.
+    // Reassign any fact whose `sender` is this group (e.g. one a prior pass
+    // auto-attributed to the collective) to its wiki's scope principal, so no
+    // active fact points at a vanished sender (the sender-scrub invariant).
+    // Subject and allow-list entries that name this group are out of scope
+    // here — only `sender` is reassigned. Best-effort — a failure (or absent
+    // memory handles) is logged, never blocks the delete.
     if let Some(memory) = state.memory.as_ref() {
         let gone = mwe_core::types::Principal::Group(group_id.clone());
         match mwe_core::fact_index::reassign_sender_to_scope(&state.pool, &memory.tree, &gone).await
         {
             Ok(n) => {
-                tracing::info!(group = %group_id, reassigned = n, "23d: group delete reassigned facts' sender to wiki scope");
+                tracing::info!(group = %group_id, reassigned = n, "group delete reassigned facts' sender to wiki scope");
             },
             Err(e) => {
-                tracing::warn!(group = %group_id, error = %e, "23d: sender reassignment failed after group delete");
+                tracing::warn!(group = %group_id, error = %e, "sender reassignment failed after group delete");
             },
         }
     } else {
-        tracing::warn!(group = %group_id, "23d: memory handles unavailable — facts' sender not reassigned");
+        tracing::warn!(group = %group_id, "memory handles unavailable — facts' sender not reassigned");
     }
 
     tracing::info!(actor = admin.sender_id(), group = %group_id, "dashboard deleted group");

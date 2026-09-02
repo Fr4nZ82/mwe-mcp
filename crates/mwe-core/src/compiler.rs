@@ -1427,11 +1427,11 @@ fn expand_fact_tags(body: &str, facts: &[FactForPage]) -> String {
         if (1..=facts.len()).contains(&n) && rendered.insert(n) {
             let f = &facts[n - 1];
             // Embed-completeness guard: the canonical claim may carry
-            // `{{embed=…}}` markers (the media pipeline); the Cronista's
-            // rewritten span must not silently drop them — re-append by
-            // code whatever the model ate. The whole body is checked
-            // too: a marker the model kept in adjacent prose must not
-            // be appended a second time inside the span.
+            // `{{embed=…}}` markers; the Cronista's rewritten span must
+            // not silently drop them — re-append by code whatever the
+            // model ate. The whole body is checked too: a marker the
+            // model kept in adjacent prose must not be appended a second
+            // time inside the span.
             let span_repaired = restore_missing_embeds(span, &f.text, body);
             out.push_str(&crate::capture::render_marker(&f.fact_id, &span_repaired));
         } else {
@@ -1622,7 +1622,7 @@ async fn compile_list_page(
     now: &str,
 ) -> Result<PageOutcome> {
     // One bullet record per fact, each wrapped in its region marker rendered
-    // HERE by code (never an LLM — the ACL is load-bearing, CLAUDE §11). A record
+    // HERE by code, never by an LLM: the marker carries the ACL. A record
     // is a single line, so any newline in the claim collapses to a space. A
     // closed record carries its done-cue INSIDE the marker, so redaction hides
     // the closure together with the fact it describes.
@@ -1833,8 +1833,7 @@ fn primary_facts_text(
 /// `(validity: open-ended)` and it weaves no start cue (cronista rule: an
 /// open-ended start needs none). A **future** `valid_from` ("da lunedì cambio
 /// ufficio") IS a genuine onset the user announced → keep the dated form so the
-/// Cronista can phrase it. (The dated open-ended hint was previously polluting
-/// identity prose with record dates.)
+/// Cronista can phrase it.
 ///
 /// A closed window may also carry its WHY (`decay_reason`:
 /// `completed` / `retracted` / `contradicted`) — appended inside the
@@ -3051,7 +3050,7 @@ mod tests {
     async fn cronista_writes_prose_with_marker_and_repoints_fact() {
         let (dir, tree, pool) = setup().await;
         let fid = FactId::parse("0190f3c2-7a4e-7c31-9b02-2f6a1c8e5d77").unwrap();
-        // Plant the fact in fact_index pointing at the buffer journal.
+        // Plant a promoted fact with no offsets — a pending render.
         fact_index::insert(
             &pool,
             &crate::fact_index::NewFact {
@@ -3105,7 +3104,7 @@ mod tests {
         let page = std::fs::read_to_string(dir.path().join("wikis/alice/cucina.md")).unwrap();
         assert!(page.contains("Alice ama la pasta."));
         assert!(page.contains(&format!("f={fid}")));
-        // The fact_index row was repointed off the journal onto the compiled page.
+        // The fact_index row was repointed onto the compiled page.
         let row = fact_index::find_by_id(&pool, &fid).await.unwrap().unwrap();
         assert_eq!(row.source_path, "wikis/alice/cucina.md");
         assert!(row.region_start.is_some(), "offsets repointed");
@@ -3850,7 +3849,7 @@ mod tests {
         let (dir, tree, pool) = setup().await;
         let fid1 = FactId::parse("0190f3c2-7a4e-7c31-9b02-2f6a1c8e5d01").unwrap();
         let fid2 = FactId::parse("0190f3c2-7a4e-7c31-9b02-2f6a1c8e5d02").unwrap();
-        // Both facts are promoted (pointing at the buffer journal). fid2 is a
+        // Both facts are promoted with no offsets — pending renders. fid2 is a
         // non-global (group) fact — exactly the `missing_acl_markers` case.
         plant_fact(&pool, &fid1, "user:alice", "Alice loves pasta").await;
         plant_fact(
@@ -3963,7 +3962,7 @@ mod tests {
             page.contains("Matteo has homework on Monday"),
             "appended fact body present"
         );
-        // Both facts repointed off the journal onto the compiled page.
+        // Both facts repointed onto the compiled page.
         for fid in [&fid1, &fid2] {
             let row = fact_index::find_by_id(&pool, fid).await.unwrap().unwrap();
             assert_eq!(

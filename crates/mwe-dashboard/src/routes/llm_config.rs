@@ -31,9 +31,6 @@
 //! **hot-reloaded** into the running process (in-memory swap + override
 //! map) — no `mwe-mcp serve` restart needed; the env-file copy on disk is
 //! what survives a restart.
-//!
-//! See the admin LLM config
-//! wiki page.
 
 #![allow(clippy::too_many_lines, reason = "single-page admin editor")]
 
@@ -190,9 +187,8 @@ const REASONING_EFFORTS: &[&str] = &["low", "medium", "high", "extra-high"];
 /// display order — **every** [`LlmFunction`] variant. `save()` rebuilds
 /// the config from exactly this list, so a slot left off here is dropped
 /// on every save: omitting `Cronista` meant the dashboard silently wiped
-/// the prose compiler, so a fresh setup captured facts but never rendered
-/// readable pages (see
-/// admin LLM config).
+/// the prose compiler, so a fresh setup captured facts but never
+/// rendered readable pages.
 const SLOTS: &[LlmFunction] = &LlmFunction::ALL;
 
 /// Sub-router for `/admin/llm-config` and `/admin/api-keys/:name`.

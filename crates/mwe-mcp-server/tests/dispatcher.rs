@@ -325,16 +325,16 @@ async fn events_ack_idempotent_across_calls() {
     assert!(second["unknown"].as_array().unwrap().is_empty());
 }
 
-// ---- structure_proposal_* removed from MCP ----
+// ---- structure_proposal_* is not an MCP tool ----
 //
-// The proposal tools no longer exist on the MCP surface. Structural
-// changes apply directly in REM, silently; the dashboard is the operator
-// surface (it calls `mwe-core::proposals` directly). The
-// dispatcher must surface them as `not_found`, since they're not
-// registered in `schemas::all_tools()`.
+// The MCP surface carries no proposal tools. Structural changes apply
+// directly in REM, silently; the dashboard is the operator surface (it
+// calls `mwe-core::proposals` directly). The dispatcher must surface a
+// call to one as `not_found`, since they are not registered in
+// `schemas::all_tools()`.
 
 #[tokio::test]
-async fn structure_proposal_apply_removed_returns_not_found() {
+async fn structure_proposal_apply_is_not_a_tool() {
     let (state, identity, _dir) = fixture(false, None).await;
     let err = call(
         &state,
@@ -348,7 +348,7 @@ async fn structure_proposal_apply_removed_returns_not_found() {
 }
 
 #[tokio::test]
-async fn structure_proposal_confirm_removed_returns_not_found() {
+async fn structure_proposal_confirm_is_not_a_tool() {
     let (state, identity, _dir) = fixture(false, None).await;
     let err = call(
         &state,
@@ -362,7 +362,7 @@ async fn structure_proposal_confirm_removed_returns_not_found() {
 }
 
 #[tokio::test]
-async fn structure_proposal_revert_removed_returns_not_found() {
+async fn structure_proposal_revert_is_not_a_tool() {
     let (state, identity, _dir) = fixture(false, None).await;
     let err = call(
         &state,
@@ -376,7 +376,7 @@ async fn structure_proposal_revert_removed_returns_not_found() {
 }
 
 #[tokio::test]
-async fn structure_proposal_list_removed_returns_not_found() {
+async fn structure_proposal_list_is_not_a_tool() {
     let (state, identity, _dir) = fixture(false, None).await;
     let err = call(&state, &identity, "structure_proposal_list", json!({}))
         .await

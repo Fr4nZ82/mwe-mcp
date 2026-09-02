@@ -1740,7 +1740,7 @@ fn blessed_channels_footer(comment_mode_url: &str, can_comment: bool, frozen: bo
                 a href="/dashboard/facts" { "fact actions" }
                 " (ACL / validity / supersede)."
             }
-            " Manual free-text rewriting of wiki pages from the dashboard is no longer offered."
+            " The dashboard does not offer manual free-text rewriting of wiki pages."
         }
     }
 }

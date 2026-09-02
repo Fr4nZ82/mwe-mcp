@@ -3,20 +3,17 @@
 //!
 //! Two sinks are installed:
 //!
-//! - `stderr` (the only sink under decision O.1) — always present.
+//! - `stderr` (always present).
 //! - A rotating file sink under
 //!   `<workdir>/<logging.file_path>` (default `logs/mwe-mcp.log`) when
-//!   `logging.file_rotation` is not `disabled`. The rationale is
-//!   documented in logging:
-//!   running `mwe-mcp` detached (systemd, container, agent process)
-//!   needs a `tail`-able file the operator can attach to after the
-//!   fact.
+//!   `logging.file_rotation` is not `disabled`. Running `mwe-mcp`
+//!   detached (systemd, container, agent process) needs a `tail`-able
+//!   file the operator can attach to after the fact.
 //!
-//! The file sink is enabled by default — see the rationale in
-//! logging. Operators on
-//! read-only mounts or with external log shipping wired in can flip
-//! `logging.file_rotation` to `disabled` in `mwe-mcp.config.yaml` to
-//! recover the original stderr-only floor.
+//! The file sink is enabled by default. Operators on read-only mounts or
+//! with external log shipping wired in can flip `logging.file_rotation`
+//! to `disabled` in `mwe-mcp.config.yaml` and keep stderr as the only
+//! sink.
 //!
 //! Live in a dedicated module (not in `main.rs`) so the integration
 //! tests under `tests/` can exercise the file sink end-to-end through
@@ -36,7 +33,7 @@ use tracing_subscriber::util::SubscriberInitExt as _;
 ///
 /// `None` when the file sink is disabled (`logging.file_rotation:
 /// disabled`) or when opening the file sink failed and we degraded to
-/// stderr-only — the documented safe fallback per decision O.1.
+/// stderr-only — the safe fallback.
 pub type Guard = Option<WorkerGuard>;
 
 /// Install the global `tracing` subscriber stack on the current
@@ -58,7 +55,7 @@ pub type Guard = Option<WorkerGuard>;
 /// integration test
 /// `crates/mwe-mcp-server/tests/file_logging.rs`).
 pub fn install(workdir: &Path, config: &Config) -> Guard {
-    // Filter precedence (decision O.1): RUST_LOG > config > info
+    // Filter precedence: RUST_LOG > config > info
     // default. Rebuilt twice because `EnvFilter` is not `Clone`; the
     // intent is that both sinks see the same picture.
     let stderr_filter = make_filter(config);

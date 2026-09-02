@@ -15,8 +15,7 @@
 //! **refuses** a standard-wiki row with `400`. Draining it synchronously would
 //! stamp `processed_at` and the dream would then never action-take it; and a
 //! memory edit must never be a user-triggered token-burning click. The comment
-//! stays parked until the next consolidation. See
-//! the compiler note.
+//! stays parked until the next consolidation.
 //!
 //! ## Why a separate route file
 //!

@@ -15,7 +15,7 @@
 //! - [`Check::MetaInvalid`] — every wiki directory whose `_meta.md` is
 //!   missing or fails to parse as [`WikiMeta`].
 //! - [`Check::EmbedMissing`] — every `{{embed=…}}` whose catalog row or
-//!   blob is gone (media pipeline).
+//!   blob is gone.
 //!
 //! The other three (`broken_crosslinks`, `acl_inconsistent`,
 //! `superseded_chain`) walk nothing: [`run`] has no arm for them, so

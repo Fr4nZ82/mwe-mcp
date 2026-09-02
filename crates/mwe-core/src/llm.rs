@@ -21,8 +21,8 @@
 //!   fields default).
 //! - Chat-with-tools shapes — [`ChatMessage`], [`Role`], [`Tool`],
 //!   [`ToolCall`], [`ChatRequest`], [`ChatResponse`] — used by the
-//!   dashboard's agentic loop (LLM functions) when
-//!   it composes `_internal.*` operations through function calling.
+//!   dashboard's agentic loop when it composes `_internal.*` operations
+//!   through function calling.
 //!   The `complete` single-prompt path stays untouched: callers that
 //!   do not need tools (ingest, REM, dedup) keep using it.
 //! - [`OllamaBackend`] — an `HTTP` client for the Ollama generate API
@@ -214,8 +214,8 @@ impl CompletionUsage {
     }
 }
 
-/// One image riding a completion request (the vision path of the
-/// media pipeline).
+/// One image riding a completion request (the vision path of the media
+/// pipeline).
 ///
 /// Carried per-request, never as backend state: the ingest slot is
 /// shared by several callers and only the main ingest classify call may
@@ -351,11 +351,11 @@ pub struct CompletionResponse {
 //
 // Separate from the single-prompt `complete` path so the existing
 // structured callers (ingest, REM dedup) are untouched. Used by the
-// dashboard agentic loop (LLM functions) to
-// compose `mwe-core`'s `_internal.*` operations: the model receives a
-// turn-by-turn message history plus a list of callable tools, decides
-// whether to emit one or more `tool_calls`, and the dashboard
-// executes them and feeds the results back as `Role::Tool` messages.
+// dashboard agentic loop to compose `mwe-core`'s `_internal.*`
+// operations: the model receives a turn-by-turn message history plus a
+// list of callable tools, decides whether to emit one or more
+// `tool_calls`, and the dashboard executes them and feeds the results
+// back as `Role::Tool` messages.
 // ---------------------------------------------------------------------------
 
 /// Role of a chat turn.
@@ -476,8 +476,7 @@ impl ChatMessage {
 ///
 /// The `parameters` field is a JSON Schema object describing the
 /// tool's arguments. The dashboard's `AgenticTool` registry produces
-/// these descriptors from the whitelisted `_internal.*` operations
-/// (LLM functions).
+/// these descriptors from the whitelisted `_internal.*` operations.
 #[derive(Debug, Clone)]
 pub struct Tool {
     /// Tool name. Must be unique per `ChatRequest`. Matched against
@@ -644,8 +643,8 @@ pub trait LlmBackend: Send + Sync {
     async fn complete(&self, request: CompletionRequest) -> Result<CompletionResponse>;
 
     /// Run a multi-turn chat exchange, optionally with function-callable
-    /// tools. Used by the dashboard agentic loop (LLM functions)
-    /// where the model alternates between text replies and tool calls.
+    /// tools. Used by the dashboard agentic loop where the model
+    /// alternates between text replies and tool calls.
     ///
     /// Backends that do not support function calling — currently every
     /// non-Ollama provider in this codebase — return
@@ -678,8 +677,7 @@ pub trait LlmBackend: Send + Sync {
     }
 
     /// Sanity check that this backend is reachable and the configured
-    /// model responds. Called at `mwe-mcp serve` boot
-    /// (LLM functions) for every
+    /// model responds. Called at `mwe-mcp serve` boot for every
     /// configured slot so the server refuses to bind the listener
     /// when an LLM is misconfigured or unreachable; called on-demand
     /// by `mwe-mcp doctor` for the same check post-deploy.
@@ -697,11 +695,11 @@ pub trait LlmBackend: Send + Sync {
     async fn health_check(&self) -> Result<()> {
         // Pins the temperature the determinism-sensitive callers pin, so
         // boot exercises the request shape the engine actually sends rather
-        // than a stripped-down one that always passes — the 2026-07-29
-        // lesson, in the default rather than in one backend. Safe now that
-        // [`ModelPolicy`] drops the parameter for models known to refuse it
-        // and the OpenAI-shaped backends retry once without it when a model
-        // refuses unexpectedly. A small-but-non-trivial `max_tokens`
+        // than a stripped-down one that always passes. It lives in the
+        // default rather than in one backend so every backend gets it. Safe
+        // because [`ModelPolicy`] drops the parameter for models known to
+        // refuse it and the OpenAI-shaped backends retry once without it when
+        // a model refuses unexpectedly. A small-but-non-trivial `max_tokens`
         // because a `max_tokens: 1` probe can return zero content blocks.
         let probe = CompletionRequest::new("ping")
             .with_max_tokens(16)
@@ -940,7 +938,7 @@ struct OllamaGenerateRequest<'a> {
     /// which breaks every structured caller (ingest, REM dedup) that
     /// expects parseable output. The dashboard UI for surfacing the
     /// reasoning to the user is deferred — when it lands this field
-    /// becomes per-call configurable per LLM functions.
+    /// becomes per-call configurable.
     think: bool,
     #[serde(skip_serializing_if = "Option::is_none")]
     options: Option<OllamaOptions>,
@@ -1167,8 +1165,8 @@ impl LlmBackend for OllamaBackend {
 
     /// Multi-turn chat with optional function-callable tools, posted
     /// to `POST /api/chat` on the Ollama daemon. Used by the dashboard
-    /// agentic loop (LLM functions) where the
-    /// model alternates between text replies and tool invocations.
+    /// agentic loop where the model alternates between text replies and
+    /// tool invocations.
     ///
     /// Behaviour notes:
     ///
@@ -2555,8 +2553,8 @@ impl LlmBackend for AnthropicBackend {
     /// Multi-turn chat with optional function-callable tools, posted
     /// to `POST /v1/messages` with the message history converted to
     /// Anthropic's typed content-block shape. Used by the dashboard
-    /// agentic loop (LLM functions) when the
-    /// operator pins a cloud profile (`hybrid` / `all-api`).
+    /// agentic loop when the operator pins a cloud profile
+    /// (`hybrid` / `all-api`).
     ///
     /// Behaviour notes:
     ///
@@ -2748,7 +2746,7 @@ impl LlmBackend for AnthropicBackend {
 //   (ingest, REM dedup, the Cartografo's JSON) get parseable output instead
 //   of a truncated tail. A future surface that wants visible reasoning
 //   (dashboard ChatPanel "show thinking" toggle) will make this
-//   per-call configurable, mirroring LLM functions.
+//   per-call configurable.
 // - **Temperature 1.0 mandatory.** Gemini 3 documentation is explicit
 //   that values below 1.0 cause loops and degraded performance on
 //   reasoning / math tasks. We clamp the caller's requested
@@ -2781,8 +2779,8 @@ impl LlmBackend for AnthropicBackend {
 //   in the part object, not inside it. We capture it on the inbound
 //   response onto [`ToolCall::thought_signature`] and re-emit it on the
 //   outbound `functionCall` part in `split_gemini_messages`, so it
-//   survives the dashboard's agentic loop (LLM functions),
-//   which holds `Vec<ChatMessage>` and replays the assistant turn.
+//   survives the dashboard's agentic loop, which holds
+//   `Vec<ChatMessage>` and replays the assistant turn.
 //   The signature is carried opaquely on the assistant message's
 //   `ToolCall`; providers without the concept leave it `None`.
 // - **Empty `contents` and orphaned function-call truncation.** Gemini
@@ -5039,13 +5037,12 @@ mod tests {
         assert_eq!(resp.finish_reason, FinishReason::MaxTokens);
     }
 
-    /// Thinking is disabled system-wide on every Ollama request
-    /// per LLM functions. The flag must reach
-    /// `/api/generate`'s body so thinking-capable models (Qwen 3.x, etc.)
-    /// produce a non-empty `response` instead of consuming `num_predict`
-    /// inside an unobserved reasoning block. Wiremock matches the body
-    /// shape literally, so an accidental removal of the field shows up
-    /// here as a missed-mock 404.
+    /// Thinking is disabled system-wide on every Ollama request. The flag
+    /// must reach `/api/generate`'s body so thinking-capable models
+    /// (Qwen 3.x, etc.) produce a non-empty `response` instead of
+    /// consuming `num_predict` inside an unobserved reasoning block.
+    /// Wiremock matches the body shape literally, so an accidental
+    /// removal of the field shows up here as a missed-mock 404.
     #[tokio::test]
     async fn ollama_backend_pins_think_false_in_request_body() {
         let server = MockServer::start().await;
@@ -5445,7 +5442,7 @@ mod tests {
         assert_eq!(backend.model_id(), "claude-haiku-4-5");
     }
 
-    /// Roadmap 49 — the prefix-cache observable, Anthropic flavour.
+    /// The prefix-cache observable, Anthropic flavour.
     ///
     /// Anthropic reports the prompt in THREE buckets and `input_tokens`
     /// excludes the other two, so a naive read under-reports the prompt

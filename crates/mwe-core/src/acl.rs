@@ -158,8 +158,7 @@ pub fn reader_set(
 
 /// Whether `caller` may **delete or edit** the fact directly.
 ///
-/// The write-authority model for `delete` / `edit` / `validity_edit`
-/// (identity and ACL):
+/// The write-authority model for `delete` / `edit` / `validity_edit`:
 /// only the fact's **sender** (its author / provenance) acts on their own
 /// contribution directly; an admin may act on any fact. A non-sender (even a
 /// non-sender `subject`) is refused here — their path is a request → vote (a
@@ -176,9 +175,8 @@ pub fn can_delete(sender_of_fact: Option<&Principal>, caller: &str, is_admin: bo
 /// Enumerate the **read audience** of a fact as a sorted, deduplicated list of
 /// bare **user ids**.
 ///
-/// This is the finite electorate a non-sender subject's forget request is put to
-/// (the write-authority model).
-/// The audience is the same effective read-set [`can_read`] checks,
+/// This is the finite electorate a non-sender subject's forget request is
+/// put to. The audience is the same effective read-set [`can_read`] checks,
 /// `subject ∪ allow ∪ {sender}`, but resolved to concrete humans: each
 /// [`Principal::Group`] is expanded to its members via
 /// [`crate::enrollment::members_for`], and the builtin `global` group is
@@ -288,9 +286,9 @@ pub fn sender_may_retract(
 /// at least one principal that was not already in the old set.
 ///
 /// The disclosure signal for the audit row written by the chat
-/// `acl_changes` verb (ingest pipeline).
-/// The effective read-set is `{subject} ∪ allow` on each side; a change is a
-/// widening when any principal in the new set is absent from the old set.
+/// `acl_changes` verb. The effective read-set is `{subject} ∪ allow` on
+/// each side; a change is a widening when any principal in the new set is
+/// absent from the old set.
 /// `Global` is treated like any other principal here — adding it newly is
 /// a widening because it admits everyone; a change that only NARROWS (a
 /// pure subset of the old set) is not.

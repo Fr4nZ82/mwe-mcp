@@ -1,5 +1,5 @@
-//! Planning card 69d — **should a third party's identity card be served
-//! deterministically, and on what condition?**
+//! **Should a third party's identity card be served deterministically, and
+//! on what condition?**
 //!
 //! The founder's question, 2026-08-04: the speaker's card is always in the
 //! block, another person's is not — let the funnel find it, or put it there?

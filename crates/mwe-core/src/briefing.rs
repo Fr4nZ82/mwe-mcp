@@ -12,10 +12,10 @@
 //! ## Authorisation
 //!
 //! Open to **any token with read access to the target wiki** — not
-//! restricted to `consumer_class=smart`. Rationale (per
-//! see the cap below): an openclaw standard consumer must be
-//! able to notify when the user, talking on Telegram, leaves an
-//! observation that the smart consumer should pick up next session.
+//! restricted to `consumer_class=smart`: an openclaw standard consumer
+//! must be able to notify when the user, talking on Telegram, leaves an
+//! observation that the smart consumer should pick up next session. The
+//! rate limit below is what keeps that door narrow.
 //!
 //! The MVP defines "read access" as `caller.sender_id ==
 //! resolved_owner_user`. Cross-user notify (`shared_with` members)
@@ -315,7 +315,7 @@ pub fn parse_bi_id(raw: &str) -> Option<i64> {
     if n < 1 { None } else { Some(n) }
 }
 
-/// Rules (mirror the tool reference):
+/// Rules:
 ///
 /// - lowercase ASCII;
 /// - any contiguous run of non-`[a-z0-9]` characters collapses to a
@@ -540,7 +540,7 @@ pub struct NotifyResponse {
     pub ts: String,
 }
 
-/// Three-layer semantic classification per the memory model.
+/// Three-layer semantic classification.
 ///
 /// `wiki_admin_notify` defaults to `Observation` when the caller omits
 /// the field; REM sub-jobs stamp it explicitly. Used by
@@ -612,9 +612,9 @@ pub struct BriefingItem {
     pub topic: String,
     /// Trimmed markdown body.
     pub body: String,
-    /// Three-layer classification. `None` when the DB row stored NULL
-    /// (legacy rows from before the three-layer classification landed)
-    /// or when the column value is not recognised.
+    /// Three-layer classification. `None` when the DB row stored NULL or
+    /// when the column value is not recognised — either way an unclassified
+    /// item, which the readers surface rather than drop.
     pub kind: Option<BriefingKind>,
     /// Stable handle to a specific section of the smart wiki's
     /// wiki this item refers to, or `None` for items that comment on

@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
-//! Planning card 61 — sizing `recall_top_k` and the missing relevance floor.
+//! Sizing `recall_top_k` and the missing relevance floor.
 //!
 //! `recall_top_k` is the one recall knob whose **compute** cost does not move
 //! with its value: `wiki_search` scans every candidate vector whatever `k` is,
