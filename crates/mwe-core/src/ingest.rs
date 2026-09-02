@@ -2498,30 +2498,39 @@ async fn weld_supersede(
     }
 }
 
-/// Render one candidate as the stage's prompt sees it:
-/// `fact_id · validity · audience · text`.
+/// A candidate's validity as the two judging stages state it, decided against
+/// the turn's clock and **never** by the presence of a `valid_to`.
 ///
-/// The audience is rendered because `acl_changes` REPLACES the allow list:
-/// a model asked to add the family to a fact has to be shown who is already
-/// on it, or "share it with the family too" silently drops everyone else.
-///
-/// **The validity is decided against the turn's clock, never by the presence
-/// of a `valid_to`.** A horizon still ahead of us is an OPEN fact with a
-/// deadline, and the prompt tells the model to leave closed candidates alone:
-/// reading "closed" off the field alone hid exactly the class this stage was
-/// built for, because the classifier stamps a `valid_to` on **every** dated
-/// commitment. *«devo comprare il latte entro venerdì»* … *«l'ho comprato»*
-/// rendered the candidate `closed <friday>`, the model obeyed its own rule,
-/// and nothing closed. Same predicate the read side uses
+/// A horizon still ahead of us is an OPEN fact carrying a deadline, and both
+/// prompts that show a candidate tell the model to leave a closed one alone.
+/// Deciding "closed" on the field's presence hides exactly the class those
+/// stages exist for, because the classifier stamps a `valid_to` on **every**
+/// dated commitment: *«devo comprare il latte entro venerdì»* … *«l'ho
+/// comprato»* renders the candidate `closed <friday>`, the model obeys its own
+/// rule, and nothing closes. Same predicate the read side uses
 /// ([`crate::recall::window_closed_at`]).
-fn reconcile_candidate_line(h: &RecallHit, now: &chrono::DateTime<chrono::Utc>) -> String {
-    let validity = match (h.valid_from.as_deref(), h.valid_to.as_deref()) {
+///
+/// One renderer for both stages. They ask the same question of the same rows,
+/// so a difference in how the row reads to them would be a difference nobody
+/// chose.
+fn candidate_validity(h: &RecallHit, now: &chrono::DateTime<chrono::Utc>) -> String {
+    match (h.valid_from.as_deref(), h.valid_to.as_deref()) {
         (_, Some(to)) if recall::window_closed_at(Some(to), now) => format!("closed {to}"),
         (Some(from), Some(to)) => format!("open since {from}, due {to}"),
         (None, Some(to)) => format!("open, due {to}"),
         (Some(from), None) => format!("open since {from}"),
         (None, None) => "open".to_owned(),
-    };
+    }
+}
+
+/// Render one candidate as the reconciliation stage's prompt sees it:
+/// `fact_id · validity · audience · text`.
+///
+/// The audience is rendered because `acl_changes` REPLACES the allow list:
+/// a model asked to add the family to a fact has to be shown who is already
+/// on it, or "share it with the family too" silently drops everyone else.
+fn reconcile_candidate_line(h: &RecallHit, now: &chrono::DateTime<chrono::Utc>) -> String {
+    let validity = candidate_validity(h, now);
     let audience = if h.allow_ids.is_empty() {
         format!("subject {}", h.subject_id)
     } else {
@@ -2536,6 +2545,21 @@ fn reconcile_candidate_line(h: &RecallHit, now: &chrono::DateTime<chrono::Utc>) 
     format!(
         "{} · {validity} · {audience} · {}",
         h.fact_id,
+        truncate(&h.text, 160)
+    )
+}
+
+/// Render one candidate as the closure confirmer's prompt sees it:
+/// `fact_id · validity · text`.
+///
+/// No audience: this stage has one verb and it closes, so who may read the
+/// fact is not its business and showing it would only invite a judgement it
+/// cannot act on.
+fn closure_candidate_line(h: &RecallHit, now: &chrono::DateTime<chrono::Utc>) -> String {
+    format!(
+        "{} · {} · {}",
+        h.fact_id,
+        candidate_validity(h, now),
         truncate(&h.text, 160)
     )
 }
@@ -2863,13 +2887,7 @@ async fn confirm_topic_closures(
 
     let lines = candidates
         .iter()
-        .map(|h| {
-            let validity = h
-                .valid_to
-                .as_deref()
-                .map_or_else(|| "open".to_owned(), |t| format!("valid_to {t}"));
-            format!("{} · {} · {}", h.fact_id, validity, truncate(&h.text, 160))
-        })
+        .map(|h| closure_candidate_line(h, &turn_now))
         .collect::<Vec<_>>()
         .join("\n");
     let turn_time = format!("{} ({})", turn_now.to_rfc3339(), turn_now.format("%A"));
@@ -14396,16 +14414,20 @@ mod tests {
         drop(dir);
     }
 
-    /// A deadline still ahead of us is rendered **open**, not «closed».
+    /// A deadline still ahead of us is rendered **open**, not «closed» — to
+    /// BOTH stages that judge a candidate.
     ///
-    /// The stage's prompt tells the model to leave closed candidates alone, and
-    /// the classifier stamps a `valid_to` on every dated commitment — so
-    /// deciding "closed" on the field's presence told the reconciler to ignore
-    /// exactly the class it exists for. *«devo comprare il latte entro
-    /// venerdì»* is open until Friday, and the closure gesture arrives before
-    /// Friday or it would not be a closure.
+    /// Each one's prompt tells the model to leave closed candidates alone, and
+    /// the classifier stamps a `valid_to` on every dated commitment, so
+    /// deciding "closed" on the field's presence tells them to ignore exactly
+    /// the class they exist for. *«devo comprare il latte entro venerdì»* is
+    /// open until Friday, and the closure gesture arrives before Friday or it
+    /// would not be a closure.
+    ///
+    /// The confirmer is asserted beside the reconciler because they are twins
+    /// and a twin is where a fixed defect comes back.
     #[tokio::test]
-    async fn a_deadline_still_ahead_is_rendered_open_to_the_reconciler() {
+    async fn a_deadline_still_ahead_is_rendered_open_to_both_judging_stages() {
         let (dir, tree, pool) = setup_workdir().await;
         let now = chrono::Utc::now();
         let plant = |body: &'static str, valid_to: Option<String>| {
@@ -14451,7 +14473,9 @@ mod tests {
         )
         .await;
 
-        let line_of = |id: &FactId| {
+        // Both renderers, on the same rows: whatever one says of a horizon,
+        // the other says too.
+        let lines_of = |id: &FactId| {
             let pool = &pool;
             let id = id.clone();
             async move {
@@ -14459,22 +14483,30 @@ mod tests {
                     .await
                     .unwrap()
                     .expect("row");
-                reconcile_candidate_line(&recall::RecallHit::from_row(row, 1.0), &now)
+                let hit = recall::RecallHit::from_row(row, 1.0);
+                [
+                    ("reconciler", reconcile_candidate_line(&hit, &now)),
+                    ("closure confirmer", closure_candidate_line(&hit, &now)),
+                ]
             }
         };
-        let open_line = line_of(&due_friday).await;
-        assert!(
-            open_line.contains("open") && !open_line.contains("closed"),
-            "a deadline in three days is an OPEN fact with a due date: {open_line}"
-        );
-        assert!(
-            open_line.contains("due "),
-            "and the model is still shown the deadline: {open_line}"
-        );
-        assert!(
-            line_of(&long_over).await.contains("closed"),
-            "a horizon already passed stays closed"
-        );
+        for (stage, open_line) in lines_of(&due_friday).await {
+            assert!(
+                open_line.contains("open") && !open_line.contains("closed"),
+                "a deadline in three days is an OPEN fact with a due date \
+                 to the {stage}: {open_line}"
+            );
+            assert!(
+                open_line.contains("due "),
+                "and the {stage} still shows the model the deadline: {open_line}"
+            );
+        }
+        for (stage, over_line) in lines_of(&long_over).await {
+            assert!(
+                over_line.contains("closed"),
+                "a horizon already passed stays closed to the {stage}: {over_line}"
+            );
+        }
         drop(dir);
     }
 

@@ -1,8 +1,8 @@
 ---
 name: ingest-closures
 description: Closure confirmer — topic-focused second recall pass for a closure-bearing turn whose targets missed the first recall window; strict JSON out; close nothing rather than a doubtful target
-version: 1.3
-default_version_at_bootstrap: v1.3
+version: 1.4
+default_version_at_bootstrap: v1.4
 ---
 
 # Prompt: ingest-closures
@@ -49,7 +49,7 @@ Decide which candidates this message actually closes. Rules:
 - Saying a fact again is not closing it. A restatement — the same claim in other words, a second report of the same value, a more precise wording of the same thing — is a DUPLICATE, and the memory merges duplicates by itself. "contradicted" needs the message to assert something the candidate cannot be true alongside.
 - `valid_to`: when the message says WHEN it stopped holding, resolve it against current_time = {current_time}; otherwise null (= this turn's instant).
 - `target` must be copied EXACTLY from a candidate's fact_id — never invent or alter an id.
-- A candidate whose validity already shows a closed window needs no second closure — skip it.
+- A candidate whose validity already shows a closed window needs no second closure — skip it. Read the line as written: `open, due <date>` is an **open** fact carrying a deadline, and it is the most likely thing a message closes ("I bought the milk"). Only `closed <date>` is already settled.
 
 USER MESSAGE:
 {message}

@@ -255,7 +255,7 @@ pub fn is_rules_page(source_path: &str) -> bool {
 /// and navigable: delivery through ordinary recall is the entire point.
 pub const PROJECTS_FILENAME: &str = "@projects.md";
 
-/// True when `stem` (a page name without its `.md`) names one of the five
+/// True when `stem` (a page name without its `.md`) names one of the
 /// **reserved pages** no classifier may aim a capture at.
 ///
 /// The wiki's card ([`PROFILE_FILENAME`], the per-wiki foundation node the
@@ -270,15 +270,17 @@ pub const PROJECTS_FILENAME: &str = "@projects.md";
 /// compiler writes them. What they share is only that the **name** is the
 /// engine's: this list is about who may coin one, not about what the file is.
 ///
-/// ⚠️ `project_diary` joined on 2026-08-18, having been missing since the
-/// diary shipped: it was fenced out of every structural sweep
-/// ([`is_channel_page`]) but not out of *coining*, so a `lista` or a
-/// user-requested container named `project_diary` reached
-/// `planner::placement_slug` intact and would have minted a plan page over the
-/// owner's diary. Same shape as the `@projects.md` hole found on 2026-08-11 —
-/// a name protected on one side of the fence and not the other. Founder,
-/// 2026-08-18, asking which files the engine names: *«forse ce ne sono
-/// altre?»* — there was one.
+/// **Both spellings of the diary are refused, and only one of them is a
+/// file.** `projects_diary` is the page ([`PROJECT_DIARY_FILENAME`]);
+/// `project_diary` is the near-miss a model reaches for, and a coined name is
+/// a guess at a spelling, so the guess is refused beside the real one. Minted
+/// through, it raises a plan page over the owner's diary.
+///
+/// **Coining and sweeping are two fences, and a name protected on one but not
+/// the other is a hole.** [`is_channel_page`] keeps the three channels out of
+/// the structural passes; this keeps all four names out of what a model may
+/// invent. Neither stands in for the other, and the card is only on this one —
+/// the planner owns it as a foundation node, which is a third fence again.
 ///
 /// One list, read by every gate where a model names a page — the planner's
 /// three, the REM split, the ingest list-page inventory
