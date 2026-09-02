@@ -62,9 +62,10 @@ use std::fs::OpenOptions;
 use std::io::Write;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::{Arc, Mutex, OnceLock};
+use std::sync::{Arc, OnceLock};
 
 use async_trait::async_trait;
+use parking_lot::Mutex;
 use serde_json::json;
 
 use crate::config::LlmFunction;
@@ -124,6 +125,9 @@ pub struct TrainingSpool {
     /// Hot flag — flipped in place by the dashboard panel.
     enabled: AtomicBool,
     /// Serialises concurrent appends so JSONL lines never interleave.
+    /// A `parking_lot` mutex, so a panic under it leaves the lock
+    /// usable: one bad append cannot silence the spool for the rest of
+    /// the process.
     write_lock: Mutex<()>,
 }
 
@@ -259,10 +263,7 @@ impl TrainingSpool {
             .join(format!("{}.jsonl", chrono::Utc::now().format("%Y-%m-%d")));
         let mut line = record.to_string();
         line.push('\n');
-        let Ok(_guard) = self.write_lock.lock() else {
-            tracing::warn!("training-spool: write lock poisoned — record dropped");
-            return;
-        };
+        let _guard = self.write_lock.lock();
         if let Err(e) = std::fs::create_dir_all(&self.dir) {
             tracing::warn!(dir = %self.dir.display(), error = %e, "training-spool: cannot create dir — record dropped");
             return;

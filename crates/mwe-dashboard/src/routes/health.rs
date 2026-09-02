@@ -79,13 +79,7 @@ async fn llm_slots(
     // Probe the *live* LLM config (the dashboard LLM-config editor can
     // hot-swap slots), building each backend through the running handles
     // so dashboard-set API keys / test fakes are honoured.
-    let live_cfg = {
-        let guard = memory
-            .llm_config
-            .read()
-            .map_err(|_| DashboardError::Internal("llm_config rwlock poisoned".to_owned()))?;
-        guard.clone()
-    };
+    let live_cfg = memory.llm_config.read().clone();
     let slots = diagnostics::probe_llm_slots(&live_cfg, |func: LlmFunction| {
         let backend: Arc<dyn LlmBackend> = memory.backend_for(func).map_err(anyhow::Error::new)?;
         Ok(backend)

@@ -6,6 +6,13 @@
 //! Cheap to clone — every member is either `Arc`-backed (pool, secret,
 //! cache, embedder, tree path) or `Copy`.
 //!
+//! The hot-reloaded handles (`llm_config`, `api_key_overrides`,
+//! `recall`) are `parking_lot` locks — the same instances the dashboard
+//! writes. A panic inside one write section costs that one request and
+//! nothing more; a `std::sync` lock would come out of it poisoned, and
+//! every later call on either transport would panic on it until a
+//! restart.
+//!
 //! `IdentityProfile` is the authenticated caller projected into the
 //! shape the per-tool handlers need. It is derived per request from the
 //! `Authorization: Bearer …` JWT in
@@ -13,13 +20,14 @@
 
 use std::collections::HashMap;
 use std::path::PathBuf;
-use std::sync::{Arc, RwLock};
+use std::sync::Arc;
 
 use mwe_core::config::{LlmConfig, LlmFunction, LlmFunctionConfig, RecallConfig};
 use mwe_core::delegations::DelegationCache;
 use mwe_core::embedder::Embedder;
 use mwe_core::jwt::{BlacklistCache, ConsumerClass, ConsumerProfile, TokenSecret};
 use mwe_core::wiki::WikiTree;
+use parking_lot::RwLock;
 use sqlx::SqlitePool;
 
 /// Shape of an authenticated MCP caller.
@@ -138,11 +146,7 @@ impl McpState {
     /// operator has not wired it.
     #[must_use]
     pub fn slot_config(&self, function: LlmFunction) -> Option<LlmFunctionConfig> {
-        self.llm_config
-            .read()
-            .expect("llm_config rwlock poisoned")
-            .slot(function)
-            .cloned()
+        self.llm_config.read().slot(function).cloned()
     }
 
     /// Build the slot's backend the way the dashboard builds its own: a key
@@ -168,7 +172,6 @@ impl McpState {
         slot.build_backend_with_env(function, move |name| {
             overrides
                 .read()
-                .expect("api_key_overrides rwlock poisoned")
                 .get(name)
                 .cloned()
                 .or_else(|| std::env::var(name).ok())

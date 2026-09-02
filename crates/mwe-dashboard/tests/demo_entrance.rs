@@ -47,9 +47,9 @@ async fn make_app(
     let memory = MemoryHandles {
         tree,
         embedder: Arc::new(FakeEmbedder::new("fake-bge-m3", 8)),
-        llm_config: Arc::new(std::sync::RwLock::new(LlmConfig::default())),
+        llm_config: Arc::new(parking_lot::RwLock::new(LlmConfig::default())),
         llm_overrides: mwe_dashboard::LlmBackendOverrides::default(),
-        api_key_overrides: Arc::new(std::sync::RwLock::new(std::collections::HashMap::new())),
+        api_key_overrides: Arc::new(parking_lot::RwLock::new(std::collections::HashMap::new())),
         workdir: dir.path().to_path_buf(),
     };
     let base =

@@ -404,9 +404,9 @@ mod tests {
             secret: secret.clone(),
             blacklist: Arc::new(BlacklistCache::new()),
             delegations: Arc::new(DelegationCache::new()),
-            llm_config: Arc::new(std::sync::RwLock::new(LlmConfig::default())),
-            api_key_overrides: Arc::new(std::sync::RwLock::new(std::collections::HashMap::new())),
-            recall: Arc::new(std::sync::RwLock::new(
+            llm_config: Arc::new(parking_lot::RwLock::new(LlmConfig::default())),
+            api_key_overrides: Arc::new(parking_lot::RwLock::new(std::collections::HashMap::new())),
+            recall: Arc::new(parking_lot::RwLock::new(
                 mwe_core::config::RecallConfig::default(),
             )),
             workdir: dir.path().to_path_buf(),

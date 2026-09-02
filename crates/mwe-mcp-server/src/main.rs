@@ -2413,21 +2413,21 @@ async fn bootstrap_state(workdir: &Path, config: &Config) -> Result<(McpState, D
     // recall-settings editor swaps it in place and both transports (MCP
     // dispatcher + dashboard chat) read it per turn — hot reload, no
     // restart caveat.
-    let recall_settings = std::sync::Arc::new(std::sync::RwLock::new(config.recall.clone()));
+    let recall_settings = std::sync::Arc::new(parking_lot::RwLock::new(config.recall.clone()));
 
     // Same idiom for the REM policy: the dashboard REM settings editor
     // swaps it in place; the interval scheduler (which clones this Arc
     // out of the dashboard state in `cmd_serve_http`) snapshots it at
     // each cycle start and the Dream console at each trigger.
-    let rem_policy = std::sync::Arc::new(std::sync::RwLock::new(config.rem.resolved_policy()));
+    let rem_policy = std::sync::Arc::new(parking_lot::RwLock::new(config.rem.resolved_policy()));
 
     // The LLM roles and the keys set at runtime are one copy, shared by
     // the MCP dispatcher and the dashboard editor that changes them: a role
     // or a key saved from the panel is what the next turn builds its
     // backend from.
-    let llm_config = std::sync::Arc::new(std::sync::RwLock::new(config.llm.clone()));
+    let llm_config = std::sync::Arc::new(parking_lot::RwLock::new(config.llm.clone()));
     let api_key_overrides =
-        std::sync::Arc::new(std::sync::RwLock::new(std::collections::HashMap::new()));
+        std::sync::Arc::new(parking_lot::RwLock::new(std::collections::HashMap::new()));
 
     let state = McpState {
         pool: pool.clone(),
@@ -2466,7 +2466,7 @@ async fn bootstrap_state(workdir: &Path, config: &Config) -> Result<(McpState, D
         // Backup-schedule handle, same hot-swap idiom: the Backup
         // console swaps it in place; the backup scheduler reads it
         // fresh at each due-check.
-        .with_backup_schedule(std::sync::Arc::new(std::sync::RwLock::new(Some(
+        .with_backup_schedule(std::sync::Arc::new(parking_lot::RwLock::new(Some(
             config.backup.resolved_schedule(workdir),
         ))));
     Ok((state, dashboard_state))

@@ -4,10 +4,16 @@
 //! Cheap to clone (everything inside is `Arc` or `Pool`-like), so we
 //! keep a single instance in `Router::with_state` and let Axum hand it
 //! out by value to each request.
+//!
+//! Every synchronous lock in this bag is a `parking_lot` lock, so a
+//! panic inside one write section costs that one request and nothing
+//! more. A `std::sync` lock would come out of such a panic poisoned,
+//! and every later request and scheduler tick touching the same handle
+//! would panic on it until a restart.
 
 use std::collections::HashMap;
 use std::path::PathBuf;
-use std::sync::{Arc, Mutex, RwLock};
+use std::sync::Arc;
 
 use mwe_core::config::{LlmConfig, LlmFunction, LlmFunctionConfig, RecallConfig};
 use mwe_core::delegations::DelegationCache;
@@ -15,6 +21,7 @@ use mwe_core::embedder::Embedder;
 use mwe_core::jwt::{BlacklistCache, TokenSecret};
 use mwe_core::llm::LlmBackend;
 use mwe_core::wiki::WikiTree;
+use parking_lot::{Mutex, RwLock};
 use sqlx::SqlitePool;
 
 /// Tunable knobs for the dashboard runtime.
@@ -274,7 +281,7 @@ impl MemoryHandles {
         // lock (and would deadlock on a future write attempt by the
         // same task if it did).
         let slot_cfg = {
-            let guard = self.llm_config.read().expect("llm_config rwlock poisoned");
+            let guard = self.llm_config.read();
             guard
                 .slot(slot)
                 .cloned()
@@ -292,7 +299,6 @@ impl MemoryHandles {
                 // env_loader values keep working.
                 overrides
                     .read()
-                    .expect("api_key_overrides rwlock poisoned")
                     .get(name)
                     .cloned()
                     .or_else(|| std::env::var(name).ok())
@@ -318,11 +324,7 @@ impl MemoryHandles {
     /// pinned, falling back to the backend's own defaults.
     #[must_use]
     pub fn defaults_for(&self, slot: LlmFunction) -> Option<LlmFunctionConfig> {
-        self.llm_config
-            .read()
-            .expect("llm_config rwlock poisoned")
-            .slot(slot)
-            .cloned()
+        self.llm_config.read().slot(slot).cloned()
     }
 
     /// Resolve the backend for the dashboard's operational agentic chat —
@@ -358,7 +360,7 @@ impl MemoryHandles {
     /// [`Self::backend_for`] / [`Self::defaults_for`] picks up the
     /// new slots.
     pub fn replace_llm_config(&self, fresh: LlmConfig) {
-        *self.llm_config.write().expect("llm_config rwlock poisoned") = fresh;
+        *self.llm_config.write() = fresh;
     }
 
     /// Upsert an API key value into the in-memory override map. The
@@ -368,7 +370,6 @@ impl MemoryHandles {
     pub fn set_api_key_override(&self, name: impl Into<String>, value: impl Into<String>) {
         self.api_key_overrides
             .write()
-            .expect("api_key_overrides rwlock poisoned")
             .insert(name.into(), value.into());
     }
 
@@ -377,21 +378,15 @@ impl MemoryHandles {
     /// fingerprint renderer) does not hold the lock while iterating.
     #[must_use]
     pub fn api_key_overrides_snapshot(&self) -> HashMap<String, String> {
-        self.api_key_overrides
-            .read()
-            .expect("api_key_overrides rwlock poisoned")
-            .clone()
+        self.api_key_overrides.read().clone()
     }
 
     /// Snapshot the full `LlmConfig`. Returned as an owned value so
     /// the caller does not hold the read-lock across an `await` (the
-    /// `RwLockReadGuard` from `std::sync` is not `Send`).
+    /// read guard is not `Send`).
     #[must_use]
     pub fn llm_config_snapshot(&self) -> LlmConfig {
-        self.llm_config
-            .read()
-            .expect("llm_config rwlock poisoned")
-            .clone()
+        self.llm_config.read().clone()
     }
 }
 
@@ -623,30 +618,21 @@ impl DashboardState {
     /// calls this right after the YAML save (write disk first, then
     /// swap, same ordering as the other section editors).
     pub fn replace_backup_schedule(&self, fresh: mwe_core::backup::BackupSchedule) {
-        *self
-            .backup_schedule
-            .write()
-            .expect("backup schedule rwlock poisoned") = Some(fresh);
+        *self.backup_schedule.write() = Some(fresh);
     }
 
     /// Snapshot the operator recall settings. Owned value so the caller
     /// never holds the read-lock across an `await`.
     #[must_use]
     pub fn recall_snapshot(&self) -> RecallConfig {
-        self.recall
-            .read()
-            .expect("recall settings rwlock poisoned")
-            .clone()
+        self.recall.read().clone()
     }
 
     /// Replace the live recall settings in place — the recall-settings
     /// editor calls this right after the YAML save (write disk first,
     /// then swap, same ordering as the LLM-config editor).
     pub fn replace_recall(&self, fresh: RecallConfig) {
-        *self
-            .recall
-            .write()
-            .expect("recall settings rwlock poisoned") = fresh;
+        *self.recall.write() = fresh;
     }
 
     /// Snapshot the REM full-cycle policy. Owned value so the caller
@@ -654,16 +640,13 @@ impl DashboardState {
     /// runs a whole cycle with it).
     #[must_use]
     pub fn rem_policy_snapshot(&self) -> mwe_core::rem::RemPolicy {
-        self.rem_policy
-            .read()
-            .expect("rem policy rwlock poisoned")
-            .clone()
+        self.rem_policy.read().clone()
     }
 
     /// Replace the live REM policy in place — the REM settings editor
     /// calls this right after the YAML save (write disk first, then
     /// swap, same ordering as the recall-settings editor).
     pub fn replace_rem_policy(&self, fresh: mwe_core::rem::RemPolicy) {
-        *self.rem_policy.write().expect("rem policy rwlock poisoned") = fresh;
+        *self.rem_policy.write() = fresh;
     }
 }

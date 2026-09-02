@@ -100,11 +100,7 @@ async fn status(State(state): State<DashboardState>, user: SessionUser) -> Resul
     if !user.is_admin {
         return Err(DashboardError::Forbidden);
     }
-    let snapshot = state
-        .dream_status
-        .lock()
-        .expect("dream_status mutex poisoned")
-        .clone();
+    let snapshot = state.dream_status.lock().clone();
     Ok(axum::Json(snapshot).into_response())
 }
 
@@ -216,11 +212,7 @@ pub(super) fn spawn_dream(state: &DashboardState, kind: DreamKind) -> bool {
     let Ok(guard) = state.rem_gate.clone().try_lock_owned() else {
         return false;
     };
-    state
-        .dream_status
-        .lock()
-        .expect("dream_status mutex poisoned")
-        .running = Some(label.to_owned());
+    state.dream_status.lock().running = Some(label.to_owned());
 
     let bg = state.clone();
     tokio::spawn(async move {
@@ -242,10 +234,10 @@ pub(super) fn spawn_dream(state: &DashboardState, kind: DreamKind) -> bool {
             // modal log — there is no structured outcome to dump.
             Err(error) => (false, 0, 0, error.clone(), error),
         };
-        // Update the in-memory pill outcome under the std mutex, then drop the
-        // guard before the async journal write (a std guard cannot cross await).
+        // Update the in-memory pill outcome under the mutex, then drop the
+        // guard before the async journal write (the guard cannot cross await).
         {
-            let mut s = bg.dream_status.lock().expect("dream_status mutex poisoned");
+            let mut s = bg.dream_status.lock();
             s.running = None;
             s.last = Some(DreamLast {
                 kind: label.to_owned(),

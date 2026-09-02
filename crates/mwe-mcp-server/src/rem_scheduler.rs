@@ -35,7 +35,7 @@
 //!   server's ctrl-c handler resolves, the ticker exits cleanly without
 //!   waiting for the next interval.
 
-use std::sync::{Arc, RwLock};
+use std::sync::Arc;
 
 use anyhow::{Context, Result};
 use mwe_core::capture_buffer;
@@ -47,6 +47,7 @@ use mwe_core::embedder::Embedder;
 use mwe_core::llm::LlmBackend;
 use mwe_core::rem::{RemLlms, RemPolicy};
 use mwe_core::wiki::WikiTree;
+use parking_lot::RwLock;
 use sqlx::SqlitePool;
 use tokio::task::JoinHandle;
 use tracing::{info, warn};
@@ -271,7 +272,7 @@ where
 /// cycle fires so (a) a REM-settings save applies to the **next** cycle,
 /// never a running one, and (b) the lock is not held across the cycle.
 fn snapshot_policy(policy: &Arc<RwLock<RemPolicy>>) -> RemPolicy {
-    policy.read().expect("rem policy rwlock poisoned").clone()
+    policy.read().clone()
 }
 
 async fn fire_once(

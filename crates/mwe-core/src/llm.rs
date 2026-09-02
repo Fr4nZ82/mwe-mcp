@@ -2178,10 +2178,10 @@ fn offline_reasons_before_answering(backend_tag: &str, model: &str) -> bool {
 /// sampling parameters. Process-wide and never persisted: it is a cache of
 /// something the provider will happily repeat, not a fact worth writing to
 /// disk where it could go stale unnoticed.
-fn sampling_refusals() -> &'static std::sync::RwLock<std::collections::HashSet<String>> {
-    static CELL: std::sync::OnceLock<std::sync::RwLock<std::collections::HashSet<String>>> =
+fn sampling_refusals() -> &'static parking_lot::RwLock<std::collections::HashSet<String>> {
+    static CELL: std::sync::OnceLock<parking_lot::RwLock<std::collections::HashSet<String>>> =
         std::sync::OnceLock::new();
-    CELL.get_or_init(|| std::sync::RwLock::new(std::collections::HashSet::new()))
+    CELL.get_or_init(|| parking_lot::RwLock::new(std::collections::HashSet::new()))
 }
 
 /// Whether this model has already refused the sampling parameters in this
@@ -2189,16 +2189,15 @@ fn sampling_refusals() -> &'static std::sync::RwLock<std::collections::HashSet<S
 fn sampling_params_refused(backend_tag: &str, model: &str) -> bool {
     sampling_refusals()
         .read()
-        .is_ok_and(|set| set.contains(&format!("{backend_tag}/{model}")))
+        .contains(&format!("{backend_tag}/{model}"))
 }
 
 /// Record a refusal, warning once so the operator sees the downgrade
 /// without a line per call for the rest of the day.
 fn note_sampling_params_refused(backend_tag: &str, model: &str, detail: &str) {
     let key = format!("{backend_tag}/{model}");
-    if let Ok(mut set) = sampling_refusals().write()
-        && set.insert(key)
-    {
+    let mut set = sampling_refusals().write();
+    if set.insert(key) {
         tracing::warn!(
             backend = backend_tag,
             model,
@@ -4706,26 +4705,26 @@ pub struct FakeLlmBackend {
     model: String,
     response: String,
     finish_reason: FinishReason,
-    chat_script: std::sync::Mutex<std::collections::VecDeque<ChatResponse>>,
+    chat_script: parking_lot::Mutex<std::collections::VecDeque<ChatResponse>>,
     /// `system` prompt of the most recent `complete` call. Tests that
     /// want to assert the orchestrator rendered placeholders into the
     /// system prompt (locale directive, future
     /// metadata.timezone, ...) read this back after the call.
-    last_system_prompt: std::sync::Mutex<Option<String>>,
+    last_system_prompt: parking_lot::Mutex<Option<String>>,
     /// User `prompt` of the most recent `complete` call. Tests that
     /// want to assert on the orchestrator's context bundle (the
     /// `current_time:` anchor, the roster sections, ...) read this
     /// back after the call.
-    last_prompt: std::sync::Mutex<Option<String>>,
+    last_prompt: parking_lot::Mutex<Option<String>>,
     /// Images of the most recent `complete` call — lets ingest tests
     /// assert the vision bytes actually reached the backend.
-    last_images: std::sync::Mutex<Vec<ImageInput>>,
+    last_images: parking_lot::Mutex<Vec<ImageInput>>,
     /// Whether the most recent `complete` call declared its system
     /// prompt a cacheable prefix. Costs nothing on the wire but a great
     /// deal on the bill, and it is invisible in the response, so the
     /// callers that must set it are guarded by a test rather than by a
     /// reviewer noticing its absence.
-    last_cache_system: std::sync::Mutex<bool>,
+    last_cache_system: parking_lot::Mutex<bool>,
 }
 
 #[cfg(any(test, feature = "test-fakes"))]
@@ -4738,11 +4737,11 @@ impl FakeLlmBackend {
             model: model.into(),
             response: response.into(),
             finish_reason: FinishReason::EndOfTurn,
-            chat_script: std::sync::Mutex::new(std::collections::VecDeque::new()),
-            last_system_prompt: std::sync::Mutex::new(None),
-            last_prompt: std::sync::Mutex::new(None),
-            last_images: std::sync::Mutex::new(Vec::new()),
-            last_cache_system: std::sync::Mutex::new(false),
+            chat_script: parking_lot::Mutex::new(std::collections::VecDeque::new()),
+            last_system_prompt: parking_lot::Mutex::new(None),
+            last_prompt: parking_lot::Mutex::new(None),
+            last_images: parking_lot::Mutex::new(Vec::new()),
+            last_cache_system: parking_lot::Mutex::new(false),
         }
     }
 
@@ -4750,39 +4749,27 @@ impl FakeLlmBackend {
     /// cacheable prefix. `false` when no `complete` has run yet.
     #[must_use]
     pub fn last_cache_system(&self) -> bool {
-        *self
-            .last_cache_system
-            .lock()
-            .expect("last_cache_system mutex poisoned")
+        *self.last_cache_system.lock()
     }
 
     /// Snapshot of the `system` prompt the last `complete` call
     /// received. `None` when no `complete` has run yet.
     #[must_use]
     pub fn last_system_prompt(&self) -> Option<String> {
-        self.last_system_prompt
-            .lock()
-            .expect("last_system_prompt mutex poisoned")
-            .clone()
+        self.last_system_prompt.lock().clone()
     }
 
     /// Snapshot of the user `prompt` the last `complete` call
     /// received. `None` when no `complete` has run yet.
     #[must_use]
     pub fn last_prompt(&self) -> Option<String> {
-        self.last_prompt
-            .lock()
-            .expect("last_prompt mutex poisoned")
-            .clone()
+        self.last_prompt.lock().clone()
     }
 
     /// Images the last `complete` call carried (empty when none).
     #[must_use]
     pub fn last_images(&self) -> Vec<ImageInput> {
-        self.last_images
-            .lock()
-            .expect("last_images mutex poisoned")
-            .clone()
+        self.last_images.lock().clone()
     }
 
     /// Override the finish reason returned on every `complete` call.
@@ -4799,7 +4786,7 @@ impl FakeLlmBackend {
     /// fed the result back, and rendered the final text.
     #[must_use]
     pub fn with_chat_script(mut self, responses: Vec<ChatResponse>) -> Self {
-        self.chat_script = std::sync::Mutex::new(responses.into_iter().collect());
+        self.chat_script = parking_lot::Mutex::new(responses.into_iter().collect());
         self
     }
 }
@@ -4815,20 +4802,10 @@ impl LlmBackend for FakeLlmBackend {
         if request.prompt.is_empty() {
             return Err(LlmError::Invalid("empty prompt".into()));
         }
-        self.last_system_prompt
-            .lock()
-            .expect("last_system_prompt mutex poisoned")
-            .clone_from(&request.system);
-        *self.last_prompt.lock().expect("last_prompt mutex poisoned") =
-            Some(request.prompt.clone());
-        self.last_images
-            .lock()
-            .expect("last_images mutex poisoned")
-            .clone_from(&request.images);
-        *self
-            .last_cache_system
-            .lock()
-            .expect("last_cache_system mutex poisoned") = request.cache_system;
+        self.last_system_prompt.lock().clone_from(&request.system);
+        *self.last_prompt.lock() = Some(request.prompt.clone());
+        self.last_images.lock().clone_from(&request.images);
+        *self.last_cache_system.lock() = request.cache_system;
         let prompt_words = u32::try_from(request.prompt.split_whitespace().count()).unwrap_or(0);
         Ok(CompletionResponse {
             text: self.response.clone(),
@@ -4846,11 +4823,7 @@ impl LlmBackend for FakeLlmBackend {
         if request.messages.is_empty() {
             return Err(LlmError::Invalid("empty messages".into()));
         }
-        let next = self
-            .chat_script
-            .lock()
-            .expect("chat_script mutex poisoned")
-            .pop_front();
+        let next = self.chat_script.lock().pop_front();
         if let Some(resp) = next {
             return Ok(resp);
         }

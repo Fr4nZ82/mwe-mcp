@@ -49,8 +49,8 @@ async fn make_app_with_overrides(
     let memory = MemoryHandles {
         tree: tree.clone(),
         embedder,
-        llm_config: std::sync::Arc::new(std::sync::RwLock::new(LlmConfig::default())),
-        api_key_overrides: std::sync::Arc::new(std::sync::RwLock::new(
+        llm_config: std::sync::Arc::new(parking_lot::RwLock::new(LlmConfig::default())),
+        api_key_overrides: std::sync::Arc::new(parking_lot::RwLock::new(
             std::collections::HashMap::new(),
         )),
         llm_overrides: overrides,
@@ -1754,8 +1754,8 @@ async fn chat_agentic_batch_forgets_three_facts_end_to_end() {
     let memory = MemoryHandles {
         tree: tree.clone(),
         embedder,
-        llm_config: std::sync::Arc::new(std::sync::RwLock::new(LlmConfig::default())),
-        api_key_overrides: std::sync::Arc::new(std::sync::RwLock::new(
+        llm_config: std::sync::Arc::new(parking_lot::RwLock::new(LlmConfig::default())),
+        api_key_overrides: std::sync::Arc::new(parking_lot::RwLock::new(
             std::collections::HashMap::new(),
         )),
         llm_overrides: overrides,
@@ -1898,8 +1898,8 @@ async fn chat_agentic_supersedes_single_fact_with_corrected_body_end_to_end() {
     let memory = MemoryHandles {
         tree: tree.clone(),
         embedder,
-        llm_config: std::sync::Arc::new(std::sync::RwLock::new(LlmConfig::default())),
-        api_key_overrides: std::sync::Arc::new(std::sync::RwLock::new(
+        llm_config: std::sync::Arc::new(parking_lot::RwLock::new(LlmConfig::default())),
+        api_key_overrides: std::sync::Arc::new(parking_lot::RwLock::new(
             std::collections::HashMap::new(),
         )),
         llm_overrides: overrides,
@@ -2036,8 +2036,8 @@ async fn chat_agentic_supersede_refuses_already_tombstoned_fact() {
     let memory = MemoryHandles {
         tree: tree.clone(),
         embedder,
-        llm_config: std::sync::Arc::new(std::sync::RwLock::new(LlmConfig::default())),
-        api_key_overrides: std::sync::Arc::new(std::sync::RwLock::new(
+        llm_config: std::sync::Arc::new(parking_lot::RwLock::new(LlmConfig::default())),
+        api_key_overrides: std::sync::Arc::new(parking_lot::RwLock::new(
             std::collections::HashMap::new(),
         )),
         llm_overrides: overrides,
@@ -2202,8 +2202,8 @@ async fn chat_agentic_changes_wiki_scope_under_new_parent_end_to_end() {
     let memory = MemoryHandles {
         tree: tree.clone(),
         embedder,
-        llm_config: std::sync::Arc::new(std::sync::RwLock::new(LlmConfig::default())),
-        api_key_overrides: std::sync::Arc::new(std::sync::RwLock::new(
+        llm_config: std::sync::Arc::new(parking_lot::RwLock::new(LlmConfig::default())),
+        api_key_overrides: std::sync::Arc::new(parking_lot::RwLock::new(
             std::collections::HashMap::new(),
         )),
         llm_overrides: overrides,

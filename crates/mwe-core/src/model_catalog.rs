@@ -298,9 +298,13 @@ pub fn capabilities_for(backend: &str, model_id: &str) -> ModelCapabilities {
 
 /// The process-wide catalog the backends read, defaulting to the bundled
 /// snapshot until [`install`] replaces it.
-fn snapshot_cell() -> &'static std::sync::RwLock<std::sync::Arc<Catalog>> {
-    static CELL: OnceLock<std::sync::RwLock<std::sync::Arc<Catalog>>> = OnceLock::new();
-    CELL.get_or_init(|| std::sync::RwLock::new(std::sync::Arc::new(bundled().clone())))
+///
+/// A `parking_lot` lock, because a capability lookup must never be the
+/// thing that takes an instance down: a panic inside the swap below
+/// leaves this lock usable by every reader that comes after it.
+fn snapshot_cell() -> &'static parking_lot::RwLock<std::sync::Arc<Catalog>> {
+    static CELL: OnceLock<parking_lot::RwLock<std::sync::Arc<Catalog>>> = OnceLock::new();
+    CELL.get_or_init(|| parking_lot::RwLock::new(std::sync::Arc::new(bundled().clone())))
 }
 
 /// Publish a catalog for the whole process.
@@ -312,20 +316,13 @@ pub fn install(catalog: Catalog) {
     if catalog.is_empty() {
         return;
     }
-    if let Ok(mut slot) = snapshot_cell().write() {
-        *slot = std::sync::Arc::new(catalog);
-    }
+    *snapshot_cell().write() = std::sync::Arc::new(catalog);
 }
 
-/// The catalog currently published to the process. Falls back to the
-/// bundled snapshot if the lock is poisoned, because a capability lookup
-/// must never be the thing that takes an instance down.
+/// The catalog currently published to the process.
 #[must_use]
 pub fn snapshot() -> std::sync::Arc<Catalog> {
-    snapshot_cell().read().map_or_else(
-        |_| std::sync::Arc::new(bundled().clone()),
-        |slot| std::sync::Arc::clone(&slot),
-    )
+    std::sync::Arc::clone(&snapshot_cell().read())
 }
 
 /// Errors raised by [`refresh`].

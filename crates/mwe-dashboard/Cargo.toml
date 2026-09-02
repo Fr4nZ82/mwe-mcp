@@ -35,6 +35,10 @@ anyhow = { workspace = true }
 thiserror = { workspace = true }
 chrono = { workspace = true }
 
+# Locks that do not poison: a panic inside one write section must not
+# leave every later reader of the same handle panicking too.
+parking_lot = { workspace = true }
+
 # Password hashing for /dashboard/setup, /dashboard/login,
 # /dashboard/accept-invite, /dashboard/settings/me.
 argon2 = { workspace = true }

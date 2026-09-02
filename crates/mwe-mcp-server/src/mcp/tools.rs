@@ -502,11 +502,7 @@ pub(super) async fn call_wiki_ingest_message(
     // The recall knobs come from the shared operator settings (the
     // `recall:` config section, hot-editable from the dashboard); the
     // classifier prompt-budget knobs stay at their defaults.
-    let policy = state
-        .recall
-        .read()
-        .expect("recall settings rwlock poisoned")
-        .resolved_ingest_policy();
+    let policy = state.recall.read().resolved_ingest_policy();
     let llm = state
         .build_backend(LlmFunction::Ingest)
         .map_err(|e| ToolError::new(ToolErrorClass::ServiceUnavailable, format!("llm: {e}")))?;
@@ -1110,7 +1106,6 @@ pub(super) async fn call_wiki_search(
             let smart_floor = state
                 .recall
                 .read()
-                .expect("recall settings rwlock poisoned")
                 .resolved_ingest_policy()
                 .smart_corpus_floor;
             recall::search_all(
@@ -1314,11 +1309,7 @@ pub(super) async fn call_wiki_navigate(
     // navigator knobs, and the trace retention window the write below prunes
     // against.
     let (nav_policy, trace_retention_days) = {
-        let policy = state
-            .recall
-            .read()
-            .expect("recall settings rwlock poisoned")
-            .resolved_ingest_policy();
+        let policy = state.recall.read().resolved_ingest_policy();
         (policy.nav, policy.trace_retention_days)
     };
     let funnel = run_navigate_funnel(state, &sender, &args, &flat_hits, &nav_policy).await?;

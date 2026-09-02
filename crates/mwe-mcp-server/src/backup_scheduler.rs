@@ -22,12 +22,13 @@
 //! status line ([`mwe_core::backup::META_LAST_AUTO_REPORT`]).
 
 use std::path::PathBuf;
-use std::sync::{Arc, RwLock};
+use std::sync::Arc;
 
 use mwe_core::backup::{
     self, AutoSnapshotReport, BackupSchedule, META_LAST_AUTO_REPORT, META_LAST_AUTO_UNIX,
 };
 use mwe_core::db;
+use parking_lot::RwLock;
 use sqlx::SqlitePool;
 use tokio::task::JoinHandle;
 use tracing::{info, warn};
@@ -91,10 +92,7 @@ where
 
 /// Owned snapshot of the shared schedule handle.
 fn snapshot_schedule(schedule: &Arc<RwLock<Option<BackupSchedule>>>) -> Option<BackupSchedule> {
-    schedule
-        .read()
-        .expect("backup schedule rwlock poisoned")
-        .clone()
+    schedule.read().clone()
 }
 
 /// Seconds since the unix epoch.

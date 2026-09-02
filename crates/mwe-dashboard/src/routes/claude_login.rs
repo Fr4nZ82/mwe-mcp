@@ -90,10 +90,7 @@ async fn start(
     let authorize_url = oauth::build_authorize_url(&redirect_uri, &csrf, &pkce.challenge)
         .map_err(|e| oauth_err(&e))?;
 
-    *state
-        .claude_login
-        .lock()
-        .expect("claude_login mutex poisoned") = Some(PendingClaudeLogin {
+    *state.claude_login.lock() = Some(PendingClaudeLogin {
         verifier: pkce.verifier,
         state: csrf,
         redirect_uri,
@@ -172,10 +169,7 @@ async fn paste(
 
 /// Drop the stored credentials (and any in-flight attempt).
 async fn logout(State(state): State<DashboardState>, admin: AdminUser) -> Result<Response> {
-    *state
-        .claude_login
-        .lock()
-        .expect("claude_login mutex poisoned") = None;
+    *state.claude_login.lock() = None;
     if let Some(store) = oauth::global_store() {
         store
             .clear()
@@ -193,12 +187,8 @@ async fn finish_login(
     returned_state: Option<&str>,
 ) -> Result<Response> {
     // Take the single pending attempt — drop the guard before the await
-    // on the network exchange (std mutex is not held across `.await`).
-    let pending = state
-        .claude_login
-        .lock()
-        .expect("claude_login mutex poisoned")
-        .take();
+    // on the network exchange (the guard is not held across `.await`).
+    let pending = state.claude_login.lock().take();
     let Some(pending) = pending else {
         return status_page(
             state,

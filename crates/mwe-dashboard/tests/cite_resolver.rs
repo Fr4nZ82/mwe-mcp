@@ -36,9 +36,9 @@ async fn make_app_with_memory() -> (Router, SqlitePool, tempfile::TempDir) {
     let memory = MemoryHandles {
         tree,
         embedder,
-        llm_config: std::sync::Arc::new(std::sync::RwLock::new(LlmConfig::default())),
+        llm_config: std::sync::Arc::new(parking_lot::RwLock::new(LlmConfig::default())),
         llm_overrides: mwe_dashboard::LlmBackendOverrides::default(),
-        api_key_overrides: std::sync::Arc::new(std::sync::RwLock::new(
+        api_key_overrides: std::sync::Arc::new(parking_lot::RwLock::new(
             std::collections::HashMap::new(),
         )),
         workdir: dir.path().to_path_buf(),
