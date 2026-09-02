@@ -12,6 +12,9 @@ description = "Headless core for mwe-mcp: memory engine, parser, ACL, REM, inter
 name = "mwe_core"
 path = "src/lib.rs"
 
+[lints]
+workspace = true
+
 [dependencies]
 tokio = { workspace = true }
 serde = { workspace = true }
@@ -28,13 +31,11 @@ anyhow = { workspace = true }
 thiserror = { workspace = true }
 fs2 = { workspace = true }
 unicode-normalization = { workspace = true }
-unicode-segmentation = { workspace = true }
 sha2 = { workspace = true }
 hex = { workspace = true }
 base64 = { workspace = true }
 async-trait = { workspace = true }
 tar = { workspace = true }
-dashmap = { workspace = true }
 parking_lot = { workspace = true }
 reqwest = { workspace = true }
 rust-embed = { workspace = true }
@@ -51,8 +52,6 @@ tokenizers = { workspace = true, optional = true }
 
 [features]
 default = []
-# Fault injection per test E2E (R.1.7)
-mwe-mcp-test-faults = []
 # Expose `FakeEmbedder` / `FakeLlmBackend` so downstream test crates
 # (mwe-dashboard tests, integration suites in Phase B) can build a
 # recall/REM pipeline without hitting the network.

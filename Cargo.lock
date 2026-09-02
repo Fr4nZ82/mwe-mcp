@@ -934,20 +934,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "dashmap"
-version = "6.1.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "5041cc499144891f3790297212f32a74fb938e5136a14943f338ef9e0ae276cf"
-dependencies = [
- "cfg-if",
- "crossbeam-utils",
- "hashbrown 0.14.5",
- "lock_api",
- "once_cell",
- "parking_lot_core",
-]
-
-[[package]]
 name = "deadpool"
 version = "0.12.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1648,12 +1634,6 @@ dependencies = [
  "rand_distr",
  "zerocopy",
 ]
-
-[[package]]
-name = "hashbrown"
-version = "0.14.5"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "e5274423e17b7c9fc20b6e7e208532f9b19825d82dfd615708b70edd83df41f1"
 
 [[package]]
 name = "hashbrown"
@@ -2479,7 +2459,6 @@ dependencies = [
  "candle-transformers",
  "chrono",
  "criterion",
- "dashmap",
  "filetime",
  "fs2",
  "getrandom 0.2.17",
@@ -2503,7 +2482,6 @@ dependencies = [
  "tokio",
  "tracing",
  "unicode-normalization",
- "unicode-segmentation",
  "uuid",
  "wiremock",
 ]
@@ -2522,8 +2500,6 @@ dependencies = [
  "getrandom 0.2.17",
  "hex",
  "http-body-util",
- "hyper",
- "jsonwebtoken",
  "lettre",
  "maud",
  "mwe-core",
@@ -2546,7 +2522,6 @@ dependencies = [
  "tokio-util",
  "totp-rs",
  "tower",
- "tower-http",
  "tracing",
  "uuid",
 ]
@@ -2562,8 +2537,6 @@ dependencies = [
  "dotenvy",
  "hex",
  "http",
- "hyper",
- "jsonwebtoken",
  "mwe-core",
  "mwe-dashboard",
  "rmcp",
@@ -2573,7 +2546,6 @@ dependencies = [
  "sha2",
  "sqlx",
  "tempfile",
- "thiserror 2.0.18",
  "tokio",
  "tokio-util",
  "tower",

@@ -12,13 +12,15 @@ description = "Built-in PWA dashboard for mwe-mcp: Axum routes /dashboard/*, Mau
 name = "mwe_dashboard"
 path = "src/lib.rs"
 
+[lints]
+workspace = true
+
 [dependencies]
 mwe-core = { path = "../mwe-core", version = "1.0.0" }
 
 axum = { workspace = true }
 axum-extra = { workspace = true }
 tower = { workspace = true }
-tower-http = { workspace = true }
 maud = { workspace = true }
 rust-embed = { workspace = true }
 
@@ -27,7 +29,6 @@ tokio-util = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
 sqlx = { workspace = true }
-jsonwebtoken = { workspace = true }
 uuid = { workspace = true }
 tracing = { workspace = true }
 anyhow = { workspace = true }
@@ -68,7 +69,6 @@ pulldown-cmark = { workspace = true }
 tempfile = { workspace = true }
 tower = { workspace = true }
 http-body-util = "0.1"
-hyper = { workspace = true }
 mwe-core = { path = "../mwe-core", version = "1.0.0", features = ["test-fakes"] }
 # Untar the export route's response body in the wiki-export tests.
 tar = { workspace = true }

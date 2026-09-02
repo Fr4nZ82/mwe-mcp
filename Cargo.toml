@@ -19,6 +19,18 @@ description = "Memory Wiki Engine — agent-agnostic MCP server for persistent s
 keywords = ["mcp", "memory", "wiki", "llm", "agent"]
 categories = ["database", "command-line-utilities"]
 
+# The lint bar every crate opts into with `[lints] workspace = true`. It
+# lives here rather than in `.cargo/config.toml` rustflags because cargo
+# replaces config rustflags wholesale whenever `RUSTFLAGS` is set in the
+# environment — which CI does (`-Dwarnings`) — and a bar that silently
+# drops out of CI is not a bar.
+[workspace.lints.clippy]
+pedantic = { level = "warn", priority = -1 }
+nursery = { level = "warn", priority = -1 }
+module_name_repetitions = "allow"
+missing_errors_doc = "allow"
+missing_panics_doc = "allow"
+
 [workspace.dependencies]
 # MCP SDK (Rust, official)
 rmcp = { version = "=1.7.0", default-features = false, features = [
@@ -34,7 +46,6 @@ http = "1"
 axum = { version = "0.7", features = ["macros", "multipart"] }
 tower = { version = "0.5", features = ["full"] }
 tower-http = { version = "0.6", features = ["trace", "compression-gzip", "fs", "normalize-path"] }
-hyper = { version = "1", features = ["full"] }
 
 # Templating server-side
 maud = { version = "0.26", features = ["axum"] }
@@ -172,9 +183,8 @@ chrono = { version = "0.4", features = ["serde"] }
 # takes `time::Duration`.
 time = "0.3"
 
-# Unicode (slug pipeline B.21+B.22)
+# Unicode (slug pipeline)
 unicode-normalization = "0.1"
-unicode-segmentation = "1"
 
 # Crypto / hashing
 sha2 = "0.10"
@@ -187,7 +197,6 @@ base64 = "0.22"
 async-trait = "0.1"
 
 # Concurrency helpers
-dashmap = "6"
 parking_lot = "0.12"
 
 # Test / bench (referenced from each crate's [dev-dependencies] with workspace = true)

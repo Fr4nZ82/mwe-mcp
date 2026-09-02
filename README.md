@@ -202,7 +202,7 @@ The dashboard is also **where you correct the memory**. On the memory proper the
 
 ## Contributing
 
-Contributions are welcome. Read [CONTRIBUTING.md](CONTRIBUTING.md) first, DCO sign-off required. Many architectural trade-offs are already deliberately resolved, so discuss direction with the maintainer before a substantial change. CI runs `fmt`, `clippy -D warnings`, the full test suite (unit, integration, property, fault-injection) and `cargo deny` on every push. Keep it green.
+Contributions are welcome. Read [CONTRIBUTING.md](CONTRIBUTING.md) first, DCO sign-off required. Many architectural trade-offs are already deliberately resolved, so discuss direction with the maintainer before a substantial change. CI runs `fmt`, `clippy -D warnings`, the full test suite (unit, integration, property) on Linux, macOS and Windows, a `cargo check` on the declared minimum Rust version, and `cargo deny` on every push. Keep it green.
 
 ## License
 

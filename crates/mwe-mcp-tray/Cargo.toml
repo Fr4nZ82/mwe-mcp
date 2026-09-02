@@ -13,6 +13,9 @@ description = "Optional KDE/Linux desktop tray that controls the mwe-mcp systemd
 name = "mwe-mcp-tray"
 path = "src/main.rs"
 
+[lints]
+workspace = true
+
 [dependencies]
 ksni = { workspace = true }
 tokio = { workspace = true }

@@ -1,16 +1,3 @@
-[build]
-# Use sparse registry protocol for faster index updates
-# (default in stable since 1.70, set explicitly for clarity)
-
-[target.'cfg(all())']
-rustflags = [
-    "-W", "clippy::pedantic",
-    "-W", "clippy::nursery",
-    "-A", "clippy::module_name_repetitions",
-    "-A", "clippy::missing_errors_doc",
-    "-A", "clippy::missing_panics_doc",
-]
-
 [alias]
 # The binary you deploy. `--features local-embedder` compiles the bge-m3
 # model into the binary, which every deployment configured with

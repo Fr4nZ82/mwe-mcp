@@ -66,14 +66,18 @@ jobs:
       # to run.
       - run: cargo build --workspace --examples --features local-embedder
 
-  test-fault-injection:
-    name: cargo test (fault injection)
+  # `rust-version` in Cargo.toml is the compatibility promise; `stable`
+  # above is only where development happens. A promise nobody compiles
+  # against is a number in a file, so this job checks the whole workspace
+  # (tests and examples included) on exactly the declared floor.
+  msrv:
+    name: cargo check (MSRV 1.88)
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v5
-      - uses: dtolnay/rust-toolchain@stable
+      - uses: dtolnay/rust-toolchain@1.88
       - uses: Swatinem/rust-cache@v2
-      - run: cargo test --workspace --features mwe-mcp-test-faults
+      - run: cargo check --workspace --all-targets
 
   deny:
     name: cargo deny

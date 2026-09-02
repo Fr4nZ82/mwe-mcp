@@ -10,10 +10,8 @@ Cargo.lock.bak
 *.swp
 *~
 .DS_Store
-# Obsidian per-vault editor state (workspace layout, enabled plugins, appearance,
-# graph view). The product is Obsidian-native, but these are personal per-machine
-# editor config — same category as .idea/.vscode above. Unanchored so it matches
-# .obsidian/ at any depth (repo root + wiki/).
+# Per-machine editor state an operator's Markdown editor may drop next to
+# the files it opens. Unanchored so it matches at any depth.
 .obsidian/
 
 # Local workdir / state (mwe-mcp runtime)
@@ -31,12 +29,11 @@ Cargo.lock.bak
 .env.*
 !.env.example
 
-# Build artifacts (static assets compilati da tailwind)
-# NOTE: the dashboard build output `crates/mwe-dashboard/assets/tailwind.css`
-# IS committed — it is the source rust-embed pulls in at compile time, and
-# Cargo cannot run the standalone tailwindcss CLI itself. Devs re-run
-# `tailwindcss -i tailwind/app.css -o crates/mwe-dashboard/assets/tailwind.css --minify`
-# after editing tailwind/ (see docs/development/build-run.md).
+# Compiled CSS. The dashboard's own stylesheet,
+# `crates/mwe-dashboard/assets/tailwind.css`, IS committed: rust-embed reads
+# it at compile time and Cargo cannot run the standalone tailwindcss CLI.
+# Rebuild it after editing `tailwind/` with
+# `tailwindcss -i tailwind/app.css -o crates/mwe-dashboard/assets/tailwind.css --minify`.
 /static/tailwind.css
 
 # Logs / temp
@@ -62,23 +59,19 @@ Cargo.lock.bak
 # OS
 Thumbs.db
 
-# gitignored
+# Local scratch, never tracked
 /gitignored/
 .secrets
+/donotopen.tar.gz
 
-# Historical design corpus — the frozen "road behind" archive. The whole
-# Italian planning corpus lives here on disk as a reference of last resort;
-# OUT of the tracked repo. Canonical current state lives in the engineering
-# wiki (wiki/), forward work in wiki/roadmap.md. The nested road-behind/
-# inside it is the deeper pre-0.2.0 layer.
+# Local corpora and replay workdirs
 /road-behind/
 /work_qwen_35b/
 /work_gemini_flash/
 __pycache__/
 
-# Maintainer-local material — never tracked in the public repo.
-# Planning, roadmap drafts, decision logs, scratch notes live here
-# locally; the public wiki (docs/) carries only what shipped.
+# Maintainer-local material — never tracked in the public repo: the roadmap,
+# the dated decision log and the per-area cards live here on this disk only.
 /planning/
 /notes/
 
@@ -88,7 +81,8 @@ __pycache__/
 # local credential for the ingest_replay harness — never commit
 .ct
 
-# Piano di riallineamento — documento di lavoro in italiano, non superficie di prodotto
+# Working documents between the maintainer and the assistant, in Italian —
+# not product surface, so the public repo stays English.
 /RIALLINEAMENTO.md
 /RIALLINEAMENTO-aperti.md
 /GLOSSARIO.md
