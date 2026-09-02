@@ -2642,6 +2642,30 @@ impl Config {
         Self::parse(&path, &raw)
     }
 
+    /// A key under `llm:` that is not `profile` or one of the six slots is
+    /// almost always a slot name typed wrong (`ingset:`), and the typed
+    /// parse would drop it without a word — leaving the operator with a
+    /// slot they believe they set. Named here, at load, once.
+    fn warn_unknown_llm_keys(value: &serde_yaml::Value) {
+        let Some(llm) = value.get("llm").and_then(serde_yaml::Value::as_mapping) else {
+            return;
+        };
+        for key in llm.keys().filter_map(serde_yaml::Value::as_str) {
+            let known = key == "profile" || LlmFunction::ALL.iter().any(|f| f.yaml_key() == key);
+            if !known {
+                tracing::warn!(
+                    key,
+                    "config: `llm.{key}` is not a model slot and is ignored — the six are {}",
+                    LlmFunction::ALL
+                        .iter()
+                        .map(|f| f.yaml_key())
+                        .collect::<Vec<_>>()
+                        .join(", ")
+                );
+            }
+        }
+    }
+
     /// Parse from a raw YAML string. `path` is informational.
     ///
     /// # Errors
@@ -2661,6 +2685,7 @@ impl Config {
         Self::validate_log_file_rotation(&value)?;
         Self::validate_rem_schedule_mode(&value)?;
         Self::validate_backup_mode(&value)?;
+        Self::warn_unknown_llm_keys(&value);
         let cfg: Self = serde_yaml::from_value(value).map_err(|e| ConfigError::Parse {
             path: path.to_path_buf(),
             detail: format!("schema: {e}"),

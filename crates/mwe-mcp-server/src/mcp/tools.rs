@@ -446,12 +446,12 @@ pub(super) async fn call_wiki_ingest_message(
     // The slot gate sits before the promotion backstop: promotion mints
     // permanent state and enqueues a document job, so refuse first if no
     // worker could ever run it.
-    let llm_slot = state.llm_config.slot(LlmFunction::Ingest).ok_or_else(|| {
-        ToolError::new(
+    if state.slot_config(LlmFunction::Ingest).is_none() {
+        return Err(ToolError::new(
             ToolErrorClass::ServiceUnavailable,
             "llm.ingest not configured in mwe-mcp.config.yaml",
-        )
-    })?;
+        ));
+    }
 
     // Verbatim source promotion, the paste-into-chat door.
     let promotion = maybe_promote_turn(
@@ -492,7 +492,7 @@ pub(super) async fn call_wiki_ingest_message(
         .read()
         .expect("recall settings rwlock poisoned")
         .resolved_ingest_policy();
-    let llm = llm_slot
+    let llm = state
         .build_backend(LlmFunction::Ingest)
         .map_err(|e| ToolError::new(ToolErrorClass::ServiceUnavailable, format!("llm: {e}")))?;
     let navigator = build_navigator(state);
@@ -566,16 +566,14 @@ fn parse_recent_messages(args: Vec<RecentMessageArg>) -> Result<Vec<RecentMessag
 /// Optional on this call path only — a missing or unbuildable slot yields
 /// flat-only recall (navigation off), never a failed turn.
 fn build_navigator(state: &McpState) -> Option<Box<dyn mwe_core::llm::LlmBackend>> {
-    state
-        .llm_config
-        .slot(LlmFunction::Navigator)
-        .and_then(|slot| match slot.build_backend(LlmFunction::Navigator) {
-            Ok(backend) => Some(backend),
-            Err(e) => {
-                tracing::warn!(error = %e, "navigator backend build failed — navigation off");
-                None
-            },
-        })
+    state.slot_config(LlmFunction::Navigator)?;
+    match state.build_backend(LlmFunction::Navigator) {
+        Ok(backend) => Some(backend),
+        Err(e) => {
+            tracing::warn!(error = %e, "navigator backend build failed — navigation off");
+            None
+        },
+    }
 }
 
 /// Wiki ingest path (`/dashboard/proposals`) the consumer agent should
@@ -2056,14 +2054,13 @@ async fn resolve_document_source(
 /// The synchronous `dry_run` branch: classify + segment, write nothing.
 async fn ingest_external_dry_run(
     state: &McpState,
-    llm_slot: &mwe_core::config::LlmFunctionConfig,
     resolved: &ResolvedDocumentSource,
     disposition: Option<mwe_core::document::Disposition>,
     format: Option<mwe_core::document::DocFormat>,
 ) -> Result<Value, ToolError> {
     use mwe_core::document;
 
-    let llm = llm_slot
+    let llm = state
         .build_backend(LlmFunction::Ingest)
         .map_err(|e| ToolError::new(ToolErrorClass::ServiceUnavailable, format!("llm: {e}")))?;
     // Same language rule as the real run (`document::process_job`): the plan
@@ -2180,19 +2177,18 @@ pub(super) async fn call_wiki_ingest_external(
     // ingest slot, so refuse rather than queueing a job no worker can run.
     let resolved =
         resolve_document_source(state, identity, &args, would_promote && !args.dry_run).await?;
-    let llm_slot = state.llm_config.slot(LlmFunction::Ingest).ok_or_else(|| {
-        ToolError::new(
+    if state.slot_config(LlmFunction::Ingest).is_none() {
+        return Err(ToolError::new(
             ToolErrorClass::ServiceUnavailable,
             "llm.ingest not configured in mwe-mcp.config.yaml",
-        )
-    })?;
+        ));
+    }
     let effective_sender: mwe_core::types::Principal = format!("user:{}", identity.sender_id)
         .parse()
         .map_err(|e| ToolError::new(ToolErrorClass::InternalError, format!("sender: {e}")))?;
 
     if args.dry_run {
-        let mut out =
-            ingest_external_dry_run(state, llm_slot, &resolved, disposition, format).await?;
+        let mut out = ingest_external_dry_run(state, &resolved, disposition, format).await?;
         out.as_object_mut()
             .expect("dry-run json root is an object")
             .insert("would_promote".into(), json!(would_promote));

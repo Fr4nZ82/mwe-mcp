@@ -11,10 +11,11 @@
 //! `Authorization: Bearer …` JWT in
 //! [`super::auth::jwt_auth_middleware`] (mwe-mcp is HTTP-only).
 
+use std::collections::HashMap;
 use std::path::PathBuf;
 use std::sync::{Arc, RwLock};
 
-use mwe_core::config::{LlmConfig, RecallConfig};
+use mwe_core::config::{LlmConfig, LlmFunction, LlmFunctionConfig, RecallConfig};
 use mwe_core::delegations::DelegationCache;
 use mwe_core::embedder::Embedder;
 use mwe_core::jwt::{BlacklistCache, ConsumerClass, ConsumerProfile, TokenSecret};
@@ -89,10 +90,16 @@ pub struct McpState {
     /// recent edits via the `tokens.rs` write paths (which call
     /// [`mwe_core::delegations::DelegationCache::refresh`]).
     pub delegations: Arc<DelegationCache>,
-    /// LLM function configuration. The dispatcher reads it on each
-    /// `wiki_ingest_message` call to materialise the `ingest` backend
-    /// fresh — picks up config edits without restarting the server.
-    pub llm_config: LlmConfig,
+    /// LLM function configuration — the same `Arc<RwLock<_>>` the
+    /// dashboard's LLM-config editor writes, so a role saved there is what
+    /// the next `wiki_ingest_message` builds its backend from, with no
+    /// restart. Read through [`Self::slot_config`] / [`Self::build_backend`].
+    pub llm_config: Arc<RwLock<LlmConfig>>,
+    /// API keys set from the dashboard at runtime, shared with it. The
+    /// process cannot change its own environment (`forbid(unsafe_code)`),
+    /// so a key saved while serving lives here and wins over the
+    /// environment whenever a backend is built.
+    pub api_key_overrides: Arc<RwLock<HashMap<String, String>>>,
     /// Operator recall settings (`recall:` config section). Shared
     /// behind `Arc<RwLock>` with the dashboard's recall-settings editor
     /// so a save there reaches the next ingest turn without a restart.
@@ -124,6 +131,50 @@ pub struct McpState {
     /// rather than on [`IdentityProfile`]: no token, role or consumer
     /// class lifts it.
     pub read_only: bool,
+}
+
+impl McpState {
+    /// The slot's configuration as it is right now, `None` when the
+    /// operator has not wired it.
+    #[must_use]
+    pub fn slot_config(&self, function: LlmFunction) -> Option<LlmFunctionConfig> {
+        self.llm_config
+            .read()
+            .expect("llm_config rwlock poisoned")
+            .slot(function)
+            .cloned()
+    }
+
+    /// Build the slot's backend the way the dashboard builds its own: a key
+    /// saved from the panel takes precedence over the process environment,
+    /// which only knows what the env loader pushed at boot.
+    ///
+    /// # Errors
+    ///
+    /// The slot is not configured, or its backend could not be built (a
+    /// missing key, an unknown backend tag) — as one message, ready for
+    /// the tool error that reports it.
+    pub fn build_backend(
+        &self,
+        function: LlmFunction,
+    ) -> std::result::Result<Box<dyn mwe_core::llm::LlmBackend>, String> {
+        let slot = self.slot_config(function).ok_or_else(|| {
+            format!(
+                "llm.{} not configured in mwe-mcp.config.yaml",
+                function.yaml_key()
+            )
+        })?;
+        let overrides = Arc::clone(&self.api_key_overrides);
+        slot.build_backend_with_env(function, move |name| {
+            overrides
+                .read()
+                .expect("api_key_overrides rwlock poisoned")
+                .get(name)
+                .cloned()
+                .or_else(|| std::env::var(name).ok())
+        })
+        .map_err(|e| e.to_string())
+    }
 }
 
 impl std::fmt::Debug for McpState {

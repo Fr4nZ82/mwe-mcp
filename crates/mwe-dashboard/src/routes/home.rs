@@ -96,7 +96,30 @@ pub async fn index(
     };
 
     let frozen = crate::read_only::hides_writes(&state);
+    // The one thing an admin must see before anything else: a model role
+    // with nothing behind it, because the memory does not work until all
+    // six have one.
+    let missing_slots: Vec<&'static str> = if user.is_admin {
+        state
+            .memory
+            .as_ref()
+            .map(|m| super::llm_config::unconfigured_slots(&m.llm_config_snapshot()))
+            .unwrap_or_default()
+    } else {
+        Vec::new()
+    };
     let body = maud::html! {
+        @if !missing_slots.is_empty() {
+            p.flash.flash-error {
+                strong {
+                    (missing_slots.len()) " of the six model roles "
+                    (if missing_slots.len() == 1 { "has" } else { "have" })
+                    " no model: " (missing_slots.join(", ")) "."
+                }
+                " The memory does not work until every role has one. "
+                a href="/dashboard/admin/llm-config" { "Set them →" }
+            }
+        }
         section.kpi-grid {
             div.kpi { strong { (wiki_count) } " wikis with facts" }
             div.kpi { strong { (active_facts) } " active facts" }

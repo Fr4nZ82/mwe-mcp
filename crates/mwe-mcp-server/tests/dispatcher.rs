@@ -63,7 +63,8 @@ async fn fixture_with_llm(
         secret,
         blacklist,
         delegations,
-        llm_config,
+        llm_config: Arc::new(std::sync::RwLock::new(llm_config)),
+        api_key_overrides: Arc::new(std::sync::RwLock::new(std::collections::HashMap::new())),
         recall: Arc::new(std::sync::RwLock::new(
             mwe_core::config::RecallConfig::default(),
         )),

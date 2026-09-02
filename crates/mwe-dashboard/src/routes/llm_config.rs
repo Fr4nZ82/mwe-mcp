@@ -448,6 +448,15 @@ const CARD_HEAD_STYLE: &str =
 const FIELD_LABEL_STYLE: &str = "font-size:.72rem;text-transform:uppercase;letter-spacing:.05em";
 const INPUT_STYLE: &str = "width:100%;background:var(--bg);border:1px solid var(--border);border-radius:.3rem;padding:.35rem .5rem;color:var(--text);font-family:var(--font-mono);font-size:.85rem";
 
+/// The slots with no model, by their YAML key, in the roster's order.
+pub(super) fn unconfigured_slots(llm: &LlmConfig) -> Vec<&'static str> {
+    LlmFunction::ALL
+        .iter()
+        .filter(|f| llm.slot(**f).is_none())
+        .map(|f| f.yaml_key())
+        .collect()
+}
+
 /// Which providers currently have usable authentication — drives the
 /// per-role "needs a key" warning and the JS gating map.
 #[allow(
@@ -555,12 +564,23 @@ fn render(
     let auth = provider_auth(&rows);
     let anthropic_login = anthropic_uses_login(&llm);
     let ingest_ok = ingest_ready(&llm, &auth);
+    let missing = unconfigured_slots(&llm);
     let body = html! {
         @if onboarding {
             (onboarding_banner(ingest_ok))
         }
         @if let Some(f) = flash {
             (components::flash(f.kind, f.msg))
+        }
+        @if !missing.is_empty() {
+            p.flash.flash-error {
+                strong {
+                    (missing.len()) " of the six model roles " (if missing.len() == 1 { "has" } else { "have" })
+                    " no model: " (missing.join(", ")) "."
+                }
+                " The memory does not work until every role has one — a turn on a "
+                "missing role is refused, the nightly cycle and the page writer skip."
+            }
         }
 
         p.flash.flash-info {

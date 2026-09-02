@@ -356,7 +356,8 @@ mod tests {
             secret: secret.clone(),
             blacklist,
             delegations,
-            llm_config: LlmConfig::default(),
+            llm_config: Arc::new(std::sync::RwLock::new(LlmConfig::default())),
+            api_key_overrides: Arc::new(std::sync::RwLock::new(std::collections::HashMap::new())),
             recall: Arc::new(std::sync::RwLock::new(
                 mwe_core::config::RecallConfig::default(),
             )),

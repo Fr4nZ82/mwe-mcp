@@ -2090,9 +2090,10 @@ async fn health_check_llm_slots(config: &mwe_core::config::LlmConfig) -> Result<
                 tracing::info!(slot = s.slot, %backend, %model, "llm health-check ok");
             },
             SlotStatus::Unconfigured => {
-                tracing::debug!(
+                warn!(
                     slot = s.slot,
-                    "llm health-check: slot unconfigured, skipping"
+                    "llm health-check: slot has no model — the feature behind it is off until \
+                     one is set (dashboard → Admin → LLM config)"
                 );
             },
             SlotStatus::LoginPending => {
@@ -2107,6 +2108,21 @@ async fn health_check_llm_slots(config: &mwe_core::config::LlmConfig) -> Result<
                 tracing::error!(slot = s.slot, detail, "llm health-check failed");
             },
         }
+    }
+
+    let unconfigured: Vec<&str> = report
+        .iter()
+        .filter(|s| matches!(s.status, SlotStatus::Unconfigured))
+        .map(|s| s.slot)
+        .collect();
+    if !unconfigured.is_empty() {
+        tracing::error!(
+            missing = ?unconfigured,
+            "llm: {} of the six model slots have no model. The product does not work \
+             until all six are set: turns on a missing slot are refused, the nightly \
+             cycle and the page writer skip",
+            unconfigured.len()
+        );
     }
 
     let failed = diagnostics::slots_failed(&report);
@@ -2382,6 +2398,14 @@ async fn bootstrap_state(workdir: &Path, config: &Config) -> Result<(McpState, D
     // each cycle start and the Dream console at each trigger.
     let rem_policy = std::sync::Arc::new(std::sync::RwLock::new(config.rem.resolved_policy()));
 
+    // The LLM roles and the keys set at runtime are one copy, shared by
+    // the MCP dispatcher and the dashboard editor that changes them: a role
+    // or a key saved from the panel is what the next turn builds its
+    // backend from.
+    let llm_config = std::sync::Arc::new(std::sync::RwLock::new(config.llm.clone()));
+    let api_key_overrides =
+        std::sync::Arc::new(std::sync::RwLock::new(std::collections::HashMap::new()));
+
     let state = McpState {
         pool: pool.clone(),
         tree: tree.clone(),
@@ -2389,7 +2413,8 @@ async fn bootstrap_state(workdir: &Path, config: &Config) -> Result<(McpState, D
         secret: secret.clone(),
         blacklist: blacklist.clone(),
         delegations: delegations.clone(),
-        llm_config: config.llm.clone(),
+        llm_config: llm_config.clone(),
+        api_key_overrides: api_key_overrides.clone(),
         recall: recall_settings.clone(),
         workdir: workdir.to_path_buf(),
         document_policy: config.document.resolved_policy(),
@@ -2401,22 +2426,16 @@ async fn bootstrap_state(workdir: &Path, config: &Config) -> Result<(McpState, D
         .with_memory(MemoryHandles {
             tree,
             embedder,
-            // Shared behind Arc<RwLock<_>> so the admin
-            // LLM-config editor can swap slots in place + close the
-            // restart-required gap (the MCP transport still holds its
-            // own cloned copy in McpState — that side is rebuilt at boot).
-            llm_config: std::sync::Arc::new(std::sync::RwLock::new(config.llm.clone())),
+            // The same handles the MCP state holds (above): the editor
+            // swaps a slot in place and both transports see it.
+            llm_config,
             // Production path constructs the per-slot backend on every
             // request via `LlmConfig::build_backend`; only test fixtures
             // populate this for deterministic e2e runs.
             llm_overrides: mwe_dashboard::LlmBackendOverrides::default(),
-            // In-memory API key override map. Empty at process
-            // start; the dashboard set-API-key handler writes through
-            // it so the next backend_for sees fresh keys without an
-            // unsafe std::env::set_var.
-            api_key_overrides: std::sync::Arc::new(std::sync::RwLock::new(
-                std::collections::HashMap::new(),
-            )),
+            // Keys set from the dashboard, written through by its
+            // set-API-key handler; empty at process start.
+            api_key_overrides,
             workdir: workdir.to_path_buf(),
         })
         .with_rem_policy(rem_policy)
