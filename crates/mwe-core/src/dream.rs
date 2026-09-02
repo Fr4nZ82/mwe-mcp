@@ -847,6 +847,7 @@ mod tests {
 
         // A card carrying a claim the engine has closed.
         let mut spent = planner::FactForPage {
+            topics: Vec::new(),
             subject_external: None,
             authored_refs: Vec::new(),
             fact_id: crate::types::FactId::parse("0190f3c2-7a4e-7c31-9b02-2f6a1c8e5d01").unwrap(),

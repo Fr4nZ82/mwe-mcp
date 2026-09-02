@@ -2647,6 +2647,7 @@ mod tests {
 
     fn ffp(id_seed: u8, text: &str) -> FactForPage {
         FactForPage {
+            topics: Vec::new(),
             subject_external: None,
             authored_refs: Vec::new(),
             fact_id: FactId::parse(&format!("0190f3c2-7a4e-7c31-9b02-2f6a1c8e5d{id_seed:02x}"))
@@ -3009,6 +3010,7 @@ mod tests {
                 description: "Alice".to_owned(),
                 style: None,
                 primary_facts: vec![FactForPage {
+                    topics: Vec::new(),
                     subject_external: None,
                     authored_refs: Vec::new(),
                     fact_id: fid.clone(),
@@ -3877,6 +3879,7 @@ mod tests {
                 style: None,
                 primary_facts: vec![
                     FactForPage {
+                        topics: Vec::new(),
                         subject_external: None,
                         authored_refs: Vec::new(),
                         fact_id: fid1.clone(),
@@ -3895,6 +3898,7 @@ mod tests {
                         salience: None,
                     },
                     FactForPage {
+                        topics: Vec::new(),
                         subject_external: None,
                         authored_refs: Vec::new(),
                         fact_id: fid2.clone(),

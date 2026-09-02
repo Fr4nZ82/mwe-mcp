@@ -2255,11 +2255,30 @@ struct LlmSupersede {
     /// `fact_id` of the NEW fact — one this turn filed.
     #[serde(default)]
     successor: Option<String>,
+    /// The ONE thing both facts state, in the model's own words: *"the due
+    /// date"*, *"where she lives"*, *"the wifi password"*.
+    ///
+    /// A supersede is one slot holding a new value, so a pair that is really
+    /// a supersede has a slot that can be named — and a pair that is not has
+    /// none. The prompt already asks the model to run that test in its head;
+    /// this is the answer written down, which is the difference between a
+    /// test that is performed and one that is read past.
+    #[serde(default)]
+    slot: Option<String>,
 }
 
 /// Vet one requested supersede, refusing rather than guessing.
 ///
-/// Three guards, and each one answers a different way of being wrong:
+/// Four guards, and each one answers a different way of being wrong:
+/// - the pair must name the **slot** both facts fill. A supersede is one slot
+///   holding a new value, so the old and the new cannot both hold; two claims
+///   that are true together are two facts, and superseding either deletes
+///   something nobody withdrew — *«pregnant, due <date>»* replaced by
+///   *«pregnancy at risk of preterm birth»* takes the only due date in the
+///   memory with it. The prompt asks for that test in prose and the field is
+///   where the answer is written: a rule the model reads and a field the
+///   model has to fill are not the same instrument, and the pairs that get
+///   through are the ones that look right;
 /// - the **target** must be one of the candidates the stage was shown, so a
 ///   hallucinated id retires nothing;
 /// - the **successor** must be one of the facts this turn actually filed, so a
@@ -2282,6 +2301,14 @@ fn vet_supersede<'a>(
         tracing::warn!("ingest: reconcile supersede missing target or successor — skipped");
         return None;
     };
+    if s.slot.as_deref().is_none_or(|w| w.trim().is_empty()) {
+        tracing::warn!(
+            target = target_raw,
+            successor = successor_raw,
+            "ingest: reconcile supersede names no slot the two facts share — refused"
+        );
+        return None;
+    }
     let (Ok(target_id), Ok(successor_id)) =
         (FactId::parse(target_raw), FactId::parse(successor_raw))
     else {
@@ -2694,6 +2721,54 @@ async fn reconcile_candidates(
     out
 }
 
+/// Room for one short record per candidate, and a floor under it.
+///
+/// The two stages at the end of the turn answer with a list whose length is
+/// bounded by the list they were shown, so a ceiling that does not move with
+/// the candidates is a ceiling that fits some turns and not others.
+const VERDICT_TOKENS_FLOOR: u32 = 1024;
+const VERDICT_TOKENS_PER_CANDIDATE: u32 = 96;
+
+/// Ask a stage for its verdict, with room to finish the sentence.
+///
+/// Both stages parse strict JSON, so a cut answer is not a shorter answer:
+/// [`parse_first_json`] finds no closing brace and the whole verdict is
+/// discarded — every closure and every supersede that turn decided, gone,
+/// behind a warning nobody is watching. A long turn is where that happens,
+/// because these stages are shown the candidates, the raw message, the
+/// completed one and the pages the turn served.
+///
+/// So the ceiling is sized from the candidate list, and a reply that hits it
+/// anyway is asked again with twice the room. Once: the retry is for a cap
+/// that was merely too tight, and a model that fills double the ceiling is not
+/// answering the question this stage asked.
+async fn complete_a_verdict(
+    llm: &dyn LlmBackend,
+    prompt: String,
+    candidates: usize,
+    stage: &'static str,
+) -> crate::llm::Result<crate::llm::CompletionResponse> {
+    let cap = VERDICT_TOKENS_FLOOR.saturating_add(
+        VERDICT_TOKENS_PER_CANDIDATE.saturating_mul(u32::try_from(candidates).unwrap_or(u32::MAX)),
+    );
+    let ask = |max_tokens: u32| {
+        CompletionRequest::new(prompt.clone())
+            .with_temperature(0.1)
+            .with_max_tokens(max_tokens)
+    };
+    let resp = llm.complete(ask(cap)).await?;
+    if resp.finish_reason != crate::llm::FinishReason::MaxTokens {
+        return Ok(resp);
+    }
+    tracing::warn!(
+        stage,
+        cap,
+        candidates,
+        "ingest: the verdict was cut at its ceiling — asking again with twice the room"
+    );
+    llm.complete(ask(cap.saturating_mul(2))).await
+}
+
 /// The **reconciliation stage** — one call, after the navigator, deciding what
 /// this turn does to facts that ALREADY EXIST.
 ///
@@ -2773,14 +2848,7 @@ async fn reconcile_after_reading(
             return ReconcileDecision::default();
         },
     };
-    let resp = match llm
-        .complete(
-            CompletionRequest::new(prompt)
-                .with_temperature(0.1)
-                .with_max_tokens(1024),
-        )
-        .await
-    {
+    let resp = match complete_a_verdict(llm, prompt, candidates.len(), "reconciler").await {
         Ok(r) => r,
         Err(err) => {
             tracing::warn!(error = %err, "ingest: reconciler unavailable — nothing reconciled");
@@ -2942,14 +3010,7 @@ async fn confirm_topic_closures(
             return (Vec::new(), Vec::new());
         },
     };
-    let resp = match llm
-        .complete(
-            CompletionRequest::new(prompt)
-                .with_temperature(0.1)
-                .with_max_tokens(1024),
-        )
-        .await
-    {
+    let resp = match complete_a_verdict(llm, prompt, candidates.len(), "closure confirmer").await {
         Ok(r) => r,
         Err(err) => {
             tracing::warn!(error = %err, "ingest: closure confirmer unavailable — no closures");
@@ -8389,6 +8450,95 @@ mod tests {
     use async_trait::async_trait;
     use tempfile::TempDir;
 
+    /// A backend that records the ceiling it was given on every call, and
+    /// optionally cuts its first reply at it.
+    struct VerdictBackend {
+        caps: parking_lot::Mutex<Vec<Option<u32>>>,
+        cut_the_first: bool,
+    }
+
+    impl VerdictBackend {
+        fn new(cut_the_first: bool) -> Self {
+            Self {
+                caps: parking_lot::Mutex::new(Vec::new()),
+                cut_the_first,
+            }
+        }
+    }
+
+    #[async_trait::async_trait]
+    impl LlmBackend for VerdictBackend {
+        fn model_id(&self) -> &'static str {
+            "verdict"
+        }
+
+        async fn complete(
+            &self,
+            request: CompletionRequest,
+        ) -> crate::llm::Result<crate::llm::CompletionResponse> {
+            let cut = {
+                let mut caps = self.caps.lock();
+                caps.push(request.max_tokens);
+                self.cut_the_first && caps.len() == 1
+            };
+            Ok(crate::llm::CompletionResponse {
+                text: if cut {
+                    "{\"closures\": [".to_owned()
+                } else {
+                    "{\"closures\": [], \"supersedes\": []}".to_owned()
+                },
+                finish_reason: if cut {
+                    FinishReason::MaxTokens
+                } else {
+                    FinishReason::EndOfTurn
+                },
+                usage: crate::llm::CompletionUsage::default(),
+            })
+        }
+    }
+
+    /// A cut verdict is asked again, not parsed and thrown away.
+    ///
+    /// Both stages want strict JSON, so a reply that stops at the ceiling has
+    /// no closing brace and `parse_first_json` discards the whole thing —
+    /// every closure and every supersede the turn decided goes with it. The
+    /// ceiling also has to move with the candidate list, which is what makes a
+    /// long turn the one that hits it.
+    #[tokio::test]
+    async fn a_verdict_cut_at_the_ceiling_is_asked_again_with_more_room() {
+        let llm = VerdictBackend::new(true);
+        let resp = complete_a_verdict(&llm, "prompt".to_owned(), 7, "reconciler")
+            .await
+            .expect("the second ask answers");
+        assert_eq!(resp.finish_reason, FinishReason::EndOfTurn);
+        assert!(parse_first_json::<ReconcileDecision>(&resp.text).is_some());
+
+        let caps = llm.caps.lock().clone();
+        let first = VERDICT_TOKENS_FLOOR + VERDICT_TOKENS_PER_CANDIDATE * 7;
+        assert_eq!(
+            caps,
+            vec![Some(first), Some(first * 2)],
+            "sized from the candidates, then doubled once"
+        );
+    }
+
+    /// A verdict that fits is asked once.
+    #[tokio::test]
+    async fn a_verdict_that_fits_costs_one_call() {
+        let llm = VerdictBackend::new(false);
+        let resp = complete_a_verdict(&llm, "prompt".to_owned(), 3, "reconciler")
+            .await
+            .expect("answered");
+        assert_eq!(resp.finish_reason, FinishReason::EndOfTurn);
+        assert_eq!(
+            llm.caps.lock().clone(),
+            vec![Some(
+                VERDICT_TOKENS_FLOOR + VERDICT_TOKENS_PER_CANDIDATE * 3
+            )],
+            "one call, and the ceiling still tracks the candidates"
+        );
+    }
+
     // ---------- Test scaffolding ----------
 
     async fn setup_workdir() -> (TempDir, WikiTree, SqlitePool) {
@@ -9696,6 +9846,7 @@ mod tests {
         let id = "0190f3c2-7a4e-7c31-9b02-2f6a1c8e5d77";
         let hit = sample_recall_hit(id);
         let same = LlmSupersede {
+            slot: Some("the slot both name".to_owned()),
             target: Some(id.to_owned()),
             successor: Some(id.to_owned()),
         };
@@ -9714,6 +9865,7 @@ mod tests {
         // Two different facts still supersede normally.
         let other = "0190f3c2-7a4e-7c31-9b02-2f6a1c8e5d78";
         let pair = LlmSupersede {
+            slot: Some("the slot both name".to_owned()),
             target: Some(id.to_owned()),
             successor: Some(other.to_owned()),
         };
@@ -14379,6 +14531,7 @@ mod tests {
         let applied = apply_reconciled_supersedes(
             &pool,
             &[LlmSupersede {
+                slot: Some("the slot both name".to_owned()),
                 target: Some(old.fact_id.as_str().to_owned()),
                 successor: Some(new.fact_id.as_str().to_owned()),
             }],
@@ -14465,6 +14618,7 @@ mod tests {
         let applied = apply_reconciled_supersedes(
             &pool,
             &[LlmSupersede {
+                slot: Some("the slot both name".to_owned()),
                 target: Some(old.fact_id.as_str().to_owned()),
                 successor: Some(new.fact_id.as_str().to_owned()),
             }],
@@ -14996,6 +15150,7 @@ mod tests {
         let applied = apply_reconciled_supersedes(
             &pool,
             &[LlmSupersede {
+                slot: Some("the slot both name".to_owned()),
                 target: Some(old.fact_id.as_str().to_owned()),
                 successor: Some(new.fact_id.as_str().to_owned()),
             }],
@@ -15089,6 +15244,7 @@ mod tests {
         let applied = apply_reconciled_supersedes(
             &pool,
             &[LlmSupersede {
+                slot: Some("the slot both name".to_owned()),
                 target: Some(old.fact_id.as_str().to_owned()),
                 successor: Some(new.fact_id.as_str().to_owned()),
             }],
@@ -15130,10 +15286,14 @@ mod tests {
         drop(dir);
     }
 
-    /// Three refusals, each preferring to change nothing over guessing: a
-    /// target nobody showed the stage, a successor this turn did not write,
-    /// and a target the sender does not own. Reading a fact is not authority
-    /// over it.
+    /// One way of asking for a supersede wrongly: why it is refused, what was
+    /// asked, and what the turn actually wrote.
+    type Refusal<'a> = (&'a str, LlmSupersede, &'a [(FactId, String)]);
+
+    /// Four refusals, each preferring to change nothing over guessing: a
+    /// target nobody showed the stage, a successor this turn did not write, a
+    /// target the sender does not own, and a pair that cannot name the slot
+    /// both facts fill. Reading a fact is not authority over it.
     #[tokio::test]
     async fn supersede_refuses_a_stranger_target_a_stranger_successor_and_a_foreign_subject() {
         let (dir, tree, pool) = setup_workdir().await;
@@ -15170,54 +15330,55 @@ mod tests {
         let mine = FactId::parse("0190f3c2-7a4e-7c31-9b02-2f6a1c8e5d01").unwrap();
         let request = req("bob adesso lavora alla Initech", "alice");
 
-        // Alice can READ bob's fact — it is a candidate — but does not own it.
-        assert_eq!(
-            apply_reconciled_supersedes(
-                &pool,
-                &[LlmSupersede {
+        let named = || Some("the slot both name".to_owned());
+        let mine_wrote = [(mine.clone(), "bob lavora alla Initech".to_owned())];
+        let refusals: [Refusal<'_>; 4] = [
+            (
+                // Alice can READ bob's fact — it is a candidate — but does
+                // not own it.
+                "reading a fact is not authority over it",
+                LlmSupersede {
+                    slot: named(),
                     target: Some(bobs.fact_id.as_str().to_owned()),
                     successor: Some(mine.as_str().to_owned()),
-                }],
-                &candidates,
-                &[(mine.clone(), "bob lavora alla Initech".to_owned())],
-                &request,
-            )
-            .await,
-            0,
-            "reading a fact is not authority over it"
-        );
-        // A target nobody showed the stage.
-        assert_eq!(
-            apply_reconciled_supersedes(
-                &pool,
-                &[LlmSupersede {
+                },
+                &mine_wrote,
+            ),
+            (
+                "a hallucinated target retires nothing",
+                LlmSupersede {
+                    slot: named(),
                     target: Some("0190f3c2-7a4e-7c31-9b02-2f6a1c8e5d99".to_owned()),
                     successor: Some(mine.as_str().to_owned()),
-                }],
-                &candidates,
-                &[(mine.clone(), "x".to_owned())],
-                &request,
-            )
-            .await,
-            0,
-            "a hallucinated target retires nothing"
-        );
-        // A successor this turn did not write.
-        assert_eq!(
-            apply_reconciled_supersedes(
-                &pool,
-                &[LlmSupersede {
+                },
+                &mine_wrote,
+            ),
+            (
+                "a fact can only be welded to something this turn actually filed",
+                LlmSupersede {
+                    slot: named(),
                     target: Some(bobs.fact_id.as_str().to_owned()),
                     successor: Some("0190f3c2-7a4e-7c31-9b02-2f6a1c8e5d98".to_owned()),
-                }],
-                &candidates,
+                },
                 &[],
-                &request,
-            )
-            .await,
-            0,
-            "a fact can only be welded to something this turn actually filed"
-        );
+            ),
+            (
+                "a supersede that cannot say what the two facts both state is not one",
+                LlmSupersede {
+                    slot: None,
+                    target: Some(bobs.fact_id.as_str().to_owned()),
+                    successor: Some(mine.as_str().to_owned()),
+                },
+                &mine_wrote,
+            ),
+        ];
+        for (why, s, turn_facts) in refusals {
+            assert_eq!(
+                apply_reconciled_supersedes(&pool, &[s], &candidates, turn_facts, &request).await,
+                0,
+                "{why}"
+            );
+        }
         assert!(
             fact_index::find_by_id(&pool, &bobs.fact_id)
                 .await
@@ -15225,7 +15386,7 @@ mod tests {
                 .unwrap()
                 .superseded_at
                 .is_none(),
-            "and after all three refusals the fact is untouched"
+            "and after all four refusals the fact is untouched"
         );
         drop(dir);
     }

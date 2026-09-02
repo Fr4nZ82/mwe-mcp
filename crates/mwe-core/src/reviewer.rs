@@ -497,6 +497,7 @@ mod tests {
 
     fn ffp(seed: u8, subject: &str) -> FactForPage {
         FactForPage {
+            topics: Vec::new(),
             subject_external: None,
             authored_refs: Vec::new(),
             fact_id: fid(seed),

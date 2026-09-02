@@ -150,6 +150,20 @@ pub fn plan_slug_for_page(wiki_id: &str, page: &str) -> String {
     }
 }
 
+/// Does this page name, as a model wrote it, mean *the identity card*?
+///
+/// The two spellings [`plan_slug_for_page`] maps onto the wiki's key, asked as
+/// a question. A caller that has to tell "the card, addressed by its file"
+/// apart from "a page whose key happens to collide" needs the question, not
+/// the mapping: the mapping answers for every name.
+#[must_use]
+pub fn names_the_card(page: &str) -> bool {
+    matches!(
+        page.strip_suffix(".md").unwrap_or(page),
+        "@profile" | "profile"
+    )
+}
+
 /// A fact materialised onto a page (one-fact-one-page). Carries the stable
 /// `fact_id` so the compiler can emit `{{… f=<id>}}` markers.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -228,6 +242,14 @@ pub struct FactForPage {
     /// for a pure-standard fact.
     #[serde(default)]
     pub authored_refs: Vec<String>,
+    /// The claim's two words (`fact_index.topics`), macrotopic first.
+    ///
+    /// Projected for one caller: the closing pass names a page after the
+    /// macrotopic when nothing else will have the claim
+    /// ([`cover_the_leftovers`]). It is the only word about the claim that is
+    /// in the memory's own language and was not invented for the occasion.
+    #[serde(default)]
+    pub topics: Vec<String>,
 }
 
 impl FactForPage {
@@ -254,6 +276,7 @@ impl FactForPage {
             style: row.style,
             salience: row.salience.clone(),
             authored_refs: row.authored_refs.clone(),
+            topics: row.topics.clone(),
         }
     }
 }
@@ -788,12 +811,26 @@ pub fn build_compilation_plan(
             slug = slugify(redir);
         }
         if !pages.contains_key(&slug) {
-            // Never mint a reserved stem. A foundation node is keyed by
-            // [`plan_slug_for_page`], which gives the identity card the
-            // wiki's own slug — so a bare `profile` misses the lookup above
-            // and would mint a SECOND plan page on the file the card already
-            // owns. Drop the assignment instead; the orphan pass below homes
-            // the fact on a page that exists.
+            // The card is addressable two ways and the Cartografo is taught
+            // both: its plan key is the wiki's own slug, its file is
+            // `@profile.md`. [`plan_slug_for_page`] is the mapping between
+            // them, so the file spelling resolves onto the key instead of
+            // reading as a coined name. What the assignment then means is
+            // "this belongs on the card", and the card's own rule below
+            // answers it — which is the answer the model was asking for.
+            if names_the_card(&a.page_slug) {
+                let card = plan_slug_for_page(&fact.source_wiki_id, &a.page_slug);
+                if pages.contains_key(&card) {
+                    slug = card;
+                }
+            }
+        }
+        if !pages.contains_key(&slug) {
+            // The other reserved stems name pages the engine owns and no
+            // fact is ever assigned to: minting one here would put a second
+            // plan page on a file that already has an owner. Drop the
+            // assignment; the fallback below homes the fact on a page that
+            // exists.
             if crate::wiki::is_reserved_page_stem(&slug) {
                 tracing::warn!(
                     slug = %slug,
@@ -2496,7 +2533,9 @@ pub enum NewFactPlacement<'a> {
     /// Same model and same shape as [`Self::Cartografo`]; what differs is the
     /// question. The nightly pass asks *where does this belong*, and declining
     /// is a fine answer because this one comes after it. This one asks *what
-    /// page does this need*, and declining costs the claim another day.
+    /// page does this need*, and declining costs the claim another day — so
+    /// what it declines anyway is covered by [`cover_the_leftovers`], which
+    /// gives each such claim a page named after its macrotopic.
     ClosingCartografo(&'a dyn LlmBackend),
     /// No placement intelligence: every new fact falls back to the identity card to its
     /// subject / source-wiki foundation page — the historical `cartografo = None`
@@ -2652,8 +2691,12 @@ async fn place_new_facts(
     signals: &CartografoSignals,
 ) -> Result<Blueprint> {
     match placement {
-        NewFactPlacement::Cartografo(llm) | NewFactPlacement::ClosingCartografo(llm) => {
+        NewFactPlacement::Cartografo(llm) => {
             classify_facts(*llm, facts, foundation, registry, workdir, signals).await
+        },
+        NewFactPlacement::ClosingCartografo(llm) => {
+            let bp = classify_facts(*llm, facts, foundation, registry, workdir, signals).await?;
+            Ok(cover_the_leftovers(bp, facts))
         },
         NewFactPlacement::Ingest => Ok(ingest_placement_blueprint(facts)),
         NewFactPlacement::NamedThenCartografo(llm) => {
@@ -2767,6 +2810,73 @@ fn cadence_directive(cadence: CartografoCadence) -> String {
 /// (default 9): how many pages must group before a **wiki** is born. Same
 /// shape, different level — facts make a page, pages make a wiki.
 pub const PAGE_BIRTH_FLOOR: usize = 5;
+
+/// The closing pass leaves nothing waiting that it can name.
+///
+/// [`hold_to_birth_floor`]'s opposite number, and the other half of the same
+/// rule: the hourly pass may refuse to open a page because the nightly one
+/// comes after it, and the nightly one may because this one does. **Nothing
+/// comes after this**, so a claim it declines waits another whole day — which
+/// is why the birth floor is waived here and why
+/// [`NewFactPlacement::ClosingCartografo`] calls declining a cost.
+///
+/// The model declines anyway, in the one shape it cannot help: it answers with
+/// the identity card for a claim the card refuses (`salience` not `high`, or a
+/// kind a card does not hold), and that assignment resolves to a page which
+/// then turns it away. Nobody else claims it, so without this it goes round
+/// every pass for as long as the memory lives, and the thing it says — what
+/// somebody does for a living, say — is simply absent.
+///
+/// So each of those gets a page named after its **macrotopic**: the claim's
+/// own first word, already in the memory's language, plus the wiki slug that
+/// keeps a page name unique across the whole forest. Only an assignment is
+/// added — the page itself is minted by the same on-the-fly fallback that
+/// serves any assignment naming a page nobody has opened yet.
+///
+/// A claim with no words at all is left alone: there is nothing to name it
+/// after, and inventing a word is how this field became useless before.
+fn cover_the_leftovers(mut bp: Blueprint, facts: &[FactForPage]) -> Blueprint {
+    // An assignment onto a reserved page is not a placement: the card turns
+    // away what it may not hold, and the other four name pages the engine
+    // owns, so every one of them leaves the claim where it was.
+    let placed: BTreeSet<&str> = bp
+        .assignments
+        .iter()
+        .filter(|a| {
+            let stem = a.page_slug.strip_suffix(".md").unwrap_or(&a.page_slug);
+            !crate::wiki::is_reserved_page_stem(stem)
+        })
+        .map(|a| a.fact_id.as_str())
+        .collect();
+    let mut covered: Vec<Assignment> = Vec::new();
+    for f in facts {
+        if placed.contains(f.fact_id.as_str()) || fact_belongs_on_a_card(f) {
+            continue;
+        }
+        let Some(macrotopic) = f.topics.first() else {
+            continue;
+        };
+        let stem = slugify(macrotopic);
+        let wiki = slugify(&f.source_wiki_id);
+        if stem.is_empty() || wiki.is_empty() {
+            continue;
+        }
+        let page_slug = format!("{stem}_{wiki}");
+        tracing::info!(
+            fact_id = f.fact_id.as_str(),
+            page_slug = %page_slug,
+            "closing pass: nothing claimed this, so it takes a page of its own"
+        );
+        covered.push(Assignment {
+            fact_id: f.fact_id.as_str().to_owned(),
+            page_slug,
+        });
+    }
+    // After the model's own, so an assignment it made to a real page is the
+    // one `build_compilation_plan` reads first.
+    bp.assignments.extend(covered);
+    bp
+}
 
 /// Hold a cheap-tier proposal to [`PAGE_BIRTH_FLOOR`]: a page grouping fewer
 /// facts than that is **not** born, and the facts meant for it fall through to
@@ -3940,6 +4050,7 @@ mod tests {
             target_page: None,
             style: None,
             salience: None,
+            topics: Vec::new(),
         }
     }
 
@@ -4556,6 +4667,126 @@ mod tests {
         // The page is minted only by the non-high facts.
         assert_eq!(bp.new_pages.len(), 1);
         assert_eq!(bp.new_pages[0].slug, "preferenze");
+    }
+
+    /// The card answers for itself when the Cartografo addresses it by file.
+    ///
+    /// Its plan key is the wiki's slug and its file is `@profile.md`, and the
+    /// prompt teaches both — so the model writes `profile`, which for a long
+    /// time was read as a coined name, refused as reserved, and dropped. The
+    /// claim then belonged to nobody: not assigned, and not `high` enough for
+    /// the deterministic route either.
+    #[test]
+    fn an_assignment_that_names_the_card_by_its_file_reaches_the_card() {
+        let mut foundation = BTreeMap::new();
+        foundation.insert("alice".to_owned(), person("alice"));
+        let mut job = fact(1, "Lavora come programmatrice.", "user:alice", "alice");
+        job.salience = Some("high".to_owned());
+
+        for spelling in ["profile", "profile.md", "@profile.md"] {
+            let blueprint = Blueprint {
+                assignments: vec![Assignment {
+                    fact_id: job.fact_id.as_str().to_owned(),
+                    page_slug: spelling.to_owned(),
+                }],
+                new_pages: Vec::new(),
+            };
+            let (plan, _reg) = build_compilation_plan(
+                &[job.clone()],
+                &foundation,
+                &blueprint,
+                &ConciliatorResult::default(),
+                &ConceptRegistry::empty("t"),
+                &BTreeMap::new(),
+                &[],
+                "2026-09-02T00:00:00Z",
+            );
+            let alice = &plan.pages["alice"];
+            assert_eq!(alice.page_path, crate::wiki::PROFILE_FILENAME);
+            assert_eq!(
+                alice.primary_facts.len(),
+                1,
+                "`{spelling}` names the card, so the claim is on it"
+            );
+            assert!(
+                plan.pages.keys().all(|k| k == "alice"),
+                "`{spelling}` minted a page beside the card: {:?}",
+                plan.pages.keys().collect::<Vec<_>>()
+            );
+        }
+    }
+
+    /// What the card turns away still ends the night on a page.
+    ///
+    /// The closing pass is the last one, so declining costs the claim a day.
+    /// Here the model answers with the card for a `normal` claim the card may
+    /// not hold: the assignment is honoured, the card refuses it on its own
+    /// rule, and [`cover_the_leftovers`] gives it a page named after its
+    /// macrotopic.
+    #[test]
+    fn the_closing_pass_covers_what_the_card_refused() {
+        let mut job = fact(2, "Lavora come programmatrice.", "user:alice", "alice");
+        job.salience = Some("normal".to_owned());
+        job.topics = vec!["lavoro".to_owned(), "professione".to_owned()];
+        let facts = vec![job.clone()];
+
+        let model_answered_with_the_card = Blueprint {
+            assignments: vec![Assignment {
+                fact_id: job.fact_id.as_str().to_owned(),
+                page_slug: "profile".to_owned(),
+            }],
+            new_pages: Vec::new(),
+        };
+        let bp = cover_the_leftovers(model_answered_with_the_card, &facts);
+        assert_eq!(bp.assignments.len(), 2, "the card answer is left as it was");
+        assert_eq!(bp.assignments[1].page_slug, "lavoro_alice");
+
+        let mut foundation = BTreeMap::new();
+        foundation.insert("alice".to_owned(), person("alice"));
+        let (plan, _reg) = build_compilation_plan(
+            &facts,
+            &foundation,
+            &bp,
+            &ConciliatorResult::default(),
+            &ConceptRegistry::empty("t"),
+            &BTreeMap::new(),
+            &[],
+            "2026-09-02T00:00:00Z",
+        );
+        assert!(
+            plan.pages["alice"].primary_facts.is_empty(),
+            "a normal claim is not card material"
+        );
+        assert_eq!(plan.pages["lavoro_alice"].primary_facts.len(), 1);
+    }
+
+    /// A claim the model DID place is not given a second page beside it.
+    #[test]
+    fn the_closing_pass_leaves_a_placed_claim_alone() {
+        let mut job = fact(3, "Lavora come programmatrice.", "user:alice", "alice");
+        job.topics = vec!["lavoro".to_owned(), "professione".to_owned()];
+        let facts = vec![job.clone()];
+        let bp = cover_the_leftovers(
+            Blueprint {
+                assignments: vec![Assignment {
+                    fact_id: job.fact_id.as_str().to_owned(),
+                    page_slug: "mestieri".to_owned(),
+                }],
+                new_pages: Vec::new(),
+            },
+            &facts,
+        );
+        assert_eq!(bp.assignments.len(), 1);
+        assert_eq!(bp.assignments[0].page_slug, "mestieri");
+    }
+
+    /// Nothing to name it after, so nothing is invented.
+    #[test]
+    fn the_closing_pass_leaves_a_wordless_claim_waiting() {
+        let wordless = fact(4, "Una regola.", "user:alice", "alice");
+        assert!(wordless.topics.is_empty());
+        let bp = cover_the_leftovers(Blueprint::default(), &[wordless]);
+        assert!(bp.assignments.is_empty());
     }
 
     #[test]
@@ -6839,10 +7070,12 @@ mod tests {
     /// An assignment naming a reserved page never mints a second plan page on
     /// the file the engine already owns.
     ///
-    /// The card is keyed by [`plan_slug_for_page`] under the wiki's own slug,
-    /// so a bare `profile` misses the lookup and reached the fallback mint,
-    /// which would have produced a second page writing `@profile.md` in the
-    /// same wiki.
+    /// `profile` resolves onto the card's key rather than reading as a coined
+    /// name, so the card answers — and a claim it may not hold is placed
+    /// nowhere *here*. That is not the end of the claim: the closing pass
+    /// gives it a page of its own
+    /// ([`cover_the_leftovers`]), and every earlier pass leaves it in the
+    /// buffer on purpose.
     #[test]
     fn an_assignment_naming_a_reserved_page_mints_nothing() {
         let mut foundation = BTreeMap::new();
@@ -6876,8 +7109,8 @@ mod tests {
         );
         assert!(
             plan.pages.values().all(|p| p.primary_facts.is_empty()),
-            "and the fact is placed nowhere — it waits rather than landing on \
-             a page nobody chose"
+            "and the card refuses a claim that is not an identity, so it is \
+             placed nowhere here rather than landing on a page nobody chose"
         );
     }
     /// An emptied page is removed, never promoted into a container.

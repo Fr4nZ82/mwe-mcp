@@ -512,6 +512,7 @@ async fn screen_one(
         style: cap.style,
         salience: cap.salience.clone(),
         authored_refs: cap.authored_refs.clone(),
+        topics: cap.topics.clone(),
     }))
 }
 

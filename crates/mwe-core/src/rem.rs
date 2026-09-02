@@ -8613,6 +8613,7 @@ mod tests {
     fn kin_leaf(slug: &str, wiki: &str, n_facts: usize) -> PagePlan {
         let facts = (0..n_facts)
             .map(|i| crate::planner::FactForPage {
+                topics: Vec::new(),
                 subject_external: None,
                 authored_refs: Vec::new(),
                 fact_id: FactId::parse(&format!("0190f3c2-7a4e-7c31-9b02-2f6a1c8e5d{i:02x}"))
@@ -11078,6 +11079,7 @@ mod tests {
                         i + slug.len() * 16
                     );
                     let mut f = crate::planner::FactForPage {
+                        topics: Vec::new(),
                         subject_external: None,
                         authored_refs: Vec::new(),
                         fact_id: FactId::parse(&id).unwrap(),
