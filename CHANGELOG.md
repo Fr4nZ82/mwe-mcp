@@ -11,107 +11,281 @@ semver-governed surface: breaking changes are called out explicitly.
 
 ## Unreleased
 
+The memory learned to say what a fact is *about* when that is not a person,
+and to link its pages on purpose. The rest is the engine catching up with its
+own promises — in the tool schemas, in the prompts a model obeys at runtime,
+and in the dashboard's session check. Eight migrations, `0068` through `0075`.
+
+### Added
+
+- **A fact can say what it is *about* when that is not a person.** The three
+  governance axes are all principals, so none of them could hold the dog, the
+  car, or a relative who does not use the product. A fact now carries the
+  plain name of its subject beside the principal that answers for it
+  (`subject_external`, migration `0075`), which makes the second fact about a
+  name a lookup instead of a fresh judgement and makes a name matchable
+  against a turn's text literally. `subject_id` keeps every job it had,
+  existing rows are `NULL`, and the export marker gains `external=`.
+
+- **Pages are linked on purpose, and the sentence a link sits in finds the
+  facts beside it** (migration `0074`). The link graph was built from a field
+  nothing ever wrote, so it was empty on every build; it is harvested from
+  each page's own prose now, and **directed** — the page a link points at owes
+  nothing back. The night nominates the links the corpus is missing, six a
+  page, and may retire one, while the hourly build defends every link the
+  prose carries, a hand-written one included. The clause each `[[wikilink]]`
+  sits in is indexed and stands in for the facts beside it, reaching a fact
+  through words it does not contain.
+
+- **Recall asks the question the turn was actually asking, and an identity
+  card says who a person is *now*.** "his kidneys have got worse" was searched
+  for as written — no name in it, so the search looked for facts about kidneys
+  belonging to nobody. The classifier has read the previous exchange, so it
+  rewrites the message with the implicit filled in, inside the reply it was
+  already composing, and the engine searches again on that at no extra call. A
+  card, meanwhile, admits only what the classifier reserved for it, sheds onto
+  ordinary pages rather than being cut at the read path, and can no longer be
+  split away from the turn.
+
+- **The night can move a page to another wiki, and it ends with an empty
+  queue.** A page joined a wiki when it was born and nothing could undo that.
+  Once a cycle the strong model is shown the whole forest — every standard
+  wiki, whose it is, and per page its card, fact count and the principals its
+  facts are about — and asked where each belongs; a smart wiki is never a
+  destination. New `rem:` key `structure_review_cap` (default 3). And
+  **`mwe-mcp reindex`** runs the safety-net sweep once, on demand, for a
+  workdir restored from a backup or edited with the server down.
+
 ### Changed
 
 - **BREAKING — the per-fragment ACL axis is named `subject`, after what it
-  actually holds.** The field that says *who or what a fact is about* had
-  been called `owner` since the first commit — one of the three that decide
-  who may read a fragment, beside `sender` (who reported it) and
-  `allow_ids` (the audience granted beyond the subject). The borrowed name
-  made it read as either of those, and it collided head-on with four
-  unrelated owners this codebase keeps on purpose: the principal a whole
-  wiki belongs to, the human an API token or a smart wiki is registered to,
-  POSIX file ownership, and Rust's own move semantics. Those four keep the
-  word. Only this axis moves, and it moves everywhere at once.
+  actually holds.** The field saying *who or what a fact is about* had been
+  called `owner` since the first commit — one of the three that decide who may
+  read a fragment, beside `sender` and `allow_ids` — so it read as either of
+  those, and it collided with the four owners this codebase keeps on purpose.
+  Migration `0070` renames six columns and two indexes: `owner_id` becomes
+  `subject_id` on `fact_index`, `capture_buffer`, `media_catalog` and
+  `document_jobs`; `disclosure_audit.prev_owner_id` / `new_owner_id` and the
+  two indexes gain the new word. Hand-written SQL has to be updated; nothing
+  else is required at upgrade. `smart_wikis.owner_id` stays — that one is a
+  real proprietor and a separate axis. **On the wire** every old spelling is
+  accepted and advertised as deprecated: `wiki_search`'s `scope` takes
+  `subject_ids`, `wiki_navigate` takes `subjects`, and `recall_core_global`
+  answers with `filter_applied.subject_user` while repeating the value under
+  `owner_user` for **one release only**. That filter has always been a filter
+  on the fact's subject — the facts *about* the caller wherever they are filed
+  — never on which wikis the caller owns. **On disk** a running server writes
+  the bare `{{f=<uuid>}}` key and keeps the governance in the index; an export
+  writes `{{subject=… allow=… sender=… f=…}}`, and the parser reads `owner=`
+  **permanently** as an alias, never writing it, because dropping a key that
+  is on every page produced before the rename would leave those regions
+  unreadable to everybody rather than raise an error.
 
-  **On disk.** The self-describing region marker an export writes is now
-  `{{subject=… allow=… sender=… f=…}}`, and each wiki's capture journal
-  (`<wiki>/_captures.md`) writes `subject=` in its entry header. Both
-  readers accept `owner=` **permanently** — `subject=` wins where an entry
-  carries both — because the journal is what a `rm engine.db` rebuild
-  replays, and it holds entries written by every version a deployment has
-  ever run: a key that stopped parsing there would be silent data loss
-  rather than an error. Compiled pages are untouched by this either way; a
-  running server writes the bare `{{f=<uuid>}}` key and keeps the
-  governance in the index.
+  **In the structured logs this is a clean break, with no dual emission**: the
+  tracing field `owner=` on capture, media, ingest, document and operator-edit
+  events is now `subject=`. A saved query, alert or panel matching `owner=`
+  goes quiet at the deploy without failing, and one spanning the deploy splits
+  into two half-populated series. Update them before upgrading — this is the
+  one part of the rename an accepted alias cannot catch.
 
-  **In the database**, migration `0070` renames six columns and two
-  indexes: `fact_index.owner_id`, `capture_buffer.owner_id`,
-  `media_catalog.owner_id` and `document_jobs.owner_id` become
-  `subject_id`; `disclosure_audit.prev_owner_id` and `new_owner_id` become
-  `prev_subject_id` and `new_subject_id`; `idx_fact_owner` becomes
-  `idx_fact_subject` and `idx_media_sha256_owner` becomes
-  `idx_media_sha256_subject`. Hand-written SQL against the memory database
-  has to be updated — nothing else is required at upgrade.
-  `smart_wikis.owner_id` deliberately stays as it is: that one is a real
-  proprietor, and a separate axis, since a fact whose subject is
-  `user:franz` may perfectly well live in a wiki owned by
-  `group:famiglia`.
+- **BREAKING — `wiki_read` requires a `path`, and the read side has no concept
+  of a wiki.** `path` used to default to `index.md` and the reply carried the
+  wiki's `children` and `parent_wiki_id`; the argument is required now and
+  both fields are gone. The wiki-shaped half of recall went with it: no root
+  index in the navigator's prompt, no "enter a wiki" door, no directory
+  listing of siblings — the `sibling_floor` knob is deleted rather than
+  defaulted off. A page is reachable by three routes: a fact that hit, a match
+  on the page's own card, or a link somebody wrote.
 
-  **On the MCP wire** every old spelling is still accepted and now
-  advertised as deprecated: `wiki_search`'s `scope` takes `subject_ids`
-  (`owner_ids` honoured), `wiki_navigate` takes `subjects` (`owners`
-  honoured). `recall_core_global` answers with
-  `filter_applied.subject_user` and repeats the same value under the old
-  `owner_user` key for **one release only** — read the new one. That filter
-  has always been a filter on the fact's subject, i.e. the facts *about*
-  the caller wherever they are filed, and never a filter on which wikis the
-  caller owns: a wiki you own can hold facts about other people, and this
-  tool does not return them.
+- **Stricter argument validation: an unknown tool argument is refused instead
+  of dropped.** Every schema has always declared `additionalProperties: false`
+  and nothing enforced it, so a misspelled parameter was discarded in silence
+  and the call ran with the argument missing. The wire structs deny unknown
+  fields now and the refusal (`invalid_input`) names the offending key; a
+  deprecated spelling stays a declared field. `top_k` is clamped to 50, the
+  ceiling both schemas already advertised, and every `wiki_search` and
+  `wiki_navigate` hit carries a wiki-relative `path` in the spelling
+  `wiki_read` accepts — the index stores a workdir-relative one, so "open the
+  page behind the snippet" was unfollowable.
 
-  **In the dashboard** the ACL form field is `subject` and the facts table
-  sorts on `subject_id`, with `owner` and `owner_id` still accepted, so an
-  old bookmark keeps sorting instead of erroring.
+- **A claim waiting to be written no longer carries a guess at where it will
+  go** (migrations `0071`, `0072`, `0073`). Placing a claim belongs to the
+  hourly pass, which reads the memory as it stands then. `capture_buffer`
+  drops `wiki_id` and `target_page`, and both it and `fact_index` drop
+  `page_description` — a page's card belongs to the page (`page_card`,
+  migration `0069`). The parking page every wiki used to get goes too: an
+  unplaceable claim waits rather than landing on a page whose whole meaning
+  was "unsorted", and `notes` is an ordinary page name again. Migration `0068`
+  is the same table, storing a capture's vector at birth.
 
-  **In the structured logs this is a clean break, with no dual emission**:
-  the tracing field `owner=` on capture, media, ingest, document and
-  operator-edit events is now `subject=`. A saved query, alert or dashboard
-  panel matching `owner=` goes quiet at the deploy without failing, and one
-  spanning the deploy silently splits into two half-populated series.
-  Update them before upgrading — this is the one part of the rename that
-  cannot be caught by an accepted alias.
+- **A structural change is read, never rolled back.** The proposal lifecycle
+  loses its whole undo half: two of its five states, the revert token and its
+  window, the confirmation sweep, the restore helpers and the `bundle` kind.
+  The nightly cycle also stops reporting its own housekeeping — a split,
+  merge, refile or closure decided at night emits nothing, and the event kinds
+  `auto_applied` and `dedup_proposed` are gone. A consumer still receives
+  `structure_applied` for a change asked for in a conversation or from the
+  dashboard, beside `fact_minted_for_you`, `reminder_due` and
+  `document_ingested`.
 
-  The bundled prompts and skills name the subject too, so the model is told
-  the same word the schema uses.
+- **The model configuration the dashboard saves is the one the MCP side
+  uses**, where it used to hold a copy taken at boot while promising
+  otherwise. And because the six slots are mandatory, a missing one is said
+  out loud now: a warning per slot and one error naming all of them at boot,
+  the same banner on the LLM-config page and the admin's home, and a key under
+  `llm:` that is not one of the six named in a warning at load. The seventh
+  slot that used to sit in that list is gone, and with it the reason every
+  canned setup profile left the dashboard's chat with no model.
+
+- **The 25th person, the 9th group and the 33rd list are refused where they
+  are created**, rather than cut where they are shown — the prompt used to
+  trim those lists to fit, always dropping whoever sorted last. The limits are
+  24 enrolled users, 8 groups a user and 32 list pages a wiki, **checked only
+  against growth**, so a deployment already over one keeps working. A list
+  refused a page is not a lost fact: the turn tells the agent to say plainly
+  that it was not saved and why.
+
+- **The first cycle after the upgrade recompiles every page that carries or
+  receives a link.** A page's fingerprint now covers its links, and no longer
+  covers the parenthood removed with it — pages have no parent, so the field,
+  the testata line and the prompt placeholder are gone.
+
+### Deprecated
+
+- `wiki_admin_signpost` says so in the first sentence of its own schema
+  description now, so an agent reading the tool list is told before it calls.
+  Both signposts ride `wiki_admin_push` as fields; the tool still answers.
 
 ### Removed
 
-- **A standard wiki no longer has an `index.md`.** Every night REM assembled
-  one per wiki — a listing of the pages that lived there, meant for whoever
-  files a fact and has to decide where it goes. Nothing read it. The side
-  that actually places a fact (the compilation planner's classification
-  stage) is handed the same material — page name, title, wiki, one-line
-  description, current fact count — out of the compilation plan and the
-  `page_cards` table, both of which are written on **every** page change
-  rather than once a night. The file was a third copy, always the stalest,
-  with no reader.
+- **A standard wiki has no `index.md`.** Every night REM assembled one per
+  wiki — a listing of the pages that lived there, for whoever files a fact and
+  has to decide where it goes. Nothing read it: the side that places a fact is
+  handed the same material out of the compilation plan and the `page_card`
+  table, both written on **every** page change rather than once a night. Gone
+  with it: the `map_writer` REM sub-job and its `map_writer_cap` policy field
+  — internal only, never a `rem:` config key, though the configuration
+  reference listed it as one — the `wikis/index.md` collector file, the
+  `index.md` seeded into every new wiki, and the four rules that kept readers
+  away from it.
 
-  **Gone with it:** the `map_writer` REM sub-job and its `map_writer_cap`
-  policy field — internal only, never a `rem:` config key, though the
-  configuration reference listed it as one; the
-  `wikis/index.md` collector file written for an operator browsing the
-  directory in Obsidian; the `index.md` seeded into every newly created wiki
-  (identity wikis and wikis born from a promotion alike);
-  `wiki::write_root_collector_index` and
-  `fact_index::count_active_on_page`, both left without callers; and the
-  four separate rules that existed only to keep readers away from what the
-  sub-job wrote — the recall navigator's offer filter and its central
-  refusal, the page-card indexer's exclusion, and the exemptions in the
-  compiler's orphan sweep and REM's husk GC. `wiki::write_wiki_dir` no
-  longer takes an index body.
+  **And the name is not reserved either.** `wiki::RESERVED_PAGE_STEMS` holds
+  `rules`, `projects`, `project_diary`, `projects_diary` and `profile`, beside
+  every `@`-prefixed stem; `index` is not among them, because the fence
+  guarded a word rather than a thing. On a **smart** wiki `index.md` is
+  ordinary content its consumer authors through `wiki_admin_push`.
 
-  **Unchanged on purpose:** `wiki_read` still answers `404` for `index.md`,
-  exactly as before. On a **smart** wiki that page is ordinary content its
-  consumer authors through `wiki_admin_push`, and nothing about smart wikis
-  moves here. The page name also stays reserved
-  (`wiki::is_reserved_page_stem`), so nothing coins a page called `index`
-  that is not one, and no plan node may claim it.
+  **Migration: none needed.** A leftover `<wiki>/index.md` is no longer exempt
+  from the compiler's orphan sweep, so the first compile removes it (a file
+  carrying live facts is kept). The loose collector is outside every sweep and
+  can be deleted by hand.
 
-  **Migration: none needed.** A leftover `<wiki>/index.md` is no longer
-  exempt from the compiler's orphan sweep, so the first compile after the
-  upgrade removes it (a file carrying live facts is kept, as always). The
-  loose `wikis/index.md` collector is outside every sweep and can be deleted
-  by hand.
+- **Arguments and endpoints that were published and never existed.**
+  `wiki_read.format`, `wiki_read.include_archived` and
+  `wiki_search.scope.include_archived` never reached a filter;
+  `dashboard_link.channel` and the `path` / `git_ref` locators on
+  `wiki_ingest_external.source` were never read; `POST /mcp/token-refresh` was
+  never mounted, and an operator re-issues from the dashboard instead. The
+  auth error classes are `missing_bearer`, `invalid_token` and `token_revoked`
+  — the `expired` and `secret_rotated` two documents promised both arrive as
+  `invalid_token`. Going the other way, `metadata.channel` on
+  `wiki_ingest_message` is declared now, and `wiki_forget` /
+  `wiki_forget_bulk` stamp the caller's `reason` into the tombstone.
+
+- **The `mwe-mcp-test-faults` build feature and its `fault!` macro**, which
+  had no call site outside its own tests while CI paid for a second full suite
+  run.
+
+### Fixed
+
+- **A turn that stored nothing said it had noted it.** Every fallback of
+  `wiki_ingest_message` — model unreachable, unparseable reply, plan that
+  could not be applied — returned the `suggested_seed` "I've noted that." on a
+  turn where nothing was saved. The failure path has its own seed now, saying
+  plainly that nothing was stored; the old sentence stays only for a turn the
+  classifier deliberately filed as nothing to keep, so **a consumer matching
+  on that string should read the new one.** Around it: no provider call was
+  retried at all, so a 429, a 5xx or a timeout was one lost memory, and every
+  backend is wrapped in two jittered retries; and Ollama calls set `num_ctx`,
+  never sent until now, so its default window had been truncating the prompt.
+
+- **A boot the model probe refuses exits `EX_CONFIG` (78)**, and the generated
+  systemd unit names it in `RestartPreventExitStatus`, so a misconfigured
+  provider is a stopped service an operator can see rather than a two-second
+  relaunch loop of paid probes. `mwe-mcp recall eval` no longer migrates the
+  database it opens — it runs beside a live server and takes no lockfile. And
+  `init --force-config` rewrites the config file only: `mwe-mcp.env` holds the
+  token secret, and rewriting it would invalidate every token, session and 2FA
+  enrolment already issued.
+
+- **One bad model reply no longer costs the night.** Auto-promote, page
+  grouping and page merge turned a transport error into a failed cycle, which
+  then skipped the compile and left the capture queue undrained until the next
+  night. All three now record it, skip the candidate without memoising a
+  verdict, and stop that sub-job after five *consecutive* failures. Nearby: a
+  proposal whose handler keeps refusing is expired after its grace window,
+  where the state diagram promised as much and the function doing it had no
+  caller; and a page whose markers do not parse whole keeps its facts rather
+  than tombstoning every one below the cut.
+
+- **The stages that judge stored facts read what the turn read, and what it
+  was asking.** The reconciliation stage saw only the raw sentence, so "I
+  bought it" matched no stored claim on its own words; it gets the
+  classifier's completed sentence now, with the raw message still above it,
+  and where the two disagree the words the user typed win. Its structural leg
+  was the navigator's walk alone, so the identity cards served before the walk
+  were not part of what the turn had read. And both nightly closure sweeps
+  dated their work by the operational clock rather than by when the fact
+  began.
+
+- **The rules the prompts teach are the rules the engine enforces.** Prompts
+  and skills are read by a model at runtime, so a sentence naming an argument
+  the handler ignores or a page name the engine does not refuse is an
+  instruction an agent follows into an error. The reserved page names carried
+  the visible cost: four prompts recited a list containing `notes`, which is
+  free, and missing `projects_diary`, which is refused. A claim aimed at a
+  refused name is not dropped quietly: the whole extraction is refused and the
+  user is told so. Fourteen further disagreements went the same way, the
+  public documents got the same pass, and `install.sh` refuses to install a
+  binary whose checksum it could not fetch.
+
+### Security
+
+- **A dashboard session is only a token minted for the browser.** Every JWT in
+  a deployment is signed with the same secret, and the session check verified
+  signature, expiry and revocation and nothing else — so an MCP bearer token,
+  long-lived and carrying its owner's admin flag, was accepted as a dashboard
+  session and skipped the second factor. Session verification refuses every
+  device label but the browser's now. In the same pass: the login had no
+  attempt limit and is rate-limited per email and per client address, an
+  unknown one verified against a fixed hash so the response time does not say
+  whether an account exists; four pages embedded JSON in a `<script>` without
+  escaping `</script`, letting memory text written by one user run in an
+  admin's browser; the smart-wiki briefing and operation-log pages showed any
+  wiki's inbox to any signed-in user and now go through the same read gate as
+  `wiki_read`; `/mcp` bodies are capped at 32 MiB; and credentials are
+  scrubbed from audit summaries.
+
+- **A snapshot no longer lands world-readable, and the new
+  `instance.cookie_secure` puts `Secure` on the dashboard's cookies.** A
+  snapshot holds the same cleartext memory as the workdir but lives outside
+  its owner-only gate, so under the service unit's `UMask=0022` it was written
+  as a `0755` directory around a `0644` database; directories it creates are
+  `0700` and the vacuumed database `0600`. The cookie flag is off by default,
+  because the documented first run is plain `http://127.0.0.1:8742` where a
+  `Secure` cookie never comes back — turn it on once the dashboard is behind
+  TLS.
+
+- **Two tables grew without bound, and a third had no window at all.** Every
+  revoked token id stayed in `token_blacklist` after the token it revoked had
+  expired, and the in-memory blacklist reloads that table every 60 seconds;
+  every row in `wiki_events` stayed, and every consumer poll scans them.
+  Housekeeping drops expired revocations and events past a 30-day retention
+  now, and runs daily rather than only at boot; `reminder_due` rows are
+  exempt. The third is the recall-trace journal, which holds each recall block
+  verbatim: the new `recall.trace_retention_days` (default 90) bounds both how
+  far back an operator can ask why recall behaved as it did and how long
+  cleartext recalled memory sits in the engine database.
 
 ## 1.9.0 — 2026-08-02
 
