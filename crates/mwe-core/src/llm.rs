@@ -1966,7 +1966,23 @@ const HOT_PATH_TEMPERATURE: f32 = 0.1;
 ///
 /// A ceiling is not a spend — raising it costs nothing on a call that
 /// does not use it.
+///
+/// **The floor, not the whole allowance.** How much a model reasons tracks
+/// how hard the job is, and the caller's own ceiling is the only measure of
+/// that this layer has: a stage asking for a long answer is asking for a
+/// long piece of work. So the allowance is the larger of this and
+/// [`REASONING_TO_ANSWER_RATIO`] times the ask — see [`ModelPolicy::ceiling_for`].
+/// A page of twelve dense clinical facts spends more thinking than a page of
+/// twelve short ones, and the flat allowance is what it ran out of.
 const ADAPTIVE_THINKING_HEADROOM: u32 = 4_096;
+
+/// How much room to think, per unit of room to answer.
+///
+/// Two, which is not a measurement — nobody can see how many tokens a model
+/// will spend reasoning. It is the shape of the rule: reasoning is the larger
+/// half of a hard call, and the cost of guessing high is a ceiling nobody
+/// reaches while the cost of guessing low is a reply with no answer in it.
+const REASONING_TO_ANSWER_RATIO: u32 = 2;
 
 /// `true` for Anthropic models that reason before answering with no
 /// `thinking` field in the request, spending output budget to do it.
@@ -2136,7 +2152,9 @@ impl ModelPolicy {
     /// respected.
     fn ceiling_for(self, caller_max: u32) -> u32 {
         let with_headroom = if self.headroom_for_reasoning {
-            caller_max.saturating_add(ADAPTIVE_THINKING_HEADROOM)
+            let headroom = ADAPTIVE_THINKING_HEADROOM
+                .max(caller_max.saturating_mul(REASONING_TO_ANSWER_RATIO));
+            caller_max.saturating_add(headroom)
         } else {
             caller_max
         };
@@ -5982,6 +6000,26 @@ mod tests {
         assert!(
             !ModelPolicy::resolve(OPENROUTER_BACKEND_TAG, "meta/llama-9").headroom_for_reasoning
         );
+    }
+
+    /// The room to think grows with the room to answer.
+    ///
+    /// A flat allowance fits a small ask and starves a large one: a stage
+    /// asking for a long answer is asking for a long piece of work, and the
+    /// reasoning that precedes it grows with the work. A page of twelve dense
+    /// clinical facts is where the flat 4 096 ran out — the reply came back
+    /// cut, or with a thinking block and no text at all.
+    #[test]
+    fn the_reasoning_allowance_grows_with_the_ask() {
+        let p = ModelPolicy::resolve(ANTHROPIC_BACKEND_TAG, "claude-sonnet-5");
+        assert!(p.headroom_for_reasoning);
+        // A small ask keeps the floor, which is what the boot probe and the
+        // one-word calls depend on.
+        assert_eq!(p.ceiling_for(16), 16 + 4_096);
+        assert_eq!(p.ceiling_for(2_048), 2_048 + 4_096);
+        // Past the floor the allowance tracks the ask.
+        assert_eq!(p.ceiling_for(4_400), 4_400 + 8_800);
+        assert_eq!(p.ceiling_for(8_000), 8_000 + 16_000);
     }
 
     /// Headroom must never push `max_tokens` past the model's own

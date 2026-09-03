@@ -5007,6 +5007,11 @@ async fn capture_agent_self_fact(
     // ([`recall_agent_self`]): `salience high` ∨ `fact_type bio` ⇒ identity
     // ⇒ no user tag; otherwise ⇒ relationship ⇒ tag with the served user.
     //
+    // The partner tag shares `topics` with the two words and is not one of
+    // them: `topic_rank::count_words` leaves every enrolled user's id out of
+    // the ranking, or an agent that talks to one person a lot would see that
+    // person's id take a macrotopic slot from a real subject.
+    //
     // The partner tag is EXCLUSIVE: on an agent self-fact a
     // user-id topic means "an action WITH that user", so any *other*
     // enrolled user's id the classifier put in `topics` (a mere mention —

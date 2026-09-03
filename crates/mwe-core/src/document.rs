@@ -1486,7 +1486,12 @@ pub async fn classify_document(
         summary,
         page_description: plan.page_description.filter(|s| !s.trim().is_empty()),
         style: crate::wiki::PageStyle::parse_lenient(plan.style.as_deref()),
-        topics: plan.topics,
+        // Through the same gate as every other model-written word. The
+        // per-fact path calls it too; this is the one that reaches the
+        // document's ANCHOR, which is a fact like any other and was
+        // reaching `fact_index` with whatever the classify step said —
+        // five words, capitals and a person's name among them.
+        topics: crate::ingest::normalize_fact_topics(&plan.topics),
     })
 }
 

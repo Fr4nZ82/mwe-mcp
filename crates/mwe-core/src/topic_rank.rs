@@ -80,6 +80,10 @@ pub struct WordCount {
 /// Deleted and superseded facts are left out: a word kept aloft by facts the
 /// memory has retired describes what this household USED to talk about, and
 /// the ranking's whole job is to say what it talks about.
+///
+/// So are the two kinds of word in this column that are not topics: the
+/// engine's own prefixes ([`ENGINE_PREFIXES`]) and an agent self-fact's
+/// partner tag, which is an enrolled user's id.
 pub async fn count_words(pool: &SqlitePool) -> Result<Vec<WordCount>> {
     let rows = sqlx::query(
         "SELECT json_each.value AS word, COUNT(*) AS facts
@@ -92,12 +96,27 @@ pub async fn count_words(pool: &SqlitePool) -> Result<Vec<WordCount>> {
     .fetch_all(pool)
     .await?;
 
+    // An agent's self-fact carries the id of the user it acted WITH as a
+    // third word — the partner tag, which `capture_agent_self_fact` appends
+    // and the agent's own recall reads back to scope "your history with this
+    // person". It shares this column and nothing else: a person is not a
+    // topic, the section that defines the two words says so, and a household
+    // whose agent talks to one user a lot would otherwise see that user's id
+    // climb the ranking and take a macrotopic slot from a real subject.
+    let partner_tags: std::collections::BTreeSet<String> = crate::enrollment::list_users(pool)
+        .await
+        .unwrap_or_default()
+        .into_iter()
+        .map(|u| u.user_id)
+        .collect();
+
     let mut out: Vec<WordCount> = rows
         .iter()
         .filter_map(|r| {
             let word: String = r.get("word");
             let facts: i64 = r.get("facts");
-            let keep = !ENGINE_PREFIXES.iter().any(|p| word.starts_with(p));
+            let keep = !ENGINE_PREFIXES.iter().any(|p| word.starts_with(p))
+                && !partner_tags.contains(&word);
             keep.then(|| WordCount {
                 word,
                 facts: usize::try_from(facts).unwrap_or(0),
