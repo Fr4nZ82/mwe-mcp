@@ -1593,6 +1593,42 @@ fn moved_addresses<'a>(
         .collect()
 }
 
+/// Follow a moved page in the **concept registry**, the durable record of
+/// which wiki a slug belongs to.
+///
+/// The registry outlives any one plan: the next full rebuild reads it to
+/// decide where each page goes, so a page whose files and rows moved while
+/// its registry entry stayed behind is put back by that rebuild — it
+/// re-points the rows at the old wiki, renders the page there again, and
+/// leaves the copy in the new wiki with nothing pointing at it. A reader
+/// opening that copy is served regions whose facts live elsewhere, which
+/// the per-page ACL map answers by redacting all of them.
+///
+/// Best-effort like its plan sibling, and loud for the same reason: the
+/// files and the rows have already moved, so a failure here is a seam to
+/// repair, not a reason to undo a move that stands.
+fn follow_page_in_registry(tree: &WikiTree, page_name: &str, dest_wiki_id: &str) {
+    let now = chrono::Utc::now().to_rfc3339();
+    let mut registry = match crate::planner::load_concept_registry(tree, &now) {
+        Ok(r) => r,
+        Err(e) => {
+            tracing::error!(error = %e, "promote: concept registry unreadable — page left pointing at its old wiki");
+            return;
+        },
+    };
+    let slug = plan_slug_of_page(dest_wiki_id, page_name);
+    let Some(entry) = registry.entries.get_mut(&slug) else {
+        return;
+    };
+    if entry.wiki_id == dest_wiki_id {
+        return;
+    }
+    dest_wiki_id.clone_into(&mut entry.wiki_id);
+    if let Err(e) = crate::planner::save_concept_registry(tree, &registry) {
+        tracing::error!(error = %e, slug = %slug, "promote: concept registry not saved — page left pointing at its old wiki");
+    }
+}
+
 /// Re-home one moved page in the persisted compilation plan: its facts
 /// leave the old page node and land on a page node of the destination
 /// wiki. Best-effort, exactly like `paragraph_to_file`'s re-home.
@@ -1690,6 +1726,11 @@ async fn apply_pages_to_subwiki(
     for page in &collected {
         relocate_page(pool, tree, page, &new_wiki_dir, new_wiki_id.as_str()).await?;
         rehome_grouped_page(pool, tree, page, &ctx.source_wiki_id, new_wiki_id.as_str()).await;
+        follow_page_in_registry(
+            tree,
+            &page.rel_in_wiki.to_string_lossy(),
+            new_wiki_id.as_str(),
+        );
         spec_pages.push(GroupedPage {
             page: page.rel_in_wiki.to_string_lossy().into_owned(),
             page_bytes: page.bytes.clone(),
@@ -3663,6 +3704,27 @@ Un'altra pagina: [[bruno/orto]].
         };
         save_plan(&tree, &plan).expect("save plan");
 
+        // The registry entry every real page has: some earlier build wrote it,
+        // naming the wiki the page was in at the time.
+        {
+            let now = "2026-06-08T00:00:00Z";
+            let mut reg = crate::planner::load_concept_registry(&tree, now).expect("registry");
+            for page in ["orto", "potatura"] {
+                reg.entries.insert(
+                    page.to_owned(),
+                    crate::planner::ConceptRegistryEntry {
+                        slug: page.to_owned(),
+                        title: page.to_owned(),
+                        description: String::new(),
+                        style: None,
+                        wiki_id: "alice".to_owned(),
+                        created_at: now.to_owned(),
+                    },
+                );
+            }
+            crate::planner::save_concept_registry(&tree, &reg).expect("seed registry");
+        }
+
         let ctx = json!({
             "variant": "pages_to_subwiki",
             "source_wiki_id": "alice",
@@ -3685,6 +3747,26 @@ Un'altra pagina: [[bruno/orto]].
             assert_eq!(node.wiki_id, "alice-giardino", "{page} followed the move");
             assert_eq!(node.page_path, format!("{page}.md"));
             assert_eq!(node.primary_facts.len(), 1, "{page} kept its fact");
+        }
+
+        // The registry follows too, and it is the record that matters most:
+        // it outlives any one plan, and the next FULL rebuild reads it to
+        // decide which wiki a page belongs to. An entry left naming the parent
+        // is a promotion that rebuild quietly undoes — the rows go back, the
+        // page is rendered at the old address again, and the copy in the new
+        // wiki is left with nothing pointing at it, which a reader is served
+        // as a page of `[redacted]`.
+        let reg = crate::planner::load_concept_registry(&tree, "2026-06-08T00:00:00Z")
+            .expect("registry loads");
+        for page in ["orto", "potatura"] {
+            assert_eq!(
+                reg.entries
+                    .get(page)
+                    .unwrap_or_else(|| panic!("{page} kept its registry entry"))
+                    .wiki_id,
+                "alice-giardino",
+                "{page}'s registry entry still names the wiki it left",
+            );
         }
     }
 

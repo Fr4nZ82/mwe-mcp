@@ -10109,6 +10109,127 @@ mod tests {
         }
     }
 
+    /// The promotion has to survive the compile that follows it in the same
+    /// night.
+    ///
+    /// Its sibling above proves the structural half with no Cronista wired, so
+    /// the cycle ends before anything rewrites a page. A real night has one:
+    /// the compile runs after the promotion, rebuilds each dirty page from the
+    /// plan and repoints its rows at what it wrote. If the plan did not follow
+    /// the pages into the new wiki, that compile puts them back — the wiki
+    /// keeps the files nothing points at, the parent gets the pages again, and
+    /// a reader opening the newborn wiki is served regions whose facts live
+    /// somewhere else, which renders as a page of `[redacted]`.
+    #[tokio::test]
+    async fn a_founded_wiki_survives_the_compile_that_follows_it() {
+        let (dir, mut tree, pool) = setup_workdir().await;
+        write_wiki(&tree, "alice", "Alice", "wiki-user");
+        tree = WikiTree::open(dir.path()).unwrap();
+        for page in ["orto.md", "potatura.md", "compost.md"] {
+            plant_on_page(&tree, &pool, "alice", page, 2, "alice").await;
+        }
+
+        // The registry entry an earlier build left behind, pinning each page
+        // to the parent wiki. This is the state a live memory is always in —
+        // a page exists because some build registered it — and it is what the
+        // next full rebuild reads to decide where the page goes.
+        {
+            let now = chrono::Utc::now().to_rfc3339();
+            let mut reg = crate::planner::load_concept_registry(&tree, &now).unwrap();
+            for page in ["orto", "potatura", "compost"] {
+                reg.entries.insert(
+                    page.to_owned(),
+                    crate::planner::ConceptRegistryEntry {
+                        slug: page.to_owned(),
+                        title: page.to_owned(),
+                        description: String::new(),
+                        style: None,
+                        wiki_id: "alice".to_owned(),
+                        created_at: now.clone(),
+                    },
+                );
+            }
+            crate::planner::save_concept_registry(&tree, &reg).unwrap();
+        }
+
+        // A claim still waiting is what makes the closing pass do its work
+        // instead of returning on an empty queue — and its work is a FULL
+        // rebuild of the plan, which is the pass this test exists to put the
+        // promotion in front of.
+        crate::capture_buffer::buffer_capture(
+            &pool,
+            crate::capture::CaptureRequest {
+                subject_external: None,
+                authored_refs: Vec::new(),
+                wiki_id: crate::types::WikiId::parse("alice").unwrap(),
+                page: None,
+                body: "Alice ha comprato del concime.".to_owned(),
+                subject: "user:alice".parse::<crate::types::Principal>().unwrap(),
+                allow: Vec::new(),
+                sender: None,
+                fact_type: Some("episode".to_owned()),
+                topics: Vec::new(),
+                dedup_threshold: None,
+                valid_from: None,
+                valid_to: None,
+                style: None,
+                page_description: None,
+                salience: None,
+            },
+            None,
+        )
+        .await
+        .unwrap();
+
+        let rev_llm = FakeLlmBackend::new("rev", "{\"same\": false}");
+        let promote_llm = FakeLlmBackend::new(
+            "rp",
+            "{\"groups\":[{\"action\":\"create\",\"slug\":\"giardino\",\"title\":\"Giardino\",\
+             \"style\":\"prosa\",\"description\":\"Everything about the garden\",\
+             \"pages\":[\"orto.md\",\"potatura.md\",\"compost.md\"]}]}",
+        );
+        let cronista_llm = FakeLlmBackend::new(
+            "cro",
+            "{\"mergedBody\":\"Una nota.\",\"description\":\"Le note dell'orto.\",\"style\":\"prosa\"}",
+        );
+        let llms = RemLlms {
+            revisor: &rev_llm,
+            auto_promote: Some(&promote_llm),
+            apply: None,
+            comment_applier: None,
+            cronista: Some(&cronista_llm),
+            navigator: None,
+        };
+        // The whole night, not the cycle alone: the closing pass and the
+        // build that follow it rebuild the plan from the store, and that is
+        // where the promotion has to still be standing.
+        crate::dream::run_full(&pool, &tree, fake_embedder(), &llms, &grouping_policy())
+            .await
+            .unwrap();
+
+        let parent = tree.wikis_dir().join("alice");
+        let born = parent.join("giardino");
+        for page in ["orto.md", "potatura.md", "compost.md"] {
+            assert!(
+                born.join(page).exists(),
+                "{page} is in the wiki it moved to"
+            );
+            assert!(
+                !parent.join(page).exists(),
+                "{page} came back to the parent — the compile undid the promotion",
+            );
+        }
+        let rows = fact_index::find_active_in_wiki(&pool, "alice-giardino")
+            .await
+            .unwrap();
+        assert_eq!(
+            rows.len(),
+            6,
+            "every fact still lives in the new wiki after the compile — a page \
+             whose facts point elsewhere is served as redacted",
+        );
+    }
+
     #[tokio::test]
     async fn page_grouping_founds_a_wiki_from_a_group_of_pages() {
         let (dir, mut tree, pool) = setup_workdir().await;
