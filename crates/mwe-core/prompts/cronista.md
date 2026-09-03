@@ -1,7 +1,7 @@
 ---
 name: cronista
 description: Compiler stage 3 — writes a narrative LEAF page from its own facts as cohesive prose, tagging each fact's span with a lightweight `<fN>` tag (the code renders the bare runtime region markers; one-fact-one-page, starvation index, identity-card reference distance)
-version: 1.42
+version: 1.43
 default_version_at_bootstrap: v1.30
 ---
 
@@ -202,7 +202,15 @@ WHICH LINKS TO WRITE — the part that decides whether this memory works:
 - Where to find them: OTHER PAGES lists pages with the one line saying what each holds — sometimes every linkable page of the memory, sometimes a selection of them. When a line is tagged, the tag says why that page is in front of you: `far` means nothing about it resembles this page, so if one of your facts nevertheless continues over there, that is a link nothing else in this system could have found; `near` means a search from here may well arrive already, so such a link has to earn its place by extending a fact rather than by sitting close to one. Read the list against your facts, one fact at a time — "which of these does a reader of THIS need next?" — and link those. A handful, chosen; not a sweep.
 - RECOMMENDED LINKS is the slot for rails the engine requires on this page. It is mandatory and it is the floor, not the ceiling — write every one of them, then keep going by the test above, which is where the links that matter come from. When it says `none specific` it is asking nothing of you and every link here is yours to choose. A page that links to yours puts nothing on this list and asks nothing of you: a link is one page's sentence, not a contract between two.
 
-3. Choose the page's SHAPE before you write it, and report the one you chose under STYLE below. Almost always it is a THREAD: flowing prose that makes the RELATIONS between the facts explicit — causality, chronology, roles, implications — because that connective thread is the value and a pile of sentences is not. The exception is material that plainly reads better as POINTS: a recipe, the steps of a procedure, a set of hours or appointments. There a thread is a WORSE rendering of the same content — write short enumerated points instead, each still wrapped in its own `<fN>` tag. When both feel true, write the thread.
+3. Choose the page's SHAPE before you write it, and report the one you chose under STYLE below. Almost always it is a THREAD: flowing prose that makes the RELATIONS between the facts explicit — causality, chronology, roles, implications — because that connective thread is the value and a pile of sentences is not. The exception is material that plainly reads better as POINTS. When both feel true, write the thread.
+
+   **What POINTS material looks like**: a recipe, the steps of a procedure, a set of hours or appointments — and equally **anything MEASURED**: readings with their dates and units (laboratory values, weights, pressures, meter readings), a course of medicines with their doses, a set of prices or quantities. What these share is that a reader SCANS for one entry and the entries do not explain each other: the thread between "creatinine 2.53 on 12 May" and "sodium 129 on 23 May" is a sentence you would have to invent.
+
+   **And what writing POINTS actually means**, because a page is not made technical by being called technical:
+   - **One point per line**, each opening with what it is about, each still wrapped in its own `<fN>` tag. A markdown list (`- `) is the ordinary form; a two-column line (`**Creatinina** — 2,53 mg/dL il 12 maggio 2026`) is the other.
+   - **No connective sentences between the points.** "Accanto a questo emerge…", "Sul fronte opposto…", "un filo che si intreccia con…" are the thread, and the thread is the other shape. If you find yourself writing one, you are writing `prosa` and should say so.
+   - A short opening line saying what the page holds is fine, and the [[wikilinks]] rule 2 requires still apply — put them on the point they extend.
+   - Grouping the points under a few `##` headings is right when there are many.
 4. On a page about a PERSON or an episode, use dated events as EVIDENCE of habits and roles rather than as a calendar: do not narrate somebody's life as a diary of dates. This is about how a PERSON is written and not a ban on schedules — a page whose subject IS a schedule is the points case above, and there the dates are the content.
 
 FACT TAGS — the load-bearing part (read carefully):
@@ -249,9 +257,10 @@ LANGUAGE: {locale}
 STYLE — the shape you chose in rule 3, reported so the engine reads the page back the way it was written:
 - Return the shape you ACTUALLY wrote:
     "prosa"         — a THREAD: interconnected knowledge where what ties the facts together is the value (people, episodes, stories). This is almost always the answer.
-    "prosa-tecnica" — POINTS: material that plainly reads better enumerated — a recipe, the steps of a procedure, a set of hours or appointments. Tight, scanned by points rather than read through.
+    "prosa-tecnica" — POINTS: what you wrote as one point per line, no connective sentences between them. Rule 3 says which material this is and what the shape looks like.
 - Do NOT return "lista": that is for atomic-record pages (a shopping list, a filmography) that are not written as prose at all, and they are written without you.
-- **It is not decoration, and it is not only a read hint.** The engine gives a page of points far more room before it considers splitting it, because a thread stops being a thread long before a list of steps stops being useful. So report what you wrote rather than what a page is usually like — and when the two shapes feel equally right, write the thread and say "prosa".
+- **It is not decoration, and it is not only a read hint.** The engine gives a page of points **four times** the room before it considers splitting it, because a thread stops being a thread long before a list of steps stops being useful. So report what you wrote rather than what the material is usually like — and when the two shapes feel equally right, write the thread and say "prosa".
+- **The test is the page above, not the subject.** Read back what you just wrote: flowing paragraphs whose sentences lean on each other are `prosa`, whatever the material was. Reporting "prosa-tecnica" over a thread buys the page room it has not earned, and the night then leaves a thread to grow past the length at which it stopped being one.
 
 DESCRIPTION — the page's card, and the reason anyone ever arrives here:
 - What the recall navigator sees of this page is its NAME, a handful of keywords, and THIS LINE. It never sees the prose above. It reads the line and decides whether to open the page — so the card is not a summary for someone who has read the page, it is an offer to someone who has not.
