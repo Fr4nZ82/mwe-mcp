@@ -3210,7 +3210,10 @@ mod tests {
         );
         let llm = ScriptedLlm::new(&[
             // classify
-            r#"{"disposition":"dossier","format":"prose","title":"Meeting X","page_slug":"meeting_x.md","target_wiki_id":"alice","summary":"Riunione sul viaggio in Norvegia.","page_description":"dossier del meeting","style":"prosa","topics":["meeting"]}"#,
+            // Five words, capitalised, with a person's name among them —
+            // what the classify step actually answers on a real document,
+            // and what the anchor used to carry into `fact_index`.
+            r#"{"disposition":"dossier","format":"prose","title":"Meeting X","page_slug":"meeting_x.md","target_wiki_id":"alice","summary":"Riunione sul viaggio in Norvegia.","page_description":"dossier del meeting","style":"prosa","topics":["meeting","Norvegia","viaggio","budget","Gimli"]}"#,
             // extract (one segment — short document). The extractor decides the
             // fact's subject (`subject_id`) and audience (`allow_ids`) under the
             // ingest rules — here a fact ABOUT Gimli, shared with the team.
@@ -3266,7 +3269,12 @@ mod tests {
         // — what belongs on a page is the page's, never a column repeated on
         // each of its facts (`capture::seed_page_card`).
         assert_eq!(row.style, Some(crate::wiki::PageStyle::Prosa));
-        assert_eq!(row.topics, vec!["meeting".to_owned()]);
+        // The anchor is a fact like any other: exactly the pair, lower-case,
+        // whatever the classify step answered.
+        assert_eq!(
+            row.topics,
+            vec!["meeting".to_owned(), "norvegia".to_owned()]
+        );
         let page = std::fs::read_to_string(wikis.join("alice").join("meeting_x.md")).unwrap();
         assert!(page.contains("Riunione sul viaggio in Norvegia."));
         assert!(
