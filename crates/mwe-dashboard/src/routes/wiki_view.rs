@@ -719,10 +719,15 @@ async fn view(
     let meta = wiki_get_meta(&memory.tree, &wiki_id).map_err(map_wiki_err)?;
 
     let reveal = crate::reveal::active(&state, &user, &jar);
-    // Derived wiki visibility (non-reveal): the wiki surfaces only to a reader
-    // who can read ≥1 fact in it; otherwise 404 — never a wiki-level render of
-    // its prose / page list / structure. An admin with reveal on sees all.
-    if !reveal && !wiki_readable(&state, memory, &wiki_id, &user.sender_id).await? {
+    // A **smart** wiki surfaces only to a reader who can read something in it:
+    // its consumer is its sole writer and the sharing model is that consumer's
+    // to grant. A standard wiki is STRUCTURE and hides from nobody (founder,
+    // 2026-09-04) — what it holds is another matter, and the answer to that is
+    // per fact: every body on this page goes through
+    // `render::render_for_sender`, so a reader who may read none of its facts
+    // is served the page with every region `[redacted]`. An admin with reveal
+    // on sees all.
+    if !reveal && meta.smart && !wiki_readable(&state, memory, &wiki_id, &user.sender_id).await? {
         return Err(DashboardError::NotFound);
     }
     let pages = wiki_list_pages(&memory.tree, &wiki_id).map_err(map_wiki_err)?;
