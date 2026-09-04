@@ -739,15 +739,6 @@ async fn view(
         rendered_index_for(&state, &memory.tree, &wiki_id, &user.sender_id, reveal).await?;
     let link_index = wikilink_index(&memory.tree);
 
-    // The owning principal is derived from topology (the root identity
-    // wiki's type), not declared in `_meta.md`. Show it as the wiki's
-    // owner; a malformed tree (a non-identity root) surfaces the error
-    // text rather than failing the whole page render.
-    let owner_label = memory
-        .tree
-        .resolve_scope_principal(&meta)
-        .map_or_else(|e| format!("(unresolved: {e})"), |p| p.to_string());
-
     let body = html! {
         section.meta {
             dl {
@@ -763,7 +754,13 @@ async fn view(
                 }
                 dt { "slug" } dd { code { (meta.slug.as_str()) } }
                 dt { "facts" } dd { (fact_count) " active" }
-                dt { "owner" } dd { (owner_label) }
+                // No owner row, because a wiki has none. A `wiki-user` is
+                // the place a person's `@profile.md` and `@rules.md` live
+                // and where the facts of their messages land when no other
+                // wiki fits — not something they possess. What may be read,
+                // and who answers for it, is decided on each fact
+                // (`subject_id` / `allow_ids`), never on the shelf it sits
+                // on (founder, 2026-09-04).
             }
         }
 
