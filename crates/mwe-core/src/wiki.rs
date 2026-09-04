@@ -661,7 +661,7 @@ pub struct WikiMeta {
     /// / `summary`), but only as a **hint, not a gate** for homogeneous /
     /// semi-homogeneous wikis — per-page style still wins when a page
     /// deviates (stamped at emergence by
-    /// `promote::apply_pages_to_subwiki`).
+    /// `promote::apply_pages_to_new_wiki`).
     pub smart: bool,
     /// `true` when this `wiki-user` is a **consumer agent's own** identity
     /// wiki — the credential-less system user a standard consumer is bound to

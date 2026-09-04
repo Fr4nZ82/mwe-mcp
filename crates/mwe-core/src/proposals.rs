@@ -29,7 +29,7 @@
 //! ## Act-first structural changes
 //!
 //! The two structural rungs (`wiki_promote` `paragraph_to_file` /
-//! `pages_to_subwiki`) never enter `pending`: REM applies them directly
+//! `pages_to_new_wiki`) never enter `pending`: REM applies them directly
 //! and records a **born-applied** receipt via [`emit_applied_proposal`]
 //! (status `applied` at insert). The receipt is a record of what the
 //! engine did on its own, not an offer to undo it. The pending lifecycle

@@ -2340,7 +2340,7 @@ pub async fn move_region(
 ///
 /// Unlike [`move_region`] (same wiki, `source_path` + offsets only) this
 /// is the only primitive that repoints `wiki_id`. Used by the
-/// `wiki_promote` cross-wiki variants (`pages_to_subwiki`, `fact_refile`)
+/// `wiki_promote` cross-wiki variants (`pages_to_new_wiki`, `fact_refile`)
 /// where a fact relocates from one wiki to another. Pass `None` for the
 /// offsets to land the row as a "pending render" (the orphan sweep
 /// spares NULL-offset rows) during the load-bearing DB-first commit

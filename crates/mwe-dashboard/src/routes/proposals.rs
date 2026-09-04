@@ -275,7 +275,7 @@ fn compose_primer(proposal_id: &str) -> String {
 ///
 /// Only `wiki_promote` paragraph-to-file reads anything: its
 /// `target_page`. Every other kind and variant takes what it needs from
-/// the proposal's own context (`pages_to_subwiki`) or ignores answers
+/// the proposal's own context (`pages_to_new_wiki`) or ignores answers
 /// entirely (`dedup_merge`, where posting *is* the confirmation).
 fn build_answers(form: &ApplyForm) -> Value {
     let target = form.target_page.as_deref().map_or("", str::trim);

@@ -29,19 +29,18 @@
 //! All variants preserve fact ids verbatim — the same marker on disk
 //! and the same row in `fact_index` keep their UUID across the move;
 //! what changes is the row's `source_path` (always) and `wiki_id`
-//! (only for the file → sub-wiki variant).
+//! (only for the variants that move a page to another wiki).
 //!
 //! ## Cross-link rewriting
 //!
 //! Cross-link text needs rewriting when a `wiki_promote` ends up changing
 //! the parts of the path the wikilink syntax depends on. The
 //! paragraph → file variant keeps the wiki id intact, so no
-//! cross-link rewriting is required. The file → sub-wiki variant
-//! changes the wiki id (a new sub-wiki appears under the parent), and
-//! the typical case — promoting `alice/giardinaggio.md` to the new
-//! sub-wiki `alice/giardinaggio/` — would leave every
-//! `[[alice/giardinaggio]]` written across the corpus naming an address
-//! the page no longer answers to.
+//! cross-link rewriting is required. The page-group variants change it —
+//! the typical case is a group of pages founding the wiki `giardinaggio/`
+//! at the root — and that would leave every `[[alice/giardinaggio]]`
+//! written across the corpus naming an address the page no longer answers
+//! to.
 //!
 //! Every variant that moves a page across a wiki line therefore closes
 //! with [`retarget_links_after_move`]: one pass over the corpus swapping
@@ -88,9 +87,10 @@ struct PromoteContext {
 }
 
 /// Answer fields the chassis loads from `structure_proposals.answers`
-/// once the user has confirmed via the dashboard. Future variants will
-/// add a discriminator field (paragraph-to-file vs file-to-sub-wiki);
-/// today only the paragraph-to-file shape is recognised.
+/// once the user has confirmed via the dashboard. Which variant is being
+/// applied is read from `answers.variant`; this shape is the one
+/// `paragraph_to_file` needs, and it is the only variant that reads an
+/// answer at all.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 struct PromoteAnswers {
     /// Page path within the source wiki to append the regions to.
@@ -146,18 +146,15 @@ struct FactRefileSpec {
 }
 
 const VARIANT_PARAGRAPH_TO_FILE: &str = "paragraph_to_file";
-const VARIANT_PAGES_TO_SUBWIKI: &str = "pages_to_subwiki";
-const VARIANT_PAGES_MOVE_WIKI: &str = "pages_move_wiki";
 /// Pages that are one subject area, from ANY wiki, become a wiki of their
-/// own at the root. The whole-memory sibling of [`VARIANT_PAGES_TO_SUBWIKI`],
-/// which only ever tidied one wiki's subtree.
+/// own at the root.
 const VARIANT_PAGES_TO_NEW_WIKI: &str = "pages_to_new_wiki";
 /// Its twin for a destination that already exists.
 const VARIANT_PAGES_INTO_WIKI: &str = "pages_into_wiki";
-/// Pages leaving their wiki for an unrelated one. The sibling of
-/// [`VARIANT_PAGES_MOVE_WIKI`] and deliberately a different verb: regrouping
-/// tidies a wiki's own subtree, this one contradicts the wiki a page was born
-/// in. Same gesture underneath; the two fences are named at [`MoveKind`].
+/// Pages leaving their wiki for an unrelated one, page by page rather than as
+/// a subject area — the page was born in the wrong place, and this is the only
+/// gesture that says so about the page as a whole rather than one fact at a
+/// time.
 const VARIANT_PAGES_REHOME: &str = "pages_rehome";
 const VARIANT_PAGE_MERGE: &str = "page_merge";
 const VARIANT_FACT_REFILE: &str = "fact_refile";
@@ -165,14 +162,13 @@ const VARIANT_VALIDITY_CLOSE: &str = "validity_close";
 const VARIANT_VALIDITY_EDIT: &str = "validity_edit";
 const VARIANT_ACL_CHANGE: &str = "acl_change";
 
-/// `wiki_type` label stamped on the new sub-wiki created by the
-/// file → sub-wiki variant. Since the type registry + templates were
+/// `wiki_type` label stamped on a wiki born out of the grouping pass. Since the type registry + templates were
 /// dropped, this is a bare string label, not a registered type — no
 /// gate reads it semantically (the smart/standard gates moved to
 /// the `_meta` smart flag). A future emergence redesign will
 /// rework how emerged wikis are labelled; until then a generic
 /// placeholder keeps `WikiMeta.wiki_type` populated.
-const DEFAULT_NEW_SUBWIKI_TYPE: &str = "wiki-tech";
+const DEFAULT_EMERGED_WIKI_TYPE: &str = "wiki-tech";
 
 // ---------- Variant routers ----------
 
@@ -195,10 +191,8 @@ pub(crate) async fn apply_wiki_promote(
         .unwrap_or(VARIANT_PARAGRAPH_TO_FILE);
     match variant {
         VARIANT_PARAGRAPH_TO_FILE => apply_paragraph_to_file(pool, tree, context, answers).await,
-        VARIANT_PAGES_TO_SUBWIKI => apply_pages_to_subwiki(pool, tree, context, answers).await,
         VARIANT_PAGES_TO_NEW_WIKI => apply_pages_to_new_wiki(pool, tree, context, answers).await,
         VARIANT_PAGES_INTO_WIKI => apply_pages_into_wiki(pool, tree, context, answers).await,
-        VARIANT_PAGES_MOVE_WIKI => apply_pages_move_wiki(pool, tree, context, answers).await,
         VARIANT_PAGES_REHOME => apply_pages_rehome(pool, tree, context, answers).await,
         VARIANT_PAGE_MERGE => apply_page_merge(pool, tree, context, answers).await,
         // Closures are applied by the ingest orchestrator before the
@@ -1353,8 +1347,6 @@ async fn apply_page_merge(
     Ok(json!(spec))
 }
 
-// ---------- file → sub-wiki variant ----------
-
 // ---------- page group → wiki variants (regrouping) ----------
 
 /// One page carried by a group move: where it lived, its verbatim bytes
@@ -1373,10 +1365,10 @@ struct GroupedPage {
     fact_ids: Vec<String>,
 }
 
-/// `spec` payload for [`apply_pages_to_subwiki`] — a group of sibling
-/// pages that became a new sub-wiki. Read back by
+/// `spec` payload for a group of pages that became a wiki, or joined one.
+/// Read back by
 #[derive(Debug, Clone, Serialize, Deserialize)]
-struct PagesToSubwikiSpec {
+struct GroupedPagesSpec {
     variant: String,
     source_wiki_id: String,
     new_wiki_id: String,
@@ -1384,17 +1376,17 @@ struct PagesToSubwikiSpec {
     pages: Vec<GroupedPage>,
 }
 
-/// `spec` payload for [`apply_pages_move_wiki`] — a group of pages that
-/// moved into a wiki that already existed. Read back by
+/// `spec` payload for a group of pages that left their wiki for another one.
+/// Read back by
 #[derive(Debug, Clone, Serialize, Deserialize)]
-struct PagesMoveWikiSpec {
+struct MovedPagesSpec {
     variant: String,
     source_wiki_id: String,
     target_wiki_id: String,
     pages: Vec<GroupedPage>,
 }
 
-/// The `context` the REM grouping pass writes for both group variants.
+/// The `context` a page re-home writes.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 struct GroupContext {
     /// Wiki the pages currently live in.
@@ -1402,14 +1394,7 @@ struct GroupContext {
     /// Page paths relative to the source wiki, in the order the model
     /// named them.
     pages: Vec<String>,
-    /// `pages_to_subwiki` only — advisory slug for the wiki about to be
-    /// born (re-derived through [`crate::slug::derive_slug`]).
-    #[serde(default)]
-    new_wiki_slug: Option<String>,
-    /// `pages_to_subwiki` only — human-readable title.
-    #[serde(default)]
-    new_wiki_title: Option<String>,
-    /// `pages_move_wiki` only — the wiki that receives the pages.
+    /// The wiki that receives the pages.
     #[serde(default)]
     target_wiki_id: Option<String>,
 }
@@ -1678,130 +1663,6 @@ async fn rehome_grouped_page(
     rehome_rows_with_seed(pool, &page.facts, &seed, &[old_slug], tree).await;
 }
 
-/// Apply a `pages_to_subwiki` promotion: a group of sibling pages that
-/// are one subject area becomes a dedicated sub-wiki, each page carried
-/// over under its own name.
-///
-/// What the narrative compiler owns in the new wiki is the carried pages, so
-/// this handler invents no prose it would then fight over.
-///
-/// The page-count floor is the **caller's** (the REM grouping pass owns
-/// `auto_promote_group_min_pages`); this handler enforces only the
-/// structural invariants — every named page exists, carries mass, and
-/// moves whole.
-async fn apply_pages_to_subwiki(
-    pool: &SqlitePool,
-    tree: &WikiTree,
-    context: &Value,
-    _answers: &Value,
-) -> Result<Value, ApplyError> {
-    let ctx: GroupContext = serde_json::from_value(context.clone())
-        .map_err(|e| ApplyError::InvalidPayload(format!("context: {e}")))?;
-    let parent_wiki_id = WikiId::parse(&ctx.source_wiki_id)
-        .map_err(|e| ApplyError::InvalidPayload(format!("context.source_wiki_id invalid: {e}")))?;
-    let parent_handle = tree
-        .locate(&parent_wiki_id)
-        .map_err(|e| ApplyError::HandlerData(format!("parent wiki not found: {e}")))?;
-
-    let slug_seed = ctx
-        .new_wiki_slug
-        .as_deref()
-        .map(str::trim)
-        .filter(|s| !s.is_empty())
-        .ok_or_else(|| {
-            ApplyError::InvalidPayload("context.new_wiki_slug is required".to_owned())
-        })?;
-    let derived = crate::slug::derive_slug(slug_seed)
-        .map_err(|e| ApplyError::InvalidPayload(format!("new_wiki_slug derive: {e}")))?;
-    let new_slug = WikiSlug::parse(&derived)
-        .map_err(|e| ApplyError::InvalidPayload(format!("new_wiki_slug invalid: {e}")))?;
-    let new_wiki_id = WikiId::child_of(&parent_wiki_id, &new_slug);
-    let new_wiki_dir = parent_handle.abs_dir().join(new_slug.as_str());
-    if new_wiki_dir.exists() {
-        return Err(ApplyError::InvalidPayload(format!(
-            "target sub-wiki path already exists: {}",
-            new_wiki_dir.display(),
-        )));
-    }
-
-    let collected = collect_group_pages(pool, tree, parent_handle.abs_dir(), &ctx.pages).await?;
-
-    let new_title = ctx
-        .new_wiki_title
-        .as_deref()
-        .map(str::trim)
-        .filter(|s| !s.is_empty())
-        .unwrap_or_else(|| new_slug.as_str())
-        .to_owned();
-    let meta = WikiMeta {
-        wiki_id: new_wiki_id.clone(),
-        wiki_type: DEFAULT_NEW_SUBWIKI_TYPE.to_owned(),
-        parent_wiki_id: Some(parent_wiki_id.clone()),
-        slug: new_slug.clone(),
-        title: new_title.clone(),
-        scope: None,
-        shared_with: Vec::new(),
-        style_overrides: serde_yaml::Mapping::new(),
-        keywords: serde_yaml::Mapping::new(),
-        children: Vec::new(),
-        promoted_from: Some(ctx.source_wiki_id.clone()),
-        no_archive: false,
-        smart: false,
-        is_agent: false,
-        created: Some(chrono::Utc::now().to_rfc3339()),
-        updated: None,
-        extra: subwiki_meta_extra(context),
-    };
-    wiki::write_wiki_dir(tree, &meta, /* requires_parent */ false)
-        .map_err(|e| ApplyError::HandlerIo(format!("create sub-wiki {new_wiki_id}: {e}")))?;
-
-    let mut spec_pages = Vec::with_capacity(collected.len());
-    for page in &collected {
-        relocate_page(pool, tree, page, &new_wiki_dir, new_wiki_id.as_str()).await?;
-        rehome_grouped_page(pool, tree, page, &ctx.source_wiki_id, new_wiki_id.as_str()).await;
-        follow_page_in_registry(
-            tree,
-            &page.rel_in_wiki.to_string_lossy(),
-            new_wiki_id.as_str(),
-        );
-        spec_pages.push(GroupedPage {
-            page: page.rel_in_wiki.to_string_lossy().into_owned(),
-            page_bytes: page.bytes.clone(),
-            fact_ids: page.facts.iter().map(|f| f.as_str().to_owned()).collect(),
-        });
-    }
-
-    // One corpus pass for the whole group: every link that still reaches
-    // these pages at the wiki they left is repointed at the newborn one.
-    retarget_links_after_move(
-        pool,
-        tree,
-        &moved_addresses(
-            collected.iter().map(|p| p.rel_in_wiki.as_path()),
-            &ctx.source_wiki_id,
-            new_wiki_id.as_str(),
-        ),
-    )
-    .await;
-    park_wiki_cards_for_recompile(tree, &[&ctx.source_wiki_id, new_wiki_id.as_str()]);
-
-    tracing::info!(
-        parent_wiki_id = parent_wiki_id.as_str(),
-        new_wiki_id = new_wiki_id.as_str(),
-        pages = spec_pages.len(),
-        facts = spec_pages.iter().map(|p| p.fact_ids.len()).sum::<usize>(),
-        "promote: pages_to_subwiki applied",
-    );
-
-    Ok(json!(PagesToSubwikiSpec {
-        variant: VARIANT_PAGES_TO_SUBWIKI.to_owned(),
-        source_wiki_id: ctx.source_wiki_id,
-        new_wiki_id: new_wiki_id.as_str().to_owned(),
-        new_wiki_slug: new_slug.as_str().to_owned(),
-        pages: spec_pages,
-    }))
-}
-
 /// One page named across the whole memory: the wiki it currently sits in,
 /// and its path inside that wiki.
 ///
@@ -1865,7 +1726,7 @@ async fn collect_pages_across_wikis(
 /// Apply a `pages_to_new_wiki` promotion: pages that are one SUBJECT AREA,
 /// wherever they currently sit, become a wiki of their own **at the root**.
 ///
-/// The sibling [`apply_pages_to_subwiki`] tidies one wiki's own subtree; this
+/// The sibling [`collect_group_pages`] takes one wiki's own pages; this
 /// one answers a different question. An argument — gardening, a car, a cat, a
 /// relative the household looks after — is not inside anybody: its pages are
 /// scattered across the shelves where each was first filed, and the wiki that
@@ -1965,7 +1826,7 @@ async fn apply_pages_to_new_wiki(
         "promote: pages_to_new_wiki applied",
     );
 
-    Ok(json!(PagesToSubwikiSpec {
+    Ok(json!(GroupedPagesSpec {
         variant: VARIANT_PAGES_TO_NEW_WIKI.to_owned(),
         source_wiki_id: sources.iter().cloned().collect::<Vec<_>>().join(","),
         new_wiki_id: new_wiki_id.as_str().to_owned(),
@@ -1986,7 +1847,7 @@ async fn apply_pages_to_new_wiki(
 fn root_wiki_meta(wiki_id: &WikiId, slug: &WikiSlug, title: &str, context: &Value) -> WikiMeta {
     WikiMeta {
         wiki_id: wiki_id.clone(),
-        wiki_type: DEFAULT_NEW_SUBWIKI_TYPE.to_owned(),
+        wiki_type: DEFAULT_EMERGED_WIKI_TYPE.to_owned(),
         parent_wiki_id: None,
         slug: slug.clone(),
         title: title.to_owned(),
@@ -2001,15 +1862,15 @@ fn root_wiki_meta(wiki_id: &WikiId, slug: &WikiSlug, title: &str, context: &Valu
         is_agent: false,
         created: Some(chrono::Utc::now().to_rfc3339()),
         updated: None,
-        extra: subwiki_meta_extra(context),
+        extra: newborn_wiki_meta_extra(context),
     }
 }
 
-/// The `_meta.extra` a newborn sub-wiki carries: the grouping-decided
+/// The `_meta.extra` a newborn wiki carries: the grouping-decided
 /// `summary` (the wiki's scope) and dominant `style` default. Both
 /// are hints, not gates — an out-of-palette style leaves the wiki
 /// generic.
-fn subwiki_meta_extra(context: &Value) -> serde_yaml::Mapping {
+fn newborn_wiki_meta_extra(context: &Value) -> serde_yaml::Mapping {
     let mut extra = serde_yaml::Mapping::new();
     if let Some(desc) = context
         .get("new_wiki_description")
@@ -2035,62 +1896,27 @@ fn subwiki_meta_extra(context: &Value) -> serde_yaml::Mapping {
     extra
 }
 
-/// Apply a `pages_move_wiki` promotion: pages that belong to a wiki
-/// which **already exists** move into it.
+/// Apply a `pages_rehome` promotion: pages that were born in the wrong wiki
+/// move to the one they belong to.
 ///
-/// No page-count floor applies — the home is already there, so there is
-/// nothing to justify; a single stray page belongs inside just as much
-/// as nine do. The target must be an existing **child** of the source
-/// wiki, and that is a rule about which GESTURE this is, not about who owns
-/// what: tidying a shelf and moving a page to another shelf are two
-/// different acts, and each has its own variant. A wiki is structure, not
-/// possession — nothing here defends a property, because a wiki has none:
-/// what may be read and who answers for it are the fact's own `subject_id`
-/// and `allow_ids`, and every move carries both untouched.
-/// Which of the two page moves is being applied — and the whole of the
-/// difference between them.
-///
-/// The gesture is identical: the files move, the rows re-home, the links
-/// retarget, both wikis' cards are parked for a recompile. What differs is the
-/// destination each one may name, and that is a claim about MEANING rather
-/// than mechanics — which is why it is an enum and not a boolean.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum MoveKind {
-    /// Regrouping: the destination must be a **child** of the source — this
-    /// is the tidying gesture, and tidying stays inside the shelf it tidies.
-    /// A page that belongs on a different shelf entirely is the other
-    /// variant's job, not a violation of anybody's property.
-    IntoOwnSubtree,
-    /// Re-homing: the destination is any other standard wiki. The page was
-    /// born in the wrong place — a new page joins the wiki of whichever of
-    /// its facts was listed first — and this is the only gesture that can say
-    /// so about the page as a whole rather than one fact at a time.
-    IntoAnotherWiki,
-}
-
-async fn apply_pages_move_wiki(
-    pool: &SqlitePool,
-    tree: &WikiTree,
-    context: &Value,
-    _answers: &Value,
-) -> Result<Value, ApplyError> {
-    move_pages(pool, tree, context, MoveKind::IntoOwnSubtree).await
-}
-
+/// No page-count floor applies — this is a repair, not an emergence, and one
+/// misplaced page is as wrong as nine. The target is any standard wiki other
+/// than the source. A wiki is structure, not possession, so nothing here
+/// defends a property: what may be read and who answers for it are the fact's
+/// own `subject_id` and `allow_ids`, and the move carries both untouched.
 async fn apply_pages_rehome(
     pool: &SqlitePool,
     tree: &WikiTree,
     context: &Value,
     _answers: &Value,
 ) -> Result<Value, ApplyError> {
-    move_pages(pool, tree, context, MoveKind::IntoAnotherWiki).await
+    move_pages(pool, tree, context).await
 }
 
 async fn move_pages(
     pool: &SqlitePool,
     tree: &WikiTree,
     context: &Value,
-    kind: MoveKind,
 ) -> Result<Value, ApplyError> {
     let ctx: GroupContext = serde_json::from_value(context.clone())
         .map_err(|e| ApplyError::InvalidPayload(format!("context: {e}")))?;
@@ -2113,28 +1939,16 @@ async fn move_pages(
     let target_handle = tree
         .locate(&target_wiki_id)
         .map_err(|e| ApplyError::HandlerData(format!("target wiki not found: {e}")))?;
-    match kind {
-        MoveKind::IntoOwnSubtree => {
-            if target_handle.meta().parent_wiki_id.as_ref() != Some(&source_wiki_id) {
-                return Err(ApplyError::InvalidPayload(format!(
-                    "{target_wiki_id} is not a child of {source_wiki_id} — a group move only \
-                     tidies one wiki's own subtree; moving a page to another wiki is a re-home",
-                )));
-            }
-        },
-        MoveKind::IntoAnotherWiki => {
-            if target_wiki_id == source_wiki_id {
-                return Err(ApplyError::InvalidPayload(format!(
-                    "{target_wiki_id} is the page's own wiki — a re-home names a different one",
-                )));
-            }
-            if target_handle.meta().smart {
-                return Err(ApplyError::InvalidPayload(format!(
-                    "{target_wiki_id} is a smart wiki — its pages are its consumer's, written \
-                     verbatim, and the compiler does not own them",
-                )));
-            }
-        },
+    if target_wiki_id == source_wiki_id {
+        return Err(ApplyError::InvalidPayload(format!(
+            "{target_wiki_id} is the page's own wiki — a re-home names a different one",
+        )));
+    }
+    if target_handle.meta().smart {
+        return Err(ApplyError::InvalidPayload(format!(
+            "{target_wiki_id} is a smart wiki — its pages are its consumer's, written verbatim, \
+             and the compiler does not own them",
+        )));
     }
 
     let collected = collect_group_pages(pool, tree, source_handle.abs_dir(), &ctx.pages).await?;
@@ -2179,15 +1993,11 @@ async fn move_pages(
         source_wiki_id = source_wiki_id.as_str(),
         target_wiki_id = target_wiki_id.as_str(),
         pages = spec_pages.len(),
-        kind = ?kind,
-        "promote: page move applied",
+        "promote: page re-home applied",
     );
 
-    Ok(json!(PagesMoveWikiSpec {
-        variant: match kind {
-            MoveKind::IntoOwnSubtree => VARIANT_PAGES_MOVE_WIKI.to_owned(),
-            MoveKind::IntoAnotherWiki => VARIANT_PAGES_REHOME.to_owned(),
-        },
+    Ok(json!(MovedPagesSpec {
+        variant: VARIANT_PAGES_REHOME.to_owned(),
         source_wiki_id: ctx.source_wiki_id,
         target_wiki_id: target_wiki_id.as_str().to_owned(),
         pages: spec_pages,
@@ -2335,7 +2145,7 @@ pub struct DirectApplied {
     /// the dashboard and the notice event point at.
     pub proposal_id: String,
     /// Spec returned by the apply handler (the `PromoteSpec` /
-    /// `PagesToSubwikiSpec` shape) — carries the concrete target
+    /// `GroupedPagesSpec` shape) — carries the concrete target
     /// (`target_page` / `new_wiki_id`).
     pub spec: Value,
 }
@@ -3147,74 +2957,13 @@ pub async fn emit_acl_change_receipt(
 /// them.
 #[derive(Debug, Clone, Default)]
 pub struct PageGroupHints {
-    /// Pages in the group — the trigger for a `pages_to_subwiki` is the
-    /// group's **size**, never one page's mass.
+    /// Pages in the group — the trigger for a birth is the group's
+    /// **size**, never one page's mass.
     pub group_pages: Option<usize>,
     /// Top-level pages the source wiki held when the group was cut.
     pub source_wiki_pages: Option<usize>,
     /// Free-form reason ("rem grouping: 13 of 35 pages of famiglia").
     pub reason: Option<String>,
-}
-
-/// Act-first entry point for the REM grouping pass: a group of pages
-/// becomes a **new** sub-wiki, the change applies in-cycle, and a
-/// born-applied receipt records the change.
-///
-/// # Errors
-///
-/// Apply failures surface as [`DirectPromoteError::Apply`]; receipt
-/// insertion as [`DirectPromoteError::Proposals`].
-#[allow(
-    clippy::too_many_arguments,
-    reason = "carries the newborn wiki's identity + _meta defaults; a struct would just rename the same fields"
-)]
-pub async fn apply_pages_to_subwiki_direct(
-    pool: &SqlitePool,
-    tree: &WikiTree,
-    source_wiki_id: &str,
-    pages: &[String],
-    new_wiki_slug: &str,
-    new_wiki_title: Option<&str>,
-    style: Option<&str>,
-    description: Option<&str>,
-    hints: &PageGroupHints,
-    recipient: Option<String>,
-) -> Result<DirectApplied, DirectPromoteError> {
-    let context = json!({
-        "variant": VARIANT_PAGES_TO_SUBWIKI,
-        "source_wiki_id": source_wiki_id,
-        "pages": pages,
-        "new_wiki_slug": new_wiki_slug,
-        "new_wiki_title": new_wiki_title,
-        "new_wiki_style": style,
-        "new_wiki_description": description,
-        "group_pages": hints.group_pages,
-        "source_wiki_pages": hints.source_wiki_pages,
-        "reason": hints.reason,
-    });
-    let answers = json!({ "variant": VARIANT_PAGES_TO_SUBWIKI });
-    let spec = apply_pages_to_subwiki(pool, tree, &context, &answers).await?;
-    let questions = json!([{
-        "id": "variant",
-        "text": format!("Group {n} pages into a new sub-wiki?", n = pages.len()),
-        "options": [{
-            "id": VARIANT_PAGES_TO_SUBWIKI,
-            "label": format!("Create sub-wiki `{new_wiki_slug}` from {n} pages", n = pages.len()),
-            "value": VARIANT_PAGES_TO_SUBWIKI,
-            "recommended": true,
-        }]
-    }]);
-    let receipt = proposals::emit_applied_proposal(
-        pool,
-        EmitParams::new(kind::WIKI_PROMOTE, context, questions).with_recipient(recipient),
-        spec.clone(),
-        None,
-    )
-    .await?;
-    Ok(DirectApplied {
-        proposal_id: receipt.proposal_id,
-        spec,
-    })
 }
 
 /// Act-first entry point for the whole-memory grouping: pages that are one
@@ -3403,7 +3152,7 @@ async fn apply_pages_into_wiki(
         "promote: pages_into_wiki applied",
     );
 
-    Ok(json!(PagesToSubwikiSpec {
+    Ok(json!(GroupedPagesSpec {
         variant: VARIANT_PAGES_INTO_WIKI.to_owned(),
         source_wiki_id: sources.iter().cloned().collect::<Vec<_>>().join(","),
         new_wiki_id: target_id.as_str().to_owned(),
@@ -3415,8 +3164,8 @@ async fn apply_pages_into_wiki(
 /// Act-first entry point for the structural review: one wiki's pages move to
 /// **another wiki**, because that is where they belong.
 ///
-/// The sibling of [`apply_pages_move_wiki_direct`], and the only gesture in
-/// the engine that can contradict a page's birth wiki wholesale. Everything
+/// The only gesture in the engine that can contradict a page's birth wiki
+/// wholesale. Everything
 /// else that repairs placement works one fact at a time — which is the wrong
 /// grain for the mistake being repaired: a page lands in the wrong wiki as a
 /// single decision (a new page joins the wiki of whichever of its facts was
@@ -3462,56 +3211,6 @@ pub async fn apply_pages_rehome_direct(
                 n = pages.len()
             ),
             "value": VARIANT_PAGES_REHOME,
-            "recommended": true,
-        }]
-    }]);
-    let receipt = proposals::emit_applied_proposal(
-        pool,
-        EmitParams::new(kind::WIKI_PROMOTE, context, questions).with_recipient(recipient),
-        spec.clone(),
-        None,
-    )
-    .await?;
-    Ok(DirectApplied {
-        proposal_id: receipt.proposal_id,
-        spec,
-    })
-}
-
-/// Act-first entry point for the REM grouping pass: pages move into a
-/// sub-wiki that already exists.
-///
-/// # Errors
-///
-/// Apply failures surface as [`DirectPromoteError::Apply`]; receipt
-/// insertion as [`DirectPromoteError::Proposals`].
-pub async fn apply_pages_move_wiki_direct(
-    pool: &SqlitePool,
-    tree: &WikiTree,
-    source_wiki_id: &str,
-    target_wiki_id: &str,
-    pages: &[String],
-    hints: &PageGroupHints,
-    recipient: Option<String>,
-) -> Result<DirectApplied, DirectPromoteError> {
-    let context = json!({
-        "variant": VARIANT_PAGES_MOVE_WIKI,
-        "source_wiki_id": source_wiki_id,
-        "target_wiki_id": target_wiki_id,
-        "pages": pages,
-        "group_pages": hints.group_pages,
-        "source_wiki_pages": hints.source_wiki_pages,
-        "reason": hints.reason,
-    });
-    let answers = json!({ "variant": VARIANT_PAGES_MOVE_WIKI });
-    let spec = apply_pages_move_wiki(pool, tree, &context, &answers).await?;
-    let questions = json!([{
-        "id": "variant",
-        "text": format!("Move {n} pages into {target_wiki_id}?", n = pages.len()),
-        "options": [{
-            "id": VARIANT_PAGES_MOVE_WIKI,
-            "label": format!("Move {n} pages into `{target_wiki_id}`", n = pages.len()),
-            "value": VARIANT_PAGES_MOVE_WIKI,
             "recommended": true,
         }]
     }]);
@@ -3979,7 +3678,7 @@ mod tests {
         }
     }
 
-    // ---- file → sub-wiki variant ----
+    // ---- page group → wiki variants ----
 
     #[tokio::test]
     async fn fact_refile_refuses_same_wiki() {
@@ -4110,21 +3809,18 @@ Un'altra pagina: [[bruno/orto]].
             .unwrap();
 
         let ctx = json!({
-            "variant": "pages_to_subwiki",
-            "source_wiki_id": "alice",
-            "pages": ["orto.md"],
+            "variant": "pages_to_new_wiki",
+            "pages": ["alice/orto.md"],
             "new_wiki_slug": "orto",
             "new_wiki_title": "Orto",
-            "new_wiki_style": "prosa",
-            "new_wiki_description": "L'orto",
         });
-        apply_wiki_promote(&pool, &tree, &ctx, &json!({"variant": "pages_to_subwiki"}))
+        apply_wiki_promote(&pool, &tree, &ctx, &json!({"variant": "pages_to_new_wiki"}))
             .await
             .expect("apply");
 
         let after = std::fs::read_to_string(&diario_abs).unwrap();
         assert!(
-            after.contains("[[alice-orto/orto]]"),
+            after.contains("[[orto/orto]]"),
             "the rail follows the page: {after}"
         );
         assert!(
@@ -4176,15 +3872,12 @@ Un'altra pagina: [[bruno/orto]].
         save_plan(&tree, &plan).expect("save plan");
 
         let ctx = json!({
-            "variant": "pages_to_subwiki",
-            "source_wiki_id": "alice",
-            "pages": ["orto.md"],
+            "variant": "pages_to_new_wiki",
+            "pages": ["alice/orto.md"],
             "new_wiki_slug": "orto",
             "new_wiki_title": "Orto",
-            "new_wiki_style": "prosa",
-            "new_wiki_description": "L'orto",
         });
-        apply_wiki_promote(&pool, &tree, &ctx, &json!({"variant": "pages_to_subwiki"}))
+        apply_wiki_promote(&pool, &tree, &ctx, &json!({"variant": "pages_to_new_wiki"}))
             .await
             .expect("apply");
 
@@ -4195,20 +3888,20 @@ Un'altra pagina: [[bruno/orto]].
             after.force_dirty
         );
         assert!(
-            after.force_dirty.contains(&slugify("alice-orto")),
+            after.force_dirty.contains(&slugify("orto")),
             "and so does the one it joined: {:?}",
             after.force_dirty
         );
     }
 
     /// The live emergence and the plan. Each carried page keeps its own
-    /// plan slug — a slug is the page stem — so the node the parent held
+    /// plan slug — a slug is the page stem — so the node its old wiki held
     /// must **follow the page into the new wiki**, not be dropped as a
     /// husk. Dropped, the group's facts would have left the plan
     /// altogether, and here that is every page it has: the emptied plan
     /// reads back as no plan at all.
     #[tokio::test]
-    async fn pages_to_subwiki_moves_each_page_node_into_the_new_wiki() {
+    async fn a_born_wiki_takes_each_page_node_with_it() {
         use crate::planner::{
             CompilationPlan, FactForPage, PagePlan, load_previous_plan, save_plan,
         };
@@ -4273,13 +3966,12 @@ Un'altra pagina: [[bruno/orto]].
         }
 
         let ctx = json!({
-            "variant": "pages_to_subwiki",
-            "source_wiki_id": "alice",
-            "pages": ["orto.md", "potatura.md"],
+            "variant": "pages_to_new_wiki",
+            "pages": ["alice/orto.md", "alice/potatura.md"],
             "new_wiki_slug": "giardino",
             "new_wiki_title": "Giardino",
         });
-        apply_wiki_promote(&pool, &tree, &ctx, &json!({"variant": "pages_to_subwiki"}))
+        apply_wiki_promote(&pool, &tree, &ctx, &json!({"variant": "pages_to_new_wiki"}))
             .await
             .expect("apply");
 
@@ -4291,15 +3983,15 @@ Un'altra pagina: [[bruno/orto]].
                 .pages
                 .get(page)
                 .unwrap_or_else(|| panic!("{page} kept its plan node"));
-            assert_eq!(node.wiki_id, "alice-giardino", "{page} followed the move");
+            assert_eq!(node.wiki_id, "giardino", "{page} followed the move");
             assert_eq!(node.page_path, format!("{page}.md"));
             assert_eq!(node.primary_facts.len(), 1, "{page} kept its fact");
         }
 
         // The registry follows too, and it is the record that matters most:
         // it outlives any one plan, and the next FULL rebuild reads it to
-        // decide which wiki a page belongs to. An entry left naming the parent
-        // is a promotion that rebuild quietly undoes — the rows go back, the
+        // decide which wiki a page belongs to. An entry left naming the wiki
+        // the page came from is a promotion that rebuild quietly undoes — the rows go back, the
         // page is rendered at the old address again, and the copy in the new
         // wiki is left with nothing pointing at it, which a reader is served
         // as a page of `[redacted]`.
@@ -4311,37 +4003,9 @@ Un'altra pagina: [[bruno/orto]].
                     .get(page)
                     .unwrap_or_else(|| panic!("{page} kept its registry entry"))
                     .wiki_id,
-                "alice-giardino",
+                "giardino",
                 "{page}'s registry entry still names the wiki it left",
             );
         }
-    }
-
-    #[tokio::test]
-    async fn pages_move_wiki_refuses_a_target_outside_the_subtree() {
-        let (_dir, tree, pool) = setup().await;
-        seed_wiki(&tree, "bob");
-        let tree = WikiTree::open(tree.workdir()).unwrap();
-        let emb = embedder();
-        capture_one(&tree, &pool, emb, "orto.md", "note on orto").await;
-
-        // Regrouping is the TIDYING gesture and stays inside the subtree it
-        // tidies. Nothing here is about property: a page that belongs on a
-        // different shelf moves with the re-home variant, which names any
-        // standard wiki and carries each fact's ACL across untouched.
-        let ctx = json!({
-            "variant": "pages_move_wiki",
-            "source_wiki_id": "alice",
-            "target_wiki_id": "bob",
-            "pages": ["orto.md"],
-        });
-        let err = apply_wiki_promote(&pool, &tree, &ctx, &json!({"variant": "pages_move_wiki"}))
-            .await
-            .unwrap_err();
-        assert!(
-            matches!(err, ApplyError::InvalidPayload(ref m) if m.contains("is not a child of")),
-            "unexpected error: {err:?}",
-        );
-        assert!(tree.wikis_dir().join("alice").join("orto.md").exists());
     }
 }
