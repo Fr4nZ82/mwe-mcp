@@ -788,6 +788,13 @@ async fn cmd_rem_run_cycle(workdir: &Path, config: &Config) -> Result<()> {
         .await
         .context("full dream (cycle + compile)")?;
 
+    print_cycle_report(&report);
+    drop(lock);
+    Ok(())
+}
+
+/// The run-cycle summary, printed for a human reading a terminal.
+fn print_cycle_report(report: &mwe_core::dream::FullOutcome) {
     println!("rem cycle      : {}", report.cycle.cycle_id);
     println!(
         "duration       : {} ms",
@@ -809,6 +816,18 @@ async fn cmd_rem_run_cycle(workdir: &Path, config: &Config) -> Result<()> {
         report.cycle.auto_promote.candidates_examined,
         report.cycle.auto_promote.applied.len(),
     );
+    // The grouping asks its own questions, and a refused birth leaves no
+    // receipt and no verdict memo — without these two lines a pass that asked
+    // twice and failed twice reads exactly like one that never ran. The errors
+    // are the whole sub-job's, splits included.
+    println!(
+        "grouping       : asked={} applied={}",
+        report.cycle.auto_promote.grouping_wikis_examined,
+        report.cycle.auto_promote.grouping_groups_applied,
+    );
+    for e in &report.cycle.auto_promote.errors {
+        println!("                 ! {e}");
+    }
     println!(
         "accorpamento   : judged={} merged={}",
         report.cycle.topic_merge.examined,
@@ -854,8 +873,6 @@ async fn cmd_rem_run_cycle(workdir: &Path, config: &Config) -> Result<()> {
             report.compile.rails_appended.join("; ")
         );
     }
-    drop(lock);
-    Ok(())
 }
 
 /// Run one light dream from the CLI: promote buffered captures into
