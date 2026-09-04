@@ -30,11 +30,12 @@
 //! parseable JSON) gets **one retry** (fresh call, strict-JSON reminder in the
 //! user message). If the retry is also unusable the page falls back to a
 //! **guard-only rewrite** ([`compile_degraded_leaf`]): the existing prose is
-//! kept byte-for-byte and every planned fact still missing a marker on disk is
-//! appended as its own marked region — the standing forward-completeness-guard
-//! shape — so every fact reaches disk with a marker (recall/redaction work,
-//! offsets stamped) while the full rewrite waits for the next successful
-//! compile. The degraded path **never invents content** (only canonical claim
+//! kept, minus the regions of facts that have left this page, and every
+//! planned fact still missing a marker on disk is appended as its own marked
+//! region — the standing forward-completeness-guard shape — so the markers on
+//! the page are exactly the facts the index puts there (recall/redaction work,
+//! offsets stamped, and the page stays movable) while the full rewrite waits
+//! for the next successful compile. The degraded path **never invents content** (only canonical claim
 //! text is written) and is **idempotent** (facts appended once carry markers,
 //! so a re-run appends nothing). The outcome is recorded distinctly
 //! ([`CompileReport::degraded`]), the page is parked on the persisted plan's
@@ -1252,12 +1253,63 @@ async fn cronista_attempt(
     }
 }
 
+/// Drop every marked region whose fact is not among `planned`, returning the
+/// remaining text and how many were cut.
+///
+/// A region carries one fact's prose between its markers, so cutting it takes
+/// the fact's bytes and nothing else. Prose outside the markers — the
+/// scaffolding the rest of the page is read against — is untouched.
+fn cut_departed_regions(
+    existing: &str,
+    planned: &std::collections::BTreeSet<&str>,
+) -> (String, usize) {
+    let mut drop_spans: Vec<(usize, usize)> = Vec::new();
+    for ev in parser::parse(existing).events {
+        let ParseEvent::Region {
+            start, end, attrs, ..
+        } = ev
+        else {
+            continue;
+        };
+        // A region with no `fact_id` belongs to no fact and is left alone.
+        if let Some(fid) = attrs.fact_id
+            && !planned.contains(fid.as_str())
+        {
+            drop_spans.push((start, end));
+        }
+    }
+    if drop_spans.is_empty() {
+        return (existing.to_owned(), 0);
+    }
+    let cut = drop_spans.len();
+    let mut out = String::with_capacity(existing.len());
+    let mut cursor = 0usize;
+    for (start, end) in drop_spans {
+        out.push_str(&existing[cursor..start]);
+        cursor = end;
+    }
+    out.push_str(&existing[cursor..]);
+    // Cutting a region leaves the blank lines that framed it back to back.
+    while out.contains("\n\n\n") {
+        out = out.replace("\n\n\n", "\n\n");
+    }
+    (out, cut)
+}
+
 /// The **guard-only rewrite** — the degraded fallback when the Cronista
 /// failed twice. Never invents content and leaves the page better than
 /// frozen:
 ///
-/// - the existing on-disk page (prose, frontmatter, markers) is kept
-///   **byte-for-byte**;
+/// - the existing on-disk page (prose, frontmatter, markers) is kept as it
+///   is, except for the regions of facts that have **left this page**: those
+///   are cut. A fact that moved away keeps its region here otherwise, and
+///   nothing ever removes it — the clean path rewrites the page whole, and
+///   this path is the only other writer. The page then has more markers than
+///   the index has rows for it, which every structural move refuses
+///   (`marker set diverged from fact_index`), so the page can never be
+///   moved again and only a successful Cronista can free it. Cutting the
+///   region invents nothing: the bytes belong to the fact, and the fact is
+///   somewhere else;
 /// - every planned fact with **no marker on the page yet** is appended as
 ///   its own marked region (canonical claim text, the exact shape of the
 ///   forward completeness guard), so every fact reaches disk with a marker
@@ -1283,8 +1335,16 @@ async fn compile_degraded_leaf(
 ) -> Result<PageOutcome> {
     let handle = tree.locate(&parse_wiki_id(&page.wiki_id))?;
     let page_path = std::path::Path::new(&page.page_path);
-    let existing = handle.read_page(page_path).unwrap_or_default();
+    let on_file = handle.read_page(page_path).unwrap_or_default();
 
+    let planned: std::collections::BTreeSet<&str> = page
+        .primary_facts
+        .iter()
+        .map(|f| f.fact_id.as_str())
+        .collect();
+    // Cut the regions of facts this page no longer holds, then read what is
+    // left: keeping them is what strands the page (see the doc above).
+    let (existing, cut) = cut_departed_regions(&on_file, &planned);
     // Which planned facts already have a marker on the page (a prior
     // compile's region, or a prior degraded append).
     let on_disk: std::collections::BTreeSet<String> = parser::parse(&existing)
@@ -1322,8 +1382,8 @@ async fn compile_degraded_leaf(
                 now,
             )
         } else {
-            // Append-only: existing prose and frontmatter stay
-            // byte-for-byte (the next clean compile refreshes the testata).
+            // Append: the prose that is left and the frontmatter stay as
+            // they are (the next clean compile refreshes the testata).
             let mut out = existing.trim_end().to_owned();
             out.push_str("\n\n");
             out.push_str(&regions);
@@ -1332,7 +1392,9 @@ async fn compile_degraded_leaf(
         }
     };
 
-    if contents != existing {
+    // Against what is ON DISK, not against the cut text: a pass that only
+    // cut a departed region still has a page to write.
+    if contents != on_file {
         handle.write_page(page_path, &contents)?;
     }
 
@@ -1350,11 +1412,15 @@ async fn compile_degraded_leaf(
     tracing::warn!(
         slug = %page.slug,
         appended,
+        cut,
         reason,
-        "compiler: degraded guard-only rewrite (existing prose kept, missing facts appended)"
+        "compiler: degraded guard-only rewrite (departed regions cut, missing facts appended)"
     );
     Ok(PageOutcome::Degraded {
-        reason: format!("{reason} — degraded append of {appended} missing fact region(s)"),
+        reason: format!(
+            "{reason} — degraded rewrite: {cut} departed region(s) cut, {appended} missing fact \
+             region(s) appended"
+        ),
     })
 }
 
@@ -5601,6 +5667,84 @@ mod tests {
             persisted.force_dirty.contains(&"cucina".to_owned()),
             "degraded page parked force_dirty: {:?}",
             persisted.force_dirty
+        );
+        drop(dir);
+    }
+
+    /// A fact that left the page takes its region with it, even when the
+    /// Cronista is down.
+    ///
+    /// Left behind, the marker outlives the row that pointed at it: the page
+    /// then carries more markers than the index has rows for it, and every
+    /// structural move refuses it (`marker set diverged from fact_index`).
+    /// Since only a successful Cronista rewrites the page whole, a page in
+    /// that state is stranded for as long as the failure lasts — and the
+    /// grouping that would have carried it into a new wiki is refused every
+    /// night.
+    #[tokio::test]
+    async fn a_degraded_rewrite_cuts_the_regions_of_facts_that_left() {
+        let (dir, tree, pool) = setup().await;
+        let stays = ffp(0x41, "Alice loves pasta");
+        let leaves = ffp(0x42, "Alice bought a bicycle");
+        plant_fact(&pool, &stays.fact_id, "user:alice", "Alice loves pasta").await;
+        plant_fact(
+            &pool,
+            &leaves.fact_id,
+            "user:alice",
+            "Alice bought a bicycle",
+        )
+        .await;
+        let cronista = FakeLlmBackend::new("fake", "NOT JSON");
+
+        // Both facts on the page, written by a degraded pass (the Cronista is
+        // down from the start): two markers on disk.
+        let mut plan = concept_leaf_plan(stays.clone(), "cucina", None);
+        plan.pages
+            .get_mut("cucina")
+            .unwrap()
+            .primary_facts
+            .push(leaves.clone());
+        compile_dirty_pages(
+            &pool,
+            &tree,
+            &plan,
+            &cronista,
+            Cadence::Light,
+            "2026-07-02T00:00:00Z",
+        )
+        .await
+        .expect("compile 1");
+        let page = dir.path().join("wikis/alice/cucina.md");
+        let after_1 = std::fs::read_to_string(&page).unwrap();
+        assert_eq!(after_1.matches(&format!("f={}", leaves.fact_id)).count(), 1);
+
+        // The second fact is refiled elsewhere: the plan no longer gives it to
+        // this page. The Cronista is still down.
+        let plan = concept_leaf_plan(stays.clone(), "cucina", None);
+        compile_dirty_pages(
+            &pool,
+            &tree,
+            &plan,
+            &cronista,
+            Cadence::Light,
+            "2026-07-02T01:00:00Z",
+        )
+        .await
+        .expect("compile 2");
+        let after_2 = std::fs::read_to_string(&page).unwrap();
+        assert_eq!(
+            after_2.matches(&format!("f={}", leaves.fact_id)).count(),
+            0,
+            "the departed fact's region is gone: {after_2}"
+        );
+        assert!(
+            !after_2.contains("bicycle"),
+            "and so is the prose that carried it: {after_2}"
+        );
+        assert_eq!(
+            after_2.matches(&format!("f={}", stays.fact_id)).count(),
+            1,
+            "the fact that stayed keeps its one region: {after_2}"
         );
         drop(dir);
     }
