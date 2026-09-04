@@ -3395,7 +3395,7 @@ async fn run_page_grouping_for_wiki(
         // the pass never reached this wiki at all — three different answers
         // to "why did no wiki emerge", and the operator has only the one
         // number.
-        tracing::debug!(
+        tracing::info!(
             wiki_id = d.meta.wiki_id.as_str(),
             candidates = candidates.len(),
             floor = policy.auto_promote_group_min_pages,
@@ -3424,7 +3424,7 @@ async fn run_page_grouping_for_wiki(
     // the moment the inventory changes (a page added, split, renamed).
     let memo_key = rem_verdicts::key(llm.model_id(), &prompt);
     if rem_verdicts::is_settled(pool, rem_verdicts::kind::PAGE_GROUPING, &memo_key).await? {
-        tracing::debug!(
+        tracing::info!(
             wiki_id = d.meta.wiki_id.as_str(),
             candidates = candidates.len(),
             "rem grouping: this inventory was already judged — not asked again"
