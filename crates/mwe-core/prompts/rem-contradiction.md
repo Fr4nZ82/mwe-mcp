@@ -1,7 +1,7 @@
 ---
 name: rem-contradiction
 description: REM contradiction sweep — given one freshly contradicted/superseded fact (and its successor, when any) plus a numbered list of OPEN candidate facts from this wiki family (the top-level wiki and every wiki nested under it), decide which candidates fall with it (the satellites of a cancelled event); strict JSON out; the cluster half of the temporal-validity model
-version: 1.3
+version: 1.4
 default_version_at_bootstrap: v1.3
 ---
 
@@ -26,7 +26,7 @@ The confirmation prompt for the REM **contradiction sweep** sub-job
   `{subject_note}` — empty for an ordinary family; on an **agent's own**
   family (the scope root carries the `is_agent` marker) it fences the
   satellites to the same relationship thread as the seed. Resolved per
-  family by `agent_families`, never per case.
+  wiki by `agent_wikis`, never per case.
 - **Output**: one strict JSON object, parsed by the first-balanced-`{}`
   scanner. Empty `invalidated` = the cluster ends at the seed.
 - **Runtime parameters**: temperature 0.1, max_tokens 400.

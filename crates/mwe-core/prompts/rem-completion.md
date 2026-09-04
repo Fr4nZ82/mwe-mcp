@@ -1,7 +1,7 @@
 ---
 name: rem-completion
 description: REM completion sweep — given one freshly captured EVIDENCE fact and a numbered list of OPEN candidate items from this wiki family (the top-level wiki and every wiki nested under it), decide which candidates the evidence closes and how — completed (the intention was spent) or retracted (it was abandoned); strict JSON out; the safety net behind the ingest closure verb
-version: 1.4
+version: 1.5
 default_version_at_bootstrap: v1.3
 ---
 
@@ -25,7 +25,7 @@ The confirmation prompt for the REM **completion sweep** sub-job
   for an ordinary family; on an **agent's own** family (the scope root
   carries the `is_agent` marker) it says that the corpus narrates the
   agent's service, so helping with an item never completes it. Resolved
-  per family by `agent_families`, never per case.
+  per wiki by `agent_wikis`, never per case.
 - **Output**: one strict JSON object, parsed by the first-balanced-`{}`
   scanner. Empty `completions` = nothing closes.
 - **Runtime parameters**: temperature 0.1, max_tokens 400.

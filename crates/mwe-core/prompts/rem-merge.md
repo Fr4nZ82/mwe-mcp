@@ -40,7 +40,7 @@ below the prompt build.
   family (the scope root carries the `is_agent` marker) it forbids merging
   two per-person threads, which `slug_kinship` nominates by construction
   (`esperienze_franz` / `esperienze_bob` share a token). Resolved per
-  family by `agent_families`, never per pair
+  wiki by `agent_wikis`, never per pair
 
 **Output schema**: strict JSON, exactly
 `{"merge": true, "survivor": "<slug>", "reason": "<one line>"}` or

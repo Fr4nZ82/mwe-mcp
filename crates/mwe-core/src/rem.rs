@@ -1767,107 +1767,58 @@ fn is_smart_wiki(smart_wiki_index: &SmartWikiIndex, wiki_id: &str) -> bool {
     smart_wiki_index.get(wiki_id).copied().unwrap_or(false)
 }
 
-// ---------- Family scopes (leva-2) ----------
+// ---------- Consolidation scopes ----------
 
-/// One consolidation scope: a FAMILY LINE — a top-level standard wiki
-/// plus its sub-wiki descendants (inclusive), in walk order.
+/// One consolidation scope: a standard wiki.
 ///
-/// The consolidation passes (dedup revisor, completion sweep,
-/// contradiction sweep, page-merge) pool their candidates per family,
-/// so the fragments of a subject split across a wiki and its own
-/// emergent sub-wiki finally reconcile — the parent↔sub-wiki dedup gap.
-/// Arbitrary cross-wiki pairs stay out of scope (self-correcting REM's
-/// future business); smart wikis are excluded entirely, as every pass
-/// already skips them.
-struct FamilyScope {
-    /// The family root's wiki id — the label WAL ops carry.
-    root_id: String,
-    /// Every member wiki id, root first (walk order).
-    wiki_ids: Vec<String>,
-    /// The root carries the `is_agent` marker: this family is an AGENT's own
-    /// memory, its autobiography rather than a person's. Read off the root
-    /// alone — a family line inherits its subject from the root, and the other
-    /// shape of agent wiki (a smart consumer's operational wiki, a child of a
-    /// human's root) never reaches here because smart wikis are excluded.
-    /// Resolved during the walk that builds the scopes so the consolidation
-    /// passes get it for free, instead of re-locating a wiki per candidate
-    /// pair.
+/// The consolidation passes (dedup revisor, completion sweep, contradiction
+/// sweep, page-merge) pool their candidates per scope, and a scope is one
+/// wiki: a standard wiki hangs under nothing, so there is nothing else to
+/// pool with. Fragments of one subject scattered over several wikis are the
+/// page-group grouping's business — it gathers them into one wiki, and they
+/// meet here afterwards. Arbitrary cross-wiki pairs stay out of scope
+/// (self-correcting REM's future business); smart wikis are excluded
+/// entirely, as every pass already skips them.
+struct ConsolidationScope {
+    /// The wiki this scope is.
+    wiki_id: String,
+    /// Whether this wiki is an AGENT's own memory — its autobiography rather
+    /// than a person's. The confirmer sweeps switch rubric on it, and
+    /// resolving it here means they get it for free instead of re-locating a
+    /// wiki per candidate pair.
     is_agent: bool,
 }
 
-/// Partition the non-smart wikis into family lines.
+/// Every standard wiki, as its own consolidation scope.
+fn consolidation_scopes(
+    tree: &WikiTree,
+    smart_wiki_index: &SmartWikiIndex,
+) -> Result<Vec<ConsolidationScope>> {
+    Ok(tree
+        .walk()?
+        .into_iter()
+        .filter(|d| !is_smart_wiki(smart_wiki_index, d.meta.wiki_id.as_str()))
+        .map(|d| ConsolidationScope {
+            wiki_id: d.meta.wiki_id.as_str().to_owned(),
+            is_agent: d.meta.is_agent,
+        })
+        .collect())
+}
+
+/// `wiki_id` → whether it is an agent's own memory.
 ///
-/// Membership is DIRECTORY nesting (component-wise prefix on
-/// `abs_dir`) — never the id string: a legit top-level wiki id may
-/// contain hyphens (`famiglia-carol` is famiglia's child
-/// because it lives at `wikis/famiglia/carol/`, not because
-/// of its name). `walk()` is path-sorted, so a root always precedes
-/// its descendants and the linear scan below sees the root first.
-fn family_scopes(tree: &WikiTree, smart_wiki_index: &SmartWikiIndex) -> Result<Vec<FamilyScope>> {
-    let mut scopes: Vec<(std::path::PathBuf, FamilyScope)> = Vec::new();
-    for d in tree.walk()? {
-        if is_smart_wiki(smart_wiki_index, d.meta.wiki_id.as_str()) {
-            continue;
-        }
-        let id = d.meta.wiki_id.as_str().to_owned();
-        if let Some((_, scope)) = scopes
-            .iter_mut()
-            .find(|(root_dir, _)| d.abs_dir.starts_with(root_dir))
-        {
-            scope.wiki_ids.push(id);
-        } else {
-            let scope = FamilyScope {
-                root_id: id.clone(),
-                wiki_ids: vec![id],
-                is_agent: d.meta.is_agent,
-            };
-            scopes.push((d.abs_dir.clone(), scope));
-        }
-    }
-    Ok(scopes.into_iter().map(|(_, s)| s).collect())
+/// The confirmer sweeps judge one case at a time, so they need the rubric
+/// switch keyed by the wiki a case came from rather than by scope.
+fn agent_wikis(scopes: &[ConsolidationScope]) -> BTreeMap<String, bool> {
+    scopes
+        .iter()
+        .map(|s| (s.wiki_id.clone(), s.is_agent))
+        .collect()
 }
 
-/// `wiki_id` → whether its family root carries the `is_agent` marker.
-///
-/// The confirmer sweeps pool their candidates per family and then judge
-/// one case at a time, so they need the rubric switch keyed by the wiki a
-/// case came from rather than by scope. Derived from [`family_scopes`] so
-/// every pass reads agent-ness identically.
-fn agent_families(scopes: &[FamilyScope]) -> BTreeMap<String, bool> {
-    let mut map = BTreeMap::new();
-    for s in scopes {
-        for w in &s.wiki_ids {
-            map.insert(w.clone(), s.is_agent);
-        }
-    }
-    map
-}
-
-/// `wiki_id → family root id`, for pair gating where only a relation
-/// test is needed (the page-merge nomination). Derived from
-/// [`family_scopes`] so every pass classifies families identically.
-fn family_roots(scopes: &[FamilyScope]) -> BTreeMap<String, String> {
-    let mut map = BTreeMap::new();
-    for s in scopes {
-        for w in &s.wiki_ids {
-            map.insert(w.clone(), s.root_id.clone());
-        }
-    }
-    map
-}
-
-/// The active rows of every member of one family, member walk order
-/// (each member's rows already `created_at ASC` from the per-wiki
-/// query).
-async fn find_active_in_family(
-    pool: &SqlitePool,
-    scope: &FamilyScope,
-) -> Result<Vec<FactIndexRow>> {
-    let mut rows = Vec::new();
-    for w in &scope.wiki_ids {
-        rows.extend(fact_index::find_active_in_wiki(pool, w).await?);
-    }
-    Ok(rows)
+/// The wikis a pair may be nominated from — every standard one.
+fn consolidating_wikis(scopes: &[ConsolidationScope]) -> BTreeSet<String> {
+    scopes.iter().map(|s| s.wiki_id.clone()).collect()
 }
 
 // ---------- Auto-apply sweep sub-job ----------
@@ -1988,16 +1939,13 @@ async fn run_revisor_jaccard(
     // Consecutive confirm failures — the outage detector behind the
     // per-pair skip below.
     let mut llm_failures: usize = 0;
-    // Family scope (leva-2): a wiki + its own sub-wiki descendants pool
-    // their facts, so the duplicated identity facts of a subject split
-    // across the line (parent wiki ↔ emergent sub-wiki) finally meet.
-    // Smart wikis are out entirely — the smart consumer owns those
-    // writes via `wiki_admin_push`, REM never dedups them.
-    for scope in family_scopes(tree, smart_wiki_index)? {
+    // One scope per standard wiki. Smart wikis are out entirely — the smart
+    // consumer owns those writes via `wiki_admin_push`, REM never dedups them.
+    for scope in consolidation_scopes(tree, smart_wiki_index)? {
         if report.applied.len() >= policy.revisor_cap || examined_capped {
             break;
         }
-        let facts = find_active_in_family(pool, &scope).await?;
+        let facts = fact_index::find_active_in_wiki(pool, &scope.wiki_id).await?;
         if facts.len() < 2 {
             continue;
         }
@@ -2177,7 +2125,7 @@ async fn run_revisor_jaccard(
                     pool,
                     cycle_id,
                     "dedup_merge_apply",
-                    Some(scope.root_id.as_str()),
+                    Some(scope.wiki_id.as_str()),
                     None,
                 )
                 .await?;
@@ -2189,8 +2137,8 @@ async fn run_revisor_jaccard(
                 );
                 let hints = DedupMergeHints {
                     jaccard: Some(score),
-                    // The winner's own wiki: on a pair straddling the
-                    // family line the survivor stays where it lives.
+                    // The winner's own wiki: the survivor stays where it
+                    // lives.
                     source_wiki_id: Some(facts[new_idx].wiki_id.clone()),
                     reason: Some(semantic.map_or_else(
                         || format!("rem revisor: jaccard={score:.2} + revisor confirm"),
@@ -4115,15 +4063,15 @@ fn slug_kinship(a: &str, b: &str) -> bool {
 
 /// Nominate candidate pairs for the merge confirmer: the reviewer's
 /// `duplicate_prose` pairs plus page-name kinship, restricted to fact-bearing
-/// **concept leaves of the same family line** (a wiki plus its own
-/// sub-wikis — `family` maps `wiki_id → family root`; a wiki absent from
-/// the map, smart or vanished, never pairs), deduped, capped at `cap`
+/// **concept leaves of the same wiki** (`consolidating` holds every wiki a
+/// pair may come from; a wiki absent from it, smart or vanished, never
+/// pairs), deduped, capped at `cap`
 /// (the resource bound on confirmation calls). Returns
 /// `(slug_a, slug_b, signal)`.
 fn merge_candidates(
     plan: &CompilationPlan,
     duplicate_prose: &[(String, String, f32)],
-    family: &BTreeMap<String, String>,
+    consolidating: &BTreeSet<String>,
     day: &day::DayPerimeter,
     split_targets: &std::collections::BTreeSet<String>,
 ) -> Vec<(String, String, String)> {
@@ -4132,10 +4080,7 @@ fn merge_candidates(
             .get(slug)
             .filter(|p| !p.is_identity_card() && !p.primary_facts.is_empty())
     }
-    let same_family = |a: &str, b: &str| match (family.get(a), family.get(b)) {
-        (Some(fa), Some(fb)) => fa == fb,
-        _ => false,
-    };
+    let same_scope = |a: &str, b: &str| a == b && consolidating.contains(a);
     let mut seen: std::collections::BTreeSet<(String, String)> = std::collections::BTreeSet::new();
     let mut out: Vec<(String, String, String)> = Vec::new();
     let mut consider = |a: &str, b: &str, signal: String| {
@@ -4149,7 +4094,7 @@ fn merge_candidates(
         let (Some(pa), Some(pb)) = (eligible(plan, x), eligible(plan, y)) else {
             return;
         };
-        if !same_family(&pa.wiki_id, &pb.wiki_id) {
+        if !same_scope(&pa.wiki_id, &pb.wiki_id) {
             return;
         }
         if seen.insert((x.to_owned(), y.to_owned())) {
@@ -4180,7 +4125,7 @@ fn merge_candidates(
     leaves.sort_by_key(|p| std::cmp::Reverse(p.primary_facts.len()));
     for (i, p) in leaves.iter().enumerate() {
         for q in leaves.iter().skip(i + 1) {
-            if same_family(&p.wiki_id, &q.wiki_id) && slug_kinship(&p.slug, &q.slug) {
+            if same_scope(&p.wiki_id, &q.wiki_id) && slug_kinship(&p.slug, &q.slug) {
                 consider(&p.slug, &q.slug, "page-name kinship".to_owned());
             }
         }
@@ -4593,9 +4538,9 @@ async fn apply_structure_moves(
 ///
 /// Structural signals (the reviewer's `duplicate_prose` over the compiled
 /// pages, page-name kinship in the persisted plan) **nominate**
-/// concept-leaf pairs of the same **family line** (a wiki plus its own
-/// sub-wikis — leva-2; a pair may straddle the parent↔sub-wiki boundary,
-/// never an arbitrary wiki pair); a dedicated confirmer call (the
+/// concept-leaf pairs of the **same wiki** (never an arbitrary wiki pair —
+/// gathering one subject's pages into one wiki is the grouping pass's job,
+/// and this one sees the result); a dedicated confirmer call (the
 /// `rem_dedup_semantic` slot — the low binary-classifier confirmer tier,
 /// the same slot the Conciliatore runs on at REM) **confirms**
 /// "same concept?" and picks the survivor; the merge then executes
@@ -4654,9 +4599,9 @@ async fn run_page_merge(
             Vec::new()
         },
     };
-    let scopes = family_scopes(tree, smart_wiki_index)?;
-    let agent_family = agent_families(&scopes);
-    let family = family_roots(&scopes);
+    let scopes = consolidation_scopes(tree, smart_wiki_index)?;
+    let agent_family = agent_wikis(&scopes);
+    let consolidating = consolidating_wikis(&scopes);
     // The budget counts pairs that reach a JUDGEMENT, not pairs that reach
     // the loop, and it is spent HERE rather than inside `merge_candidates` —
     // that is before the already-judged and settled filters run, so a handful
@@ -4667,7 +4612,7 @@ async fn run_page_merge(
     let mut budget = policy.page_merge_cap;
     let mut llm_failures = 0usize;
     for (slug_a, slug_b, signal) in
-        merge_candidates(&plan, &duplicate_prose, &family, day, split_targets)
+        merge_candidates(&plan, &duplicate_prose, &consolidating, day, split_targets)
     {
         if budget == 0 {
             break;
@@ -4922,8 +4867,8 @@ const CLAIM_FOR_JUDGEMENT_CHARS: usize = 600;
 
 /// Nominate completion cases: fresh evidence facts (created inside
 /// `policy.closure_sweep_window`) paired with the most similar
-/// OPEN facts of the same scope — a family line, the wiki plus its own
-/// sub-wikis — (embedding cosine, top 3, older than the evidence).
+/// OPEN facts of the same wiki (embedding cosine, top 3, older than the
+/// evidence).
 /// Newest evidence first, capped by `policy.completion_sweep_cap`;
 /// evidence with no open candidate never reaches the LLM.
 fn completion_cases<'a>(
@@ -5022,19 +4967,18 @@ async fn run_completion_sweep(
     if policy.completion_sweep_cap == 0 {
         return Ok(report);
     }
-    // Family scope (leva-2): the bucket is the family line, so evidence
-    // in the parent wiki can complete an open item in the sub-wiki and
-    // vice versa — the pairing logic below is untouched.
-    let scopes = family_scopes(tree, smart_wiki_index)?;
-    let agent_family = agent_families(&scopes);
-    let mut by_family: BTreeMap<String, Vec<FactIndexRow>> = BTreeMap::new();
+    // One bucket per standard wiki: an open item is completed by evidence
+    // that landed in the same wiki.
+    let scopes = consolidation_scopes(tree, smart_wiki_index)?;
+    let agent_family = agent_wikis(&scopes);
+    let mut by_wiki: BTreeMap<String, Vec<FactIndexRow>> = BTreeMap::new();
     for scope in &scopes {
-        let rows = find_active_in_family(pool, scope).await?;
+        let rows = fact_index::find_active_in_wiki(pool, &scope.wiki_id).await?;
         if !rows.is_empty() {
-            by_family.insert(scope.root_id.clone(), rows);
+            by_wiki.insert(scope.wiki_id.clone(), rows);
         }
     }
-    let cases = completion_cases(&by_family, now, policy);
+    let cases = completion_cases(&by_wiki, now, policy);
     // The candidate snapshot (`by_wiki`) is built once at the top of the
     // sweep, so two different evidence facts can both nominate the same
     // open item. Track what THIS cycle has already closed and drop those
@@ -5979,16 +5923,12 @@ async fn run_contradiction_sweep(
     }
     let since = (now - policy.closure_sweep_window).to_rfc3339();
     let mut cases: Vec<(FactIndexRow, Vec<FactIndexRow>)> = Vec::new();
-    // Family scope (leva-2): seeds and open neighbours pool over the
-    // family line, so a contradiction landing in the parent wiki can
-    // fell its satellites in the sub-wiki and vice versa.
-    let scopes = family_scopes(tree, smart_wiki_index)?;
-    let agent_family = agent_families(&scopes);
+    // One scope per standard wiki: a contradiction fells the satellites that
+    // live with it.
+    let scopes = consolidation_scopes(tree, smart_wiki_index)?;
+    let agent_family = agent_wikis(&scopes);
     for scope in &scopes {
-        let mut seeds = Vec::new();
-        for wiki in &scope.wiki_ids {
-            seeds.extend(fact_index::find_recently_contradicted(pool, wiki, &since).await?);
-        }
+        let seeds = fact_index::find_recently_contradicted(pool, &scope.wiki_id, &since).await?;
         if seeds.is_empty() {
             continue;
         }
@@ -6004,7 +5944,7 @@ async fn run_contradiction_sweep(
         // firing after its event is cancelled was the one class this sweep
         // could never nominate. Already-expired rows stay out — closing what
         // has already lapsed spends a confirmer call to change nothing.
-        let open_rows: Vec<FactIndexRow> = find_active_in_family(pool, scope)
+        let open_rows: Vec<FactIndexRow> = fact_index::find_active_in_wiki(pool, &scope.wiki_id)
             .await?
             .into_iter()
             .filter(|r| {
@@ -8960,10 +8900,10 @@ mod tests {
             reopen_pages: Vec::new(),
             authored_rails: Vec::new(),
         };
-        let family: BTreeMap<String, String> = [("alice".to_owned(), "alice".to_owned())].into();
+        let consolidating = BTreeSet::from(["alice".to_owned()]);
         let day = day::DayPerimeter::default();
 
-        let open = merge_candidates(&plan, &[], &family, &day, &BTreeSet::new());
+        let open = merge_candidates(&plan, &[], &consolidating, &day, &BTreeSet::new());
         assert!(
             open.iter()
                 .any(|(a, b, _)| a == "dossier" && b == "dossier_esami"),
@@ -8973,7 +8913,7 @@ mod tests {
         let fenced = merge_candidates(
             &plan,
             &[],
-            &family,
+            &consolidating,
             &day,
             &BTreeSet::from(["dossier_esami".to_owned()]),
         );
@@ -8984,7 +8924,7 @@ mod tests {
     }
 
     #[test]
-    fn merge_candidates_nominate_same_family_kin_leaves_only() {
+    fn merge_candidates_nominate_same_wiki_kin_leaves_only() {
         let leaf = kin_leaf;
         let mut pages = std::collections::BTreeMap::new();
         // Kin pair in the same wiki → nominated.
@@ -8999,8 +8939,10 @@ mod tests {
         // Kin names across UNRELATED wikis → never nominated.
         pages.insert("spesa".to_owned(), leaf("spesa", "alice", 1));
         pages.insert("spesa_casa".to_owned(), leaf("spesa_casa", "bob", 1));
-        // Kin names across the SAME family line (parent ↔ sub-wiki) →
-        // nominated (leva-2).
+        // Kin names in two wikis, however alike the ids → never nominated.
+        // A page belongs to one wiki, and consolidation happens inside it;
+        // gathering one subject's pages into one wiki is the grouping pass's
+        // job, and this pass sees the result, not the scatter.
         pages.insert("dossier".to_owned(), leaf("dossier", "famiglia", 1));
         pages.insert(
             "dossier_bruno".to_owned(),
@@ -9021,21 +8963,14 @@ mod tests {
             reopen_pages: Vec::new(),
             authored_rails: Vec::new(),
         };
-        // alice and bob are their own families; famiglia-bruno is
-        // famiglia's sub-wiki (one family line).
-        let family: BTreeMap<String, String> = [
-            ("alice", "alice"),
-            ("bob", "bob"),
-            ("famiglia", "famiglia"),
-            ("famiglia-bruno", "famiglia"),
-        ]
-        .into_iter()
-        .map(|(a, b)| (a.to_owned(), b.to_owned()))
-        .collect();
+        let consolidating: BTreeSet<String> = ["alice", "bob", "famiglia", "famiglia-bruno"]
+            .into_iter()
+            .map(str::to_owned)
+            .collect();
         let got = merge_candidates(
             &plan,
             &[],
-            &family,
+            &consolidating,
             &day::DayPerimeter::default(),
             &BTreeSet::new(),
         );
@@ -9049,8 +8984,8 @@ mod tests {
         );
         assert!(pairs.contains(&("presenza", "presenze")), "{pairs:?}");
         assert!(
-            pairs.contains(&("dossier", "dossier_bruno")),
-            "parent↔sub-wiki kin nominate within the family line: {pairs:?}"
+            !pairs.contains(&("dossier", "dossier_bruno")),
+            "kin names in two wikis do not nominate, however alike the ids: {pairs:?}"
         );
         assert!(
             !pairs
@@ -9071,7 +9006,7 @@ mod tests {
         let all = merge_candidates(
             &plan,
             &[],
-            &family,
+            &consolidating,
             &day::DayPerimeter::default(),
             &BTreeSet::new(),
         );
@@ -9114,13 +9049,12 @@ mod tests {
             reopen_pages: Vec::new(),
             authored_rails: Vec::new(),
         };
-        let family: BTreeMap<String, String> =
-            std::iter::once(("alice".to_owned(), "alice".to_owned())).collect();
+        let consolidating = BTreeSet::from(["alice".to_owned()]);
 
         let pairs = merge_candidates(
             &plan,
             &[],
-            &family,
+            &consolidating,
             &day::DayPerimeter::default(),
             &BTreeSet::new(),
         );
@@ -10145,13 +10079,12 @@ mod tests {
             reopen_pages: Vec::new(),
             authored_rails: Vec::new(),
         };
-        let family: BTreeMap<String, String> =
-            std::iter::once(("alice".to_owned(), "alice".to_owned())).collect();
+        let consolidating = BTreeSet::from(["alice".to_owned()]);
 
         let quiet = merge_candidates(
             &plan,
             &[],
-            &family,
+            &consolidating,
             &day::DayPerimeter::default(),
             &BTreeSet::new(),
         );
@@ -10166,7 +10099,7 @@ mod tests {
             pages_born: std::iter::once("nuoto_martedi".to_owned()).collect(),
             ..day::DayPerimeter::default()
         };
-        let today = merge_candidates(&plan, &[], &family, &day, &BTreeSet::new());
+        let today = merge_candidates(&plan, &[], &consolidating, &day, &BTreeSet::new());
         assert_eq!(
             (today[0].0.as_str(), today[0].1.as_str()),
             ("nuoto", "nuoto_martedi"),
@@ -13973,73 +13906,39 @@ mod tests {
         drop(dir);
     }
 
-    // ---------- family scopes (leva-2) ----------
+    // ---------- consolidation scopes ----------
 
-    /// A sub-wiki nested under `parent` — the directory nesting IS the
-    /// family relation [`family_scopes`] reads (the id is deliberately
-    /// NOT `parent-child` shaped in one test case, to pin that ids are
-    /// never string-matched).
-    fn write_sub_wiki(
-        tree: &WikiTree,
-        parent: &str,
-        child_slug: &str,
-        wiki_id: &str,
-        subject: &str,
-    ) {
-        let dir = tree.wikis_dir().join(parent).join(child_slug);
-        std::fs::create_dir_all(&dir).unwrap();
-        let frontmatter = format!(
-            "---\nwiki_id: {wiki_id}\nwiki_type: wiki-tech\nslug: {child_slug}\ntitle: {child_slug}\nacl_default: 'user:{subject}'\nparent_wiki_id: {parent}\n---\n",
-        );
-        std::fs::write(dir.join("_meta.md"), frontmatter).unwrap();
-        std::fs::write(dir.join("preferenze.md"), "# sub\n").unwrap();
-    }
-
+    /// Every standard wiki is one scope, and a smart wiki is none.
     #[tokio::test]
-    async fn family_scopes_partition_by_directory_nesting_not_id() {
+    async fn every_standard_wiki_is_its_own_consolidation_scope() {
         let (dir, mut tree, _pool) = setup_workdir().await;
         write_wiki(&tree, "famiglia", "Famiglia", "wiki-group");
-        write_sub_wiki(&tree, "famiglia", "bruno", "famiglia-bruno", "alice");
-        // A top-level wiki whose id LOOKS like a child of famiglia — the
-        // partition must not be fooled by the hyphen.
         write_wiki(&tree, "famiglia-amici", "Amici", "wiki-group");
         write_smart_wiki(&tree, "alice-lnprint", "lnprint smart wiki", "alice");
         tree = WikiTree::open(dir.path()).unwrap();
 
         let index = load_smart_wiki_index(&tree).expect("index");
-        let scopes = family_scopes(&tree, &index).expect("scopes");
-        let mut got: Vec<(String, Vec<String>)> = scopes
+        let mut got: Vec<String> = consolidation_scopes(&tree, &index)
+            .expect("scopes")
             .into_iter()
-            .map(|s| (s.root_id, s.wiki_ids))
+            .map(|s| s.wiki_id)
             .collect();
         got.sort();
         assert_eq!(
             got,
-            vec![
-                (
-                    "famiglia".to_owned(),
-                    vec!["famiglia".to_owned(), "famiglia-bruno".to_owned()]
-                ),
-                (
-                    "famiglia-amici".to_owned(),
-                    vec!["famiglia-amici".to_owned()]
-                ),
-            ],
-            "nesting groups, hyphens don't, smart wikis are out"
+            vec!["famiglia".to_owned(), "famiglia-amici".to_owned()],
+            "one scope per standard wiki, and the smart one is out",
         );
         drop(dir);
     }
 
     /// The confirmer sweeps look the rubric up by the wiki a case came from,
-    /// so every member of an agent's family — the root and its sub-wikis —
-    /// must answer "yes", and no member of anyone else's may.
+    /// so an agent's own memory must answer "yes" and nobody else's may.
     #[tokio::test]
-    async fn agent_families_flags_every_member_of_the_agents_line() {
+    async fn agent_wikis_flags_the_agents_own_memory_only() {
         let (dir, mut tree, _pool) = setup_workdir().await;
         write_wiki(&tree, "alice", "Alice", "wiki-user");
-        write_sub_wiki(&tree, "alice", "lavoro", "alice-lavoro", "alice");
         write_wiki(&tree, "hermes1", "Hermes", "wiki-user");
-        write_sub_wiki(&tree, "hermes1", "diari", "hermes1-diari", "hermes1");
         let meta_path = tree.wikis_dir().join("hermes1").join("_meta.md");
         let raw = std::fs::read_to_string(&meta_path).unwrap();
         std::fs::write(
@@ -14050,24 +13949,18 @@ mod tests {
         tree = WikiTree::open(dir.path()).unwrap();
 
         let index = load_smart_wiki_index(&tree).expect("index");
-        let map = agent_families(&family_scopes(&tree, &index).expect("scopes"));
+        let map = agent_wikis(&consolidation_scopes(&tree, &index).expect("scopes"));
         assert_eq!(map.get("hermes1"), Some(&true));
-        assert_eq!(
-            map.get("hermes1-diari"),
-            Some(&true),
-            "a sub-wiki inherits its root's subject"
-        );
         assert_eq!(map.get("alice"), Some(&false));
-        assert_eq!(map.get("alice-lavoro"), Some(&false));
     }
 
-    /// The dedup rubric changes inside an agent's own family: there, WHO an
+    /// The dedup rubric changes inside an agent's own memory: there, WHO an
     /// episode was lived with is part of the fact, so two near-identical
     /// sentences about two different people are two memories. The scope
-    /// resolves the marker once, off the family root, instead of re-locating a
-    /// wiki per candidate pair.
+    /// resolves the marker once instead of re-locating a wiki per candidate
+    /// pair.
     #[tokio::test]
-    async fn agent_family_carries_the_autobiography_dedup_rubric() {
+    async fn an_agents_wiki_carries_the_autobiography_dedup_rubric() {
         let (dir, mut tree, pool) = setup_workdir().await;
         write_wiki(&tree, "alice", "Alice", "wiki-user");
         write_wiki(&tree, "hermes1", "Hermes", "wiki-user");
@@ -14082,13 +13975,13 @@ mod tests {
         tree = WikiTree::open(dir.path()).unwrap();
 
         let index = load_smart_wiki_index(&tree).expect("index");
-        let scopes = family_scopes(&tree, &index).expect("scopes");
+        let scopes = consolidation_scopes(&tree, &index).expect("scopes");
         for s in &scopes {
             assert_eq!(
                 s.is_agent,
-                s.root_id == "hermes1",
-                "only the agent's family is flagged; got {:?}",
-                s.root_id
+                s.wiki_id == "hermes1",
+                "only the agent's own memory is flagged; got {:?}",
+                s.wiki_id
             );
         }
 
@@ -14273,14 +14166,13 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn revisor_dedups_across_the_family_line() {
+    async fn revisor_dedups_two_pages_of_one_wiki() {
         let (dir, mut tree, pool) = setup_workdir().await;
         write_wiki(&tree, "famiglia", "Famiglia", "wiki-group");
-        write_sub_wiki(&tree, "famiglia", "bruno", "famiglia-bruno", "alice");
         tree = WikiTree::open(dir.path()).unwrap();
-        // The split-subject duplicate: the same identity fact captured in
-        // the parent wiki and again in the emergent sub-wiki. Jaccard-kin
-        // but not identical (the capture-time dedup threshold is off).
+        // The split-subject duplicate: the same identity fact captured twice,
+        // on two pages of the wiki. Jaccard-kin but not identical (the
+        // capture-time dedup threshold is off).
         let older = plant_fact_on_page(
             &tree,
             &pool,
@@ -14293,7 +14185,7 @@ mod tests {
         let newer = plant_fact_on_page(
             &tree,
             &pool,
-            "famiglia-bruno",
+            "famiglia",
             "anagrafica.md",
             "Carol è la sorella di Franz e vive a Bologna in centro",
             "alice",
@@ -14312,27 +14204,20 @@ mod tests {
         )
         .await
         .expect("revisor");
-        assert_eq!(
-            report.applied.len(),
-            1,
-            "the parent↔sub-wiki pair merged: {report:?}"
-        );
+        assert_eq!(report.applied.len(), 1, "the pair merged: {report:?}");
         let loser = fact_index::find_by_id(&pool, &older)
             .await
             .unwrap()
             .unwrap();
-        assert!(
-            loser.superseded_at.is_some(),
-            "the older parent-side copy retired"
-        );
+        assert!(loser.superseded_at.is_some(), "the older copy retired");
         assert_eq!(loser.superseded_by.as_ref(), Some(&newer));
         let winner = fact_index::find_by_id(&pool, &newer)
             .await
             .unwrap()
             .unwrap();
         assert_eq!(
-            winner.wiki_id, "famiglia-bruno",
-            "the survivor stays in its own wiki"
+            winner.wiki_id, "famiglia",
+            "the survivor stays where it lives"
         );
         drop(dir);
     }
@@ -14342,13 +14227,12 @@ mod tests {
     /// (`bio` + `salience=high`), even a genuine near-duplicate. A
     /// relationship like "X è il compagno di Y" changes only on an
     /// explicit correction, never by silent background consolidation.
-    /// Same near-duplicate pair as `revisor_dedups_across_the_family_line`,
+    /// Same near-duplicate pair as `revisor_dedups_two_pages_of_one_wiki`,
     /// but the would-be loser is identity-core — so nothing merges.
     #[tokio::test]
     async fn revisor_never_retires_an_identity_core_fact() {
         let (dir, mut tree, pool) = setup_workdir().await;
         write_wiki(&tree, "famiglia", "Famiglia", "wiki-group");
-        write_sub_wiki(&tree, "famiglia", "bruno", "famiglia-bruno", "alice");
         tree = WikiTree::open(dir.path()).unwrap();
         let older = plant_fact_on_page(
             &tree,
@@ -14368,7 +14252,7 @@ mod tests {
         let _newer = plant_fact_on_page(
             &tree,
             &pool,
-            "famiglia-bruno",
+            "famiglia",
             "anagrafica.md",
             "Carol è la sorella di Franz e vive a Bologna in centro",
             "alice",

@@ -1,14 +1,14 @@
 ---
 name: rem-dedup
 description: REM revisor — binary dedup confirmer between two facts (pair nominated by the jaccard band or the embedding-cosine channel), each shown with the page it lives on
-version: 1.5
+version: 1.6
 default_version_at_bootstrap: v1.5
 ---
 
 # Prompt: rem-dedup
 
 Prompt for the REM nightly **revisor** sub-job. Two facts
-in the same family scope survived one of the two deterministic
+of the same wiki survived one of the two deterministic
 nomination channels — the surface `policy.revisor_jaccard_min` ↔
 `policy.revisor_jaccard_max` band, or the semantic
 `policy.revisor_cosine_min` embedding floor (which catches a claim
@@ -45,7 +45,7 @@ below the prompt build.
   family (the scope root carries the `is_agent` marker) it carries the extra
   rubric line saying that WHO an episode was lived with is part of the fact,
   so two near-identical sentences about two different people stay two
-  memories. Resolved once per family scope by `family_scopes`, never per pair
+  memories. Resolved once per wiki by `consolidation_scopes`, never per pair
 
 **Output schema**: strict JSON, exactly one of `{"same": true}` or
 `{"same": false}`. No prose. Parsed by `parse_llm_yes` in
