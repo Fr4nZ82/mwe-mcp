@@ -3663,7 +3663,16 @@ async fn judge_one_candidate(
         return Ok(CandidateOutcome::Nothing);
     };
 
-    apply_one_group(run, candidate, &group.action, kept, by_id, report).await
+    apply_one_group(
+        run,
+        candidate,
+        &group.action,
+        kept,
+        pages.len(),
+        by_id,
+        report,
+    )
+    .await
 }
 
 /// Which of the named pages the action actually moves, or `None` when it moves
@@ -3701,19 +3710,32 @@ async fn apply_one_group(
     candidate: &Candidate,
     action: &GroupAction,
     kept: Vec<String>,
+    offered: usize,
     by_id: &HashMap<&str, &wiki::DiscoveredWiki>,
     report: &mut AutoPromoteReport,
 ) -> Result<CandidateOutcome> {
     let recipient = recipient_of_first_page(run.pool, &kept).await;
+    // Two numbers, because they are two different facts and the receipt is
+    // read by a person: how many pages share the handle, and how many this
+    // move carries. A group of nine whose eight are already home moves one,
+    // and a receipt saying "1 pages share the topic" would be false.
     let hints = promote::PageGroupHints {
         group_pages: Some(kept.len()),
         source_wiki_pages: None,
-        reason: Some(format!(
-            "rem grouping: {n} pages share the {kind} `{handle}`",
-            n = kept.len(),
-            kind = candidate.nominator.as_str(),
-            handle = candidate.handle,
-        )),
+        reason: Some(if kept.len() == offered {
+            format!(
+                "rem grouping: {offered} pages share the {kind} `{handle}`",
+                kind = candidate.nominator.as_str(),
+                handle = candidate.handle,
+            )
+        } else {
+            format!(
+                "rem grouping: {offered} pages share the {kind} `{handle}`, {moved} of them moved",
+                kind = candidate.nominator.as_str(),
+                handle = candidate.handle,
+                moved = kept.len(),
+            )
+        }),
     };
 
     let (op_id, res, variant) = match action {
