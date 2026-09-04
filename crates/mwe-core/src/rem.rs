@@ -3389,6 +3389,18 @@ async fn run_page_grouping_for_wiki(
 
     // Nothing can fire: too few pages for a birth and nowhere to file.
     if candidates.len() < policy.auto_promote_group_min_pages && children.is_empty() {
+        // Said out loud because the counter cannot say it. `grouping_wikis`
+        // counts the wikis the MODEL saw, so a zero reads the same whether
+        // the shelf was too short, the same question was already settled, or
+        // the pass never reached this wiki at all — three different answers
+        // to "why did no wiki emerge", and the operator has only the one
+        // number.
+        tracing::debug!(
+            wiki_id = d.meta.wiki_id.as_str(),
+            candidates = candidates.len(),
+            floor = policy.auto_promote_group_min_pages,
+            "rem grouping: too few pages to found a wiki and no sub-wiki to file into"
+        );
         return Ok(moved);
     }
 
@@ -3412,6 +3424,11 @@ async fn run_page_grouping_for_wiki(
     // the moment the inventory changes (a page added, split, renamed).
     let memo_key = rem_verdicts::key(llm.model_id(), &prompt);
     if rem_verdicts::is_settled(pool, rem_verdicts::kind::PAGE_GROUPING, &memo_key).await? {
+        tracing::debug!(
+            wiki_id = d.meta.wiki_id.as_str(),
+            candidates = candidates.len(),
+            "rem grouping: this inventory was already judged — not asked again"
+        );
         return Ok(moved);
     }
     report.grouping_wikis_examined += 1;

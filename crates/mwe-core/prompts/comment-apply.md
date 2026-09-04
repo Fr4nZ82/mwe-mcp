@@ -1,7 +1,7 @@
 ---
 name: comment-apply
 description: turns parked dashboard comments on a narrative page into precise fact ops (correct / remove / add / move) over that page's facts; an `add` carries its own subject_id/allow_ids decided under the ingest rules (subject + audience from the comment, the page's wiki scope, and the commenter's group scopes)
-version: 1.6
+version: 1.7
 default_version_at_bootstrap: v1.5
 ---
 
@@ -25,9 +25,10 @@ an operator override at `<workdir>/prompts/comment-apply.md` wins.
   page, numbered), `{scope}` (the commenter's id, this page's wiki `scope` prose,
   and the commenter's group scopes — the audience signals an `add`'s
   `subject_id`/`allow_ids` are decided from, mirroring `ingest`'s assembly),
-  `{destinations}` (the wikis + pages a `move` op may target — the other
-  non-smart wikis of the source wiki's owner, **each followed by the pages it
-  already holds**, and this wiki's other pages).
+  `{destinations}` (the wikis + pages a `move` op may target — every other
+  non-smart wiki, **each followed by the pages it already holds**, and this
+  wiki's other pages; a wiki is structure, so no shelf is off limits because
+  of whose principal it declares).
 - **Output**: one strict JSON object — `{ "ops": [...] }` — parsed into
   `crate::comment_apply::InterpretedOps`. Each op is `correct` (with `fact_id`
   + full `text`), `remove` (with `fact_id`), `add` (with `text` + its own
@@ -35,10 +36,14 @@ an operator override at `<workdir>/prompts/comment-apply.md` wins.
   (with `fact_id` + a destination chosen from `{destinations}`). The caller
   refuses any `fact_id` not present on the page (containment guard); an `add`'s
   `subject`/`allow` are the LLM's (subject + audience under the ingest rules,
-  defaulting to `user:<commenter>` / `[]`) with `sender` = the comment's author;
-  and a `move` is refused if its destination does
-  not exist / is smart / belongs to a different owner, or if a cross-wiki move
-  names no `dest_page` — there is no per-wiki inbox to drop a fact in. A `move`
+  defaulting to `user:<commenter>`) with `sender` = the comment's author — and
+  an `add` the caller cannot attribute to anybody (no `subject_id` and no
+  comment author) is REFUSED rather than filed under the page's wiki: a wiki
+  answers for nothing. A `move` is refused if its destination does not exist
+  or is smart, or if a cross-wiki move names no `dest_page` — there is no
+  per-wiki inbox to drop a fact in. It is **not** refused for crossing
+  principals: the fact carries its own `subject_id` and `allow_ids` across,
+  so nobody gains or loses a reading. A `move`
   is born-applied and final; an unparseable response leaves the comments for
   the next cycle.
 

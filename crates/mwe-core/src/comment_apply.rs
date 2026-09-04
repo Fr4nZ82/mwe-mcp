@@ -20,19 +20,22 @@
 //!   anchored to. `correct` / `remove` / `move` are refused for any `fact_id`
 //!   not on that page (a cross-page / hallucinated id never mutates a stranger's
 //!   fact). `move` relocates such a fact *out* of the page, but only to a
-//!   destination drawn from a bounded list (the other non-smart wikis of this
-//!   wiki's OWNER + this wiki's other pages) — never an invented one, and never
-//!   one belonging to a different owner.
+//!   destination drawn from a bounded list (every other non-smart wiki + this
+//!   wiki's other pages) — never an invented one. No shelf is excluded for
+//!   whose principal it declares: a wiki is structure, and the fact carries
+//!   its own subject and audience across.
 //! - **A fact is a fact.** A `correct` preserves the existing fact's
 //!   subject/`allow`/sender verbatim (it touches claim text only); an `add` carries
 //!   its OWN ACL under the same rules as a captured message — the LLM decides
 //!   the subject (`subject`) and audience (`allow`) from the comment, the page's
 //!   wiki scope, and the commenter's group scopes, defaulting to the commenter /
 //!   `[]`, with `sender` = the human who left the comment (`author_sender_id`).
-//!   It never copies an arbitrary existing fact's (possibly broader) subject. A
-//!   `move` keeps the fact's ACL and refuses a destination wiki with a different
-//!   OWNER (the destination's resolved scope principal — not the fact's subject,
-//!   which the move never looks at).
+//!   It never copies an arbitrary existing fact's (possibly broader) subject,
+//!   and when nobody can be named — no subject on the op and no author on the
+//!   comment — the `add` is refused rather than filed under the page's wiki. A
+//!   `move` keeps the fact's ACL untouched and asks nothing about principals:
+//!   a wiki is structure, so no destination is refused for declaring a
+//!   different one.
 //!
 //! Unlike `correct` / `remove` / `add` (which apply bare), a `move` is
 //! **born-applied** — the `promote::*_direct` wrappers mint a receipt, so a
@@ -196,20 +199,18 @@ pub async fn apply_comments(
         Err(WikiError::WikiNotFound { .. }) => return Ok(report),
         Err(e) => return Err(e.into()),
     };
-    // The wiki's scope principal (derived from topology) — its OWNER. It plays two
-    // roles, on two different axes: it bounds a `move` destination to a wiki with the
-    // SAME OWNER, and it is the LAST-RESORT subject an
-    // `add` falls back to when the LLM emits no `subject_id` AND the comment has no
-    // recorded author — never an arbitrary existing fact's (possibly broader)
-    // subject. With an author and/or an LLM `subject_id` the `add` follows the
-    // captured-message rules instead (see `apply_add`).
-    let add_subject = tree.resolve_scope_principal(handle.meta())?;
-    // The language every claim this pass writes comes out in. The operator may
-    // comment in any language; the page keeps the one its wiki declares, so a
-    // correction never leaves a page speaking two languages. Resolved once per
-    // wiki off the principal already in hand.
+    // The wiki's scope principal, and it is read for ONE thing: which language
+    // this wiki writes in. The operator may comment in any language; the page
+    // keeps the one its wiki declares, so a correction never leaves a page
+    // speaking two languages.
+    //
+    // It is not an owner. A wiki is structure, not possession — what may be
+    // read and who answers for it are the fact's own `subject_id` and
+    // `allow_ids` — so this principal neither bounds where a page may move nor
+    // stands in as the subject of a claim nobody attributed.
+    let language_principal = tree.resolve_scope_principal(handle.meta())?;
     let language_directive = crate::locale::render_memory_language_directive(
-        crate::enrollment::locale_for_principal(pool, &add_subject)
+        crate::enrollment::locale_for_principal(pool, &language_principal)
             .await
             .unwrap_or_default()
             .as_deref(),
@@ -239,7 +240,6 @@ pub async fn apply_comments(
             embedder,
             llm,
             wiki_id,
-            &add_subject,
             &language_directive,
             &source_path,
             &comments,
@@ -269,7 +269,6 @@ async fn apply_page(
     embedder: &Arc<dyn Embedder>,
     llm: &dyn LlmBackend,
     wiki_id: &WikiId,
-    add_subject: &Principal,
     language_directive: &str,
     source_path: &str,
     comments: &[(i64, String, Option<String>)],
@@ -299,11 +298,11 @@ async fn apply_page(
 
     let facts_desc = describe_facts(&facts);
     let comments_desc = describe_comments(comments);
-    // Destination context for the `move` op: the candidate wikis the source
-    // wiki's owner may write into (cross-wiki moves) plus this wiki's other
-    // pages (same-wiki page moves). The LLM resolves "salute" → a concrete
-    // wiki/page from this list; it can only pick what is offered here.
-    let destinations = describe_destinations(tree, wiki_id, source_path, add_subject);
+    // Destination context for the `move` op: every other standard wiki
+    // (cross-wiki moves) plus this wiki's other pages (same-wiki page moves).
+    // The LLM resolves "salute" → a concrete wiki/page from this list; it can
+    // only pick what is offered here.
+    let destinations = describe_destinations(tree, wiki_id, source_path);
     let system = prompts::render(
         "comment-apply",
         tree.workdir(),
@@ -356,7 +355,6 @@ async fn apply_page(
                     wiki_id,
                     source_path,
                     commenter.as_ref(),
-                    add_subject,
                     &batch_removals,
                     op,
                     report,
@@ -371,7 +369,6 @@ async fn apply_page(
                     &known,
                     wiki_id,
                     source_path,
-                    add_subject,
                     op,
                     &reason,
                     report,
@@ -506,7 +503,7 @@ async fn apply_remove(
 /// tombstone.
 #[allow(
     clippy::too_many_arguments,
-    reason = "the add threads the wiki/page, the commenter, the fallback subject, the batch removals, the op, and the report"
+    reason = "the add threads the wiki/page, the commenter, the batch removals, the op, and the report"
 )]
 async fn apply_add(
     pool: &SqlitePool,
@@ -514,7 +511,6 @@ async fn apply_add(
     wiki_id: &WikiId,
     source_path: &str,
     commenter: Option<&Principal>,
-    fallback_subject: &Principal,
     batch_removals: &HashSet<&str>,
     op: &RawOp,
     report: &mut CommentApplyReport,
@@ -523,14 +519,31 @@ async fn apply_add(
         report.errors.push("add missing text".to_owned());
         return Ok(());
     };
-    let subject_id = op
+    // Who answers for this claim, and there is no third place to look. The
+    // model may name a subject; failing that the person who wrote the comment
+    // answers for what they asked to be written.
+    //
+    // The wiki does NOT supply one. A wiki is structure, not possession — the
+    // shelf a claim sits on says nothing about whose claim it is — so a page
+    // whose wiki declares a principal cannot lend it to a claim nobody
+    // attributed. Better to refuse the `add`: a fact filed under a subject
+    // the memory guessed is readable by that subject's principals from then
+    // on, and nothing later says it was a guess.
+    let Some(subject_id) = op
         .subject_id
         .as_deref()
         .map(str::trim)
         .filter(|s| !s.is_empty())
         .and_then(|s| s.parse::<Principal>().ok())
         .or_else(|| commenter.cloned())
-        .unwrap_or_else(|| fallback_subject.clone());
+    else {
+        report.errors.push(
+            "add refused: no subject on the op and no author on the comment — nobody answers for \
+             the claim, and the page's wiki does not answer for it either"
+                .to_owned(),
+        );
+        return Ok(());
+    };
     let allow_ids: Vec<Principal> = op
         .allow_ids
         .iter()
@@ -632,9 +645,9 @@ async fn apply_add(
 ///   refiled onto the named `dest_page` of that wiki via
 ///   [`promote::apply_fact_refile_direct`]. A cross-wiki move MUST name its
 ///   page — there is no per-wiki inbox to drop a fact in. The destination must
-///   locate, be **owned by the same principal** as the source wiki (no move
-///   across owners), and be **standard** (a smart wiki is the consumer's —
-///   refused).
+///   locate and be **standard** (a smart wiki has one writer and it is not
+///   this pass). It does not have to share the source wiki's scope principal:
+///   a move rewrites where a page sits, never who answers for its facts.
 /// - **same-wiki page move** (`dest_wiki_id` absent / == this wiki, with a
 ///   `dest_page` that differs from the source page): the fact moves to that
 ///   page via [`promote::apply_paragraph_to_file_direct`].
@@ -655,7 +668,6 @@ async fn apply_move(
     known: &HashSet<&str>,
     wiki_id: &WikiId,
     source_path: &str,
-    add_subject: &Principal,
     op: &RawOp,
     reason: &str,
     report: &mut CommentApplyReport,
@@ -712,7 +724,6 @@ async fn apply_move(
             source_path,
             dest_wiki_id,
             dest_page,
-            add_subject,
             recipient,
             reason,
             report,
@@ -738,7 +749,7 @@ async fn apply_move(
 /// refile the fact onto its buffer.
 #[allow(
     clippy::too_many_arguments,
-    reason = "the cross-wiki branch carries the fact, both wiki endpoints, source page, subject, recipient, and reason"
+    reason = "the cross-wiki branch carries the fact, both wiki endpoints, source page, recipient, and reason"
 )]
 async fn apply_move_cross_wiki(
     pool: &SqlitePool,
@@ -748,7 +759,6 @@ async fn apply_move_cross_wiki(
     source_path: &str,
     dest_wiki_id: &str,
     dest_page: &str,
-    add_subject: &Principal,
     recipient: Option<String>,
     reason: &str,
     report: &mut CommentApplyReport,
@@ -759,9 +769,16 @@ async fn apply_move_cross_wiki(
         ));
         return Ok(());
     };
-    // The destination must locate (anti-hallucination), be standard (a smart
-    // wiki is the consumer's), and be owned by the SAME principal as the source
-    // wiki (its resolved scope principal) — never a move across owners.
+    // The destination must locate (anti-hallucination) and be standard — a
+    // smart wiki has one writer and it is not this pass.
+    //
+    // It does NOT have to match the source wiki's scope principal. A wiki is
+    // STRUCTURE, not possession: what may be read, and who answers for it,
+    // are the fact's own `subject_id` and `allow_ids`, and a move carries
+    // both untouched (`fact_index::move_to_wiki` writes the wiki and the path
+    // and nothing else). Refusing a move because two shelves declare
+    // different principals guards a property the memory does not have, and
+    // costs the one gesture that can say a page was filed in the wrong place.
     let Ok(dest_handle) = tree.locate(&dest_id) else {
         report
             .errors
@@ -774,14 +791,6 @@ async fn apply_move_cross_wiki(
         ));
         return Ok(());
     }
-    let dest_owner = tree.resolve_scope_principal(dest_handle.meta())?;
-    if &dest_owner != add_subject {
-        report.errors.push(format!(
-            "move refused: dest wiki {dest_wiki_id} is owned by {dest_owner}, the source wiki by {add_subject}"
-        ));
-        return Ok(());
-    }
-
     let source_handle = tree.locate(wiki_id)?;
     let source_page = page_wiki_relative(&source_handle, source_path);
     match promote::apply_fact_refile_direct(
@@ -909,11 +918,10 @@ fn page_wiki_relative(handle: &WikiHandle, source_path: &str) -> String {
 }
 
 /// Describe the destinations a `move` op may target, for the prompt's
-/// `{destinations}` placeholder. Two bounded lists for the source wiki's
-/// **owner** (`owner` is the page's resolved scope principal):
+/// `{destinations}` placeholder. Two bounded lists:
 ///
-/// - **other wikis** that owner can write — every **non-smart** wiki whose
-///   resolved scope principal equals `owner`, except the source wiki itself —
+/// - **other wikis** — every **non-smart** wiki except the source itself,
+///   whatever principal each declares, because a shelf is not a property —
 ///   each with **the pages it already holds**, because a cross-wiki move names
 ///   a wiki *and* one of its pages (see [`RawOp::dest_page`], and [`apply_move`]
 ///   which refuses a dest wiki with no page). A wiki with no page yet is shown
@@ -924,26 +932,20 @@ fn page_wiki_relative(handle: &WikiHandle, source_path: &str) -> String {
 /// Bounded by a person's wiki tree (`tree.walk()` is the same scan `locate`
 /// uses); a `walk`/`list_pages` error degrades to an empty section rather than
 /// failing the whole sub-job (the LLM then simply emits no move).
-fn describe_destinations(
-    tree: &WikiTree,
-    wiki_id: &WikiId,
-    source_path: &str,
-    owner: &Principal,
-) -> String {
+fn describe_destinations(tree: &WikiTree, wiki_id: &WikiId, source_path: &str) -> String {
     let mut wikis: Vec<String> = Vec::new();
     if let Ok(discovered) = tree.walk() {
         for d in discovered {
             if &d.meta.wiki_id == wiki_id || d.meta.smart {
                 continue;
             }
-            // Only wikis the same OWNER controls — never a cross-owner target.
-            // Note the vocabulary trap: "cross-subject" elsewhere in this tree
-            // means two FACTS have different subjects. This gate is not that —
-            // it never reads a fact's subject at all, only the two wikis'
-            // resolved scope principals.
-            if tree
-                .resolve_scope_principal(&d.meta)
-                .is_ok_and(|p| &p == owner)
+            // Every standard wiki, not only those whose scope principal
+            // matches the source's. A wiki is structure, not possession: the
+            // shelf a page sits on says nothing about whose facts they are,
+            // and a move carries each fact's `subject_id` and `allow_ids`
+            // across untouched. Offering only the same-principal shelves hid
+            // the right destination whenever a page had been filed under the
+            // wrong one, which is the case this whole gesture exists for.
             {
                 let pages = crate::wiki::list_wiki_pages(&d.abs_dir).map_or_else(
                     |_| Vec::new(),
@@ -1641,8 +1643,7 @@ mod tests {
     // ---------- move ----------
 
     /// `setup()` + two destination wikis under the same workdir, both
-    /// children of `alice` so the scope-principal derivation makes them
-    /// `user:alice` (the SAME owner as `alice`):
+    /// children of `alice`:
     /// - `salute` (standard — a cross-wiki move into it is allowed);
     /// - `proj` (a SMART wiki — a cross-wiki move into it must be refused
     ///   because it is the consumer's container).

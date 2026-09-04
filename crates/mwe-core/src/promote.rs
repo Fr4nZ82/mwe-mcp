@@ -1805,8 +1805,12 @@ fn subwiki_meta_extra(context: &Value) -> serde_yaml::Mapping {
 /// No page-count floor applies — the home is already there, so there is
 /// nothing to justify; a single stray page belongs inside just as much
 /// as nine do. The target must be an existing **child** of the source
-/// wiki: regrouping rearranges a wiki's own subtree, it never files
-/// content into somebody else's.
+/// wiki, and that is a rule about which GESTURE this is, not about who owns
+/// what: tidying a shelf and moving a page to another shelf are two
+/// different acts, and each has its own variant. A wiki is structure, not
+/// possession — nothing here defends a property, because a wiki has none:
+/// what may be read and who answers for it are the fact's own `subject_id`
+/// and `allow_ids`, and every move carries both untouched.
 /// Which of the two page moves is being applied — and the whole of the
 /// difference between them.
 ///
@@ -1816,9 +1820,10 @@ fn subwiki_meta_extra(context: &Value) -> serde_yaml::Mapping {
 /// than mechanics — which is why it is an enum and not a boolean.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum MoveKind {
-    /// Regrouping: the destination must be a **child** of the source. A wiki
-    /// rearranges its own subtree and never files content into somebody
-    /// else's.
+    /// Regrouping: the destination must be a **child** of the source — this
+    /// is the tidying gesture, and tidying stays inside the shelf it tidies.
+    /// A page that belongs on a different shelf entirely is the other
+    /// variant's job, not a violation of anybody's property.
     IntoOwnSubtree,
     /// Re-homing: the destination is any other standard wiki. The page was
     /// born in the wrong place — a new page joins the wiki of whichever of
@@ -1877,7 +1882,7 @@ async fn move_pages(
             if target_handle.meta().parent_wiki_id.as_ref() != Some(&source_wiki_id) {
                 return Err(ApplyError::InvalidPayload(format!(
                     "{target_wiki_id} is not a child of {source_wiki_id} — a group move only \
-                     rearranges a wiki's own subtree",
+                     tidies one wiki's own subtree; moving a page to another wiki is a re-home",
                 )));
             }
         },
@@ -3778,8 +3783,10 @@ Un'altra pagina: [[bruno/orto]].
         let emb = embedder();
         capture_one(&tree, &pool, emb, "orto.md", "note on orto").await;
 
-        // Regrouping rearranges a wiki's own subtree — it never files
-        // content into somebody else's wiki.
+        // Regrouping is the TIDYING gesture and stays inside the subtree it
+        // tidies. Nothing here is about property: a page that belongs on a
+        // different shelf moves with the re-home variant, which names any
+        // standard wiki and carries each fact's ACL across untouched.
         let ctx = json!({
             "variant": "pages_move_wiki",
             "source_wiki_id": "alice",
