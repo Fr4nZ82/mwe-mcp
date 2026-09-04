@@ -490,6 +490,7 @@ mod tests {
             style: None,
             primary_facts: facts,
             outgoing_links: Vec::new(),
+            pending_links: Vec::new(),
             wiki_id: "alice".to_owned(),
             page_path: format!("{slug}.md"),
         }

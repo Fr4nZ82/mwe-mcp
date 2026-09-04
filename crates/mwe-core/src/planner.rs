@@ -324,10 +324,31 @@ pub struct PagePlan {
     /// the compiler will require of it next time
     /// ([`crate::compiler::link_targets`]). **Outgoing only** — a page that links here does
     /// not appear, because a link does not oblige the page at the other end
-    /// (founder, 2026-08-23). Part of [`page_fingerprint`]: a page whose links
-    /// changed is a page whose prose has to be written again.
+    /// (founder, 2026-08-23). This is the navigation graph and **not** a
+    /// recompile signal — what the page still owes is, and that lives in
+    /// [`Self::pending_links`].
     #[serde(default)]
     pub outgoing_links: Vec<String>,
+    /// The link work this page still OWES — and the only link signal that
+    /// makes it dirty.
+    ///
+    /// One thing lands here: a rail the night decided this page should carry,
+    /// whose prose does not carry it yet. It is work a rewrite discharges, so
+    /// it empties itself — which is the property that matters. A link whose
+    /// target has gone is deliberately NOT here: nothing guarantees the next
+    /// rewrite drops it, and a page that cannot discharge what it owes is
+    /// rewritten every build for ever.
+    ///
+    /// [`Self::outgoing_links`] is deliberately NOT that signal. Those links
+    /// are read back out of the prose the Cronista just wrote, and the
+    /// Cronista chooses them: comparing this build's harvest with the last
+    /// one's compares a page's output with its input, so every page came out
+    /// of a compile marked as needing another. Measured on the bench,
+    /// 2026-09-04: with nothing new to place, 7 of 67 pages were queued for a
+    /// rewrite on that difference alone, and the closing pass — a second full
+    /// compile — spent a quarter to a third of every night on it.
+    #[serde(default)]
+    pub pending_links: Vec<String>,
     /// The standard wiki this page lives in (its tree home).
     pub wiki_id: String,
     /// The `.md` path within `wiki_id`. A foundation node uses its type's
@@ -657,6 +678,7 @@ pub async fn build_foundation_pages(pool: &SqlitePool) -> Result<BTreeMap<String
                 style: None,
                 primary_facts: Vec::new(),
                 outgoing_links: Vec::new(),
+                pending_links: Vec::new(),
                 wiki_id: u.user_id.clone(),
                 page_path: crate::wiki::PROFILE_FILENAME.to_owned(),
                 slug,
@@ -851,6 +873,7 @@ pub fn build_compilation_plan(
                     style: None,
                     primary_facts: Vec::new(),
                     outgoing_links: Vec::new(),
+                    pending_links: Vec::new(),
                     wiki_id: wiki_id.clone(),
                     page_path: format!("{slug}.md"),
                     slug: slug.clone(),
@@ -1054,6 +1077,13 @@ pub fn build_compilation_plan(
             p.outgoing_links.push(to.clone());
         }
         carried_rails.push((from.clone(), to.clone()));
+        if let Some(p) = pages.get_mut(from)
+            && !p.pending_links.contains(to)
+        {
+            // A rail this page owes: the night decided it, and the prose has
+            // not written it yet. That IS a reason to write the page again.
+            p.pending_links.push(to.clone());
+        }
     }
     let mut link_graph: BTreeMap<String, Vec<String>> = BTreeMap::new();
     for (slug, page) in &pages {
@@ -1110,6 +1140,7 @@ fn registry_to_page(e: &ConceptRegistryEntry) -> PagePlan {
         style: e.style,
         primary_facts: Vec::new(),
         outgoing_links: Vec::new(),
+        pending_links: Vec::new(),
         wiki_id: e.wiki_id.clone(),
         page_path,
     }
@@ -1125,6 +1156,7 @@ fn new_page_to_plan(np: &NewPage, slug: &str, wiki_id: &str) -> PagePlan {
         style: crate::wiki::PageStyle::parse_lenient(np.style.as_deref()),
         primary_facts: Vec::new(),
         outgoing_links: Vec::new(),
+        pending_links: Vec::new(),
         wiki_id: wiki_id.to_owned(),
         page_path,
     }
@@ -1323,7 +1355,9 @@ pub fn page_fingerprint(p: &PagePlan) -> String {
         })
         .collect();
     facts.sort_unstable();
-    let mut out = p.outgoing_links.clone();
+    // The links a page HAS are not a change: it wrote them itself. What it
+    // still owes is — see [`PagePlan::pending_links`].
+    let mut out = p.pending_links.clone();
     out.sort();
     format!("{}|{}", facts.join(","), out.join(","))
 }
@@ -1548,6 +1582,7 @@ pub fn rehome_facts_in_persisted_plan(
                     style: seed.style,
                     primary_facts: Vec::new(),
                     outgoing_links: Vec::new(),
+                    pending_links: Vec::new(),
                     wiki_id: seed.wiki_id.clone(),
                     page_path: seed
                         .page_path
@@ -3472,6 +3507,14 @@ pub async fn build_wiki_plan(
         pages = plan.pages.len(),
         dirty = plan.dirty_pages.len(),
         facts = plan.fact_count,
+        // A page owing a link is dirty until the rewrite writes it. If this
+        // number stops falling, a rewrite is failing to discharge what it owes
+        // and the page is being written every build for nothing.
+        owed_links = plan
+            .pages
+            .values()
+            .map(|p| p.pending_links.len())
+            .sum::<usize>(),
         "planner: plan built"
     );
     Ok(plan)
@@ -4076,6 +4119,7 @@ mod tests {
                 style: None,
                 primary_facts: Vec::new(),
                 outgoing_links: Vec::new(),
+                pending_links: Vec::new(),
                 wiki_id: "franz".to_owned(),
                 page_path: crate::wiki::PROFILE_FILENAME.to_owned(),
                 slug: "franz".to_owned(),
@@ -4299,6 +4343,7 @@ mod tests {
             style: None,
             primary_facts: Vec::new(),
             outgoing_links: Vec::new(),
+            pending_links: Vec::new(),
             wiki_id: slug.to_owned(),
             page_path: crate::wiki::PROFILE_FILENAME.to_owned(),
         }
@@ -4839,6 +4884,7 @@ mod tests {
                 style: None,
                 primary_facts: Vec::new(),
                 outgoing_links: Vec::new(),
+                pending_links: Vec::new(),
                 wiki_id: "alice".to_owned(),
                 page_path: "cucina.md".to_owned(),
             },
@@ -4997,9 +5043,9 @@ mod tests {
     fn fingerprint_changes_on_topology_not_just_facts() {
         let mut p = person("alice");
         let fp1 = page_fingerprint(&p);
-        p.outgoing_links.push("bob".to_owned());
+        p.pending_links.push("bob".to_owned());
         let fp2 = page_fingerprint(&p);
-        assert_ne!(fp1, fp2, "a link change must change the fingerprint");
+        assert_ne!(fp1, fp2, "an owed link must change the fingerprint");
     }
 
     #[test]
@@ -5571,22 +5617,41 @@ mod tests {
             vec!["garage".to_owned()],
             "which is the graph the compiler recommends rails from"
         );
+        assert!(
+            plan.pages["cucina"].pending_links.is_empty(),
+            "and the page owes nothing for a link it wrote itself — that is \
+             what stops a rewrite from asking for the next one: {:?}",
+            plan.pages["cucina"].pending_links,
+        );
         drop(dir);
     }
 
-    /// A page whose own links changed is a page whose prose has to be written
-    /// again — that is what puts a link back when a rewrite drops it, and what
-    /// carries a rail the REM decided into the text.
+    /// A page that OWES a link is dirty; a page that merely wrote different
+    /// links than the last plan recorded is not.
+    ///
+    /// The links a page carries are read back out of the prose the Cronista
+    /// wrote, and the Cronista chooses them. Treating that harvest as a change
+    /// compares a page's output with its input, and every page that was
+    /// rewritten came out asking to be rewritten again — a quarter to a third
+    /// of every night, measured on the bench 2026-09-04.
     #[test]
-    fn a_page_whose_links_changed_is_dirty() {
+    fn a_page_is_dirty_for_the_link_it_owes_not_the_ones_it_wrote() {
         let mut before = person("alice");
         before.outgoing_links = vec!["cucina".to_owned()];
         let mut after = before.clone();
         after.outgoing_links = vec!["cucina".to_owned(), "orto".to_owned()];
-        assert_ne!(
+        assert_eq!(
             page_fingerprint(&before),
             page_fingerprint(&after),
-            "gaining a link changes the fingerprint"
+            "the Cronista choosing another link is not a reason to write the page again"
+        );
+
+        let mut owing = before.clone();
+        owing.pending_links = vec!["orto".to_owned()];
+        assert_ne!(
+            page_fingerprint(&before),
+            page_fingerprint(&owing),
+            "a rail the night decided and the prose has not written IS a reason"
         );
     }
 
