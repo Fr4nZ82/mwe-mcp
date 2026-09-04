@@ -152,6 +152,8 @@ const VARIANT_PAGES_MOVE_WIKI: &str = "pages_move_wiki";
 /// own at the root. The whole-memory sibling of [`VARIANT_PAGES_TO_SUBWIKI`],
 /// which only ever tidied one wiki's subtree.
 const VARIANT_PAGES_TO_NEW_WIKI: &str = "pages_to_new_wiki";
+/// Its twin for a destination that already exists.
+const VARIANT_PAGES_INTO_WIKI: &str = "pages_into_wiki";
 /// Pages leaving their wiki for an unrelated one. The sibling of
 /// [`VARIANT_PAGES_MOVE_WIKI`] and deliberately a different verb: regrouping
 /// tidies a wiki's own subtree, this one contradicts the wiki a page was born
@@ -195,6 +197,7 @@ pub(crate) async fn apply_wiki_promote(
         VARIANT_PARAGRAPH_TO_FILE => apply_paragraph_to_file(pool, tree, context, answers).await,
         VARIANT_PAGES_TO_SUBWIKI => apply_pages_to_subwiki(pool, tree, context, answers).await,
         VARIANT_PAGES_TO_NEW_WIKI => apply_pages_to_new_wiki(pool, tree, context, answers).await,
+        VARIANT_PAGES_INTO_WIKI => apply_pages_into_wiki(pool, tree, context, answers).await,
         VARIANT_PAGES_MOVE_WIKI => apply_pages_move_wiki(pool, tree, context, answers).await,
         VARIANT_PAGES_REHOME => apply_pages_rehome(pool, tree, context, answers).await,
         VARIANT_PAGE_MERGE => apply_page_merge(pool, tree, context, answers).await,
@@ -1425,6 +1428,15 @@ struct NewWikiContext {
     /// Human-readable title.
     #[serde(default)]
     new_wiki_title: Option<String>,
+}
+
+/// Context of a `pages_into_wiki`: where the pages go, and which they are.
+#[derive(Debug, serde::Deserialize)]
+struct IntoWikiContext {
+    /// The wiki that receives them. It must already exist.
+    target_wiki_id: String,
+    /// `<wiki_id>/<page.md>` for each page.
+    pages: Vec<String>,
 }
 
 /// A page collected for a group move: paths, bytes, and the facts on it,
@@ -3263,6 +3275,141 @@ pub async fn apply_pages_to_new_wiki_direct(
         proposal_id: receipt.proposal_id,
         spec,
     })
+}
+
+/// Act-first entry point for the whole-memory grouping's other verb: pages
+/// that belong to a wiki which ALREADY EXISTS move into it, from wherever
+/// each was filed.
+///
+/// No floor — the home is already there, so there is nothing to justify.
+/// `pages` are `<wiki_id>/<page.md>`, and they may come from any number of
+/// wikis including the target's own siblings; a page already in the target is
+/// refused rather than moved onto itself.
+///
+/// # Errors
+/// Whatever the handler refuses, plus a receipt failure.
+pub async fn apply_pages_into_wiki_direct(
+    pool: &SqlitePool,
+    tree: &WikiTree,
+    target_wiki_id: &str,
+    pages: &[String],
+    hints: &PageGroupHints,
+    recipient: Option<String>,
+) -> Result<DirectApplied, DirectPromoteError> {
+    let context = json!({
+        "variant": VARIANT_PAGES_INTO_WIKI,
+        "target_wiki_id": target_wiki_id,
+        "pages": pages,
+        "group_pages": hints.group_pages,
+        "reason": hints.reason,
+    });
+    let answers = json!({ "variant": VARIANT_PAGES_INTO_WIKI });
+    let spec = apply_pages_into_wiki(pool, tree, &context, &answers).await?;
+    let questions = json!([{
+        "id": "variant",
+        "text": format!("File {n} pages into `{target_wiki_id}`?", n = pages.len()),
+        "options": [{
+            "id": VARIANT_PAGES_INTO_WIKI,
+            "label": format!("Move {n} pages into `{target_wiki_id}`", n = pages.len()),
+            "value": VARIANT_PAGES_INTO_WIKI,
+            "recommended": true,
+        }]
+    }]);
+    let receipt = proposals::emit_applied_proposal(
+        pool,
+        EmitParams::new(kind::WIKI_PROMOTE, context, questions).with_recipient(recipient),
+        spec.clone(),
+        None,
+    )
+    .await?;
+    Ok(DirectApplied {
+        proposal_id: receipt.proposal_id,
+        spec,
+    })
+}
+
+/// Apply a `pages_into_wiki`: pages named across the memory move into a wiki
+/// that already exists.
+///
+/// The birth sibling ([`apply_pages_to_new_wiki`]) mints the destination; this
+/// one is handed it. Everything else is the same gesture, and the same
+/// guarantee: each fact carries its own `subject_id` and `allow_ids` across,
+/// so the move rewrites where a page sits and nothing about whose it is.
+async fn apply_pages_into_wiki(
+    pool: &SqlitePool,
+    tree: &WikiTree,
+    context: &Value,
+    _answers: &Value,
+) -> Result<Value, ApplyError> {
+    let ctx: IntoWikiContext = serde_json::from_value(context.clone())
+        .map_err(|e| ApplyError::InvalidPayload(format!("context: {e}")))?;
+    let target_id = WikiId::parse(&ctx.target_wiki_id)
+        .map_err(|e| ApplyError::InvalidPayload(format!("context.target_wiki_id: {e}")))?;
+    let target = tree
+        .locate(&target_id)
+        .map_err(|e| ApplyError::InvalidPayload(format!("target wiki not found: {e}")))?;
+    if target.meta().smart {
+        return Err(ApplyError::InvalidPayload(format!(
+            "{target_id} is smart — its consumer is its only writer",
+        )));
+    }
+    let target_dir = target.abs_dir().to_path_buf();
+
+    let collected = collect_pages_across_wikis(pool, tree, &ctx.pages).await?;
+    if let Some((from, _)) = collected
+        .iter()
+        .find(|(from, _)| from == target_id.as_str())
+    {
+        return Err(ApplyError::InvalidPayload(format!(
+            "a page of {from} cannot move into {target_id} — it is already there",
+        )));
+    }
+
+    let mut spec_pages = Vec::with_capacity(collected.len());
+    let mut sources: std::collections::BTreeSet<String> = std::collections::BTreeSet::new();
+    for (source_wiki_id, page) in &collected {
+        relocate_page(pool, tree, page, &target_dir, target_id.as_str()).await?;
+        rehome_grouped_page(pool, tree, page, source_wiki_id, target_id.as_str()).await;
+        follow_page_in_registry(
+            tree,
+            &page.rel_in_wiki.to_string_lossy(),
+            target_id.as_str(),
+        );
+        retarget_links_after_move(
+            pool,
+            tree,
+            &moved_addresses(
+                std::iter::once(page.rel_in_wiki.as_path()),
+                source_wiki_id,
+                target_id.as_str(),
+            ),
+        )
+        .await;
+        sources.insert(source_wiki_id.clone());
+        spec_pages.push(GroupedPage {
+            page: page.rel_in_wiki.to_string_lossy().into_owned(),
+            page_bytes: page.bytes.clone(),
+            fact_ids: page.facts.iter().map(|f| f.as_str().to_owned()).collect(),
+        });
+    }
+    let mut parked: Vec<&str> = sources.iter().map(String::as_str).collect();
+    parked.push(target_id.as_str());
+    park_wiki_cards_for_recompile(tree, &parked);
+
+    tracing::info!(
+        target_wiki_id = target_id.as_str(),
+        pages = spec_pages.len(),
+        from_wikis = sources.len(),
+        "promote: pages_into_wiki applied",
+    );
+
+    Ok(json!(PagesToSubwikiSpec {
+        variant: VARIANT_PAGES_INTO_WIKI.to_owned(),
+        source_wiki_id: sources.iter().cloned().collect::<Vec<_>>().join(","),
+        new_wiki_id: target_id.as_str().to_owned(),
+        new_wiki_slug: target.meta().slug.as_str().to_owned(),
+        pages: spec_pages,
+    }))
 }
 
 /// Act-first entry point for the structural review: one wiki's pages move to

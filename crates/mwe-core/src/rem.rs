@@ -141,10 +141,10 @@ pub struct RemPolicy {
     /// leaves two halves, neither of which answers the question. See
     /// [`mass_floor_for_style`].
     pub auto_promote_min_page_facts_technical: usize,
-    /// Minimum **group size**, in pages, for a new sub-wiki to be born
-    /// out of the *page-group → wiki* regrouping pass: the LLM must find
-    /// at least this many pages of one wiki that are the same subject
-    /// area before any of them moves (`pages_to_subwiki`).
+    /// Minimum **group size**, in pages, for a new wiki to be born out of
+    /// the *page-group → wiki* regrouping pass: the LLM must find at least
+    /// this many pages, from anywhere in the memory, that are the same
+    /// subject area before any of them moves (`pages_to_new_wiki`).
     ///
     /// This is the page→folder rung of the forma fisica scale, above
     /// [`Self::auto_promote_min_page_facts`] (line→page), and the two no
@@ -154,10 +154,10 @@ pub struct RemPolicy {
     /// trigger is evidence on disk rather than a bet on future
     /// ramification.
     ///
-    /// The floor governs **birth** only. Moving pages into a sub-wiki
-    /// that already exists (`pages_move_wiki`) has no floor — the home
-    /// is already there, so a single stray page belongs inside just as
-    /// much as nine do.
+    /// The floor governs **birth** only. Moving pages into a wiki that
+    /// already exists (`pages_into_wiki`) has no floor — the home is
+    /// already there, so a single stray page belongs inside just as much
+    /// as nine do.
     pub auto_promote_group_min_pages: usize,
     /// Maximum number of page-merge candidate pairs the merge sub-job
     /// sends to the LLM confirmer per cycle (the cure front of semantic
@@ -768,12 +768,12 @@ pub struct AutoPromoteReport {
     /// per page).
     pub grouping_wikis_examined: usize,
     /// Groups the LLM cut that survived the Rust-side floors and
-    /// applied — a new sub-wiki born, or pages filed into one that
-    /// already existed.
+    /// applied — a new wiki born at the root, or pages filed into one
+    /// that already existed.
     pub grouping_groups_applied: usize,
     /// Receipt ids of the structural changes **applied directly** this
     /// cycle (born-applied `wiki_promote` rows: `paragraph_to_file`,
-    /// `pages_to_subwiki`, and `pages_move_wiki` share the
+    /// `pages_to_new_wiki` and `pages_into_wiki` share the
     /// `auto_promote_cap`). Each was announced with a `structure_applied`
     /// notice.
     pub applied: Vec<String>,
@@ -2668,14 +2668,43 @@ async fn run_auto_promote(
         report.disabled_reason = Some("no rem_promotions LLM wired".to_owned());
         return Ok(report);
     };
-    // The whole tree up front: the grouping pass needs to see a wiki's
-    // existing sub-wikis to prefer filing pages into them over founding
-    // a second home for the same subject.
+    // The whole tree up front: the grouping pass reads the memory as one
+    // shelf, and it has to see every wiki that already exists to prefer
+    // filing pages into one over founding a second home for the same subject.
     let all_wikis = tree.walk()?;
     // One run of failures for the whole sub-job, shared with the grouping
     // pass below: both call the same slot, so a backend that has stopped
     // answering one has stopped answering the other.
     let mut llm_failures = 0usize;
+
+    // Page-group → wiki regrouping, ONCE for the whole memory and before the
+    // per-page loop below. The two rungs of the forma fisica scale read
+    // different signals and never contend: this one gathers whole pages that
+    // are one argument, wherever they sit; the loop splits a single page that
+    // has grown too heavy. A page this pass relocated is skipped below — each
+    // wiki's `facts` snapshot is taken inside the loop and would still point
+    // at the page's old home.
+    let regrouped = run_page_grouping(
+        &GroupingRun {
+            pool,
+            tree,
+            llm,
+            cycle_id,
+            policy,
+            all_wikis: &all_wikis,
+            smart_wiki_index,
+        },
+        &mut llm_failures,
+        &mut report,
+    )
+    .await?;
+    if llm_failures >= LLM_FAILURE_ABORT {
+        return Ok(report);
+    }
+    // The tree changed under us: pages moved between wikis, and a wiki may
+    // have been born.
+    let all_wikis = tree.walk()?;
+
     for d in &all_wikis {
         if report.applied.len() >= policy.auto_promote_cap {
             break;
@@ -2694,27 +2723,6 @@ async fn run_auto_promote(
         for f in &facts {
             *page_mass.entry(f.source_path.as_str()).or_default() += 1;
         }
-        // Page-group → wiki regrouping. Runs *before* the paragraph
-        // loop, and the two read different signals: this pass moves whole
-        // pages between wikis on the strength of how many of them are one
-        // subject, while the loop below splits a page that has grown too
-        // heavy. A page this pass relocated is skipped below — the `facts`
-        // snapshot predates the move and still points at the page's old home.
-        let regrouped = run_page_grouping_for_wiki(
-            pool,
-            tree,
-            llm,
-            cycle_id,
-            policy,
-            d,
-            &all_wikis,
-            smart_wiki_index,
-            &facts,
-            &page_mass,
-            &mut llm_failures,
-            &mut report,
-        )
-        .await?;
         if llm_failures >= LLM_FAILURE_ABORT {
             return Ok(report);
         }
@@ -3019,7 +3027,7 @@ async fn run_auto_promote(
 ///   `fact_id` into `context`. A `kind`-only match let ANY once-closed /
 ///   refiled / re-ACL'd fact veto its whole page. `paragraph_to_file` is
 ///   the one real page-promotion receipt to match. Its sibling
-///   `pages_to_subwiki` cannot be matched here and does not need to be:
+///   `pages_to_new_wiki` cannot be matched here and does not need to be:
 ///   its context carries a `pages` list and no `source_page`, so the
 ///   scope clause below would never fire on it.
 /// - **Source scope.** A receipt records the page a fact was promoted
@@ -3299,6 +3307,138 @@ fn wiki_relative_page(d: &wiki::DiscoveredWiki, source_path: &str) -> Option<Str
 
 // ---------- Page-group → wiki regrouping ----------
 
+/// What nominated a candidate group — said in words, because the receipt and
+/// the dashboard show it and *«perché queste pagine»* is the first question a
+/// reader has.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord)]
+enum Nominator {
+    /// A topic word carried by the facts of every page in the group. The
+    /// general case: the two words a fact carries exist to be counted, and a
+    /// word many pages share is what "an argument" means here.
+    Topic,
+    /// The NAME of something that is not a principal — a relative, a pet, a
+    /// car. One handle among several, never the privileged one.
+    NamedThing,
+    /// A single day. A day with enough happening in it is as much an argument
+    /// as a subject is (founder, 2026-09-04).
+    Day,
+}
+
+impl Nominator {
+    const fn as_str(self) -> &'static str {
+        match self {
+            Self::Topic => "topic",
+            Self::NamedThing => "named thing",
+            Self::Day => "day",
+        }
+    }
+}
+
+/// A group of pages the engine puts to the model, and what tied them.
+#[derive(Debug, Clone)]
+struct Candidate {
+    /// The shared handle, verbatim: `salute`, `Bilbo`, `2026-06-30`.
+    handle: String,
+    nominator: Nominator,
+    /// `<wiki_id>/<page.md>`, sorted, deduplicated.
+    pages: Vec<String>,
+}
+
+/// Nominate the groups worth a question, from the whole memory, without
+/// reading the whole memory.
+///
+/// **Three counts, no scan.** A candidate is any handle that ties at least
+/// `floor` pages together, and the engine has three of them on columns it
+/// already keeps: a fact's topic words, the name of what it is about, and the
+/// day it holds from. Each is one `GROUP BY`, so the cost is the number of
+/// ANSWERS, not the size of the memory — which is the whole reason this is not
+/// "show the model every page and ask it to find groups". That version reads
+/// fine on forty pages and is impossible on four thousand (founder,
+/// 2026-09-04: *«su una memoria grande diventa insostenibile»*).
+///
+/// **No handle is privileged.** A wiki may emerge for anything that takes nine
+/// pages — gardening, a car, a busy day — so the subject is one nominator
+/// among three and not the shape the pass looks for.
+///
+/// Strongest first, so the night spends its cap on the clearest groups; the
+/// caller drops pages an earlier group already claimed, which is what stops
+/// two overlapping handles (`salute` and a person's name over nearly the same
+/// pages) from minting two wikis for one argument.
+async fn nominate_candidates(
+    pool: &SqlitePool,
+    all_wikis: &[wiki::DiscoveredWiki],
+    smart_wiki_index: &SmartWikiIndex,
+    floor: usize,
+) -> Result<Vec<Candidate>> {
+    let by_id: HashMap<&str, &wiki::DiscoveredWiki> = all_wikis
+        .iter()
+        .filter(|d| !is_smart_wiki(smart_wiki_index, d.meta.wiki_id.as_str()))
+        .map(|d| (d.meta.wiki_id.as_str(), d))
+        .collect();
+
+    // One read of the live rows, three groupings over it. The alternative —
+    // three queries — reads the same rows three times for the same answer.
+    let rows = fact_index::find_by_filters(pool, &fact_index::FactFilters::default()).await?;
+    let mut buckets: HashMap<(Nominator, String), BTreeSet<String>> = HashMap::new();
+    for row in &rows {
+        let Some(d) = by_id.get(row.wiki_id.as_str()) else {
+            continue;
+        };
+        let Some(rel) = wiki_relative_page(d, &row.source_path) else {
+            continue;
+        };
+        // The pages the engine names itself are never grouped: a card and a
+        // rules page are found by their path, and moving one would silently
+        // stop it being served.
+        if wiki::is_identity_card_page(&row.source_path) || wiki::is_channel_page(&row.source_path)
+        {
+            continue;
+        }
+        let qualified = format!("{}/{rel}", row.wiki_id);
+        let mut add = |nominator, handle: String| {
+            buckets
+                .entry((nominator, handle))
+                .or_default()
+                .insert(qualified.clone());
+        };
+        for word in &row.topics {
+            let word = word.trim();
+            if !word.is_empty() {
+                add(Nominator::Topic, word.to_owned());
+            }
+        }
+        if let Some(name) = row.subject_external.as_deref().map(str::trim)
+            && !name.is_empty()
+        {
+            add(Nominator::NamedThing, name.to_owned());
+        }
+        if let Some(day) = row.valid_from.as_deref().and_then(|v| v.get(..10))
+            && day.len() == 10
+        {
+            add(Nominator::Day, day.to_owned());
+        }
+    }
+
+    let mut out: Vec<Candidate> = buckets
+        .into_iter()
+        .filter(|(_, pages)| pages.len() >= floor)
+        .map(|((nominator, handle), pages)| Candidate {
+            handle,
+            nominator,
+            pages: pages.into_iter().collect(),
+        })
+        .collect();
+    // Widest first, ties by handle so two runs of the same memory ask the
+    // same questions in the same order.
+    out.sort_by(|a, b| {
+        b.pages
+            .len()
+            .cmp(&a.pages.len())
+            .then_with(|| a.handle.cmp(&b.handle))
+    });
+    Ok(out)
+}
+
 /// How many verbatim excerpts of a page ride in the inventory the
 /// cartographer reads. Two is enough to tell `bagnetto_neonata.md` from
 /// `bucato_neonata.md` without shipping the whole corpus in the prompt.
@@ -3307,133 +3447,164 @@ const GROUPING_SNIPPETS_PER_PAGE: usize = 2;
 /// Character budget per excerpt.
 const GROUPING_SNIPPET_CHARS: usize = 110;
 
-/// The *page-group → wiki* regrouping pass for one wiki — the
-/// page→folder rung of the forma fisica scale.
+/// The *page-group → wiki* regrouping pass — the page→folder rung of the
+/// forma fisica scale, read across the WHOLE memory.
 ///
-/// One LLM call per wiki (not per page): the model reads the wiki's
-/// whole page inventory plus the sub-wikis that already exist under it,
-/// and cuts groups of pages that are **already** one subject area. A
-/// group either becomes a new sub-wiki (`pages_to_subwiki`, floor
-/// `policy.auto_promote_group_min_pages`) or moves into a sub-wiki that
-/// already exists (`pages_move_wiki`, no floor — the home is there).
+/// **The engine nominates, the model judges.** [`nominate_candidates`] counts
+/// three handles a page can share — a topic word, the name of what a fact is
+/// about, a day — and hands over every group of at least
+/// `auto_promote_group_min_pages` pages. Each candidate is then one small
+/// question: *these pages share this handle, are they one subject area, and
+/// what is the wiki called?*
 ///
-/// The trigger is therefore **evidence on disk**, never a bet: a wiki
-/// is born holding every page of its subject, and can never be born
-/// with one page. A page that has merely accumulated mass is the
-/// *paragraph → page* pass's business: the two rungs read different
-/// signals and never contend for the same page.
+/// It is deliberately **not** "show the model every page and let it find the
+/// groups". That reads fine on forty pages and is impossible on four thousand
+/// (founder, 2026-09-04: *«su una memoria grande diventa insostenibile»*), and
+/// it also asks the model to do the counting, which is the one part a
+/// `GROUP BY` does better and explains for free — the receipt can say WHY
+/// these pages were put together.
 ///
-/// Returns the workdir-relative `source_path`s the pass moved, so the
-/// paragraph pass below can skip them: its `facts` snapshot predates
-/// the move and still points at the old home.
+/// **Nothing is privileged.** A wiki may emerge for anything that takes nine
+/// pages: gardening, a car, a cat, a day with a lot in it, a relative the
+/// household looks after. The subject is one nominator of three.
 ///
-/// `llm_failures` is the caller's run of consecutive failed model calls,
-/// shared because both passes call the same slot — a failed call here costs
-/// this wiki and not the night ([`note_llm_failure`]).
-#[allow(
-    clippy::too_many_arguments,
-    reason = "mirrors run_auto_promote's orchestrator bag; threading a struct would just hide the same fields"
-)]
-#[allow(
-    clippy::too_many_lines,
-    reason = "linear per-wiki pipeline (inventory → prompt → validate → apply); splitting hides the order"
-)]
-async fn run_page_grouping_for_wiki(
-    pool: &SqlitePool,
-    tree: &WikiTree,
-    llm: &dyn LlmBackend,
-    cycle_id: &str,
-    policy: &RemPolicy,
-    d: &wiki::DiscoveredWiki,
-    all_wikis: &[wiki::DiscoveredWiki],
-    smart_wiki_index: &SmartWikiIndex,
-    facts: &[FactIndexRow],
-    page_mass: &HashMap<&str, usize>,
+/// The pages a group takes are dropped from every later candidate of the same
+/// night, so two handles lying over the same pages — a topic and a name, say —
+/// mint one wiki and not two.
+/// The read-only half of a grouping run, gathered once by the caller.
+///
+/// The pass puts one question per candidate to the model and applies at most
+/// `auto_promote_cap` answers; every one of them reads the same memory, and
+/// the tree walk behind `all_wikis` is expensive enough to be worth doing once.
+struct GroupingRun<'a> {
+    pool: &'a SqlitePool,
+    tree: &'a WikiTree,
+    llm: &'a dyn LlmBackend,
+    cycle_id: &'a str,
+    policy: &'a RemPolicy,
+    all_wikis: &'a [wiki::DiscoveredWiki],
+    smart_wiki_index: &'a SmartWikiIndex,
+}
+
+/// What one candidate left behind.
+enum CandidateOutcome {
+    /// Nothing moved — the model saw no subject area, or its answer was
+    /// unusable. The next candidate is asked all the same.
+    Nothing,
+    /// The group was applied: these pages, qualified as `<wiki>/<page.md>`,
+    /// are now somewhere else.
+    Applied(Vec<String>),
+    /// The slot stopped answering. Nothing more is asked tonight.
+    Abort,
+}
+
+async fn run_page_grouping(
+    run: &GroupingRun<'_>,
     llm_failures: &mut usize,
     report: &mut AutoPromoteReport,
 ) -> Result<HashSet<String>> {
     let mut moved: HashSet<String> = HashSet::new();
-    if report.applied.len() >= policy.auto_promote_cap {
+    if report.applied.len() >= run.policy.auto_promote_cap {
         return Ok(moved);
     }
-
-    // Candidate pages: every page carrying mass, except the ones whose NAME
-    // the engine decides. A grouping moves a page into a sub-wiki, so it
-    // moves the page's path — and a reserved page is found by its path: the
-    // rules reader opens `@rules.md` at the wiki root, the signpost reader
-    // keys on the path, recall serves the identity card from the wiki it
-    // belongs to. Carried one level down, each of them keeps its content and
-    // silently stops being delivered, with no error anywhere. Same two fences
-    // the split honours, for the same reason.
-    let mut candidates: Vec<(String, &str, usize)> = page_mass
-        .iter()
-        .filter(|&(&source_path, _)| !wiki::is_channel_page(source_path))
-        .filter(|&(&source_path, _)| !wiki::is_identity_card_page(source_path))
-        .filter_map(|(&source_path, &mass)| {
-            let rel = wiki_relative_page(d, source_path)?;
-            Some((rel, source_path, mass))
-        })
-        .collect();
-    candidates.sort_unstable_by(|a, b| a.0.cmp(&b.0));
-
-    // Sub-wikis that already exist under this wiki and can receive
-    // pages. A smart wiki never qualifies: its consumer is the sole
-    // writer, REM does not file into it.
-    let children: Vec<&wiki::DiscoveredWiki> = all_wikis
-        .iter()
-        .filter(|c| {
-            c.meta.parent_wiki_id.as_ref().map(WikiId::as_str) == Some(d.meta.wiki_id.as_str())
-                && !is_smart_wiki(smart_wiki_index, c.meta.wiki_id.as_str())
-        })
-        .collect();
-
-    // Nothing can fire: too few pages for a birth and nowhere to file.
-    if candidates.len() < policy.auto_promote_group_min_pages && children.is_empty() {
-        // Said out loud because the counter cannot say it. `grouping_wikis`
-        // counts the wikis the MODEL saw, so a zero reads the same whether
-        // the shelf was too short, the same question was already settled, or
-        // the pass never reached this wiki at all — three different answers
-        // to "why did no wiki emerge", and the operator has only the one
-        // number.
+    let candidates = nominate_candidates(
+        run.pool,
+        run.all_wikis,
+        run.smart_wiki_index,
+        run.policy.auto_promote_group_min_pages,
+    )
+    .await?;
+    if candidates.is_empty() {
         tracing::info!(
-            wiki_id = d.meta.wiki_id.as_str(),
-            candidates = candidates.len(),
-            floor = policy.auto_promote_group_min_pages,
-            "rem grouping: too few pages to found a wiki and no sub-wiki to file into"
+            floor = run.policy.auto_promote_group_min_pages,
+            "rem grouping: nothing ties enough pages together to be worth a wiki"
         );
         return Ok(moved);
     }
 
-    let inventory = grouping_inventory(&candidates, facts);
-    let existing = grouping_existing_wikis(&children);
-    // The new sub-wiki's title and description are read by a human, so they
-    // follow the wiki's declared language rather than whatever language the
-    // page inventory happens to be in.
-    let language_directive =
-        crate::locale::memory_directive_for_wiki_meta(pool, tree, &d.meta).await;
-    let prompt = page_grouping_prompt(
-        tree,
-        d,
-        candidates.len(),
-        policy.auto_promote_group_min_pages,
-        &existing,
+    // Where each page lives, so a group can be applied without re-walking.
+    let by_id: HashMap<&str, &wiki::DiscoveredWiki> = run
+        .all_wikis
+        .iter()
+        .map(|d| (d.meta.wiki_id.as_str(), d))
+        .collect();
+    let existing = grouping_existing_wikis_all(run.all_wikis, run.smart_wiki_index);
+    let mut claimed: HashSet<String> = HashSet::new();
+
+    for candidate in candidates {
+        if report.applied.len() >= run.policy.auto_promote_cap {
+            break;
+        }
+        let pages: Vec<String> = candidate
+            .pages
+            .iter()
+            .filter(|p| !claimed.contains(*p))
+            .cloned()
+            .collect();
+        if pages.len() < run.policy.auto_promote_group_min_pages {
+            continue;
+        }
+        let outcome = judge_one_candidate(
+            run,
+            &candidate,
+            &pages,
+            &by_id,
+            &existing,
+            llm_failures,
+            report,
+        )
+        .await?;
+        match outcome {
+            CandidateOutcome::Nothing => {},
+            CandidateOutcome::Abort => return Ok(moved),
+            CandidateOutcome::Applied(kept) => {
+                for qualified in kept {
+                    if let Some(source_path) = source_path_of(&by_id, &qualified) {
+                        moved.insert(source_path);
+                    }
+                    claimed.insert(qualified);
+                }
+            },
+        }
+    }
+
+    Ok(moved)
+}
+
+/// Put one candidate to the model and act on the answer.
+async fn judge_one_candidate(
+    run: &GroupingRun<'_>,
+    candidate: &Candidate,
+    pages: &[String],
+    by_id: &HashMap<&str, &wiki::DiscoveredWiki>,
+    existing: &str,
+    llm_failures: &mut usize,
+    report: &mut AutoPromoteReport,
+) -> Result<CandidateOutcome> {
+    let inventory = candidate_inventory(run.pool, by_id, pages).await?;
+    let prompt = candidate_grouping_prompt(
+        run.tree,
+        candidate,
+        pages.len(),
+        existing,
         &inventory,
-        &language_directive,
-    )?;
-    // The memo keys on the rendered prompt, so it re-opens by itself
-    // the moment the inventory changes (a page added, split, renamed).
-    let memo_key = rem_verdicts::key(llm.model_id(), &prompt);
-    if rem_verdicts::is_settled(pool, rem_verdicts::kind::PAGE_GROUPING, &memo_key).await? {
+        run.pool,
+    )
+    .await?;
+    let memo_key = rem_verdicts::key(run.llm.model_id(), &prompt);
+    if rem_verdicts::is_settled(run.pool, rem_verdicts::kind::PAGE_GROUPING, &memo_key).await? {
         tracing::info!(
-            wiki_id = d.meta.wiki_id.as_str(),
-            candidates = candidates.len(),
-            "rem grouping: this inventory was already judged — not asked again"
+            handle = candidate.handle.as_str(),
+            nominator = candidate.nominator.as_str(),
+            pages = pages.len(),
+            "rem grouping: this group was already judged — not asked again"
         );
-        return Ok(moved);
+        return Ok(CandidateOutcome::Nothing);
     }
     report.grouping_wikis_examined += 1;
 
-    let resp = match llm
+    let resp = match run
+        .llm
         .complete(
             CompletionRequest::new(prompt)
                 .with_temperature(0.2)
@@ -3446,228 +3617,175 @@ async fn run_page_grouping_for_wiki(
             r
         },
         Err(e) => {
-            // The caller reads the counter and stops the sub-job when the
-            // run is long enough; this wiki is skipped either way.
             note_llm_failure(
                 &mut report.errors,
                 llm_failures,
                 format!(
-                    "page grouping failed on {wiki}: {e}",
-                    wiki = d.meta.wiki_id.as_str()
+                    "page grouping failed on {handle}: {e}",
+                    handle = candidate.handle
                 ),
             );
-            return Ok(moved);
+            return Ok(CandidateOutcome::Abort);
         },
     };
     let Some(groups) = parse_page_groups(&resp.text) else {
         report.errors.push(format!(
-            "page grouping llm returned unparseable verdict for {wiki}",
-            wiki = d.meta.wiki_id.as_str(),
+            "page grouping llm returned unparseable verdict for {handle}",
+            handle = candidate.handle,
         ));
-        return Ok(moved);
+        return Ok(CandidateOutcome::Nothing);
     };
-    if groups.is_empty() {
+    // One question, one answer: the pass shows a candidate and asks whether it
+    // is a subject area, so a reply naming several groups is answering a
+    // question nobody put. The first is taken and the rest ignored rather than
+    // refused — the extra ones name the same pages.
+    let Some(group) = groups.into_iter().next() else {
         rem_verdicts::record_negative(
-            pool,
+            run.pool,
             rem_verdicts::kind::PAGE_GROUPING,
             &memo_key,
-            d.meta.wiki_id.as_str(),
+            &candidate.handle,
         )
         .await?;
-        return Ok(moved);
+        return Ok(CandidateOutcome::Nothing);
+    };
+    // The model may keep a subset: pages it judges to be off the subject stay
+    // where they are. What it may NOT do is name a page nobody offered it.
+    let kept: Vec<String> = if group.pages.is_empty() {
+        pages.to_vec()
+    } else {
+        let offered: HashSet<&str> = pages.iter().map(String::as_str).collect();
+        let unknown: Vec<&String> = group
+            .pages
+            .iter()
+            .filter(|p| !offered.contains(p.as_str()))
+            .collect();
+        if !unknown.is_empty() {
+            report.errors.push(format!(
+                "page grouping named pages nobody offered for {handle}: {unknown:?}",
+                handle = candidate.handle,
+            ));
+            return Ok(CandidateOutcome::Nothing);
+        }
+        group.pages.clone()
+    };
+    if kept.len() < run.policy.auto_promote_group_min_pages {
+        return Ok(CandidateOutcome::Nothing);
     }
 
-    let known: HashSet<&str> = candidates.iter().map(|(rel, _, _)| rel.as_str()).collect();
-    let child_ids: HashSet<&str> = children.iter().map(|c| c.meta.wiki_id.as_str()).collect();
-    let mut claimed: HashSet<String> = HashSet::new();
+    apply_one_group(run, candidate, &group.action, kept, by_id, report).await
+}
 
-    for group in groups {
-        if report.applied.len() >= policy.auto_promote_cap {
-            break;
-        }
-        // Every named page must exist in this wiki, carry mass, and be
-        // claimed by exactly one group. A model that repeats a page
-        // across two groups loses the second one, not both.
-        let mut pages: Vec<String> = Vec::with_capacity(group.pages.len());
-        let mut rejected = false;
-        for page in &group.pages {
-            if !known.contains(page.as_str()) {
-                report.errors.push(format!(
-                    "page grouping named unknown page {page} in {wiki}",
-                    wiki = d.meta.wiki_id.as_str(),
-                ));
-                rejected = true;
-                break;
-            }
-            if !claimed.insert(page.clone()) {
-                report.errors.push(format!(
-                    "page grouping claimed {page} twice in {wiki}",
-                    wiki = d.meta.wiki_id.as_str(),
-                ));
-                rejected = true;
-                break;
-            }
-            pages.push(page.clone());
-        }
-        if rejected || pages.is_empty() {
-            continue;
-        }
+/// Carry out what the model decided for one group, under a WAL op.
+async fn apply_one_group(
+    run: &GroupingRun<'_>,
+    candidate: &Candidate,
+    action: &GroupAction,
+    kept: Vec<String>,
+    by_id: &HashMap<&str, &wiki::DiscoveredWiki>,
+    report: &mut AutoPromoteReport,
+) -> Result<CandidateOutcome> {
+    let recipient = recipient_of_first_page(run.pool, &kept).await;
+    let hints = promote::PageGroupHints {
+        group_pages: Some(kept.len()),
+        source_wiki_pages: None,
+        reason: Some(format!(
+            "rem grouping: {n} pages share the {kind} `{handle}`",
+            n = kept.len(),
+            kind = candidate.nominator.as_str(),
+            handle = candidate.handle,
+        )),
+    };
 
-        let recipient = facts
-            .iter()
-            .find(|f| wiki_relative_page(d, &f.source_path).is_some_and(|r| r == pages[0]))
-            .and_then(|f| proposals::recipient_from_fact(&f.subject_id, f.sender_id.as_ref()));
-        let hints = promote::PageGroupHints {
-            group_pages: Some(pages.len()),
-            source_wiki_pages: Some(candidates.len()),
-            reason: Some(format!(
-                "rem grouping: {n} of {total} pages of {wiki}",
-                n = pages.len(),
-                total = candidates.len(),
-                wiki = d.meta.wiki_id.as_str(),
-            )),
-        };
-
-        let outcome = match &group.action {
-            GroupAction::Create {
+    let (op_id, res, variant) = match action {
+        GroupAction::Create {
+            slug,
+            title,
+            style,
+            description,
+        } => {
+            let op_id =
+                wal::begin_rem_op(run.pool, run.cycle_id, "page_grouping_create", None, None)
+                    .await?;
+            let res = promote::apply_pages_to_new_wiki_direct(
+                run.pool,
+                run.tree,
+                &kept,
                 slug,
-                title,
-                style,
-                description,
-            } => {
-                // The WIKI birth floor. Below it the group is not a subject
-                // area with a home to earn — it is a handful of pages, and
-                // they stay where they are. Sibling one level down:
-                // [`crate::planner::PAGE_BIRTH_FLOOR`], how many facts must
-                // group before a PAGE is born. Same shape, different level —
-                // facts make a page, pages make a wiki.
-                if pages.len() < policy.auto_promote_group_min_pages {
-                    continue;
-                }
-                let op_id = wal::begin_rem_op(
-                    pool,
-                    cycle_id,
-                    "page_grouping_create",
-                    Some(d.meta.wiki_id.as_str()),
-                    None,
-                )
-                .await?;
-                let res = promote::apply_pages_to_subwiki_direct(
-                    pool,
-                    tree,
-                    d.meta.wiki_id.as_str(),
-                    &pages,
-                    slug,
-                    title.as_deref(),
-                    style.map(crate::wiki::PageStyle::as_str),
-                    description.as_deref(),
-                    &hints,
-                    recipient.clone(),
-                )
-                .await;
-                (op_id, res, "pages_to_subwiki")
-            },
-            GroupAction::Move { target } => {
-                if !child_ids.contains(target.as_str()) {
-                    report.errors.push(format!(
-                        "page grouping named {target}, which is not a sub-wiki of {wiki}",
-                        wiki = d.meta.wiki_id.as_str(),
-                    ));
-                    continue;
-                }
-                let op_id = wal::begin_rem_op(
-                    pool,
-                    cycle_id,
-                    "page_grouping_move",
-                    Some(d.meta.wiki_id.as_str()),
-                    None,
-                )
-                .await?;
-                let res = promote::apply_pages_move_wiki_direct(
-                    pool,
-                    tree,
-                    d.meta.wiki_id.as_str(),
-                    target,
-                    &pages,
-                    &hints,
-                    recipient.clone(),
-                )
-                .await;
-                (op_id, res, "pages_move_wiki")
-            },
-        };
+                title.as_deref(),
+                style.map(crate::wiki::PageStyle::as_str),
+                description.as_deref(),
+                &hints,
+                recipient,
+            )
+            .await;
+            (op_id, res, "pages_to_new_wiki")
+        },
+        GroupAction::Move { target } => {
+            if !by_id.contains_key(target.as_str()) {
+                report
+                    .errors
+                    .push(format!("page grouping named {target}, which is not a wiki"));
+                return Ok(CandidateOutcome::Nothing);
+            }
+            let op_id = wal::begin_rem_op(
+                run.pool,
+                run.cycle_id,
+                "page_grouping_move",
+                Some(target),
+                None,
+            )
+            .await?;
+            let res = promote::apply_pages_into_wiki_direct(
+                run.pool, run.tree, target, &kept, &hints, recipient,
+            )
+            .await;
+            (op_id, res, "pages_into_wiki")
+        },
+    };
 
-        let (op_id, res, variant) = outcome;
-        match res {
-            Ok(receipt) => {
-                wal::complete_rem_op(pool, op_id).await?;
-                report.applied.push(receipt.proposal_id.clone());
-                report.grouping_groups_applied += 1;
-                for (rel, source_path, _) in &candidates {
-                    if pages.iter().any(|p| p == rel) {
-                        moved.insert((*source_path).to_owned());
-                    }
-                }
-            },
-            Err(e) => {
-                wal::fail_rem_op(pool, op_id, &format!("{e}")).await?;
-                report.errors.push(format!("apply {variant} failed: {e}"));
-            },
-        }
+    match res {
+        Ok(receipt) => {
+            wal::complete_rem_op(run.pool, op_id).await?;
+            report.applied.push(receipt.proposal_id.clone());
+            report.grouping_groups_applied += 1;
+            Ok(CandidateOutcome::Applied(kept))
+        },
+        Err(e) => {
+            wal::fail_rem_op(run.pool, op_id, &format!("{e}")).await?;
+            report.errors.push(format!("apply {variant} failed: {e}"));
+            Ok(CandidateOutcome::Nothing)
+        },
     }
-
-    Ok(moved)
 }
 
-/// The page inventory the cartographer reads: one line per page with
-/// its mass and a couple of verbatim excerpts.
+/// Every standard wiki a group could be filed into, with what each holds.
 ///
-/// The excerpts are the load-bearing part. A page's stored
-/// `page_description` is written per fact at routing time and drifts
-/// (it routinely describes a neighbouring page, and mixes languages),
-/// so it is deliberately **not** used — a wrong label is worse than no
-/// label. The filename plus two real sentences is ground truth.
-fn grouping_inventory(candidates: &[(String, &str, usize)], facts: &[FactIndexRow]) -> String {
+/// A group is judged against the whole memory, so every wiki that is not smart
+/// is a possible home — a shelf is not a property, and none of them is off
+/// limits.
+fn grouping_existing_wikis_all(
+    all_wikis: &[wiki::DiscoveredWiki],
+    smart_wiki_index: &SmartWikiIndex,
+) -> String {
     use std::fmt::Write as _;
-    let mut out = String::new();
-    for (rel, source_path, mass) in candidates {
-        let _ = write!(out, "- {rel} [{mass}]");
-        for (shown, f) in facts
-            .iter()
-            .filter(|f| &f.source_path == source_path)
-            .take(GROUPING_SNIPPETS_PER_PAGE)
-            .enumerate()
-        {
-            let sep = if shown == 0 { " — " } else { " / " };
-            let snippet = truncate_chars(f.text.trim(), GROUPING_SNIPPET_CHARS);
-            let _ = write!(out, "{sep}\"{snippet}\"");
-        }
-        out.push('\n');
-    }
-    out
-}
-
-/// The sub-wikis already living under this wiki, with whatever "what
-/// goes in here" their `_meta` carries — the model needs them to prefer
-/// filing over founding.
-fn grouping_existing_wikis(children: &[&wiki::DiscoveredWiki]) -> String {
-    use std::fmt::Write as _;
-    if children.is_empty() {
+    let standard: Vec<&wiki::DiscoveredWiki> = all_wikis
+        .iter()
+        .filter(|d| !is_smart_wiki(smart_wiki_index, d.meta.wiki_id.as_str()))
+        .collect();
+    if standard.is_empty() {
         return "(none)\n".to_owned();
     }
     let mut out = String::new();
-    for c in children {
+    for c in standard {
         let summary = c
             .meta
             .extra
             .get(serde_yaml::Value::from("summary"))
             .and_then(serde_yaml::Value::as_str)
             .unwrap_or("");
-        // Topic pages, on the same definition the parent's own count uses.
-        // Counting a foundation page here inflated every child by one against
-        // a parent number that excludes it, and the model is
-        // asked to weigh the two side by side when it chooses between filing
-        // into a sub-wiki and founding another.
+        // Topic pages: a foundation page is not one, and counting it would
+        // put every wiki one ahead of what it actually holds on the subject.
         let pages = std::fs::read_dir(&c.abs_dir).map_or(0, |rd| {
             rd.filter_map(std::result::Result::ok)
                 .filter(|e| {
@@ -3682,13 +3800,64 @@ fn grouping_existing_wikis(children: &[&wiki::DiscoveredWiki]) -> String {
         });
         let _ = writeln!(
             out,
-            "- {id} — {title}{sep}{summary} ({pages} pages)",
-            id = c.meta.wiki_id.as_str(),
+            "- {id} \"{title}\" [{pages} pages]{sep}{summary}",
+            id = c.meta.wiki_id,
             title = c.meta.title,
-            sep = if summary.is_empty() { "" } else { ": " },
+            sep = if summary.is_empty() { "" } else { " — " },
         );
     }
     out
+}
+
+/// `wikis/<…>/<page.md>` for a `<wiki_id>/<page.md>`, or `None` when the wiki
+/// is gone from the tree.
+fn source_path_of(by_id: &HashMap<&str, &wiki::DiscoveredWiki>, qualified: &str) -> Option<String> {
+    let (wiki, page) = qualified.split_once('/')?;
+    let d = by_id.get(wiki)?;
+    Some(format!("{}/{page}", d.rel_dir.to_string_lossy()))
+}
+
+/// The inventory of ONE candidate: its pages, each with its fact count and a
+/// couple of verbatim excerpts.
+///
+/// Same shape and same reasoning as the whole-wiki ancestor — the stored page
+/// description drifts, so the file name plus two real sentences is what the
+/// model is given — but bounded by the candidate instead of by a wiki, which
+/// is what keeps the prompt the same size on a memory of any size.
+async fn candidate_inventory(
+    pool: &SqlitePool,
+    by_id: &HashMap<&str, &wiki::DiscoveredWiki>,
+    pages: &[String],
+) -> Result<String> {
+    use std::fmt::Write as _;
+    let mut out = String::new();
+    for qualified in pages {
+        let Some(source_path) = source_path_of(by_id, qualified) else {
+            continue;
+        };
+        let facts = fact_index::find_active_by_source_path(pool, &source_path).await?;
+        let _ = write!(out, "- {qualified} [{n}]", n = facts.len());
+        for (shown, f) in facts.iter().take(GROUPING_SNIPPETS_PER_PAGE).enumerate() {
+            let sep = if shown == 0 { " — " } else { " / " };
+            let snippet = truncate_chars(f.text.trim(), GROUPING_SNIPPET_CHARS);
+            let _ = write!(out, "{sep}\"{snippet}\"");
+        }
+        out.push('\n');
+    }
+    Ok(out)
+}
+
+/// Who the receipt is addressed to: the first page's first fact answers, the
+/// way the per-wiki ancestor did.
+async fn recipient_of_first_page(pool: &SqlitePool, pages: &[String]) -> Option<String> {
+    let first = pages.first()?;
+    let (_, page) = first.split_once('/')?;
+    let rows = fact_index::find_by_filters(pool, &fact_index::FactFilters::default())
+        .await
+        .ok()?;
+    rows.iter()
+        .find(|r| r.source_path.ends_with(page))
+        .and_then(|f| proposals::recipient_from_fact(&f.subject_id, f.sender_id.as_ref()))
 }
 
 /// Truncate on a character boundary, with an ellipsis when cut.
@@ -3702,26 +3871,33 @@ fn truncate_chars(s: &str, max: usize) -> String {
     out
 }
 
-fn page_grouping_prompt(
+/// Render the question put about ONE nominated candidate.
+///
+/// The placeholders carry what nominated the group (`{handle}`,
+/// `{nominator}`) so the model judges the tie the engine actually found,
+/// rather than hunting for one of its own. The language is the memory's
+/// default: a wiki that does not exist yet has none to declare, and the
+/// pages come from several wikis that may not agree.
+async fn candidate_grouping_prompt(
     tree: &WikiTree,
-    d: &wiki::DiscoveredWiki,
-    wiki_pages: usize,
-    min_pages: usize,
+    candidate: &Candidate,
+    pages: usize,
     existing: &str,
     inventory: &str,
-    language_directive: &str,
+    pool: &SqlitePool,
 ) -> Result<String> {
-    let wiki_pages_s = wiki_pages.to_string();
-    let min_pages_s = min_pages.to_string();
+    let pages_s = pages.to_string();
+    let locale = default_memory_locale(pool).await;
+    let language_directive = crate::locale::render_memory_language_directive(locale.as_deref());
     prompts::render(
         "rem-page-grouping",
         tree.workdir(),
         BUNDLED_REM_PAGE_GROUPING_MD,
         &[
-            ("locale", language_directive),
-            ("wiki", d.meta.title.as_str()),
-            ("wiki_pages", wiki_pages_s.as_str()),
-            ("min_pages", min_pages_s.as_str()),
+            ("locale", language_directive.as_str()),
+            ("handle", candidate.handle.as_str()),
+            ("nominator", candidate.nominator.as_str()),
+            ("pages", pages_s.as_str()),
             ("existing", existing),
             ("inventory", inventory),
         ],
@@ -3729,10 +3905,32 @@ fn page_grouping_prompt(
     .map_err(RemError::from)
 }
 
+/// The locale the memory writes in when no single wiki answers for the text —
+/// the one every enrolled person shares, or none.
+///
+/// A wiki that does not exist yet declares no language, and the pages it would
+/// gather come from several that need not agree. Unanimity or nothing is the
+/// same rule `enrollment::locale_for_principal` applies to a group's members,
+/// and `None` renders the memory's ordinary fallback.
+async fn default_memory_locale(pool: &SqlitePool) -> Option<String> {
+    let users = crate::enrollment::list_users(pool).await.ok()?;
+    let mut locales = Vec::new();
+    for u in users {
+        locales.push(
+            crate::enrollment::locale_for(pool, &u.user_id)
+                .await
+                .ok()??,
+        );
+    }
+    let first = locales.first()?.clone();
+    locales.iter().all(|l| *l == first).then_some(first)
+}
+
 /// What the cartographer decided to do with one group of pages.
 #[derive(Debug, Clone)]
 enum GroupAction {
-    /// Found a new sub-wiki for them (subject to the page floor).
+    /// Found a new wiki for them at the top level (subject to the page
+    /// floor).
     Create {
         slug: String,
         title: Option<String>,
@@ -3742,7 +3940,7 @@ enum GroupAction {
         /// Free-text scope for the newborn wiki's `_meta`.
         description: Option<String>,
     },
-    /// File them into a sub-wiki that already exists.
+    /// File them into a wiki that already exists.
     Move { target: String },
 }
 
@@ -10075,7 +10273,13 @@ mod tests {
                 allow: Vec::new(),
                 sender: None,
                 fact_type: None,
-                topics: Vec::new(),
+                // Every real fact carries its two words, and the grouping
+                // nominates from them — a fixture with none ties nothing
+                // together and the pass rightly has nothing to ask about.
+                topics: vec![
+                    page.trim_end_matches(".md").to_owned(),
+                    "giardino".to_owned(),
+                ],
                 dedup_threshold: Some(0.999),
                 valid_from: None,
                 valid_to: None,
@@ -10126,6 +10330,29 @@ mod tests {
         }
     }
 
+    /// The registry entries an earlier build left behind, pinning each page to
+    /// the wiki it sits in. This is the state a live memory is always in — a
+    /// page exists because some build registered it — and it is what the next
+    /// full rebuild reads to decide where the page goes.
+    fn pin_concepts_to_wiki(tree: &WikiTree, concepts: &[&str], wiki_id: &str) {
+        let now = chrono::Utc::now().to_rfc3339();
+        let mut reg = crate::planner::load_concept_registry(tree, &now).unwrap();
+        for concept in concepts {
+            reg.entries.insert(
+                (*concept).to_owned(),
+                crate::planner::ConceptRegistryEntry {
+                    slug: (*concept).to_owned(),
+                    title: (*concept).to_owned(),
+                    description: String::new(),
+                    style: None,
+                    wiki_id: wiki_id.to_owned(),
+                    created_at: now.clone(),
+                },
+            );
+        }
+        crate::planner::save_concept_registry(tree, &reg).unwrap();
+    }
+
     /// The promotion has to survive the compile that follows it in the same
     /// night.
     ///
@@ -10134,9 +10361,9 @@ mod tests {
     /// the compile runs after the promotion, rebuilds each dirty page from the
     /// plan and repoints its rows at what it wrote. If the plan did not follow
     /// the pages into the new wiki, that compile puts them back — the wiki
-    /// keeps the files nothing points at, the parent gets the pages again, and
-    /// a reader opening the newborn wiki is served regions whose facts live
-    /// somewhere else, which renders as a page of `[redacted]`.
+    /// keeps the files nothing points at, the pages reappear where they came
+    /// from, and a reader opening the newborn wiki is served regions whose
+    /// facts live somewhere else, which renders as a page of `[redacted]`.
     #[tokio::test]
     async fn a_founded_wiki_survives_the_compile_that_follows_it() {
         let (dir, mut tree, pool) = setup_workdir().await;
@@ -10146,28 +10373,7 @@ mod tests {
             plant_on_page(&tree, &pool, "alice", page, 2, "alice").await;
         }
 
-        // The registry entry an earlier build left behind, pinning each page
-        // to the parent wiki. This is the state a live memory is always in —
-        // a page exists because some build registered it — and it is what the
-        // next full rebuild reads to decide where the page goes.
-        {
-            let now = chrono::Utc::now().to_rfc3339();
-            let mut reg = crate::planner::load_concept_registry(&tree, &now).unwrap();
-            for page in ["orto", "potatura", "compost"] {
-                reg.entries.insert(
-                    page.to_owned(),
-                    crate::planner::ConceptRegistryEntry {
-                        slug: page.to_owned(),
-                        title: page.to_owned(),
-                        description: String::new(),
-                        style: None,
-                        wiki_id: "alice".to_owned(),
-                        created_at: now.clone(),
-                    },
-                );
-            }
-            crate::planner::save_concept_registry(&tree, &reg).unwrap();
-        }
+        pin_concepts_to_wiki(&tree, &["orto", "potatura", "compost"], "alice");
 
         // A claim still waiting is what makes the closing pass do its work
         // instead of returning on an empty queue — and its work is a FULL
@@ -10203,7 +10409,7 @@ mod tests {
             "rp",
             "{\"groups\":[{\"action\":\"create\",\"slug\":\"giardino\",\"title\":\"Giardino\",\
              \"style\":\"prosa\",\"description\":\"Everything about the garden\",\
-             \"pages\":[\"orto.md\",\"potatura.md\",\"compost.md\"]}]}",
+             \"pages\":[\"alice/orto.md\",\"alice/potatura.md\",\"alice/compost.md\"]}]}",
         );
         let cronista_llm = FakeLlmBackend::new(
             "cro",
@@ -10224,19 +10430,39 @@ mod tests {
             .await
             .unwrap();
 
-        let parent = tree.wikis_dir().join("alice");
-        let born = parent.join("giardino");
-        for page in ["orto.md", "potatura.md", "compost.md"] {
-            assert!(
-                born.join(page).exists(),
-                "{page} is in the wiki it moved to"
-            );
-            assert!(
-                !parent.join(page).exists(),
-                "{page} came back to the parent — the compile undid the promotion",
-            );
-        }
-        let rows = fact_index::find_active_in_wiki(&pool, "alice-giardino")
+        // The source wiki is left with its `_meta.md` and nothing else: a
+        // page reappearing here is the compile having undone the promotion.
+        let source = tree.wikis_dir().join("alice");
+        let came_back: Vec<String> = std::fs::read_dir(&source)
+            .unwrap()
+            .flatten()
+            .map(|e| e.file_name().to_string_lossy().into_owned())
+            .filter(|n| n != "_meta.md")
+            .collect();
+        assert!(
+            came_back.is_empty(),
+            "the compile put pages back where they came from: {came_back:?}",
+        );
+
+        // The registry is the half the compile actually reads, and the
+        // promotion rewrote the three entries that named the source wiki. The
+        // rebuild that follows may re-plan the concepts, but nothing it plans
+        // may still be pointing back where the pages came from.
+        let reg =
+            crate::planner::load_concept_registry(&tree, &chrono::Utc::now().to_rfc3339()).unwrap();
+        assert!(!reg.entries.is_empty(), "the rebuild registered the pages");
+        let left_behind: Vec<&str> = reg
+            .entries
+            .values()
+            .filter(|e| e.wiki_id == "alice")
+            .map(|e| e.slug.as_str())
+            .collect();
+        assert!(
+            left_behind.is_empty(),
+            "the registry still sends concepts to the wiki the pages left: {left_behind:?}",
+        );
+
+        let rows = fact_index::find_active_in_wiki(&pool, "giardino")
             .await
             .unwrap();
         assert_eq!(
@@ -10264,7 +10490,7 @@ mod tests {
             "rp",
             "{\"groups\":[{\"action\":\"create\",\"slug\":\"giardino\",\"title\":\"Giardino\",\
              \"style\":\"prosa\",\"description\":\"Everything about the garden\",\
-             \"pages\":[\"orto.md\",\"potatura.md\",\"compost.md\"]}]}",
+             \"pages\":[\"alice/orto.md\",\"alice/potatura.md\",\"alice/compost.md\"]}]}",
         );
         let llms = grouping_llms(&rev_llm, &promote_llm);
         let report = run_cycle(&pool, &tree, fake_embedder(), &llms, &grouping_policy())
@@ -10276,7 +10502,7 @@ mod tests {
         assert_eq!(report.auto_promote.applied.len(), 1);
 
         // The wiki is born holding all three pages under their own names.
-        let new_dir = tree.wikis_dir().join("alice").join("giardino");
+        let new_dir = tree.wikis_dir().join("giardino");
         assert!(new_dir.join("_meta.md").exists(), "sub-wiki must exist");
         for page in ["orto.md", "potatura.md", "compost.md"] {
             assert!(new_dir.join(page).exists(), "{page} must have moved in");
@@ -10298,7 +10524,7 @@ mod tests {
             "an emerged wiki carries its pages and nothing else"
         );
 
-        let rows = fact_index::find_active_in_wiki(&pool, "alice-giardino")
+        let rows = fact_index::find_active_in_wiki(&pool, "giardino")
             .await
             .unwrap();
         assert_eq!(rows.len(), 6, "every fact followed its page");
@@ -10314,8 +10540,12 @@ mod tests {
         assert_eq!(kind, "wiki_promote");
         assert_eq!(status, "applied", "act-first: born applied");
         let ctx: serde_json::Value = serde_json::from_str(&context).unwrap();
-        assert_eq!(ctx["variant"], "pages_to_subwiki");
-        assert_eq!(ctx["source_wiki_id"], "alice");
+        assert_eq!(ctx["variant"], "pages_to_new_wiki");
+        // No source wiki on the context, and that is the change: a group is
+        // named across the memory, so its pages carry their own wiki and the
+        // birth answers to none of them.
+        assert!(ctx["source_wiki_id"].is_null());
+        assert_eq!(ctx["pages"][0], "alice/orto.md");
         assert_eq!(ctx["group_pages"], 3);
         assert_eq!(ctx["new_wiki_style"], "prosa");
         assert_eq!(ctx["new_wiki_description"], "Everything about the garden");
@@ -10344,7 +10574,7 @@ mod tests {
         let promote_llm = FakeLlmBackend::new(
             "rp",
             "{\"groups\":[{\"action\":\"create\",\"slug\":\"giardino\",\"title\":\"Giardino\",\
-             \"pages\":[\"orto.md\",\"potatura.md\"]}]}",
+             \"pages\":[\"alice/orto.md\",\"alice/potatura.md\"]}]}",
         );
         let llms = grouping_llms(&rev_llm, &promote_llm);
         let report = run_cycle(&pool, &tree, fake_embedder(), &llms, &grouping_policy())
@@ -10361,21 +10591,30 @@ mod tests {
         drop(dir);
     }
 
+    /// A group whose subject already has a wiki goes in there, not into a
+    /// second home for the same thing.
+    ///
+    /// The destination may be any wiki, not only one under the pages' current
+    /// shelf — a shelf is structure, and the fact carries its own audience
+    /// across. What this pass does NOT do is rescue a single stray page: it
+    /// only ever sees groups the engine nominated, and a handle tying fewer
+    /// pages than the floor nominates nothing. Refiling one misplaced fact is
+    /// [`run_refile_sweep`]'s job, which nominates by cosine and has no floor.
     #[tokio::test]
-    async fn page_grouping_files_into_an_existing_subwiki_without_a_floor() {
+    async fn page_grouping_files_a_group_into_a_wiki_that_already_exists() {
         let (dir, mut tree, pool) = setup_workdir().await;
         write_wiki(&tree, "alice", "Alice", "wiki-user");
         write_subwiki(&tree, "alice", "giardino", "Giardino");
         tree = WikiTree::open(dir.path()).unwrap();
-        plant_on_page(&tree, &pool, "alice", "orto.md", 2, "alice").await;
+        for page in ["orto.md", "potatura.md", "compost.md"] {
+            plant_on_page(&tree, &pool, "alice", page, 2, "alice").await;
+        }
 
         let rev_llm = FakeLlmBackend::new("rev", "{\"same\": false}");
-        // One stray page whose subject already has a home. No floor
-        // applies — the home exists, so there is nothing to justify.
         let promote_llm = FakeLlmBackend::new(
             "rp",
             "{\"groups\":[{\"action\":\"move\",\"target\":\"alice-giardino\",\
-             \"pages\":[\"orto.md\"]}]}",
+             \"pages\":[\"alice/orto.md\",\"alice/potatura.md\",\"alice/compost.md\"]}]}",
         );
         let llms = grouping_llms(&rev_llm, &promote_llm);
         let report = run_cycle(&pool, &tree, fake_embedder(), &llms, &grouping_policy())
@@ -10393,7 +10632,7 @@ mod tests {
         let rows = fact_index::find_active_in_wiki(&pool, "alice-giardino")
             .await
             .unwrap();
-        assert_eq!(rows.len(), 2, "facts followed the page");
+        assert_eq!(rows.len(), 6, "every fact followed its page");
 
         let proposal_id = &report.auto_promote.applied[0];
         let (context,): (String,) =
@@ -10403,7 +10642,7 @@ mod tests {
                 .await
                 .unwrap();
         let ctx: serde_json::Value = serde_json::from_str(&context).unwrap();
-        assert_eq!(ctx["variant"], "pages_move_wiki");
+        assert_eq!(ctx["variant"], "pages_into_wiki");
         assert_eq!(ctx["target_wiki_id"], "alice-giardino");
         drop(dir);
     }
@@ -10423,7 +10662,7 @@ mod tests {
         let promote_llm = FakeLlmBackend::new(
             "rp",
             "{\"groups\":[{\"action\":\"create\",\"slug\":\"giardino\",\
-             \"pages\":[\"orto.md\",\"potatura.md\"]}]}",
+             \"pages\":[\"alice/orto.md\",\"alice/potatura.md\"]}]}",
         );
         let llms = grouping_llms(&rev_llm, &promote_llm);
         let report = run_cycle(&pool, &tree, fake_embedder(), &llms, &grouping_policy())
@@ -10478,7 +10717,7 @@ mod tests {
             "rp",
             "{\"groups\":[{\"action\":\"create\",\"slug\":\"giardino\",\"title\":\"Giardino\",\
              \"style\":\"prosa\",\"description\":\"Everything about the garden\",\
-             \"pages\":[\"orto.md\",\"potatura.md\",\"@rules.md\"]}]}",
+             \"pages\":[\"alice/orto.md\",\"alice/potatura.md\",\"alice/@rules.md\"]}]}",
         );
         let llms = grouping_llms(&rev_llm, &promote_llm);
         let report = run_cycle(&pool, &tree, fake_embedder(), &llms, &grouping_policy())
@@ -10518,7 +10757,7 @@ mod tests {
         let promote_llm = FakeLlmBackend::new(
             "rp",
             "{\"groups\":[{\"action\":\"create\",\"slug\":\"giardino\",\"title\":\"Giardino\",\
-             \"pages\":[\"orto.md\",\"potatura.md\",\"inesistente.md\"]}]}",
+             \"pages\":[\"alice/orto.md\",\"alice/potatura.md\",\"alice/inesistente.md\"]}]}",
         );
         let llms = grouping_llms(&rev_llm, &promote_llm);
         let report = run_cycle(&pool, &tree, fake_embedder(), &llms, &grouping_policy())
