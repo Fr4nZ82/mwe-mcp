@@ -1,7 +1,7 @@
 ---
 name: rem-page-grouping
 description: REM page-group → wiki cartographer — judge one engine-nominated group of pages: are they a subject area, and does it deserve a wiki of its own
-version: 1.6
+version: 1.7
 default_version_at_bootstrap: v1.3
 ---
 
@@ -66,7 +66,10 @@ the first is taken):
 
 `pages` may name a **subset** of what was offered — the pages that really
 are the subject — and naming one nobody offered rejects the group rather
-than guessing. `slug` is re-derived in Rust at apply time via
+than guessing. The birth floor is applied to the subset of a `create` and
+**not** to a `move`, which has none; from a `move`'s pages the engine drops
+the ones already in the target, since a group nominated across the memory
+routinely holds some. `slug` is re-derived in Rust at apply time via
 `derive_slug`; `style` and `description` are stamped onto the newborn
 wiki's `_meta` so it is **not born blind** to placement and recall
 navigation. Parsed by `parse_page_groups` in
@@ -89,7 +92,12 @@ wiki's pages are never nominated (its consumer is its sole writer), the
 engine's own pages (a card, a rules page) are never nominated because
 moving one would silently stop it being served, and a candidate whose pages
 an earlier group already claimed this night is skipped — which is what stops
-two overlapping handles from minting two wikis for one argument. The verdict
+two overlapping handles from minting two wikis for one argument. A candidate
+that **is one wiki, whole** — all its pages in that wiki, and no other page
+there carrying a fact — is dropped before the question is put
+([`already_fills_a_wiki`]): the argument has its home already, and the only
+answers left would be a second wiki for it or a move into the wiki the pages
+are in. A group that is nine of a wiki's fifteen pages is still asked. The verdict
 memo (`rem_verdicts` kind `page_grouping`) keys on the rendered prompt, so a
 settled "no" re-opens by itself as soon as the group changes. Applies share
 `policy.auto_promote_cap` (default `5`) with the paragraph pass.

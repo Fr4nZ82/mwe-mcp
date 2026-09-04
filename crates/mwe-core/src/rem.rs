@@ -3380,6 +3380,9 @@ async fn nominate_candidates(
     // three queries — reads the same rows three times for the same answer.
     let rows = fact_index::find_by_filters(pool, &fact_index::FactFilters::default()).await?;
     let mut buckets: HashMap<(Nominator, String), BTreeSet<String>> = HashMap::new();
+    // Every page that holds a fact, by wiki — what a group is measured against
+    // when the question is whether it already fills a wiki of its own.
+    let mut wiki_pages: HashMap<String, BTreeSet<String>> = HashMap::new();
     for row in &rows {
         let Some(d) = by_id.get(row.wiki_id.as_str()) else {
             continue;
@@ -3395,6 +3398,10 @@ async fn nominate_candidates(
             continue;
         }
         let qualified = format!("{}/{rel}", row.wiki_id);
+        wiki_pages
+            .entry(row.wiki_id.clone())
+            .or_default()
+            .insert(qualified.clone());
         let mut add = |nominator, handle: String| {
             buckets
                 .entry((nominator, handle))
@@ -3422,6 +3429,7 @@ async fn nominate_candidates(
     let mut out: Vec<Candidate> = buckets
         .into_iter()
         .filter(|(_, pages)| pages.len() >= floor)
+        .filter(|(_, pages)| !already_fills_a_wiki(pages, &wiki_pages))
         .map(|((nominator, handle), pages)| Candidate {
             handle,
             nominator,
@@ -3437,6 +3445,38 @@ async fn nominate_candidates(
             .then_with(|| a.handle.cmp(&b.handle))
     });
     Ok(out)
+}
+
+/// Is this group one wiki, whole? Then the argument already has its home.
+///
+/// The floor is a count, and a wiki born out of nine pages still has those
+/// nine pages the next night: the same handle ties them again, and the same
+/// question comes back for as long as the memory holds. There are only two
+/// answers left to it and both are wrong — found a second wiki for the same
+/// argument, or file the pages into the wiki they are already in. So the
+/// group never reaches the model.
+///
+/// The test is deliberately narrow: **all** its pages in **one** wiki, and
+/// that wiki holding no other page that carries a fact. A group that is nine
+/// of a wiki's fifteen pages is a real question — those nine may well be a
+/// subject of their own — and it is still asked.
+fn already_fills_a_wiki(
+    pages: &BTreeSet<String>,
+    wiki_pages: &HashMap<String, BTreeSet<String>>,
+) -> bool {
+    let mut wikis = pages
+        .iter()
+        .filter_map(|p| p.split_once('/'))
+        .map(|(wiki, _)| wiki);
+    let Some(first) = wikis.next() else {
+        return false;
+    };
+    if wikis.any(|w| w != first) {
+        return false;
+    }
+    wiki_pages
+        .get(first)
+        .is_some_and(|all| all.len() == pages.len())
 }
 
 /// How many verbatim excerpts of a page ride in the inventory the
@@ -3470,7 +3510,8 @@ const GROUPING_SNIPPET_CHARS: usize = 110;
 ///
 /// The pages a group takes are dropped from every later candidate of the same
 /// night, so two handles lying over the same pages — a topic and a name, say —
-/// mint one wiki and not two.
+/// mint one wiki and not two. A candidate that is one wiki whole is never put
+/// at all: see [`already_fills_a_wiki`].
 /// The read-only half of a grouping run, gathered once by the caller.
 ///
 /// The pass puts one question per candidate to the model and applies at most
@@ -3669,11 +3710,41 @@ async fn judge_one_candidate(
         }
         group.pages.clone()
     };
-    if kept.len() < run.policy.auto_promote_group_min_pages {
+
+    let Some(kept) = pages_the_action_moves(&group.action, kept, run.policy) else {
         return Ok(CandidateOutcome::Nothing);
-    }
+    };
 
     apply_one_group(run, candidate, &group.action, kept, by_id, report).await
+}
+
+/// Which of the named pages the action actually moves, or `None` when it moves
+/// nothing.
+///
+/// The two actions read the count differently. **Birth** is what the floor
+/// governs: a group founding a wiki has to be worth one, and a subset that
+/// falls under the floor is not. **Joining** a wiki that exists has nothing to
+/// justify — the home is there, and one stray page belongs inside as much as
+/// nine do — but a group nominated across the whole memory routinely names
+/// pages that are already in the target. Those need no move, and the apply
+/// refuses a page that is already home, taking the whole group with it.
+fn pages_the_action_moves(
+    action: &GroupAction,
+    kept: Vec<String>,
+    policy: &RemPolicy,
+) -> Option<Vec<String>> {
+    match action {
+        GroupAction::Create { .. } => {
+            (kept.len() >= policy.auto_promote_group_min_pages).then_some(kept)
+        },
+        GroupAction::Move { target } => {
+            let elsewhere: Vec<String> = kept
+                .into_iter()
+                .filter(|q| q.split_once('/').is_none_or(|(wiki, _)| wiki != target))
+                .collect();
+            (!elsewhere.is_empty()).then_some(elsewhere)
+        },
+    }
 }
 
 /// Carry out what the model decided for one group, under a WAL op.
@@ -9491,6 +9562,7 @@ mod tests {
         ] {
             plant_on_page(&tree, &pool, "alice", page, 3, "alice").await;
         }
+        plant_off_topic_page(&tree, &pool, "alice", "alice").await;
 
         let llm = FlakyLlm {
             fail_first: std::sync::atomic::AtomicUsize::new(usize::MAX),
@@ -9533,6 +9605,7 @@ mod tests {
         for page in ["orto.md", "potatura.md", "compost.md"] {
             plant_on_page(&tree, &pool, "alice", page, 2, "alice").await;
         }
+        plant_off_topic_page(&tree, &pool, "alice", "alice").await;
 
         let llm = FlakyLlm {
             fail_first: std::sync::atomic::AtomicUsize::new(usize::MAX),
@@ -10243,6 +10316,33 @@ mod tests {
     /// Plant `n` distinct facts on a specific page so the regrouping pass
     /// has real topic pages to work with. Bodies are namespaced by page so two pages
     /// never collide on the dedup threshold.
+    /// A page of the same wiki on another subject, so the group under test is
+    /// not the whole wiki — which is the one shape the nominator drops (see
+    /// [`already_fills_a_wiki`]).
+    async fn plant_off_topic_page(tree: &WikiTree, pool: &SqlitePool, wiki: &str, subject: &str) {
+        let req = CaptureRequest {
+            subject_external: None,
+            authored_refs: Vec::new(),
+            wiki_id: WikiId::parse(wiki).unwrap(),
+            page: Some(PathBuf::from("bollette.md")),
+            body: "la bolletta della luce arriva ogni due mesi".to_owned(),
+            subject: Principal::User(subject.to_owned()),
+            allow: Vec::new(),
+            sender: None,
+            fact_type: None,
+            topics: vec!["bollette".to_owned(), "casa".to_owned()],
+            dedup_threshold: Some(0.999),
+            valid_from: None,
+            valid_to: None,
+            style: None,
+            page_description: None,
+            salience: None,
+        };
+        capture::wiki_capture(tree, pool, fake_embedder(), req)
+            .await
+            .expect("plant off-topic");
+    }
+
     async fn plant_on_page(
         tree: &WikiTree,
         pool: &SqlitePool,
@@ -10372,6 +10472,7 @@ mod tests {
         for page in ["orto.md", "potatura.md", "compost.md"] {
             plant_on_page(&tree, &pool, "alice", page, 2, "alice").await;
         }
+        plant_off_topic_page(&tree, &pool, "alice", "alice").await;
 
         pin_concepts_to_wiki(&tree, &["orto", "potatura", "compost"], "alice");
 
@@ -10430,14 +10531,15 @@ mod tests {
             .await
             .unwrap();
 
-        // The source wiki is left with its `_meta.md` and nothing else: a
-        // page reappearing here is the compile having undone the promotion.
+        // The source wiki is left with the page that was not the subject: one
+        // of the three reappearing here is the compile having undone the
+        // promotion.
         let source = tree.wikis_dir().join("alice");
         let came_back: Vec<String> = std::fs::read_dir(&source)
             .unwrap()
             .flatten()
             .map(|e| e.file_name().to_string_lossy().into_owned())
-            .filter(|n| n != "_meta.md")
+            .filter(|n| n != "_meta.md" && !n.starts_with("bollette"))
             .collect();
         assert!(
             came_back.is_empty(),
@@ -10454,7 +10556,7 @@ mod tests {
         let left_behind: Vec<&str> = reg
             .entries
             .values()
-            .filter(|e| e.wiki_id == "alice")
+            .filter(|e| e.wiki_id == "alice" && !e.slug.starts_with("bollette"))
             .map(|e| e.slug.as_str())
             .collect();
         assert!(
@@ -10484,6 +10586,7 @@ mod tests {
         for page in ["orto.md", "potatura.md", "compost.md"] {
             plant_on_page(&tree, &pool, "alice", page, 2, "alice").await;
         }
+        plant_off_topic_page(&tree, &pool, "alice", "alice").await;
 
         let rev_llm = FakeLlmBackend::new("rev", "{\"same\": false}");
         let promote_llm = FakeLlmBackend::new(
@@ -10567,6 +10670,7 @@ mod tests {
         for page in ["orto.md", "potatura.md", "compost.md"] {
             plant_on_page(&tree, &pool, "alice", page, 2, "alice").await;
         }
+        plant_off_topic_page(&tree, &pool, "alice", "alice").await;
 
         let rev_llm = FakeLlmBackend::new("rev", "{\"same\": false}");
         // The model cut a two-page group; the floor is three. A wiki is
@@ -10609,6 +10713,7 @@ mod tests {
         for page in ["orto.md", "potatura.md", "compost.md"] {
             plant_on_page(&tree, &pool, "alice", page, 2, "alice").await;
         }
+        plant_off_topic_page(&tree, &pool, "alice", "alice").await;
 
         let rev_llm = FakeLlmBackend::new("rev", "{\"same\": false}");
         let promote_llm = FakeLlmBackend::new(
@@ -10773,6 +10878,60 @@ mod tests {
         drop(dir);
     }
 
+    /// A wiki that emerged is not asked to emerge again.
+    ///
+    /// The floor is a count of pages, and the pages a birth carried are still
+    /// there the next night: the same handle ties them again and the question
+    /// comes back for as long as the memory holds. Both answers left to it are
+    /// wrong — a second wiki for one argument, or a move into the wiki the
+    /// pages are already in, which the apply refuses. So the group never
+    /// reaches the model, and the pass says it asked nothing.
+    #[tokio::test]
+    async fn a_group_that_is_a_whole_wiki_is_never_asked_about() {
+        let (dir, mut tree, pool) = setup_workdir().await;
+        write_wiki(&tree, "giardino", "Giardino", "wiki-user");
+        tree = WikiTree::open(dir.path()).unwrap();
+        // The shape a birth leaves behind: every page of this wiki shares the
+        // handle, and the wiki holds nothing else.
+        for page in ["orto.md", "potatura.md", "compost.md"] {
+            plant_on_page(&tree, &pool, "giardino", page, 2, "alice").await;
+        }
+
+        let rev_llm = FakeLlmBackend::new("rev", "{\"same\": false}");
+        // Scripted to say yes. It is never called: proving the drop is the
+        // engine's and not the model's.
+        let promote_llm = FakeLlmBackend::new(
+            "rp",
+            "{\"groups\":[{\"action\":\"create\",\"slug\":\"giardino-2\",\"title\":\"Giardino\",\
+             \"pages\":[\"giardino/orto.md\",\"giardino/potatura.md\",\"giardino/compost.md\"]}]}",
+        );
+        let llms = grouping_llms(&rev_llm, &promote_llm);
+        let report = run_cycle(&pool, &tree, fake_embedder(), &llms, &grouping_policy())
+            .await
+            .unwrap();
+
+        assert_eq!(
+            report.auto_promote.grouping_wikis_examined, 0,
+            "the group never reached the model",
+        );
+        assert_eq!(report.auto_promote.grouping_groups_applied, 0);
+        assert!(
+            !tree.wikis_dir().join("giardino-2").exists(),
+            "and no second wiki was founded for an argument that has one",
+        );
+        // A page of another subject makes it a real question again: those
+        // three are no longer everything the wiki holds.
+        plant_off_topic_page(&tree, &pool, "giardino", "alice").await;
+        let report = run_cycle(&pool, &tree, fake_embedder(), &llms, &grouping_policy())
+            .await
+            .unwrap();
+        assert_eq!(
+            report.auto_promote.grouping_wikis_examined, 1,
+            "nine of fifteen pages is a question; fifteen of fifteen is not",
+        );
+        drop(dir);
+    }
+
     #[tokio::test]
     async fn page_grouping_respects_an_empty_verdict() {
         let (dir, mut tree, pool) = setup_workdir().await;
@@ -10781,6 +10940,7 @@ mod tests {
         for page in ["orto.md", "potatura.md", "compost.md"] {
             plant_on_page(&tree, &pool, "alice", page, 2, "alice").await;
         }
+        plant_off_topic_page(&tree, &pool, "alice", "alice").await;
 
         let rev_llm = FakeLlmBackend::new("rev", "{\"same\": false}");
         // A tidy wiki: the model finds nothing worth grouping.
