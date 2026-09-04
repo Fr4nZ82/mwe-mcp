@@ -8760,11 +8760,12 @@ mod tests {
         )
     }
 
-    /// Frontmatter for an emerged sub-wiki under `parent`, with a creation
-    /// stamp so the oldest-first ordering is testable.
-    fn emerged_meta_yaml(id: &str, parent: &str, created: &str) -> String {
+    /// Frontmatter for a wiki that emerged, with a creation stamp so the
+    /// oldest-first ordering is testable. It hangs under nothing; what keeps
+    /// it out of the identity set is its `wiki_type`.
+    fn emerged_meta_yaml(id: &str, created: &str) -> String {
         format!(
-            "---\nwiki_id: {id}\nwiki_type: wiki\nparent_wiki_id: {parent}\n\
+            "---\nwiki_id: {id}\nwiki_type: wiki\nparent_wiki_id: null\n\
              slug: {id}\ntitle: {id}\ncreated: \"{created}\"\n---\n"
         )
     }
@@ -8803,18 +8804,9 @@ mod tests {
         let tree = WikiTree::open(dir.path()).expect("reopen");
         // Deliberately created in a different order than their timestamps, and
         // named so that alphabetical order would give a different answer.
-        write_meta(
-            &tree,
-            &emerged_meta_yaml("anewest", "alice", "2026-03-01T00:00:00Z"),
-        );
-        write_meta(
-            &tree,
-            &emerged_meta_yaml("zoldest", "alice", "2026-01-01T00:00:00Z"),
-        );
-        write_meta(
-            &tree,
-            &emerged_meta_yaml("mmiddle", "alice", "2026-02-01T00:00:00Z"),
-        );
+        write_meta(&tree, &emerged_meta_yaml("anewest", "2026-03-01T00:00:00Z"));
+        write_meta(&tree, &emerged_meta_yaml("zoldest", "2026-01-01T00:00:00Z"));
+        write_meta(&tree, &emerged_meta_yaml("mmiddle", "2026-02-01T00:00:00Z"));
 
         // Cap 2: the identity wiki rides free, the two OLDEST emerged survive.
         let avail = available_wikis(&tree, 2).expect("available");
@@ -8839,10 +8831,7 @@ mod tests {
         let smart = "---\nwiki_id: proj\nwiki_type: wiki\nparent_wiki_id: alice\n\
                      slug: proj\ntitle: Proj\nsmart: true\ncreated: \"2026-01-01T00:00:00Z\"\n---\n";
         write_meta(&tree, smart);
-        write_meta(
-            &tree,
-            &emerged_meta_yaml("viaggi", "alice", "2026-02-01T00:00:00Z"),
-        );
+        write_meta(&tree, &emerged_meta_yaml("viaggi", "2026-02-01T00:00:00Z"));
 
         // Cap 1. Were the smart wiki counted (it is the older of the two) the
         // real emerged wiki would be squeezed out.

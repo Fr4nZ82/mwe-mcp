@@ -2602,11 +2602,10 @@ mod tests {
 
     #[tokio::test]
     async fn create_refuses_top_level_smart_wiki() {
-        // Child-only gate, now per-kind: only the smart family
-        // requires a parent (it inherits the parent's ACL scope), so a
-        // smart-wiki create with `parent_wiki_id: None` must surface
-        // `WikiTypeRequiresParent` (wire form `400 wiki_type_requires_parent`)
-        // ahead of the generic "create requires parent_wiki_id".
+        // A smart wiki is the one kind that needs a parent — it takes its
+        // read audience from the wiki it sits under — so a smart-wiki create
+        // with `parent_wiki_id: None` must surface `WikiTypeRequiresParent`
+        // (wire form `400 wiki_type_requires_parent`).
         let (_dir, tree, pool) = seeded_tree().await;
         let req = PushRequest {
             mode: PushMode::Create,
