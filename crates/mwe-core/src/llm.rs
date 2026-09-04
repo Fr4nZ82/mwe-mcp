@@ -1896,9 +1896,21 @@ impl AnthropicBackend {
         }
 
         if !saw_text_block {
-            return Err(LlmError::Protocol(
-                "anthropic response has no `text` content block".into(),
-            ));
+            // A reply of pure reasoning is not the backend talking nonsense:
+            // it is the ceiling being too small for the job, and the two want
+            // different reactions from a caller.
+            return Err(
+                if classify_anthropic_stop_reason(parsed.stop_reason.as_deref())
+                    == FinishReason::MaxTokens
+                {
+                    LlmError::Backend(format!(
+                        "anthropic spent the whole {max_tokens}-token ceiling reasoning and \
+                         returned no answer"
+                    ))
+                } else {
+                    LlmError::Protocol("anthropic response has no `text` content block".into())
+                },
+            );
         }
 
         let resp = CompletionResponse {
@@ -1972,9 +1984,16 @@ const HOT_PATH_TEMPERATURE: f32 = 0.1;
 /// that this layer has: a stage asking for a long answer is asking for a
 /// long piece of work. So the allowance is the larger of this and
 /// [`REASONING_TO_ANSWER_RATIO`] times the ask — see [`ModelPolicy::ceiling_for`].
-/// A page of twelve dense clinical facts spends more thinking than a page of
-/// twelve short ones, and the flat allowance is what it ran out of.
-const ADAPTIVE_THINKING_HEADROOM: u32 = 4_096;
+///
+/// **Why the floor is the number that matters.** A short ask is not a easy
+/// one: measured on the bench on 2026-09-04, the page the Cronista failed on
+/// four nights running holds three facts and 2 251 bytes, so it asked for the
+/// minimum and got the minimum room to think with it. Meanwhile no page on
+/// that memory used more than a **third** of its answer allowance — the
+/// answer was never what ran out. The floor is set to the same 8 192 the
+/// explicit ladder calls `high`, so a caller with a small ask and a hard job
+/// gets a hard job's room.
+const ADAPTIVE_THINKING_HEADROOM: u32 = 8_192;
 
 /// How much room to think, per unit of room to answer.
 ///
@@ -4743,6 +4762,10 @@ pub struct FakeLlmBackend {
     /// callers that must set it are guarded by a test rather than by a
     /// reviewer noticing its absence.
     last_cache_system: parking_lot::Mutex<bool>,
+    /// The `max_tokens` of every `complete` call, in order. A ladder that
+    /// retries under a different ceiling is invisible in the response, so the
+    /// only way to hold it to that is to read back what it asked for.
+    max_tokens_seen: parking_lot::Mutex<Vec<Option<u32>>>,
 }
 
 #[cfg(any(test, feature = "test-fakes"))]
@@ -4760,6 +4783,7 @@ impl FakeLlmBackend {
             last_prompt: parking_lot::Mutex::new(None),
             last_images: parking_lot::Mutex::new(Vec::new()),
             last_cache_system: parking_lot::Mutex::new(false),
+            max_tokens_seen: parking_lot::Mutex::new(Vec::new()),
         }
     }
 
@@ -4768,6 +4792,12 @@ impl FakeLlmBackend {
     #[must_use]
     pub fn last_cache_system(&self) -> bool {
         *self.last_cache_system.lock()
+    }
+
+    /// The `max_tokens` each `complete` call asked for, in call order.
+    #[must_use]
+    pub fn max_tokens_seen(&self) -> Vec<Option<u32>> {
+        self.max_tokens_seen.lock().clone()
     }
 
     /// Snapshot of the `system` prompt the last `complete` call
@@ -4824,6 +4854,7 @@ impl LlmBackend for FakeLlmBackend {
         *self.last_prompt.lock() = Some(request.prompt.clone());
         self.last_images.lock().clone_from(&request.images);
         *self.last_cache_system.lock() = request.cache_system;
+        self.max_tokens_seen.lock().push(request.max_tokens);
         let prompt_words = u32::try_from(request.prompt.split_whitespace().count()).unwrap_or(0);
         Ok(CompletionResponse {
             text: self.response.clone(),
@@ -5908,7 +5939,7 @@ mod tests {
             .and(body_json(serde_json::json!({
                 "model": "claude-opus-5",
                 // 16 asked for + ADAPTIVE_THINKING_HEADROOM.
-                "max_tokens": 16 + 4096,
+                "max_tokens": 16 + 8192,
                 "messages": [ { "role": "user", "content": "ping" } ],
             })))
             .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
@@ -6006,17 +6037,17 @@ mod tests {
     ///
     /// A flat allowance fits a small ask and starves a large one: a stage
     /// asking for a long answer is asking for a long piece of work, and the
-    /// reasoning that precedes it grows with the work. A page of twelve dense
-    /// clinical facts is where the flat 4 096 ran out — the reply came back
-    /// cut, or with a thinking block and no text at all.
+    /// reasoning that precedes it grows with the work. But a SHORT ask is not
+    /// an easy one — the page the Cronista kept failing on holds three facts —
+    /// so the floor has to be a hard job's allowance on its own.
     #[test]
     fn the_reasoning_allowance_grows_with_the_ask() {
         let p = ModelPolicy::resolve(ANTHROPIC_BACKEND_TAG, "claude-sonnet-5");
         assert!(p.headroom_for_reasoning);
-        // A small ask keeps the floor, which is what the boot probe and the
-        // one-word calls depend on.
-        assert_eq!(p.ceiling_for(16), 16 + 4_096);
-        assert_eq!(p.ceiling_for(2_048), 2_048 + 4_096);
+        // A small ask keeps the floor, which is what the boot probe, the
+        // one-word calls and a short page's rewrite all depend on.
+        assert_eq!(p.ceiling_for(16), 16 + 8_192);
+        assert_eq!(p.ceiling_for(3_000), 3_000 + 8_192);
         // Past the floor the allowance tracks the ask.
         assert_eq!(p.ceiling_for(4_400), 4_400 + 8_800);
         assert_eq!(p.ceiling_for(8_000), 8_000 + 16_000);

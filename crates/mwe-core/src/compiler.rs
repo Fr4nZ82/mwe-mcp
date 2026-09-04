@@ -962,8 +962,15 @@ fn cronista_max_tokens(fact_count: usize) -> u32 {
 
 /// The Cronista call ladder: one attempt, and on an unusable reply ONE
 /// retry — a fresh call whose user message reminds strict JSON (no prompt
-/// machinery, the system prompt is unchanged). `Err` is the combined
-/// two-failure reason the degraded fallback records.
+/// machinery, the system prompt is unchanged) **and twice the room**. `Err`
+/// is the combined two-failure reason the degraded fallback records.
+///
+/// The retry doubles the ceiling because a repeat of the same call is the one
+/// thing that cannot work: the failure this ladder actually meets is a reply
+/// that ran out of room — truncated, or nothing but reasoning — and asking
+/// again under the same limit fails the same way. A ceiling is not a spend,
+/// so the doubling costs nothing on the retries that failed for another
+/// reason.
 /// Marker line in the rendered Cronista prompt that separates the
 /// **per-run-stable** half (the rules plus the page index — identical for
 /// every page of one compile run) from the **per-page** half (this page's
@@ -1056,7 +1063,8 @@ async fn cronista_with_retry(
             let retry_msg = "Write the page. Return ONLY one valid JSON object with the keys \
                              mergedBody, description, style — no code fences, no \
                              commentary, nothing before or after the object.";
-            match cronista_attempt(llm, system, task, retry_msg, max_tokens).await {
+            match cronista_attempt(llm, system, task, retry_msg, max_tokens.saturating_mul(2)).await
+            {
                 Ok(b) => Ok(b),
                 Err(second) => Err(format!(
                     "Cronista failed twice: {}; retry: {}",
@@ -5745,6 +5753,44 @@ mod tests {
             after_2.matches(&format!("f={}", stays.fact_id)).count(),
             1,
             "the fact that stayed keeps its one region: {after_2}"
+        );
+        drop(dir);
+    }
+
+    /// The retry is not a repeat: it asks for twice the room.
+    ///
+    /// The failure this ladder actually meets is a reply that ran out of room —
+    /// truncated, or nothing but reasoning and no answer at all — and the room
+    /// to think is derived from what the caller asks for. Retrying under the
+    /// same ceiling fails the same way, and the page ends up written the
+    /// degraded way for want of a bigger number.
+    #[tokio::test]
+    async fn the_cronista_retry_asks_for_twice_the_room() {
+        let (dir, tree, pool) = setup().await;
+        let f = ffp(0x51, "Alice loves pasta");
+        plant_fact(&pool, &f.fact_id, "user:alice", "Alice loves pasta").await;
+        let plan = concept_leaf_plan(f, "cucina", None);
+        // Unusable both times, so the whole ladder runs.
+        let cronista = FakeLlmBackend::new("fake", "NOT JSON");
+
+        compile_dirty_pages(
+            &pool,
+            &tree,
+            &plan,
+            &cronista,
+            Cadence::Light,
+            "2026-07-02T00:00:00Z",
+        )
+        .await
+        .expect("compile");
+
+        let asked = cronista.max_tokens_seen();
+        assert_eq!(asked.len(), 2, "one attempt and one retry: {asked:?}");
+        let first = asked[0].expect("the Cronista names its ceiling");
+        assert_eq!(
+            asked[1],
+            Some(first * 2),
+            "the retry asks for twice the first ceiling: {asked:?}",
         );
         drop(dir);
     }
