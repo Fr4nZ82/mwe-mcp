@@ -2,7 +2,7 @@
 //! REM Briefing-processor.
 //!
 //! The REM is the conceptual maintainer of non-smart wikis
-//! (the identity wikis and every emerged sub-wiki). On
+//! (the identity wikis and every wiki that emerged). On
 //! smart-wikis the smart consumer drains
 //! [`wiki_briefing_items`] at `smart_bootstrap` and closes them with
 //! `mark_processed` on the next `wiki_admin_push`; on non-smart

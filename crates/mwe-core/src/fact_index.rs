@@ -2383,57 +2383,6 @@ pub async fn move_to_wiki(
     Ok(res.rows_affected())
 }
 
-/// Rebase every `fact_index.source_path` that starts with `old_prefix`
-/// onto `new_prefix`, preserving the suffix after the prefix.
-///
-/// Used by [`crate::scope::wiki_change_scope`] to keep the
-/// fact-index `source_path` column consistent with the filesystem
-/// after a directory rename: the on-disk content (and therefore the
-/// region offsets) is identical, only the path prefix shifted.
-///
-/// Both prefixes are POSIX-style relative paths matching the canonical
-/// `source_path` form produced by
-/// [`crate::wiki::workdir_relative_source_path`] — callers are
-/// expected to include the trailing `/` so the prefix never matches a
-/// sibling whose name happens to share the source's leading bytes
-/// (e.g. `wikis/alice/` vs `wikis/alice-bis/`).
-///
-/// Returns the number of rows touched. The function does not bump
-/// `updated_at` — paths-only metadata changes are not user-meaningful.
-///
-/// # Errors
-///
-/// `sqlx::Error` only.
-pub async fn rebase_source_path_prefix(
-    pool: &SqlitePool,
-    old_prefix: &str,
-    new_prefix: &str,
-) -> Result<u64> {
-    if old_prefix == new_prefix {
-        return Ok(0);
-    }
-    let like_pattern = format!("{old_prefix}%");
-    let rows: Vec<(String, String)> =
-        sqlx::query_as("SELECT fact_id, source_path FROM fact_index WHERE source_path LIKE ?")
-            .bind(&like_pattern)
-            .fetch_all(pool)
-            .await?;
-    let mut touched = 0u64;
-    for (fact_id, source_path) in rows {
-        let Some(suffix) = source_path.strip_prefix(old_prefix) else {
-            continue;
-        };
-        let new_path = format!("{new_prefix}{suffix}");
-        let res = sqlx::query("UPDATE fact_index SET source_path = ? WHERE fact_id = ?")
-            .bind(&new_path)
-            .bind(&fact_id)
-            .execute(pool)
-            .await?;
-        touched += res.rows_affected();
-    }
-    Ok(touched)
-}
-
 /// The three-axis read predicate as SQL, bound `3 × n` times by the caller.
 ///
 /// `subject ∪ allow ∪ sender` — the query-side mirror of
@@ -4862,46 +4811,6 @@ mod tests {
         let row = find_by_id(&pool, &f1.fact_id).await.unwrap().unwrap();
         assert!(row.superseded_at.is_some());
         assert_eq!(row.superseded_by.as_ref().map(FactId::as_str), Some(f3_id));
-    }
-
-    #[tokio::test]
-    async fn rebase_source_path_prefix_rewrites_matching_rows() {
-        let pool = make_pool().await;
-        let mut f1 = sample_new_fact(SAMPLE_UUID_V7_1, "alice", "user:alice", "a");
-        f1.source_path = "wikis/alice/intro.md".into();
-        let mut f2 = sample_new_fact(SAMPLE_UUID_V7_2, "alice", "user:alice", "b");
-        f2.source_path = "wikis/alice/appunti.md".into();
-        // A row that must NOT match — sibling with shared prefix bytes.
-        let mut f3 = sample_new_fact(SAMPLE_UUID_V7_3, "alice-bis", "user:alice", "c");
-        f3.source_path = "wikis/alice-bis/intro.md".into();
-        insert(&pool, &f1).await.unwrap();
-        insert(&pool, &f2).await.unwrap();
-        insert(&pool, &f3).await.unwrap();
-
-        let touched = rebase_source_path_prefix(&pool, "wikis/alice/", "wikis/bob/family/alice/")
-            .await
-            .unwrap();
-        assert_eq!(touched, 2, "only the two alice rows should rebase");
-
-        let row1 = find_by_id(&pool, &f1.fact_id).await.unwrap().unwrap();
-        assert_eq!(row1.source_path, "wikis/bob/family/alice/intro.md");
-        let row2 = find_by_id(&pool, &f2.fact_id).await.unwrap().unwrap();
-        assert_eq!(row2.source_path, "wikis/bob/family/alice/appunti.md");
-        // The sibling stays untouched — its prefix differs after the trailing slash.
-        let row3 = find_by_id(&pool, &f3.fact_id).await.unwrap().unwrap();
-        assert_eq!(row3.source_path, "wikis/alice-bis/intro.md");
-    }
-
-    #[tokio::test]
-    async fn rebase_source_path_prefix_is_no_op_when_prefixes_match() {
-        let pool = make_pool().await;
-        let mut f1 = sample_new_fact(SAMPLE_UUID_V7_1, "alice", "user:alice", "a");
-        f1.source_path = "wikis/alice/intro.md".into();
-        insert(&pool, &f1).await.unwrap();
-        let touched = rebase_source_path_prefix(&pool, "wikis/alice/", "wikis/alice/")
-            .await
-            .unwrap();
-        assert_eq!(touched, 0);
     }
 
     #[tokio::test]

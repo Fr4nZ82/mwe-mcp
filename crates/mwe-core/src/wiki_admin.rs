@@ -658,7 +658,9 @@ async fn push_create(
     })?;
     if req.wiki_id.is_some() {
         return Err(AdminError::InvalidInput(
-            "create must not pass wiki_id (it is derived from parent + slug)".into(),
+            "create must not pass wiki_id (it is derived from the slug, and for a smart wiki from \
+             its parent and the slug)"
+                .into(),
         ));
     }
 
@@ -677,31 +679,50 @@ async fn push_create(
         });
     }
 
-    // Child-only gate, per kind: only the smart family inherits a parent's
-    // ACL scope and must be created beneath one.
-    // Surfaced ahead of the generic "create requires parent_wiki_id" so the
-    // caller sees the wire-stable `WikiTypeRequiresParent`.
-    if is_smart_family && req.parent_wiki_id.is_none() {
-        return Err(AdminError::WikiTypeRequiresParent {
-            wiki_type: wiki_type.to_owned(),
-            expected_parent: caller.sender_id.clone(),
-        });
-    }
-    let parent_id = req.parent_wiki_id.clone().ok_or_else(|| {
-        AdminError::InvalidInput(format!(
-            "create (new wiki) requires parent_wiki_id — your own root wiki, `{}`",
-            caller.sender_id
-        ))
-    })?;
-
-    // Locate the parent on disk (or refuse if it's missing — we
-    // need its abs_dir to land the child).
-    let parent_handle = tree
-        .locate(&parent_id)
-        .map_err(|_| AdminError::NotFound(parent_id.clone()))?;
+    // Where the wiki lands. A standard wiki is a shelf, not somebody's
+    // property: it hangs under nothing and is created at the top level. A
+    // smart wiki is the exception, and the reason is read access — its
+    // wiki-level audience is derived from the wiki it sits under, so it is
+    // created beneath its user's own, and passing that parent is required.
+    let parent_id: Option<WikiId> = if is_smart_family {
+        Some(
+            req.parent_wiki_id
+                .clone()
+                .ok_or_else(|| AdminError::WikiTypeRequiresParent {
+                    wiki_type: wiki_type.to_owned(),
+                    expected_parent: caller.sender_id.clone(),
+                })?,
+        )
+    } else {
+        if req.parent_wiki_id.is_some() {
+            return Err(AdminError::InvalidInput(
+                "a standard wiki has no parent — it is created at the top level. \
+                 `parent_wiki_id` belongs to a smart wiki, which takes its read audience from \
+                 the wiki it is created under"
+                    .into(),
+            ));
+        }
+        None
+    };
 
     let slug = WikiSlug::parse(slug_str)?;
-    let new_wiki_id = WikiId::child_of(&parent_id, &slug);
+    let (new_wiki_id, parent_dir) = match &parent_id {
+        // Locate the parent on disk (or refuse if it's missing — we need its
+        // abs_dir to land the child).
+        Some(parent) => {
+            let handle = tree
+                .locate(parent)
+                .map_err(|_| AdminError::NotFound(parent.clone()))?;
+            (
+                WikiId::child_of(parent, &slug),
+                handle.abs_dir().to_path_buf(),
+            )
+        },
+        None => (
+            WikiId::parse(slug.as_str())?,
+            tree.wikis_dir().to_path_buf(),
+        ),
+    };
 
     // Refuse if the new wiki already exists — `create` is
     // strictly additive.
@@ -733,7 +754,7 @@ async fn push_create(
     let meta = WikiMeta {
         wiki_id: new_wiki_id.clone(),
         wiki_type: wiki_type.to_owned(),
-        parent_wiki_id: Some(parent_id.clone()),
+        parent_wiki_id: parent_id.clone(),
         slug,
         title: title.to_owned(),
         scope,
@@ -781,7 +802,7 @@ async fn push_create(
     // filesystem is touched.
     let mark_ids = parse_mark_processed(&new_wiki_id, &req.mark_processed)?;
 
-    let dir = parent_handle.abs_dir().join(slug_str);
+    let dir = parent_dir.join(slug_str);
     let meta_path = dir.join(META_FILENAME);
     let meta_doc = meta.render("").map_err(|e| {
         AdminError::Wiki(WikiError::InvalidFrontmatter {
@@ -2514,6 +2535,69 @@ mod tests {
         push(&pool, &tree, &alice_smart(), ActorKind::Dashboard, req)
             .await
             .expect("dashboard writes are not gated by the consumer's identity");
+    }
+
+    /// A standard wiki is a shelf, and a shelf stands on the floor.
+    #[tokio::test]
+    async fn create_lands_a_standard_wiki_at_the_top_level() {
+        let (dir, tree, pool) = seeded_tree().await;
+        let req = PushRequest {
+            mode: PushMode::Create,
+            wiki_id: None,
+            parent_wiki_id: None,
+            slug: Some("giardinaggio".into()),
+            title: Some("Giardinaggio".into()),
+            wiki_type: Some("project".into()),
+            smart: false,
+            project_id: None,
+            description: None,
+            pages: Vec::new(),
+            deletes: Vec::new(),
+            mark_processed: Vec::new(),
+            expected_op_log_head: None,
+        };
+        push(&pool, &tree, &alice_smart(), ActorKind::Dashboard, req)
+            .await
+            .expect("a standard wiki needs no parent");
+
+        let tree = WikiTree::open(dir.path()).unwrap();
+        let made = tree
+            .locate(&WikiId::parse("giardinaggio").unwrap())
+            .expect("the new wiki is at the top level");
+        assert_eq!(made.meta().parent_wiki_id, None, "and it has no parent");
+        assert_eq!(
+            made.abs_dir(),
+            tree.wikis_dir().join("giardinaggio"),
+            "its directory sits beside the others, not inside one",
+        );
+    }
+
+    /// Passing one says the caller means a smart wiki and did not say so.
+    #[tokio::test]
+    async fn create_refuses_a_parent_for_a_standard_wiki() {
+        let (_dir, tree, pool) = seeded_tree().await;
+        let req = PushRequest {
+            mode: PushMode::Create,
+            wiki_id: None,
+            parent_wiki_id: Some(WikiId::parse("alice").unwrap()),
+            slug: Some("giardinaggio".into()),
+            title: Some("Giardinaggio".into()),
+            wiki_type: Some("project".into()),
+            smart: false,
+            project_id: None,
+            description: None,
+            pages: Vec::new(),
+            deletes: Vec::new(),
+            mark_processed: Vec::new(),
+            expected_op_log_head: None,
+        };
+        let err = push(&pool, &tree, &alice_smart(), ActorKind::Dashboard, req)
+            .await
+            .expect_err("a standard wiki has no parent");
+        assert!(
+            err.to_string().contains("has no parent"),
+            "the message says why: {err}",
+        );
     }
 
     #[tokio::test]

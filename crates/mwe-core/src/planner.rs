@@ -39,10 +39,11 @@
 //!   `wiki-group`); a page's tree home is carried on
 //!   [`PagePlan::wiki_id`] + [`PagePlan::page_path`]. Concept pages are `.md`
 //!   pages **within** the relevant standard wiki. A page that grows is **split
-//!   into more pages** (the Cartografo's split-by-mass lever); a **sub-wiki**
+//!   into more pages** (the Cartografo's split-by-mass lever); a **wiki**
 //!   emerges from a different signal — a *group* of existing pages that are one
-//!   subject area, via the REM promote machinery — so a page never becomes a
-//!   wiki and a wiki is never born holding one page. **Emergent-page
+//!   subject area, gathered from anywhere in the memory via the REM promote
+//!   machinery — so a page never becomes a wiki and a wiki is never born
+//!   holding one page. **Emergent-page
 //!   creation leaves a receipt** in `structure_proposals`
 //!   ([`crate::proposals::kind::PAGE_CREATE`], born-applied —
 //!   see [`record_minted_pages`]).

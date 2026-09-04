@@ -87,7 +87,7 @@ async fn in_flight_count(
 /// handler needs anything from the operator.
 ///
 /// - `wiki_promote` paragraph → file: reads `target_page`.
-/// - `wiki_promote` pages → sub-wiki: reads nothing; the handler takes
+/// - `wiki_promote` pages → wiki: reads nothing; the handler takes
 ///   every field from the proposal's own context.
 /// - `dedup_merge`: ignores every field (the act of posting is the
 ///   confirmation).

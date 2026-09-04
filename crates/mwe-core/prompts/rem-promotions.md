@@ -70,7 +70,7 @@ scan, `serde_json::Value`, tolerant to prose around the JSON). Parse
 failure ⇒ `None` ⇒ the page stays as it is (no apply, warning logged).
 The named handles are re-validated in Rust: each must resolve on the page
 and the set must be a **proper, non-empty subset** (moving everything
-is a rename, not a split — that is the page→sub-wiki rung). On a valid
+is a rename, not a split — that is the page-group→wiki rung). On a valid
 split verdict the move is **applied directly** (act-first): there is no
 proposal step, and nobody is notified — the memory reorganising itself is
 not news.

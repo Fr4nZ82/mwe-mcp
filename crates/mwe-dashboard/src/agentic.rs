@@ -36,14 +36,6 @@
 //!   with `superseded_by` pointing at the new row; subject, ACL,
 //!   `fact_type`, topics, and the validity window carry over from the
 //!   original so the chat does not need to re-elicit them.
-//! - **Hierarchical wiki move**: the write tool
-//!   `wiki_change_scope` lets the chat re-parent a wiki (and its
-//!   subtree) — moving it under a different parent or promoting it to
-//!   the root. The directly moved wiki's `_meta.md.parent_wiki_id` is
-//!   rewritten, the on-disk directory is renamed, and
-//!   `fact_index.source_path` is rebased for every affected row.
-//!   `wiki_id` stays stable, so `wiki_id`-based cross-links never need
-//!   rewriting (no-op today).
 //! - **Single-fact move**: the write tool `wiki_move_fact` relocates
 //!   **one** fact on the operator's instruction ("sposta questo fatto su
 //!   salute") — to another page of the same wiki
@@ -137,20 +129,6 @@ pub enum AgenticTool {
     /// consumer's plain-markdown page). Write tool — paired
     /// with [`Self::WikiRecall`] for the single-fact correction flow.
     WikiSupersede,
-    /// Move a wiki (and its subtree) under a different parent, or
-    /// promote it to the root. Mirrors
-    /// [`mwe_core::scope::wiki_change_scope`]: directory is renamed
-    /// on disk, the moved wiki's `_meta.md.parent_wiki_id` is
-    /// rewritten, parent `children` lists are kept in sync, and
-    /// `fact_index.source_path` is rebased for every affected row.
-    /// `wiki_id` stays stable, so existing `[[wiki_id]]` /
-    /// `[[wiki_id/page]]` cross-links continue to resolve. A smart
-    /// source wiki is refused — its wiki-level read audience derives
-    /// from its position in the tree (the scope principal), so a
-    /// re-parent would change effective read access on the next
-    /// reindex/push; [`mwe_core::scope::wiki_change_scope`] carries the
-    /// same guard for every other caller. Write tool.
-    WikiChangeScope,
     /// Move **one** fact to a different page of the same wiki, or into
     /// another wiki, following the operator's instruction ("sposta questo
     /// fatto su salute"). Reuses the same engine the REM cross-wiki refile
@@ -213,7 +191,6 @@ impl AgenticTool {
             Self::WikiFactsFor => "wiki_facts_for",
             Self::WikiForget => "wiki_forget",
             Self::WikiSupersede => "wiki_supersede",
-            Self::WikiChangeScope => "wiki_change_scope",
             Self::WikiMoveFact => "wiki_move_fact",
             Self::WikiDeletePage => "wiki_delete_page",
             Self::WikiRequestForget => "wiki_request_forget",
@@ -236,7 +213,6 @@ impl AgenticTool {
             "wiki_facts_for" => Some(Self::WikiFactsFor),
             "wiki_forget" => Some(Self::WikiForget),
             "wiki_supersede" => Some(Self::WikiSupersede),
-            "wiki_change_scope" => Some(Self::WikiChangeScope),
             "wiki_move_fact" => Some(Self::WikiMoveFact),
             "wiki_delete_page" => Some(Self::WikiDeletePage),
             "wiki_request_forget" => Some(Self::WikiRequestForget),
@@ -260,7 +236,6 @@ pub fn tool_descriptors() -> Vec<Tool> {
     out.extend(proposal_tool_descriptors());
     out.extend(batch_fact_tool_descriptors());
     out.extend(correction_tool_descriptors());
-    out.extend(scope_tool_descriptors());
     out.extend(move_fact_tool_descriptors());
     out.extend(delete_page_tool_descriptors());
     out.extend(request_forget_tool_descriptors());
@@ -530,39 +505,6 @@ fn correction_tool_descriptors() -> Vec<Tool> {
     }]
 }
 
-fn scope_tool_descriptors() -> Vec<Tool> {
-    vec![Tool {
-        name: AgenticTool::WikiChangeScope.name().to_owned(),
-        description: "Move a wiki (and its subtree) to a new place in the tree — \
-            either under a different parent or promoted to the root. The wiki \
-            keeps its stable wiki_id, so existing `[[wiki_id]]` cross-links \
-            still resolve afterwards. The wiki's owning principal is derived \
-            from its place in the tree, never stored, so a move re-derives it \
-            rather than rewriting anything. Refuses a \
-            smart source wiki (smart wikis are the consumer's — a re-parent \
-            would change their derived wiki-level read audience). WRITE TOOL — \
-            call this only after the user has explicitly named both the wiki \
-            being moved and the new parent (or said \"to the root\") in the \
-            current turn. Use `wiki_get_meta` first if you need to verify \
-            either id."
-            .to_owned(),
-        parameters: json!({
-            "type": "object",
-            "properties": {
-                "source_wiki_id": {
-                    "type": "string",
-                    "description": "Stable id of the wiki being moved (e.g. \"alice-acmecorp\")."
-                },
-                "new_parent_wiki_id": {
-                    "type": "string",
-                    "description": "Stable id of the new parent wiki. Omit (or pass null) to promote to the root."
-                }
-            },
-            "required": ["source_wiki_id"]
-        }),
-    }]
-}
-
 fn move_fact_tool_descriptors() -> Vec<Tool> {
     vec![Tool {
         name: AgenticTool::WikiMoveFact.name().to_owned(),
@@ -770,7 +712,6 @@ pub async fn dispatch(
         AgenticTool::WikiFactsFor => dispatch_wiki_facts_for(arguments, ctx).await,
         AgenticTool::WikiForget => dispatch_wiki_forget(arguments, ctx).await,
         AgenticTool::WikiSupersede => dispatch_wiki_supersede(arguments, ctx).await,
-        AgenticTool::WikiChangeScope => dispatch_wiki_change_scope(arguments, ctx).await,
         AgenticTool::WikiMoveFact => dispatch_wiki_move_fact(arguments, ctx).await,
         AgenticTool::WikiDeletePage => dispatch_wiki_delete_page(arguments, ctx).await,
         AgenticTool::WikiRequestForget => dispatch_wiki_request_forget(arguments, ctx).await,
@@ -850,9 +791,9 @@ struct PageInfoSnippet {
 /// offending value and names the character, so the old wrapper repeated the
 /// value a second time in its own quoting style and said nothing new; and a
 /// refusal that does not say what the right shape *is* costs a whole iteration
-/// of the 8-step budget to rediscover. `field` is named because
-/// `wiki_change_scope` carries two wiki ids and "invalid wiki id" alone would
-/// not say which.
+/// of the 8-step budget to rediscover. `field` is named because a tool that
+/// carries two wiki ids — a source and a destination — leaves "invalid wiki
+/// id" alone unable to say which.
 ///
 /// Only for ids the **operator** supplied: a `wiki_id` read back out of the DB
 /// that fails to parse is an [`AgenticToolError::InternalFailure`], not bad
@@ -1636,71 +1577,6 @@ fn build_supersede_request(
 }
 
 // ---------------------------------------------------------------------------
-// Hierarchical wiki move: wiki_change_scope
-// ---------------------------------------------------------------------------
-
-#[derive(Debug, Deserialize)]
-struct WikiChangeScopeArgs {
-    source_wiki_id: String,
-    #[serde(default)]
-    new_parent_wiki_id: Option<String>,
-}
-
-#[derive(Debug, Serialize)]
-struct WikiChangeScopeReport {
-    wiki_id: String,
-    old_rel_dir: String,
-    new_rel_dir: String,
-    new_parent_wiki_id: Option<String>,
-    facts_rebased: u64,
-}
-
-async fn dispatch_wiki_change_scope(
-    arguments: &serde_json::Value,
-    ctx: &AgenticContext<'_>,
-) -> Result<String, AgenticToolError> {
-    let args: WikiChangeScopeArgs = serde_json::from_value(arguments.clone()).map_err(|e| {
-        AgenticToolError::InvalidArguments {
-            tool: AgenticTool::WikiChangeScope.name(),
-            detail: e.to_string(),
-        }
-    })?;
-    let source_id = parse_operator_wiki_id(
-        &args.source_wiki_id,
-        "source_wiki_id",
-        AgenticTool::WikiChangeScope.name(),
-    )?;
-    let new_parent_id = match args.new_parent_wiki_id.as_deref() {
-        None | Some("") => None,
-        Some(raw) => Some(parse_operator_wiki_id(
-            raw,
-            "new_parent_wiki_id",
-            AgenticTool::WikiChangeScope.name(),
-        )?),
-    };
-    // A smart wiki's wiki-level read audience derives from its position in the
-    // tree (the scope principal), so a re-parent would change effective read
-    // access on the next reindex/push. The core primitive carries the same
-    // guard; refusing here keeps the message operator-readable.
-    ensure_standard_wiki(ctx, AgenticTool::WikiChangeScope.name(), source_id.as_str())?;
-    let outcome =
-        mwe_core::scope::wiki_change_scope(ctx.tree, ctx.pool, &source_id, new_parent_id.as_ref())
-            .await
-            .map_err(|e| AgenticToolError::InternalFailure {
-                tool: AgenticTool::WikiChangeScope.name(),
-                detail: e.to_string(),
-            })?;
-    let report = WikiChangeScopeReport {
-        wiki_id: outcome.wiki_id.as_str().to_owned(),
-        old_rel_dir: outcome.old_rel_dir.to_string_lossy().into_owned(),
-        new_rel_dir: outcome.new_rel_dir.to_string_lossy().into_owned(),
-        new_parent_wiki_id: outcome.new_parent_wiki_id.map(|id| id.as_str().to_owned()),
-        facts_rebased: outcome.facts_rebased,
-    };
-    serialise_result("scope_changed", &report)
-}
-
-// ---------------------------------------------------------------------------
 // Single-fact move: wiki_move_fact
 //
 // Relocate ONE fact on the operator's instruction — same-wiki page→page or
@@ -2304,7 +2180,6 @@ mod tests {
             AgenticTool::WikiFactsFor,
             AgenticTool::WikiForget,
             AgenticTool::WikiSupersede,
-            AgenticTool::WikiChangeScope,
             AgenticTool::WikiMoveFact,
             AgenticTool::WikiDeletePage,
             AgenticTool::WikiRequestForget,
@@ -2459,7 +2334,7 @@ mod tests {
         );
         assert!(
             detail.contains("`wiki_id`"),
-            "`wiki_change_scope` carries two wiki ids, so the field has to be named: {detail}"
+            "a tool carrying two wiki ids has to say which one: {detail}"
         );
     }
 
@@ -3069,39 +2944,6 @@ mod tests {
     }
 
     // ---------- smart-wiki guards (smart wikis are the consumer's) ----------
-
-    /// `wiki_change_scope` refuses a smart source wiki: its wiki-level read
-    /// audience derives from its position in the tree, so a re-parent would
-    /// change effective read access on the next reindex/push.
-    #[tokio::test]
-    async fn dispatch_wiki_change_scope_refuses_smart_source() {
-        let (dir, pool, tree) = move_fact_tree().await;
-        let ctx = AgenticContext {
-            pool: &pool,
-            tree: &tree,
-            embedder: Arc::new(mwe_core::embedder::FakeEmbedder::new("fake", 4)),
-            sender_ctx: SenderContext::user("alice"),
-            is_admin: true,
-            reveal: false,
-        };
-        let err = dispatch(
-            "wiki_change_scope",
-            &json!({ "source_wiki_id": "proj", "new_parent_wiki_id": "alice" }),
-            &ctx,
-        )
-        .await
-        .expect_err("a smart source must be refused");
-        assert!(
-            matches!(&err, AgenticToolError::InvalidArguments { tool, detail }
-                if *tool == "wiki_change_scope" && detail.contains("smart")),
-            "{err:?}"
-        );
-        // Nothing moved on disk.
-        assert!(dir.path().join("wikis/proj").exists());
-        assert!(!dir.path().join("wikis/alice/proj").exists());
-        drop(dir);
-    }
-
     /// `wiki_forget` refuses a fact living in a smart wiki — smart section
     /// rows are not fact-governed (the consumer's next push would overwrite the
     /// tombstone). Admin context, so only the smart guard can be the refusal.

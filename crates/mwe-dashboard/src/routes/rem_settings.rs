@@ -89,10 +89,10 @@ fn knobs() -> Vec<Knob> {
         },
         Knob {
             field: "auto_promote_group_min_pages",
-            label: "Auto-promote — pages to found a sub-wiki",
+            label: "Auto-promote — pages to found a wiki",
             default: def.auto_promote_group_min_pages.to_string(),
-            help: "Pages of one subject the regrouping pass must find to found a sub-wiki. \
-                   Birth only: filing into an existing sub-wiki has no floor."
+            help: "Pages of one subject the regrouping pass must find, anywhere in the memory, \
+                   to found a wiki. Birth only: filing into a wiki that exists has no floor."
                 .to_owned(),
         },
         Knob {

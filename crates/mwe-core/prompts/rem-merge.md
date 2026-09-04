@@ -1,7 +1,7 @@
 ---
 name: rem-merge
 description: REM page-merge confirmer — are two near-synonym concept pages the same concept, and which name survives?
-version: 1.4
+version: 1.5
 default_version_at_bootstrap: v1.4
 ---
 
@@ -9,9 +9,8 @@ default_version_at_bootstrap: v1.4
 
 Prompt for the REM nightly **page-merge** sub-job — the cure
 front of semantic page consolidation. A candidate pair of concept pages
-in the same **family line** (a wiki plus its own sub-wikis — the pair
-may straddle the parent↔sub-wiki boundary) was *nominated* by structural
-signals (duplicate prose across the compiled bodies, or kinship between
+in the same **consolidation scope** — a wiki, plus anything nested inside it
+on disk — was *nominated* by structural signals (duplicate prose across the compiled bodies, or kinship between
 the page names); the `rem_dedup_semantic` / revisor slot (the low-tier
 confirmer shared by every REM verdict sweep) is asked the question the
 signals cannot answer: are these two pages **the same concept**, and if so
@@ -31,8 +30,8 @@ below the prompt build.
 **Placeholders** (substituted at render time by
 `mwe_core::prompts::render`):
 
-- `{wiki_id}` — the family-line label: the wiki both pages live in, or
-  `parent + sub-wiki` when the pair straddles the line
+- `{wiki_id}` — the scope label: the wiki both pages live in, or the two
+  ids joined when the scope spans more than one
 - `{signal}` — the structural signal that nominated the pair (audit
   context, not evidence)
 - `{page_a}` — first page: wiki, slug, title, description, style, numbered facts
@@ -72,7 +71,7 @@ Two concept pages from `{wiki_id}` follow. They were nominated by a structural s
 
 Decide whether they are the SAME concept — would a reader looking things up on one of them always want the other's content in the same place? Merge near-synonym pages about one topic (e.g. a trip's page and the same trip's planning page duplicating it). Do NOT merge pages that are merely related, or where one is a sub-topic that deserves its own page (a person vs one of their hobbies; a project vs its budget), or lists with different purposes — in particular an open-items list and its registry/log twin ("shopping" vs "shopping_log", a watchlist vs the watched log) are NEVER the same concept, however similar their records read: one holds what is still open, the other what was consumed.
 
-The two pages may live in two wikis of the same family line (a wiki and its emergent sub-wiki): each block's `wiki:` line says where. That is still one memory about one subject — judge the CONCEPT exactly as above. When the same story is told on a parent page and retold on the subject's own sub-wiki page, the sub-wiki page is usually the better long-term home.
+Each block's `wiki:` line says where its page lives; the two are normally the same wiki. That is one memory about one subject — judge the CONCEPT exactly as above. When the same story is told twice, the page whose wiki is about that subject is the better long-term home.
 
 {subject_note}
 

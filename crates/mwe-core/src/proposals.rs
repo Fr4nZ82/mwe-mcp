@@ -60,7 +60,7 @@ use crate::wiki::WikiTree;
 ///
 /// The chassis rejects any other value as `unknown_kind`.
 pub mod kind {
-    /// Promote facts paragraph→file or file→sub-wiki (3-stage auto-promotion building block).
+    /// Promote facts paragraph→page, or a group of pages into a wiki of their own.
     pub const WIKI_PROMOTE: &str = "wiki_promote";
     /// Merge two near-duplicate facts after REM semantic dedup.
     pub const DEDUP_MERGE: &str = "dedup_merge";

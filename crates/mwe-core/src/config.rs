@@ -1288,8 +1288,8 @@ pub struct RemPolicyConfig {
     pub auto_promote_min_page_facts_technical: Option<usize>,
     /// Override `auto_promote_group_min_pages` (default 9) — how many
     /// pages of one subject the regrouping pass must find before a new
-    /// sub-wiki is born. Governs birth only: filing pages into a
-    /// sub-wiki that already exists has no floor.
+    /// wiki is born. Governs birth only: filing pages into a wiki
+    /// that already exists has no floor.
     #[serde(default)]
     pub auto_promote_group_min_pages: Option<usize>,
     /// Override `auto_promote_cap` (default 5).

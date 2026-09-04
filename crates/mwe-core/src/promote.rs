@@ -1066,7 +1066,7 @@ async fn apply_page_merge(
     let wiki_id = WikiId::parse(&ctx.source_wiki_id)
         .map_err(|e| ApplyError::InvalidPayload(format!("context.source_wiki_id invalid: {e}")))?;
     // The survivor's wiki: same as the husk's unless a family-scope merge
-    // crossed the parent↔sub-wiki line (pre-family receipts carry None).
+    // crossed from one wiki to another (older receipts carry None).
     let target_wiki_str = ctx
         .target_wiki_id
         .clone()
@@ -1173,7 +1173,7 @@ async fn apply_page_merge(
     // DB rows FIRST (the capture commit-point pattern): repoint every row at
     // the survivor as a pending render so neither the husk deletion nor the
     // survivor write can be misread by the orphan sweep. A family-scope
-    // merge that crossed the parent↔sub-wiki line re-homes the row's
+    // merge that crossed from one wiki to another re-homes the row's
     // `wiki_id` too (`move_to_wiki` — the only primitive that flips it).
     let mut repointed: Vec<&MovedRegion> = Vec::with_capacity(moved.len());
     let mut failure: Option<ApplyError> = None;
@@ -2367,7 +2367,7 @@ pub struct PageMergeParams<'a> {
     pub wiki_id: &'a str,
     /// The standard wiki the SURVIVOR page lives in — usually the same
     /// as [`Self::wiki_id`], but a family-scope merge may cross the
-    /// parent↔sub-wiki line (never an arbitrary wiki pair).
+    /// consolidation scope (never an arbitrary wiki pair).
     pub survivor_wiki_id: &'a str,
     /// The husk page (wiki-relative `.md`) — loses all facts, gets deleted.
     pub husk_page: &'a str,

@@ -52,7 +52,7 @@ WHAT IS NOT WRONG, and refusing these matters more than finding the ones above:
 
 - **A page about a NON-ENROLLED person or thing is not misplaced by that fact alone.** Somebody's father, the dog, the car — they have no wiki of their own, so their pages live wherever the person who keeps them lives. Move such a page only when it clearly belongs to a group that carries responsibility for that subject, and the `subjects` line says so.
 - **Topic overlap is not misplacement.** Two wikis holding pages about cooking is normal; each holds its own.
-- **A sub-wiki is not the wrong wiki.** A page inside a wiki's own subtree is where the regrouping pass put it deliberately. Leave it.
+- **A page the regrouping pass moved is not misplaced.** A page that sits with the others on its subject is where that pass put it deliberately. Leave it.
 - **Being large, badly named, or badly written is not being in the wrong wiki.** Other passes own those.
 - **Doubt.** A move rewrites paths and retargets links. If you cannot say plainly why the page belongs elsewhere, it stays. An empty answer is the right answer most nights, and it is never a failure.
 

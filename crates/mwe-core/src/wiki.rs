@@ -537,9 +537,9 @@ pub enum WikiError {
 
     /// A wiki's `parent_wiki_id` chain to the root identity wiki could not
     /// be resolved within the configured hop cap. Either the chain forms a
-    /// cycle (a `wiki_change_scope` bug that re-parented a wiki under one of
-    /// its own descendants) or the chain is deeper than the cap suggests is
-    /// reasonable.
+    /// cycle — a wiki placed under one of its own descendants, which only a
+    /// hand-edited `_meta.md` can produce — or the chain is deeper than the
+    /// cap suggests is reasonable.
     #[error("parent chain from {wiki:?} did not terminate within {cap} hops")]
     ScopeChainUnresolved {
         /// Wiki id whose scope principal was being resolved.
@@ -618,7 +618,7 @@ pub struct WikiMeta {
     /// Prose description of the wiki's **category** — its scope —
     /// read by the ingest/document classifier as a **placement signal**
     /// (never an ACL gate). A group wiki inherits the group's `scope`
-    /// prose; an emerged sub-wiki gets prose the LLM writes at creation.
+    /// prose; a wiki that emerged gets prose the LLM writes at creation.
     /// `None` for the many wikis that carry no description yet. The wiki's
     /// owning **principal** (whose category it is) is not declared here — it
     /// is **derived from topology** via
@@ -1296,7 +1296,7 @@ impl WikiTree {
     ///
     /// A [`WikiError::ScopeChainUnresolved`] is raised if the parent chain
     /// exceeds [`MAX_ACL_DEFAULT_HOPS`] hops or forms a cycle (defensive
-    /// against a `wiki_change_scope` bug).
+    /// against a hand-edited `_meta.md`).
     pub fn resolve_scope_principal(&self, meta: &WikiMeta) -> Result<Principal> {
         let mut current = meta.clone();
         let mut seen = std::collections::HashSet::new();
@@ -1345,9 +1345,9 @@ fn scope_principal_of_root(root: &WikiMeta) -> Result<Principal> {
 
 /// Cap on parent-chain hops [`WikiTree::resolve_scope_principal`] follows.
 ///
-/// Real trees stay shallow (root → user → cliente → progetto is already
-/// deep at 4), so 64 is comfortably permissive while still detecting
-/// cycles introduced by a misbehaving `wiki_change_scope`.
+/// The only chain the engine builds is one hop — a smart wiki under the wiki
+/// of the user it belongs to — so 64 is comfortably permissive while still
+/// detecting a cycle in a hand-edited `_meta.md`.
 pub const MAX_ACL_DEFAULT_HOPS: usize = 64;
 
 /// One element of [`WikiTree::walk`].
@@ -1890,9 +1890,8 @@ pub(crate) fn flatten_keywords_mapping(keywords: &serde_yaml::Mapping) -> Vec<St
 /// `wiki_type` for a freshly created **user** identity wiki.
 ///
 /// Generic enough to host prose, a `keywords` block, lifecycle-aware
-/// regions if the owner later forges a more specific type. The admin
-/// can change it via `_meta.md` edit or `wiki_change_scope` after the
-/// fact. Group identity wikis use [`GROUP_IDENTITY_WIKI_TYPE`] instead —
+/// regions if the owner later forges a more specific type. The admin can
+/// change it with an `_meta.md` edit after the fact. Group identity wikis use [`GROUP_IDENTITY_WIKI_TYPE`] instead —
 /// see [`IdentityKind::wiki_type`].
 pub const IDENTITY_WIKI_TYPE: &str = "wiki-user";
 
