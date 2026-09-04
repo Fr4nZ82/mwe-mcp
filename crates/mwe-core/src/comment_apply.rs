@@ -208,13 +208,8 @@ pub async fn apply_comments(
     // read and who answers for it are the fact's own `subject_id` and
     // `allow_ids` — so this principal neither bounds where a page may move nor
     // stands in as the subject of a claim nobody attributed.
-    let language_principal = tree.resolve_scope_principal(handle.meta())?;
-    let language_directive = crate::locale::render_memory_language_directive(
-        crate::enrollment::locale_for_principal(pool, &language_principal)
-            .await
-            .unwrap_or_default()
-            .as_deref(),
-    );
+    let language_directive =
+        crate::locale::memory_directive_for_wiki_meta(pool, tree, handle.meta()).await;
 
     // Group the pending comments by the page their citation anchors to.
     let mut by_page: std::collections::BTreeMap<String, Vec<(i64, String, Option<String>)>> =

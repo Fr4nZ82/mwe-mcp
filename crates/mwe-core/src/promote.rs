@@ -148,6 +148,10 @@ struct FactRefileSpec {
 const VARIANT_PARAGRAPH_TO_FILE: &str = "paragraph_to_file";
 const VARIANT_PAGES_TO_SUBWIKI: &str = "pages_to_subwiki";
 const VARIANT_PAGES_MOVE_WIKI: &str = "pages_move_wiki";
+/// Pages that are one subject area, from ANY wiki, become a wiki of their
+/// own at the root. The whole-memory sibling of [`VARIANT_PAGES_TO_SUBWIKI`],
+/// which only ever tidied one wiki's subtree.
+const VARIANT_PAGES_TO_NEW_WIKI: &str = "pages_to_new_wiki";
 /// Pages leaving their wiki for an unrelated one. The sibling of
 /// [`VARIANT_PAGES_MOVE_WIKI`] and deliberately a different verb: regrouping
 /// tidies a wiki's own subtree, this one contradicts the wiki a page was born
@@ -190,6 +194,7 @@ pub(crate) async fn apply_wiki_promote(
     match variant {
         VARIANT_PARAGRAPH_TO_FILE => apply_paragraph_to_file(pool, tree, context, answers).await,
         VARIANT_PAGES_TO_SUBWIKI => apply_pages_to_subwiki(pool, tree, context, answers).await,
+        VARIANT_PAGES_TO_NEW_WIKI => apply_pages_to_new_wiki(pool, tree, context, answers).await,
         VARIANT_PAGES_MOVE_WIKI => apply_pages_move_wiki(pool, tree, context, answers).await,
         VARIANT_PAGES_REHOME => apply_pages_rehome(pool, tree, context, answers).await,
         VARIANT_PAGE_MERGE => apply_page_merge(pool, tree, context, answers).await,
@@ -1406,6 +1411,22 @@ struct GroupContext {
     target_wiki_id: Option<String>,
 }
 
+/// Context of a `pages_to_new_wiki`: the pages, named across the whole
+/// memory, plus the newborn wiki's advisory name.
+#[derive(Debug, serde::Deserialize)]
+struct NewWikiContext {
+    /// `<wiki_id>/<page.md>` for each page, in the order the model named
+    /// them. They may come from any number of wikis — that is the point.
+    pages: Vec<String>,
+    /// Advisory slug for the wiki about to be born (re-derived through
+    /// [`crate::slug::derive_slug`]).
+    #[serde(default)]
+    new_wiki_slug: Option<String>,
+    /// Human-readable title.
+    #[serde(default)]
+    new_wiki_title: Option<String>,
+}
+
 /// A page collected for a group move: paths, bytes, and the facts on it,
 /// validated against both `fact_index` and the markers on disk.
 struct CollectedPage {
@@ -1767,6 +1788,209 @@ async fn apply_pages_to_subwiki(
         new_wiki_slug: new_slug.as_str().to_owned(),
         pages: spec_pages,
     }))
+}
+
+/// One page named across the whole memory: the wiki it currently sits in,
+/// and its path inside that wiki.
+///
+/// The grouping reads every shelf at once, so a page it names has to say
+/// which shelf it is on — `"franz/salute_padre.md"`. Split once, here.
+fn split_qualified_page(qualified: &str) -> Result<(WikiId, String), ApplyError> {
+    let (wiki, page) = qualified.split_once('/').ok_or_else(|| {
+        ApplyError::InvalidPayload(format!(
+            "context.pages entry {qualified} must be `<wiki_id>/<page.md>`",
+        ))
+    })?;
+    let wiki_id = WikiId::parse(wiki)
+        .map_err(|e| ApplyError::InvalidPayload(format!("context.pages wiki id {wiki}: {e}")))?;
+    if page.is_empty() {
+        return Err(ApplyError::InvalidPayload(format!(
+            "context.pages entry {qualified} names no page",
+        )));
+    }
+    Ok((wiki_id, page.to_owned()))
+}
+
+/// Collect pages named across several wikis, each with the wiki it leaves.
+///
+/// The single-wiki sibling ([`collect_group_pages`]) takes one directory and
+/// page names relative to it; this one takes `<wiki_id>/<page.md>` and locates
+/// each wiki itself. Every other check is the same and lives in the sibling —
+/// the file exists, it carries live facts, and its markers agree with
+/// `fact_index` — so a page is never moved on a stale picture of it.
+async fn collect_pages_across_wikis(
+    pool: &SqlitePool,
+    tree: &WikiTree,
+    pages: &[String],
+) -> Result<Vec<(String, CollectedPage)>, ApplyError> {
+    if pages.is_empty() {
+        return Err(ApplyError::InvalidPayload(
+            "context.pages must not be empty".into(),
+        ));
+    }
+    let mut seen: HashSet<String> = HashSet::new();
+    let mut out = Vec::with_capacity(pages.len());
+    for qualified in pages {
+        if !seen.insert(qualified.clone()) {
+            return Err(ApplyError::InvalidPayload(format!(
+                "context.pages duplicate: {qualified}",
+            )));
+        }
+        let (wiki_id, page) = split_qualified_page(qualified)?;
+        let handle = tree.locate(&wiki_id).map_err(|e| {
+            ApplyError::HandlerData(format!("source wiki {wiki_id} not found: {e}"))
+        })?;
+        let mut collected =
+            collect_group_pages(pool, tree, handle.abs_dir(), std::slice::from_ref(&page)).await?;
+        let one = collected
+            .pop()
+            .ok_or_else(|| ApplyError::HandlerData(format!("{qualified} collected nothing")))?;
+        out.push((wiki_id.as_str().to_owned(), one));
+    }
+    Ok(out)
+}
+
+/// Apply a `pages_to_new_wiki` promotion: pages that are one SUBJECT AREA,
+/// wherever they currently sit, become a wiki of their own **at the root**.
+///
+/// The sibling [`apply_pages_to_subwiki`] tidies one wiki's own subtree; this
+/// one answers a different question. An argument — gardening, a car, a cat, a
+/// relative the household looks after — is not inside anybody: its pages are
+/// scattered across the shelves where each was first filed, and the wiki that
+/// gathers them belongs to no one and hangs under no one (founder,
+/// 2026-09-04: *«la wiki nuova nasce nella root»*).
+///
+/// Nothing about who may read what changes. Each fact carries its own
+/// `subject_id` and `allow_ids` across
+/// ([`fact_index::move_to_wiki`] writes the wiki and the path and nothing
+/// else), so the same people read the same claims before and after — the move
+/// rewrites where a page sits, never whose it is.
+async fn apply_pages_to_new_wiki(
+    pool: &SqlitePool,
+    tree: &WikiTree,
+    context: &Value,
+    _answers: &Value,
+) -> Result<Value, ApplyError> {
+    let ctx: NewWikiContext = serde_json::from_value(context.clone())
+        .map_err(|e| ApplyError::InvalidPayload(format!("context: {e}")))?;
+
+    let slug_seed = ctx
+        .new_wiki_slug
+        .as_deref()
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+        .ok_or_else(|| {
+            ApplyError::InvalidPayload("context.new_wiki_slug is required".to_owned())
+        })?;
+    let derived = crate::slug::derive_slug(slug_seed)
+        .map_err(|e| ApplyError::InvalidPayload(format!("new_wiki_slug derive: {e}")))?;
+    let new_slug = WikiSlug::parse(&derived)
+        .map_err(|e| ApplyError::InvalidPayload(format!("new_wiki_slug invalid: {e}")))?;
+    // A root wiki's id IS its slug — there is no parent to compose with.
+    let new_wiki_id = WikiId::parse(new_slug.as_str())
+        .map_err(|e| ApplyError::InvalidPayload(format!("new wiki id: {e}")))?;
+    if tree.locate(&new_wiki_id).is_ok() {
+        return Err(ApplyError::InvalidPayload(format!(
+            "a wiki named {new_wiki_id} already exists",
+        )));
+    }
+
+    let collected = collect_pages_across_wikis(pool, tree, &ctx.pages).await?;
+
+    let new_title = ctx
+        .new_wiki_title
+        .as_deref()
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+        .unwrap_or_else(|| new_slug.as_str())
+        .to_owned();
+    let meta = root_wiki_meta(&new_wiki_id, &new_slug, &new_title, context);
+    wiki::write_wiki_dir(tree, &meta, /* requires_parent */ false)
+        .map_err(|e| ApplyError::HandlerIo(format!("create wiki {new_wiki_id}: {e}")))?;
+    let new_wiki_dir = tree
+        .locate(&new_wiki_id)
+        .map_err(|e| ApplyError::HandlerIo(format!("locate new wiki {new_wiki_id}: {e}")))?
+        .abs_dir()
+        .to_path_buf();
+
+    let mut spec_pages = Vec::with_capacity(collected.len());
+    let mut sources: std::collections::BTreeSet<String> = std::collections::BTreeSet::new();
+    for (source_wiki_id, page) in &collected {
+        relocate_page(pool, tree, page, &new_wiki_dir, new_wiki_id.as_str()).await?;
+        rehome_grouped_page(pool, tree, page, source_wiki_id, new_wiki_id.as_str()).await;
+        follow_page_in_registry(
+            tree,
+            &page.rel_in_wiki.to_string_lossy(),
+            new_wiki_id.as_str(),
+        );
+        retarget_links_after_move(
+            pool,
+            tree,
+            &moved_addresses(
+                std::iter::once(page.rel_in_wiki.as_path()),
+                source_wiki_id,
+                new_wiki_id.as_str(),
+            ),
+        )
+        .await;
+        sources.insert(source_wiki_id.clone());
+        spec_pages.push(GroupedPage {
+            page: page.rel_in_wiki.to_string_lossy().into_owned(),
+            page_bytes: page.bytes.clone(),
+            fact_ids: page.facts.iter().map(|f| f.as_str().to_owned()).collect(),
+        });
+    }
+
+    let mut parked: Vec<&str> = sources.iter().map(String::as_str).collect();
+    parked.push(new_wiki_id.as_str());
+    park_wiki_cards_for_recompile(tree, &parked);
+
+    tracing::info!(
+        new_wiki_id = new_wiki_id.as_str(),
+        pages = spec_pages.len(),
+        from_wikis = sources.len(),
+        facts = spec_pages.iter().map(|p| p.fact_ids.len()).sum::<usize>(),
+        "promote: pages_to_new_wiki applied",
+    );
+
+    Ok(json!(PagesToSubwikiSpec {
+        variant: VARIANT_PAGES_TO_NEW_WIKI.to_owned(),
+        source_wiki_id: sources.iter().cloned().collect::<Vec<_>>().join(","),
+        new_wiki_id: new_wiki_id.as_str().to_owned(),
+        new_wiki_slug: new_slug.as_str().to_owned(),
+        pages: spec_pages,
+    }))
+}
+
+/// The `_meta.md` of a wiki born for an argument.
+///
+/// **No parent, and that is the whole point.** An argument hangs under
+/// nothing: the product paths never read `parent_wiki_id` (neither recall nor
+/// capture mentions it), and the one derivation that walks to a root — the
+/// scope principal — answers "none" for a wiki that is nobody's, which its
+/// callers tolerate. What the wiki carries instead is its `extra`: the
+/// grouping's description and dominant style, which are hints about what
+/// belongs here, not about who it belongs to.
+fn root_wiki_meta(wiki_id: &WikiId, slug: &WikiSlug, title: &str, context: &Value) -> WikiMeta {
+    WikiMeta {
+        wiki_id: wiki_id.clone(),
+        wiki_type: DEFAULT_NEW_SUBWIKI_TYPE.to_owned(),
+        parent_wiki_id: None,
+        slug: slug.clone(),
+        title: title.to_owned(),
+        scope: None,
+        shared_with: Vec::new(),
+        style_overrides: serde_yaml::Mapping::new(),
+        keywords: serde_yaml::Mapping::new(),
+        children: Vec::new(),
+        promoted_from: None,
+        no_archive: false,
+        smart: false,
+        is_agent: false,
+        created: Some(chrono::Utc::now().to_rfc3339()),
+        updated: None,
+        extra: subwiki_meta_extra(context),
+    }
 }
 
 /// The `_meta.extra` a newborn sub-wiki carries: the grouping-decided
@@ -2981,6 +3205,66 @@ pub async fn apply_pages_to_subwiki_direct(
     })
 }
 
+/// Act-first entry point for the whole-memory grouping: pages that are one
+/// subject area, from any wikis, become a wiki of their own at the root.
+///
+/// `pages` are `<wiki_id>/<page.md>`. The floor on how many it takes is the
+/// caller's (`auto_promote_group_min_pages`); this wrapper enforces only that
+/// the pages exist, carry live facts and move whole.
+///
+/// # Errors
+/// Whatever [`apply_pages_to_new_wiki`] refuses, plus a receipt failure.
+#[allow(
+    clippy::too_many_arguments,
+    reason = "carries the newborn wiki's identity + _meta defaults; a struct would just rename the same fields"
+)]
+pub async fn apply_pages_to_new_wiki_direct(
+    pool: &SqlitePool,
+    tree: &WikiTree,
+    pages: &[String],
+    new_wiki_slug: &str,
+    new_wiki_title: Option<&str>,
+    style: Option<&str>,
+    description: Option<&str>,
+    hints: &PageGroupHints,
+    recipient: Option<String>,
+) -> Result<DirectApplied, DirectPromoteError> {
+    let context = json!({
+        "variant": VARIANT_PAGES_TO_NEW_WIKI,
+        "pages": pages,
+        "new_wiki_slug": new_wiki_slug,
+        "new_wiki_title": new_wiki_title,
+        "new_wiki_style": style,
+        "new_wiki_description": description,
+        "group_pages": hints.group_pages,
+        "source_wiki_pages": hints.source_wiki_pages,
+        "reason": hints.reason,
+    });
+    let answers = json!({ "variant": VARIANT_PAGES_TO_NEW_WIKI });
+    let spec = apply_pages_to_new_wiki(pool, tree, &context, &answers).await?;
+    let questions = json!([{
+        "id": "variant",
+        "text": format!("Gather {n} pages into a wiki of their own?", n = pages.len()),
+        "options": [{
+            "id": VARIANT_PAGES_TO_NEW_WIKI,
+            "label": format!("Create wiki `{new_wiki_slug}` from {n} pages", n = pages.len()),
+            "value": VARIANT_PAGES_TO_NEW_WIKI,
+            "recommended": true,
+        }]
+    }]);
+    let receipt = proposals::emit_applied_proposal(
+        pool,
+        EmitParams::new(kind::WIKI_PROMOTE, context, questions).with_recipient(recipient),
+        spec.clone(),
+        None,
+    )
+    .await?;
+    Ok(DirectApplied {
+        proposal_id: receipt.proposal_id,
+        spec,
+    })
+}
+
 /// Act-first entry point for the structural review: one wiki's pages move to
 /// **another wiki**, because that is where they belong.
 ///
@@ -3154,6 +3438,117 @@ mod tests {
         );
         std::fs::write(dir.join("_meta.md"), meta).unwrap();
     }
+    /// [`capture_one`] into a named wiki, for the tests that need a page to
+    /// exist somewhere other than `alice`.
+    async fn capture_one_in(
+        tree: &WikiTree,
+        pool: &SqlitePool,
+        embedder: Arc<dyn Embedder>,
+        wiki: &str,
+        page: &str,
+        body: &str,
+    ) -> FactId {
+        let req = CaptureRequest {
+            subject_external: None,
+            authored_refs: Vec::new(),
+            wiki_id: WikiId::parse(wiki).unwrap(),
+            page: Some(PathBuf::from(page)),
+            body: body.to_owned(),
+            subject: format!("user:{wiki}").parse::<Principal>().unwrap(),
+            allow: vec![],
+            sender: None,
+            fact_type: None,
+            topics: vec![],
+            dedup_threshold: Some(1.01),
+            valid_from: None,
+            valid_to: None,
+            style: None,
+            page_description: None,
+            salience: None,
+        };
+        let outcome = wiki_capture(tree, pool, embedder, req).await.unwrap();
+        match outcome.action {
+            CaptureAction::Captured { .. } => outcome.fact_id,
+            other => panic!("expected Captured, got {other:?}"),
+        }
+    }
+
+    /// An argument is not inside anybody, so its wiki is born at the root and
+    /// its pages come from wherever each was first filed.
+    ///
+    /// This is the gesture the per-wiki sibling cannot make: `salute.md` sits
+    /// in `alice` and `esami.md` in `bob`, they are one subject, and no shelf
+    /// contains both. Nothing about who reads what moves with them — the facts
+    /// keep their own `subject_id` and `allow_ids`.
+    #[tokio::test]
+    async fn pages_from_two_wikis_become_one_wiki_at_the_root() {
+        let (_dir, tree, pool) = setup().await;
+        seed_wiki(&tree, "bob");
+        let tree = WikiTree::open(tree.workdir()).unwrap();
+        let emb = embedder();
+        capture_one_in(
+            &tree,
+            &pool,
+            emb.clone(),
+            "alice",
+            "salute.md",
+            "note on salute",
+        )
+        .await;
+        capture_one_in(&tree, &pool, emb, "bob", "esami.md", "note on esami").await;
+
+        let applied = apply_pages_to_new_wiki_direct(
+            &pool,
+            &tree,
+            &["alice/salute.md".to_owned(), "bob/esami.md".to_owned()],
+            "bilbo",
+            Some("Bilbo"),
+            Some("prosa-tecnica"),
+            Some("Il quadro clinico di Bilbo."),
+            &PageGroupHints::default(),
+            None,
+        )
+        .await
+        .expect("apply");
+        assert_eq!(applied.spec["variant"], "pages_to_new_wiki");
+
+        // The wiki is at the ROOT, with no parent.
+        let born = tree.wikis_dir().join("bilbo");
+        assert!(
+            born.join("_meta.md").exists(),
+            "the wiki is born at the root"
+        );
+        let meta = std::fs::read_to_string(born.join("_meta.md")).unwrap();
+        assert!(
+            meta.contains("parent_wiki_id: null") || !meta.contains("parent_wiki_id:"),
+            "a wiki of an argument hangs under nothing: {meta}"
+        );
+
+        // Both pages moved in, and neither is left behind.
+        for page in ["salute.md", "esami.md"] {
+            assert!(born.join(page).exists(), "{page} moved in");
+        }
+        assert!(!tree.wikis_dir().join("alice").join("salute.md").exists());
+        assert!(!tree.wikis_dir().join("bob").join("esami.md").exists());
+
+        // And the facts followed — a page whose rows stayed behind renders
+        // as `[redacted]` to every reader.
+        let rows = fact_index::find_active_in_wiki(&pool, "bilbo")
+            .await
+            .unwrap();
+        assert_eq!(rows.len(), 2, "every fact followed its page");
+        // Each kept the subject it arrived with: a move rewrites where a page
+        // sits, never whose facts they are.
+        let subjects: std::collections::BTreeSet<String> =
+            rows.iter().map(|r| r.subject_id.to_string()).collect();
+        assert_eq!(
+            subjects,
+            ["user:alice".to_owned(), "user:bob".to_owned()]
+                .into_iter()
+                .collect()
+        );
+    }
+
     async fn capture_one(
         tree: &WikiTree,
         pool: &SqlitePool,
