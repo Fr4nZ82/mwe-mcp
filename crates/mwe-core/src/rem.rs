@@ -3928,7 +3928,7 @@ async fn candidate_grouping_prompt(
     pool: &SqlitePool,
 ) -> Result<String> {
     let pages_s = pages.to_string();
-    let locale = default_memory_locale(pool).await;
+    let locale = crate::locale::memory_wide_locale(pool).await;
     let language_directive = crate::locale::render_memory_language_directive(locale.as_deref());
     prompts::render(
         "rem-page-grouping",
@@ -3944,27 +3944,6 @@ async fn candidate_grouping_prompt(
         ],
     )
     .map_err(RemError::from)
-}
-
-/// The locale the memory writes in when no single wiki answers for the text —
-/// the one every enrolled person shares, or none.
-///
-/// A wiki that does not exist yet declares no language, and the pages it would
-/// gather come from several that need not agree. Unanimity or nothing is the
-/// same rule `enrollment::locale_for_principal` applies to a group's members,
-/// and `None` renders the memory's ordinary fallback.
-async fn default_memory_locale(pool: &SqlitePool) -> Option<String> {
-    let users = crate::enrollment::list_users(pool).await.ok()?;
-    let mut locales = Vec::new();
-    for u in users {
-        locales.push(
-            crate::enrollment::locale_for(pool, &u.user_id)
-                .await
-                .ok()??,
-        );
-    }
-    let first = locales.first()?.clone();
-    locales.iter().all(|l| *l == first).then_some(first)
 }
 
 /// What the cartographer decided to do with one group of pages.

@@ -43,9 +43,12 @@
 //!
 //! [`memory_directive_for_wiki`] is how a memory-writing slot gets
 //! there when it is compiling a page — the wiki's scope principal names
-//! the language. A slot with no wiki in hand resolves the principal
+//! the language. **A wiki that answers to nobody** — every one the nightly
+//! grouping raises, since it hangs under nothing — has no principal to name
+//! it, and falls back to [`memory_wide_locale`]: the language every enrolled
+//! person shares, or none. A slot with no wiki in hand resolves the principal
 //! itself and calls [`render_memory_language_directive`]: document
-//! ingest does that once per job, from the job's subject. Both are
+//! ingest does that once per job, from the job's subject. All of it is
 //! best-effort — any lookup failure logs and degrades to the English
 //! fallback rather than failing the job.
 
@@ -145,15 +148,25 @@ pub async fn memory_directive_for_wiki_meta(
     tree: &crate::wiki::WikiTree,
     meta: &crate::wiki::WikiMeta,
 ) -> String {
+    // A wiki that answers to nobody is the ordinary case now, not an error:
+    // a wiki born out of the nightly grouping hangs under nothing, so there
+    // is no principal whose language to read. The memory still has one when
+    // every enrolled person shares it, and that is the language its pages are
+    // written in — the alternative is what the bench showed on 2026-09-05,
+    // where the two wikis that had emerged held 15 pages of English inside a
+    // memory whose five people are all `it`, among them a father's clinical
+    // record.
     let principal = match tree.resolve_scope_principal(meta) {
         Ok(p) => p,
         Err(e) => {
-            tracing::warn!(
+            let shared = memory_wide_locale(pool).await;
+            tracing::debug!(
                 wiki_id = %meta.wiki_id,
                 error = %e,
-                "locale: wiki scope principal unresolved, falling back to English"
+                locale = shared.as_deref().unwrap_or("(nessuna)"),
+                "locale: wiki answers to nobody — the memory's own language is used"
             );
-            return render_memory_language_directive(None);
+            return render_memory_language_directive(shared.as_deref());
         },
     };
     let resolved = match crate::enrollment::locale_for_principal(pool, &principal).await {
@@ -168,6 +181,34 @@ pub async fn memory_directive_for_wiki_meta(
         },
     };
     render_memory_language_directive(resolved.as_deref())
+}
+
+/// The language the memory writes in when no single wiki answers for the
+/// text — the one every enrolled person shares, or none.
+///
+/// Two callers, one question. A wiki that does not exist yet declares no
+/// language, and the pages a grouping would gather come from several that need
+/// not agree; a wiki born at the top level answers to nobody, so it has no
+/// principal to read one from. Unanimity or nothing is the same rule
+/// [`crate::enrollment::locale_for_principal`] applies to a group's members,
+/// and `None` renders the ordinary mirror fallback.
+///
+/// # Errors
+///
+/// None: a lookup that fails reads as "no shared language", which is the
+/// safe answer — no compile should die over a locale.
+pub async fn memory_wide_locale(pool: &sqlx::SqlitePool) -> Option<String> {
+    let users = crate::enrollment::list_users(pool).await.ok()?;
+    let mut locales = Vec::new();
+    for u in users {
+        locales.push(
+            crate::enrollment::locale_for(pool, &u.user_id)
+                .await
+                .ok()??,
+        );
+    }
+    let first = locales.first()?.clone();
+    locales.iter().all(|l| *l == first).then_some(first)
 }
 
 /// Mirror clause used when no explicit locale is known: it tells the
@@ -214,6 +255,69 @@ fn language_name_for(tag: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A wiki that answers to nobody writes in the memory's own language.
+    ///
+    /// Every wiki the nightly grouping raises is one: it hangs under nothing,
+    /// so there is no principal to read a language from. Deriving it from
+    /// ownership and giving up when there is no owner put 15 English pages
+    /// inside an all-Italian memory on the bench, 2026-09-05 — a father's
+    /// clinical record among them.
+    #[tokio::test]
+    async fn a_wiki_that_answers_to_nobody_writes_in_the_memorys_language() {
+        let dir = tempfile::tempdir().unwrap();
+        let pool = crate::db::open_or_init(dir.path()).await.expect("db");
+        for u in ["alice", "bob"] {
+            sqlx::query(
+                "INSERT INTO enrollment_users (user_id, aliases, is_admin, locale) \
+                 VALUES (?, '[]', 0, 'it')",
+            )
+            .bind(u)
+            .execute(&pool)
+            .await
+            .unwrap();
+        }
+        let wikis = dir.path().join("wikis/giardinaggio");
+        std::fs::create_dir_all(&wikis).unwrap();
+        std::fs::write(
+            wikis.join("_meta.md"),
+            "---\nwiki_id: giardinaggio\nwiki_type: wiki-tech\nparent_wiki_id: null\n\
+             slug: giardinaggio\ntitle: Giardinaggio\n---\n",
+        )
+        .unwrap();
+        let tree = crate::wiki::WikiTree::open(dir.path()).expect("tree");
+        let meta = tree
+            .locate(&crate::types::WikiId::parse("giardinaggio").unwrap())
+            .expect("wiki")
+            .meta()
+            .clone();
+        // The premise: nobody answers for this wiki.
+        assert!(
+            tree.resolve_scope_principal(&meta).is_err(),
+            "a wiki born at the top level has no principal"
+        );
+
+        let directive = memory_directive_for_wiki_meta(&pool, &tree, &meta).await;
+        assert!(
+            directive.contains("Italian"),
+            "the memory's own language is the one its pages are written in: {directive}"
+        );
+
+        // And with the enrolled disagreeing there is no memory-wide language,
+        // so the memory-writing fallback stands — English, a fixed language
+        // the operator can recognise and correct — rather than one person's
+        // locale winning a vote it was never in.
+        sqlx::query("UPDATE enrollment_users SET locale = 'fr' WHERE user_id = 'bob'")
+            .execute(&pool)
+            .await
+            .unwrap();
+        let directive = memory_directive_for_wiki_meta(&pool, &tree, &meta).await;
+        assert!(
+            directive.contains("Respond in English"),
+            "no unanimity, no language: {directive}"
+        );
+        drop(dir);
+    }
 
     #[test]
     fn mirror_fallback_when_locale_is_none() {
