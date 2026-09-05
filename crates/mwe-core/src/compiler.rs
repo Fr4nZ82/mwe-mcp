@@ -257,12 +257,7 @@ pub async fn compile_dirty_pages(
             "compiler: cross-page plan moves pre-pointed as pending renders"
         );
     }
-    let mut tone_cache: HashMap<String, String> = HashMap::new();
-    // Sibling of the tone memo, and memoised for the same reason: resolving a
-    // wiki's language walks the scope chain to the root wiki (a `tree.walk()`
-    // per hop) and then hits the DB. Both are per-wiki constants for the whole
-    // run, and a compile touches many pages of the same wiki.
-    let mut locale_cache: HashMap<String, String> = HashMap::new();
+    let (tone_cache, locale_cache) = warm_wiki_caches(pool, tree, plan).await;
     // The page index is a pure function of the plan, so it is built once per
     // run and handed to every leaf: it is the same ~3.5k tokens for all of
     // them, which is exactly what makes it the cacheable half of the Cronista
@@ -273,26 +268,28 @@ pub async fn compile_dirty_pages(
     // `force_dirty` below, so the next build retries the proper rewrite even
     // on an otherwise-idle night (the early-skip would clear the dirty set).
     let mut retry_slugs: Vec<String> = Vec::new();
-    for slug in &plan.dirty_pages {
+
+    let outcomes = write_dirty_pages(
+        pool,
+        tree,
+        plan,
+        cronista,
+        &tone_cache,
+        &locale_cache,
+        &page_index,
+        cadence,
+        now,
+    )
+    .await;
+
+    for (slug, outcome) in outcomes {
+        let slug = &slug;
         let Some(page) = plan.pages.get(slug) else {
             // Removed page: its on-disk file is handled by the orphan
             // sweep at the tail of this compile (once no row points at it).
             continue;
         };
-        match compile_page(
-            pool,
-            tree,
-            plan,
-            page,
-            cronista,
-            &mut tone_cache,
-            &mut locale_cache,
-            &page_index,
-            cadence,
-            now,
-        )
-        .await
-        {
+        match outcome {
             Ok(PageOutcome::Leaf(notes)) => {
                 report.leaves += 1;
                 report.record_notes(slug, &notes);
@@ -587,6 +584,100 @@ async fn prepoint_plan_moves(
     Ok(moved)
 }
 
+/// Write every dirty page, four at a time, and hand back what each one did.
+///
+/// A page is written from the facts the plan gives it and from nothing another
+/// page holds, so the order they are written in cannot change what any of them
+/// says — and the whole cost of writing one is the wait for the model, ~90
+/// seconds on the bench's memory. One after another that is the night: 21
+/// pages, 21 waits, half an hour of a machine sitting idle. Measured over five
+/// real nights on 2026-09-05, writing the pages was 80% of the night (30
+/// minutes of 38) against 18% for all the reorganisation passes together.
+///
+/// The FIRST page goes alone on purpose. The Cronista's instructions are the
+/// same long block for every page of a run and ride as a cacheable prefix; the
+/// first call is what puts it in the cache and the rest read it for almost
+/// nothing. Start four at once and all four pay to write it.
+///
+/// The writers share no decision. Each takes the next page and returns its
+/// outcome; the ledger writes, the report and the retry list are folded by the
+/// caller, in plan order, exactly as they were when this was a loop. Nor do
+/// their writes collide: the plan gives each fact to one page, so no two pages
+/// touch the same row, and each row is written by a single statement that
+/// takes the write lock at once rather than a transaction that upgrades to it.
+#[allow(
+    clippy::too_many_arguments,
+    reason = "the compile's whole context, threaded through unchanged from its caller"
+)]
+async fn write_dirty_pages(
+    pool: &SqlitePool,
+    tree: &WikiTree,
+    plan: &CompilationPlan,
+    cronista: &dyn LlmBackend,
+    tone_cache: &HashMap<String, String>,
+    locale_cache: &HashMap<String, String>,
+    page_index: &PageIndex,
+    cadence: crate::dream::Cadence,
+    now: &str,
+) -> Vec<(String, Result<PageOutcome>)> {
+    let compile_one = async |slug: &String| -> Option<(String, Result<PageOutcome>)> {
+        let page = plan.pages.get(slug)?;
+        Some((
+            slug.clone(),
+            compile_page(
+                pool,
+                tree,
+                plan,
+                page,
+                cronista,
+                tone_cache,
+                locale_cache,
+                page_index,
+                cadence,
+                now,
+            )
+            .await,
+        ))
+    };
+    let (first, rest) = plan
+        .dirty_pages
+        .split_first()
+        .map_or((None, &[][..]), |(f, r)| (Some(f), r));
+    let mut outcomes: Vec<(String, Result<PageOutcome>)> = Vec::new();
+    if let Some(slug) = first
+        && let Some(done) = compile_one(slug).await
+    {
+        outcomes.push(done);
+    }
+    if rest.is_empty() {
+        return outcomes;
+    }
+    let next = std::sync::atomic::AtomicUsize::new(0);
+    let done = parking_lot::Mutex::new(Vec::new());
+    let worker = || async {
+        loop {
+            let i = next.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+            let Some(slug) = rest.get(i) else { break };
+            if let Some(o) = compile_one(slug).await {
+                done.lock().push((i, o));
+            }
+        }
+    };
+    // Boxed: four page-writing state machines live at once here, and a future
+    // that carries all four inline grows every caller's frame down the stack
+    // (the dashboard's dream handler is the one that notices).
+    tokio::join!(
+        Box::pin(worker()),
+        Box::pin(worker()),
+        Box::pin(worker()),
+        Box::pin(worker()),
+    );
+    let mut got = done.into_inner();
+    got.sort_by_key(|(i, _)| *i);
+    outcomes.extend(got.into_iter().map(|(_, o)| o));
+    outcomes
+}
+
 #[allow(
     clippy::too_many_arguments,
     reason = "one dispatch hop: the per-run values (page index, tone cache, clock) \
@@ -598,8 +689,8 @@ async fn compile_page(
     plan: &CompilationPlan,
     page: &PagePlan,
     cronista: &dyn LlmBackend,
-    tone_cache: &mut HashMap<String, String>,
-    locale_cache: &mut HashMap<String, String>,
+    tone_cache: &HashMap<String, String>,
+    locale_cache: &HashMap<String, String>,
     page_index: &PageIndex,
     cadence: crate::dream::Cadence,
     now: &str,
@@ -629,14 +720,23 @@ async fn compile_page(
     if page.primary_facts.is_empty() {
         return compile_empty_leaf(tree, page, &link_targets(plan, &page.slug, cadence).0, now);
     }
+    // Both are per-wiki constants resolved before any page is written (see
+    // `warm_wiki_caches`), so a page that arrives here always finds its own.
     let wiki_tone = tone_cache
-        .entry(page.wiki_id.clone())
-        .or_insert_with(|| resolve_tone(tree, &page.wiki_id));
+        .get(&page.wiki_id)
+        .cloned()
+        .unwrap_or_else(|| resolve_tone(tree, &page.wiki_id));
     // Per PAGE, not per wiki: an agent's wiki holds pages about other people
     // too (see `tone_for_page`), and those must not be narrated as the agent's
     // own life.
-    let tone = tone_for_page(wiki_tone, page);
-    let language = cached_language_directive(pool, tree, &page.wiki_id, locale_cache).await;
+    let tone = tone_for_page(&wiki_tone, page);
+    let language = match locale_cache.get(&page.wiki_id) {
+        Some(hit) => hit.clone(),
+        None => {
+            crate::locale::memory_directive_for_wiki(pool, tree, &parse_wiki_id(&page.wiki_id))
+                .await
+        },
+    };
     compile_leaf_page(
         pool, tree, plan, page, cronista, &tone, &language, page_index, cadence, now,
     )
@@ -648,19 +748,37 @@ async fn compile_page(
 /// The deterministic renders (list pages, fact-less leaves) never call
 /// this: they write no prose, so they must not pay the scope-chain walk
 /// either. Only the two LLM branches above ask.
-async fn cached_language_directive(
+/// Resolve the tone and the language of every wiki this run will write in,
+/// once, before any page is written.
+///
+/// Both are per-wiki constants for a whole compile and both are expensive the
+/// first time — the language walks the scope chain to the root (a tree walk
+/// per hop) and then hits the DB. Memoising them lazily was enough while
+/// pages were written one after another; pages that are written together
+/// would each miss the same empty memo and pay for the same answer, so the
+/// answers are gathered here instead.
+async fn warm_wiki_caches(
     pool: &SqlitePool,
     tree: &WikiTree,
-    wiki_id: &str,
-    cache: &mut HashMap<String, String>,
-) -> String {
-    if let Some(hit) = cache.get(wiki_id) {
-        return hit.clone();
+    plan: &CompilationPlan,
+) -> (HashMap<String, String>, HashMap<String, String>) {
+    let mut tone = HashMap::new();
+    let mut locale = HashMap::new();
+    for slug in &plan.dirty_pages {
+        let Some(page) = plan.pages.get(slug) else {
+            continue;
+        };
+        if tone.contains_key(&page.wiki_id) {
+            continue;
+        }
+        tone.insert(page.wiki_id.clone(), resolve_tone(tree, &page.wiki_id));
+        locale.insert(
+            page.wiki_id.clone(),
+            crate::locale::memory_directive_for_wiki(pool, tree, &parse_wiki_id(&page.wiki_id))
+                .await,
+        );
     }
-    let directive =
-        crate::locale::memory_directive_for_wiki(pool, tree, &parse_wiki_id(wiki_id)).await;
-    cache.insert(wiki_id.to_owned(), directive.clone());
-    directive
+    (tone, locale)
 }
 
 /// The deterministic render of a fact-less leaf — usually a foundation
