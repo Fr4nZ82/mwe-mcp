@@ -2141,14 +2141,17 @@ enum ClosurePlanError {
     /// `reason` is missing or outside the closed vocabulary.
     #[error("closure reason `{0}` is not one of completed|retracted|contradicted")]
     UnknownReason(String),
-    /// The sender is neither the target's subject nor the one who said it.
-    /// A closure withdraws an assertion, so it is open to the subject (the
-    /// named user, or a member of the named non-global group) and to
-    /// whoever made the assertion — and to nobody else, which is what keeps
-    /// one user's turn from closing a fact of another's. A world fact with
-    /// no recorded author is closable by no one from chat.
+    /// The sender is none of the three the target is open to.
+    /// A closure withdraws an assertion, so it is open to the subject, to
+    /// whoever made the assertion, and to whoever the fact was SHARED with —
+    /// and to nobody else, which is what keeps one user's turn from closing a
+    /// stranger's fact. A world fact shared with nobody and claimed by nobody
+    /// is closable by no one from chat.
     /// See [`crate::acl::sender_may_retract`].
-    #[error("closure target `{id}` is about {subject} and was said by somebody else")]
+    #[error(
+        "closure target `{id}` is about {subject}, was said by somebody else, \
+         and was not shared with you"
+    )]
     NotSubjectOrAuthor { id: String, subject: String },
 }
 
@@ -2188,13 +2191,14 @@ fn validate_closure<'a>(
         });
     };
     // Retraction gate: closing a fact's validity withdraws an assertion, so
-    // the subject may do it (the named user or a member of the named
-    // non-global group) and so may whoever MADE the assertion. A world fact
-    // (subject=global) with no recorded author stays closable by no one from
-    // chat.
+    // the subject may do it, so may whoever MADE it, and so may whoever it
+    // was SHARED with — a claim handed to a household is the household's to
+    // retire. A world fact shared with nobody and claimed by nobody stays
+    // closable by no one from chat.
     if !crate::acl::sender_may_retract(
         &hit.subject_id,
         hit.sender_id.as_ref(),
+        &hit.allow_ids,
         sender_id,
         sender_groups,
     ) {
@@ -3369,11 +3373,13 @@ fn validate_validity_edit<'a>(
         });
     };
     // The retraction gate: closing a fact's validity withdraws an assertion,
-    // so its subject may do it and so may whoever made it. Rewriting and the
-    // ACL stay with the subject — see [`crate::acl::sender_may_retract`].
+    // so its subject may do it, so may whoever made it, and so may whoever it
+    // was shared with. Rewriting and the ACL stay with the subject — see
+    // [`crate::acl::sender_may_retract`].
     if !crate::acl::sender_may_retract(
         &hit.subject_id,
         hit.sender_id.as_ref(),
+        &hit.allow_ids,
         sender_id,
         sender_groups,
     ) {

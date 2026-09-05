@@ -257,29 +257,54 @@ pub fn sender_is_subject(subject: &Principal, sender_id: &str, sender_groups: &[
 /// Whether `sender` may RETRACT a fact from chat — close its validity, so the
 /// memory stops holding it as current.
 ///
-/// Wider than [`sender_is_subject`] on purpose, and only here. Retracting is
-/// **withdrawing an assertion**, so the person who made it qualifies: they
-/// said it, and they are entitled to stop saying it. That the fact is about
-/// somebody else does not change whose statement it was.
+/// Wider than [`sender_is_subject`] on purpose, and only here. Three ways in:
+///
+/// - **The subject.** It is about them.
+/// - **Whoever said it.** Retracting is *withdrawing an assertion*, and they
+///   are entitled to stop saying it; that the fact is about somebody else does
+///   not change whose statement it was.
+/// - **Whoever it was shared with** — the fact's own `allow`. This one is the
+///   founder's, 2026-09-06: *«la regola si deve basare sull'allow non sul
+///   subject»*. `subject` answers "who is this about", and on a household
+///   event that question has no single honest answer — a pregnancy is about a
+///   person and about the house at once, and the classifier has to pick one.
+///   `allow` answers "who was this shared with", which is not an inference but
+///   a decision recorded on the fact. A claim handed to the family is the
+///   family's shared context, and any of them may say it stopped being true.
+///
+///   Measured on the live memory the day the rule changed: 554 facts were
+///   readable by `group:famiglia` and 72 had it as their subject, so 482 were
+///   shared with a household that could not touch them. Among them, that
+///   Carol was pregnant — which her partner could not close on the day their
+///   daughter was born. The people are renamed here.
+///
+/// The audience test is the `allow` list itself, not [`can_read`]: reading is
+/// wider (the subject and the author come in through their own doors, and a
+/// `global` fact is legible to everyone), and "everyone may read it" must not
+/// become "anyone may retire it". A fact shared with nobody stays with its
+/// subject and its author, exactly as before.
 ///
 /// Rewriting is the other half and stays with the subject: replacing a fact
 /// asserts something NEW about its subject, and that needs the subject's
-/// authority, not the author's. The ACL stays with the subject for the
+/// authority, not the reader's. The ACL stays with the subject for the
 /// stronger reason that changing it discloses the subject's data.
 ///
-/// The author test is exact — the fact's own `sender`, matched the way a
-/// subject is matched, so a group-attributed capture is retractable by that
-/// group's members. A fact with no recorded author falls back to the subject
-/// test alone.
+/// Every test is matched the way a subject is matched, so a group — named as
+/// the subject, as the author, or in the audience — is answered for by its
+/// members.
 #[must_use]
 pub fn sender_may_retract(
     subject: &Principal,
     fact_sender: Option<&Principal>,
+    allow: &[Principal],
     sender_id: &str,
     sender_groups: &[String],
 ) -> bool {
     sender_is_subject(subject, sender_id, sender_groups)
         || fact_sender.is_some_and(|s| sender_is_subject(s, sender_id, sender_groups))
+        || allow
+            .iter()
+            .any(|a| sender_is_subject(a, sender_id, sender_groups))
 }
 
 /// Whether an ACL change WIDENS a fact's effective read-set: it introduces
@@ -638,28 +663,83 @@ mod tests {
         let bob: Principal = "user:bob".parse().unwrap();
         let team: Principal = "group:team".parse().unwrap();
 
-        // Bob said something about Alice. He is not its subject...
+        // Bob said something about Alice, shared with nobody. He is not its
+        // subject...
         assert!(!sender_is_subject(&alice, "bob", &[]));
         // ...and he may still take it back.
-        assert!(sender_may_retract(&alice, Some(&bob), "bob", &[]));
+        assert!(sender_may_retract(&alice, Some(&bob), &[], "bob", &[]));
 
         // A stranger may do neither.
-        assert!(!sender_may_retract(&alice, Some(&bob), "carol", &[]));
+        assert!(!sender_may_retract(&alice, Some(&bob), &[], "carol", &[]));
 
         // The subject keeps the authority it always had, author or not.
-        assert!(sender_may_retract(&alice, Some(&bob), "alice", &[]));
+        assert!(sender_may_retract(&alice, Some(&bob), &[], "alice", &[]));
 
         // A group-attributed capture is retractable by that group's members.
         assert!(sender_may_retract(
             &alice,
             Some(&team),
+            &[],
             "carol",
             &["team".to_owned()]
         ));
 
         // A world fact nobody claims stays closable by no one from chat.
         let world: Principal = "global".parse().unwrap();
-        assert!(!sender_may_retract(&world, None, "alice", &[]));
+        assert!(!sender_may_retract(&world, None, &[], "alice", &[]));
+    }
+
+    /// A claim handed to a household is the household's to close.
+    ///
+    /// The case that made the rule, 2026-09-06: the memory held that Carol
+    /// was pregnant — her subject, her sentence, shared with `group:famiglia`
+    /// — and on the day their daughter was born her partner could not close
+    /// it. He is neither the subject nor the author, and until this rule he
+    /// was nobody. The people are renamed here.
+    #[test]
+    fn a_fact_shared_with_a_household_is_the_households_to_close() {
+        let carol: Principal = "user:carol".parse().unwrap();
+        let family: Principal = "group:famiglia".parse().unwrap();
+        let shared = [family];
+
+        // Carol's own claim about herself, told to the family.
+        assert!(
+            sender_may_retract(
+                &carol,
+                Some(&carol),
+                &shared,
+                "frodo",
+                &["famiglia".to_owned()]
+            ),
+            "a member of the family it was shared with may retire it"
+        );
+        // Somebody outside that family may not, however much they know.
+        assert!(
+            !sender_may_retract(
+                &carol,
+                Some(&carol),
+                &shared,
+                "bilbo",
+                &["lavoro".to_owned()]
+            ),
+            "the audience is the fact's own, not whoever happens to be around"
+        );
+        // And sharing with one person names that person, nobody else.
+        let to_frodo = ["user:frodo".parse::<Principal>().unwrap()];
+        assert!(sender_may_retract(
+            &carol,
+            Some(&carol),
+            &to_frodo,
+            "frodo",
+            &[]
+        ));
+        assert!(!sender_may_retract(
+            &carol,
+            Some(&carol),
+            &to_frodo,
+            "bilbo",
+            &[]
+        ));
     }
 
     #[test]
