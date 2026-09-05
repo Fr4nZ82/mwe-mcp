@@ -124,8 +124,18 @@ pub struct DueReminder {
     pub fact_id: String,
     /// Its home wiki — also the `dashboard_path` anchor.
     pub wiki_id: String,
-    /// Addressee: the subject of the commitment, `user:`-prefixed.
-    pub recipient_id: String,
+    /// Everyone the commitment rings for, each `user:`-prefixed: its subject
+    /// and the people it was shared with.
+    ///
+    /// A commitment reaches whoever it concerns, and who it concerns is the
+    /// same question the retraction gate answers — the fact's own audience,
+    /// not an inference from its subject (founder, 2026-09-06). Before that,
+    /// a commitment addressed to a group rang for **nobody** ("a group has no
+    /// single inbox") and one shared with a household rang for one person:
+    /// measured on the live memory that day, 16 of 135 due commitments were
+    /// silent and 112 more reached a single member of the family they had
+    /// been told to.
+    pub recipients: Vec<String>,
     /// The fact's own prose. The notice carries it so the delivering
     /// agent can say the thing without a recall round-trip — the same
     /// reason `fact_minted_for_you` carries bodies.
@@ -169,12 +179,64 @@ pub fn firing_instant(valid_to: DateTime<Utc>, policy: &ReminderPolicy) -> DateT
     }
 }
 
+/// Everyone a commitment rings for: its subject and the people it was
+/// shared with, each as a `user:` principal.
+///
+/// A group is opened into its members — it has no inbox of its own, but they
+/// have one each, which is what "a household commitment" means. An agent is
+/// dropped: it has no inbox at all. `global` is dropped too, being everybody
+/// and therefore nobody to ring. Order is stable and duplicates removed, so
+/// the same person addressed twice rings once.
+///
+/// Best-effort by contract, like the sweep around it: a membership lookup
+/// that fails leaves that principal out rather than failing the sweep.
+async fn people_to_ring(pool: &SqlitePool, row: &fact_index::FactIndexRow) -> Vec<String> {
+    use crate::types::Principal;
+    let mut out: Vec<String> = Vec::new();
+    let push = |id: &str, out: &mut Vec<String>| {
+        let wire = format!("user:{id}");
+        if !out.contains(&wire) {
+            out.push(wire);
+        }
+    };
+    for principal in std::iter::once(&row.subject_id).chain(row.allow_ids.iter()) {
+        match principal {
+            Principal::User(id) => push(id, &mut out),
+            // The builtin global group parses as a `Group` whose membership
+            // list is empty — everybody, and therefore nobody to put a
+            // commitment in front of.
+            Principal::Group(id) => {
+                for member in crate::enrollment::members_for(pool, id)
+                    .await
+                    .unwrap_or_default()
+                {
+                    push(&member, &mut out);
+                }
+            },
+        }
+    }
+    // An agent principal has no inbox — same rule as the fact-minted notice.
+    let mut people = Vec::with_capacity(out.len());
+    for wire in out {
+        let id = wire.strip_prefix("user:").unwrap_or(&wire).to_owned();
+        if !crate::enrollment::is_agent(pool, &id)
+            .await
+            .unwrap_or(false)
+        {
+            people.push(wire);
+        }
+    }
+    people
+}
+
 /// The commitments whose firing instant has just passed.
 ///
-/// Selection: an active `plan` with a `valid_to`, owned by a **person**
-/// (`user:` — a group has no single inbox and an agent has no inbox at
-/// all), whose [`firing_instant`] sits in `(now - grace, now]` and which
-/// has not already rung.
+/// Selection: an active `plan` with a `valid_to` whose [`firing_instant`]
+/// sits in `(now - grace, now]` and which has not already rung.
+///
+/// Who it rings for is [`DueReminder::recipients`]: the subject and the
+/// audience, groups opened into their members, agents dropped (they have no
+/// inbox). A commitment nobody has an inbox for is skipped.
 ///
 /// # Errors
 ///
@@ -203,11 +265,6 @@ pub async fn due_now(
         if row.fact_type.as_deref() != Some(PLAN) {
             continue;
         }
-        // A group has no single inbox, and the wire form of the builtin
-        // global group is not even `group:`-prefixed — only a person rings.
-        let crate::types::Principal::User(subject) = &row.subject_id else {
-            continue;
-        };
         let Some(valid_to) = row.valid_to.as_deref() else {
             continue;
         };
@@ -223,18 +280,14 @@ pub async fn due_now(
         if fires_at > now || fires_at <= floor {
             continue;
         }
-        // An agent principal has no inbox — same rule as the
-        // fact-minted notice.
-        if crate::enrollment::is_agent(pool, subject.as_str())
-            .await
-            .unwrap_or(false)
-        {
+        let recipients = people_to_ring(pool, &row).await;
+        if recipients.is_empty() {
             continue;
         }
         due.push(DueReminder {
             fact_id: row.fact_id.as_str().to_owned(),
             wiki_id: row.wiki_id.clone(),
-            recipient_id: row.subject_id.to_string(),
+            recipients,
             body: row.text.clone(),
             due_at: valid_to.to_owned(),
             fires_at,
@@ -263,45 +316,52 @@ pub async fn sweep(
     let due = due_now(pool, now, policy).await?;
     report.examined = due.len();
     for r in due {
-        let rung = events::find_recent_event_for(
-            pool,
-            EventKind::ReminderDue,
-            &r.fact_id,
-            chrono::Duration::days(ALREADY_RUNG_DAYS),
-        )
-        .await
-        .map_err(|e| crate::Error::Other(format!("reminders: events probe: {e}")))?;
-        if rung {
-            report.already_rung += 1;
-            continue;
+        // One event per person: an event carries a single addressee, and
+        // "has this already rung" is therefore a question about a person.
+        // Asking it about the fact alone would ring the first of a household
+        // and silence the rest.
+        for recipient in &r.recipients {
+            let rung = events::find_recent_event_for_recipient(
+                pool,
+                EventKind::ReminderDue,
+                &r.fact_id,
+                Some(recipient),
+                chrono::Duration::days(ALREADY_RUNG_DAYS),
+            )
+            .await
+            .map_err(|e| crate::Error::Other(format!("reminders: events probe: {e}")))?;
+            if rung {
+                report.already_rung += 1;
+                continue;
+            }
+            let payload = serde_json::json!({
+                "recipient_id": recipient,
+                "due_at": r.due_at,
+                "fires_at": r.fires_at.to_rfc3339_opts(chrono::SecondsFormat::Secs, true),
+                "facts": [{
+                    "fact_id": r.fact_id,
+                    "wiki_id": r.wiki_id,
+                    "body": r.body,
+                }],
+                "dashboard_path": format!("/dashboard/wiki/{}", r.wiki_id),
+            });
+            events::insert_event(
+                pool,
+                EventKind::ReminderDue,
+                Some(&r.wiki_id),
+                Some(&r.fact_id),
+                &payload,
+            )
+            .await
+            .map_err(|e| crate::Error::Other(format!("reminders: emit: {e}")))?;
+            tracing::info!(
+                fact_id = %r.fact_id,
+                recipient = %recipient,
+                due_at = %r.due_at,
+                "reminders: commitment came due"
+            );
+            report.emitted.push(r.fact_id.clone());
         }
-        let payload = serde_json::json!({
-            "recipient_id": r.recipient_id,
-            "due_at": r.due_at,
-            "fires_at": r.fires_at.to_rfc3339_opts(chrono::SecondsFormat::Secs, true),
-            "facts": [{
-                "fact_id": r.fact_id,
-                "wiki_id": r.wiki_id,
-                "body": r.body,
-            }],
-            "dashboard_path": format!("/dashboard/wiki/{}", r.wiki_id),
-        });
-        events::insert_event(
-            pool,
-            EventKind::ReminderDue,
-            Some(&r.wiki_id),
-            Some(&r.fact_id),
-            &payload,
-        )
-        .await
-        .map_err(|e| crate::Error::Other(format!("reminders: emit: {e}")))?;
-        tracing::info!(
-            fact_id = %r.fact_id,
-            recipient = %r.recipient_id,
-            due_at = %r.due_at,
-            "reminders: commitment came due"
-        );
-        report.emitted.push(r.fact_id);
     }
     Ok(report)
 }
@@ -334,20 +394,49 @@ mod tests {
         fact_type: &str,
         valid_to: Option<&str>,
     ) {
+        plan_fact_shared(pool, fact_id, subject, fact_type, valid_to, "[]").await;
+    }
+
+    async fn plan_fact_shared(
+        pool: &SqlitePool,
+        fact_id: &str,
+        subject: &str,
+        fact_type: &str,
+        valid_to: Option<&str>,
+        allow_ids: &str,
+    ) {
         sqlx::query(
             r#"INSERT INTO fact_index
                  (fact_id, wiki_id, source_path, "text", embedding, embedding_dim,
-                  subject_id, fact_type, created_at, updated_at, valid_to)
+                  subject_id, allow_ids, fact_type, created_at, updated_at, valid_to)
                VALUES (?, 'alice', 'alice/cucina.md', 'dentist at nine', X'00000000', 1,
-                       ?, ?, '2026-07-01T00:00:00Z', '2026-07-01T00:00:00Z', ?)"#,
+                       ?, ?, ?, '2026-07-01T00:00:00Z', '2026-07-01T00:00:00Z', ?)"#,
         )
         .bind(fact_id)
         .bind(subject)
+        .bind(allow_ids)
         .bind(fact_type)
         .bind(valid_to)
         .execute(pool)
         .await
         .expect("insert fact");
+    }
+
+    async fn enrol(pool: &SqlitePool, users: &[&str], group: &str) {
+        for u in users {
+            sqlx::query("INSERT OR IGNORE INTO enrollment_users (user_id, aliases, is_admin) VALUES (?, '[]', 0)")
+                .bind(u)
+                .execute(pool)
+                .await
+                .expect("enrol");
+        }
+        let members = serde_json::to_string(users).expect("json");
+        sqlx::query("INSERT OR REPLACE INTO enrollment_groups (group_id, members) VALUES (?, ?)")
+            .bind(group)
+            .bind(members)
+            .execute(pool)
+            .await
+            .expect("group");
     }
 
     #[test]
@@ -382,7 +471,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn only_a_dated_plan_owned_by_a_person_rings() {
+    async fn only_a_dated_plan_with_somebody_to_ring_rings() {
         let (_workdir, pool) = fresh_pool().await;
         let now = t("2026-08-11T09:00:00Z");
         let day = Some("2026-08-11T23:59:59Z");
@@ -391,7 +480,7 @@ mod tests {
         plan_fact(&pool, id(2).as_str(), "user:alice", "state", day).await;
         // A standing directive never rings.
         plan_fact(&pool, id(3).as_str(), "user:alice", "rule", day).await;
-        // Communal: no single inbox.
+        // Communal, and nobody enrolled in that group here: nobody to ring.
         plan_fact(&pool, id(4).as_str(), "group:famiglia", "plan", day).await;
         // The shopping-list shape the prompt guarantees: no horizon.
         plan_fact(&pool, id(5).as_str(), "user:alice", "plan", None).await;
@@ -401,8 +490,84 @@ mod tests {
             .expect("due");
         assert_eq!(due.len(), 1, "exactly the dated personal plan");
         assert_eq!(due[0].fact_id, id(1));
-        assert_eq!(due[0].recipient_id, "user:alice");
+        assert_eq!(due[0].recipients, vec!["user:alice".to_owned()]);
         assert_eq!(due[0].fires_at, t("2026-08-11T07:00:00Z"));
+    }
+
+    /// A commitment rings for everyone it was told to, not for its subject
+    /// alone.
+    ///
+    /// The case, 2026-09-06: a household's commitments either rang for one
+    /// person or — when the household itself was the subject — for nobody,
+    /// on the reasoning that "a group has no single inbox". Its members have
+    /// one each, and being told about an appointment is what being reminded
+    /// of it is for. Measured on the live memory: of 135 due commitments, 16
+    /// were silent and 112 reached one member of the family they belonged to.
+    #[tokio::test]
+    async fn a_commitment_rings_for_everyone_it_was_shared_with() {
+        let (_workdir, pool) = fresh_pool().await;
+        enrol(&pool, &["alice", "bob", "carol"], "famiglia").await;
+        let now = t("2026-08-11T09:00:00Z");
+        let day = Some("2026-08-11T23:59:59Z");
+
+        // Alice's appointment, told to the household.
+        plan_fact_shared(
+            &pool,
+            id(1).as_str(),
+            "user:alice",
+            "plan",
+            day,
+            r#"["group:famiglia"]"#,
+        )
+        .await;
+        // And one that is the household's own.
+        plan_fact(&pool, id(2).as_str(), "group:famiglia", "plan", day).await;
+
+        let due = due_now(&pool, now, &ReminderPolicy::default())
+            .await
+            .expect("due");
+        assert_eq!(due.len(), 2, "both come due");
+
+        let shared = due.iter().find(|d| d.fact_id == id(1)).expect("alice's");
+        assert_eq!(
+            shared.recipients,
+            vec![
+                "user:alice".to_owned(),
+                "user:bob".to_owned(),
+                "user:carol".to_owned()
+            ],
+            "the subject first, then the household it was told to"
+        );
+
+        let communal = due
+            .iter()
+            .find(|d| d.fact_id == id(2))
+            .expect("the household's");
+        assert_eq!(
+            communal.recipients,
+            vec![
+                "user:alice".to_owned(),
+                "user:bob".to_owned(),
+                "user:carol".to_owned()
+            ],
+            "a group has no inbox, but its members have one each"
+        );
+
+        // And the sweep puts one notice in front of each of them.
+        let report = sweep(&pool, now, &ReminderPolicy::default())
+            .await
+            .expect("sweep");
+        assert_eq!(report.emitted.len(), 6, "two commitments, three people");
+        // Run again: nobody is rung twice for the same commitment.
+        let again = sweep(&pool, now, &ReminderPolicy::default())
+            .await
+            .expect("sweep again");
+        assert!(
+            again.emitted.is_empty(),
+            "already rung: {:?}",
+            again.emitted
+        );
+        assert_eq!(again.already_rung, 6);
     }
 
     #[tokio::test]

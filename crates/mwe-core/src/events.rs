@@ -296,16 +296,38 @@ pub async fn find_recent_event_for(
     fact_id: &str,
     window: chrono::Duration,
 ) -> Result<bool> {
+    find_recent_event_for_recipient(pool, kind, fact_id, None, window).await
+}
+
+/// [`find_recent_event_for`], asked of ONE addressee.
+///
+/// An event carries a single `recipient_id`, so a fact that must reach
+/// several people is several events — and "has this already fired" is then a
+/// question about a person, not about the fact. Asked without a recipient it
+/// is the older question, about the fact whoever it went to.
+///
+/// # Errors
+///
+/// [`EventsError::Db`] for any SQL failure.
+pub async fn find_recent_event_for_recipient(
+    pool: &SqlitePool,
+    kind: EventKind,
+    fact_id: &str,
+    recipient_id: Option<&str>,
+    window: chrono::Duration,
+) -> Result<bool> {
     let cutoff = (chrono::Utc::now() - window).to_rfc3339();
     let row: Option<(i64,)> = sqlx::query_as(
         "SELECT id FROM wiki_events
           WHERE kind = ? AND fact_id = ? AND created_at >= ?
+            AND (?4 IS NULL OR json_extract(payload, '$.recipient_id') = ?4)
           ORDER BY id DESC
           LIMIT 1",
     )
     .bind(kind.as_str())
     .bind(fact_id)
     .bind(&cutoff)
+    .bind(recipient_id)
     .fetch_optional(pool)
     .await?;
     Ok(row.is_some())
