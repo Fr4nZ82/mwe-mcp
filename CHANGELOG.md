@@ -282,6 +282,17 @@ and in the dashboard's session check. Eight migrations, `0068` through `0075`.
   `wiki-companion` type behind the folder layout, the `/cite/` resolver is
   mounted, and the `initialize` handshake already sends `instructions`.
 
+- **"You are called X for everyone" renamed the user instead of the agent.**
+  The ingest prompt covered naming the agent for the speaker alone and nothing
+  else, so naming it for the whole audience it serves came back as the
+  cross-assistant scope — the opposite referent, a rule about the speaker — and
+  it was filed in the user's own memory with a body that renamed the user. The
+  prompt now carries the pair: naming the agent for everyone it serves is
+  `agent-wide`, with the addressee dropped from the body ("Your name is
+  Gandalf."), filed in the agent's wiki; naming the speaker for every assistant
+  they talk to is `user-global`, with a third-person body ("Call the user
+  Gandalf."), filed in theirs.
+
 - **A turn that stored nothing said it had noted it.** Every fallback of
   `wiki_ingest_message` — model unreachable, unparseable reply, plan that
   could not be applied — returned the `suggested_seed` "I've noted that." on a
