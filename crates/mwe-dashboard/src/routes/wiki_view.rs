@@ -301,8 +301,9 @@ async fn delete_confirm(
         h2 { "Delete wiki " code { (id) } }
         @if live_identity {
             p.flash.flash-error {
-                "This is an identity wiki (" code { (wiki_type) } "). Identity wikis are removed "
-                "through the user / group deletion flow, not deleted here."
+                "This is an identity wiki (" code { (wiki_type) } "). A person's is erased "
+                "by forgetting them on the Users page; a group's goes when the group does. "
+                "Neither happens here."
             }
             p { a href="/dashboard/wiki" { "Back to the list" } }
         } @else {
@@ -438,10 +439,16 @@ async fn delete_apply(
         _ => (DeletionMode::Dissolve, "dissolve"),
     };
     let deleter = Principal::User(admin.sender_id().to_owned());
-    let report =
-        wiki_delete::delete_wiki_subtree(&state.pool, &memory.tree, &wiki_id, &deleter, mode)
-            .await
-            .map_err(map_wiki_delete_err)?;
+    let report = wiki_delete::delete_wiki_subtree(
+        &state.pool,
+        &memory.tree,
+        &wiki_id,
+        &deleter,
+        mode,
+        wiki_delete::HuskFate::Trash,
+    )
+    .await
+    .map_err(map_wiki_delete_err)?;
     tracing::info!(
         actor = admin.sender_id(),
         wiki = %id,
@@ -453,7 +460,7 @@ async fn delete_apply(
         sections_dropped = report.sections_dropped,
         page_cards_dropped = report.page_cards_dropped,
         link_keys_dropped = report.link_keys_dropped,
-        trash = %report.trash_dir.display(),
+        trash = report.trash_dir.as_ref().map(|p| p.display().to_string()),
         "dashboard: wiki subtree soft-deleted to trash"
     );
     // A dissolve leaves its freed facts parked for re-placement: kick the full
@@ -508,6 +515,7 @@ fn map_wiki_delete_err(e: wiki_delete::WikiDeleteError) -> DashboardError {
         E::FactIndex(_)
         | E::Buffer(_)
         | E::Move { .. }
+        | E::Erase { .. }
         | E::Enrollment(_)
         | E::Sections(_)
         | E::PageCards(_)

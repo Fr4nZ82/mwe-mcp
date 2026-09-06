@@ -220,7 +220,7 @@ pub async fn export_wiki_subtree(
 /// portable (the media analogue of the full marker: an embed key has no
 /// inline-attribute ACL form, so the manifest carries it).
 #[derive(serde::Serialize)]
-struct MediaManifestEntry {
+pub(crate) struct MediaManifestEntry {
     catalog_id: String,
     sha256: String,
     kind: String,
@@ -235,6 +235,26 @@ struct MediaManifestEntry {
     caption: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     description: Option<String>,
+}
+
+impl MediaManifestEntry {
+    /// Project one catalog row onto its manifest shape — used by the wiki
+    /// archive and by the person archive ([`crate::gdpr::export_user`]), so
+    /// the two never describe the same row differently.
+    pub(crate) fn from_row(row: media::MediaRow) -> Self {
+        Self {
+            catalog_id: row.catalog_id.as_str().to_owned(),
+            sha256: row.sha256,
+            kind: row.kind,
+            mime: row.mime,
+            size_bytes: row.size_bytes,
+            subject: row.subject_id.to_string(),
+            allow: row.allow_ids.iter().map(ToString::to_string).collect(),
+            sender: row.sender_id.as_ref().map(ToString::to_string),
+            caption: row.caption,
+            description: row.description,
+        }
+    }
 }
 
 /// Bundle every referenced media blob under `<root_dir>/_media/` plus
@@ -275,18 +295,7 @@ async fn append_referenced_media(
             },
         };
         append_entry(builder, &media_dir.join(id), &bytes)?;
-        manifest.push(MediaManifestEntry {
-            catalog_id: id.clone(),
-            sha256: row.sha256,
-            kind: row.kind,
-            mime: row.mime,
-            size_bytes: row.size_bytes,
-            subject: row.subject_id.to_string(),
-            allow: row.allow_ids.iter().map(ToString::to_string).collect(),
-            sender: row.sender_id.as_ref().map(ToString::to_string),
-            caption: row.caption,
-            description: row.description,
-        });
+        manifest.push(MediaManifestEntry::from_row(row));
         report.media_bundled += 1;
     }
     if !manifest.is_empty() {
@@ -347,7 +356,7 @@ fn rewrite_page_markers(
 /// Append one file to the in-memory tar with deterministic metadata
 /// (mode 0644, epoch mtime) so the same tree always produces the same
 /// bytes.
-fn append_entry(
+pub(crate) fn append_entry(
     builder: &mut tar::Builder<Vec<u8>>,
     path: &Path,
     bytes: &[u8],

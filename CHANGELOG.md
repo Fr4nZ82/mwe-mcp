@@ -18,6 +18,32 @@ and in the dashboard's session check. Eight migrations, `0068` through `0075`.
 
 ### Added
 
+- **A person can ask for everything the memory holds about them, and for its
+  removal.** Two admin actions on the user's page. **Export** builds a tar
+  archive with their wiki (self-describing full markers), a markdown file of
+  the facts **other people's wikis** hold about them — each with where it is
+  filed, who said it and when — the files they uploaded, and their card.
+  **Forget** erases them, and it is now the only way the dashboard removes a
+  person.
+
+  Forgetting is not deleting every sentence with their name in it. What they
+  said about themselves goes with their wiki, and unlike every other
+  retirement it leaves no tombstone — a retired row keeps its claim text, and
+  the claim text is the thing being erased. What **somebody else** said
+  about them is that person's memory and survives: the fact changes hands —
+  the speaker becomes the principal that answers for it — and the forgotten
+  person stays on it as a plain name in `subject_external`, which grants
+  nothing and addresses nobody; a fact filed in their wiki moves into the
+  speaker's, onto a page named after them. What **they** said about other
+  people stays exactly where it is, with the author replaced by
+  `user:_removed`, an id no account can ever hold. Behaviour rules about them
+  are the exception and are destroyed whoever wrote them: a rule is an
+  instruction, and handed to its author it would become an instruction about
+  the author. The audit trail keeps what happened and loses who did it. No
+  copy is kept — the wiki is erased where it stands rather than moved to the
+  trash, and any subtree of theirs an earlier delete left in the trash is
+  erased with it.
+
 - **A fact can say what it is *about* when that is not a person.** The three
   governance axes are all principals, so none of them could hold the dog, the
   car, or a relative who does not use the product. A fact now carries the

@@ -181,8 +181,10 @@ pub fn can_delete(sender_of_fact: Option<&Principal>, caller: &str, is_admin: bo
 /// [`Principal::Group`] is expanded to its members via
 /// [`crate::enrollment::members_for`], and the builtin `global` group is
 /// **dropped** (a public fact has no finite electorate — there is nobody to
-/// poll). A `None` sender contributes nothing. The result is sorted and
-/// deduped so the caller can compare / store it deterministically.
+/// poll), as is a forgotten author ([`crate::gdpr::removed_sender`]: an
+/// identity nobody holds is nobody to ask). A `None` sender contributes
+/// nothing. The result is sorted and deduped so the caller can compare /
+/// store it deterministically.
 ///
 /// # Errors
 ///
@@ -196,6 +198,10 @@ pub async fn audience(
     use std::collections::BTreeSet;
     let mut users: BTreeSet<String> = BTreeSet::new();
     for principal in std::iter::once(subject).chain(allow.iter()).chain(sender) {
+        // Nobody to put a question to.
+        if crate::gdpr::is_removed(principal) {
+            continue;
+        }
         match principal {
             Principal::User(id) => {
                 users.insert(id.clone());

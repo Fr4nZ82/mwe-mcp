@@ -8,7 +8,9 @@ mod common;
 
 use axum::body::Body;
 use axum::http::{Request, StatusCode, header};
-use common::{body_string, extract_cookie_value, extract_set_cookie, make_app, send};
+use common::{
+    body_string, extract_cookie_value, extract_set_cookie, make_app, make_app_with_memory, send,
+};
 
 /// Bootstrap the admin and return the session cookie value ready for
 /// re-presenting as `Cookie:` on subsequent requests.
@@ -221,24 +223,122 @@ async fn non_admin_cannot_reach_users_page() {
     assert_eq!(response.status(), StatusCode::FORBIDDEN);
 }
 
+/// The one person the erasure will not touch, and it says so on both doors:
+/// the confirmation page offers no form, and a hand-crafted POST is refused.
+/// Forgetting the deployment admin leaves nobody who can operate the
+/// deployment.
 #[tokio::test]
-async fn admin_cannot_delete_self() {
-    let (app, _dir) = make_app().await;
+async fn the_deployment_admin_cannot_be_forgotten() {
+    let (app, _pool, _tree, _dir) = make_app_with_memory().await;
     let admin_cookie = login_as_admin(&app).await;
 
     let response = send(
         &app,
         Request::builder()
-            .method("POST")
-            .uri("/users/francesco/delete")
+            .uri("/users/francesco/forget")
             .header(header::COOKIE, &admin_cookie)
             .body(Body::empty())
+            .unwrap(),
+    )
+    .await;
+    assert_eq!(response.status(), StatusCode::OK);
+    let html = body_string(response).await;
+    assert!(
+        html.contains("deployment admin"),
+        "the confirmation page must say why: {html}"
+    );
+    assert!(
+        !html.contains("name=\"confirm_id\""),
+        "no form is offered for the admin: {html}"
+    );
+
+    let response = send(
+        &app,
+        Request::builder()
+            .method("POST")
+            .uri("/users/francesco/forget")
+            .header(header::CONTENT_TYPE, "application/x-www-form-urlencoded")
+            .header(header::COOKIE, &admin_cookie)
+            .body(Body::from("confirm_id=francesco"))
             .unwrap(),
     )
     .await;
     assert_eq!(response.status(), StatusCode::UNPROCESSABLE_ENTITY);
     let html = body_string(response).await;
     assert!(html.contains("admin"), "{html}");
+}
+
+/// The confirmation page is the only place the operator learns what an
+/// erasure means, so it has to say all three things: what is destroyed, what
+/// changes hands and under what name, and that nothing is kept.
+#[tokio::test]
+async fn the_forget_page_says_what_goes_what_changes_hands_and_that_nothing_is_kept() {
+    let (app, _pool, _tree, _dir) = make_app_with_memory().await;
+    let admin_cookie = login_as_admin(&app).await;
+    create_user(&app, &admin_cookie, "galadriel").await;
+
+    let response = send(
+        &app,
+        Request::builder()
+            .uri("/users/galadriel/forget")
+            .header(header::COOKIE, &admin_cookie)
+            .body(Body::empty())
+            .unwrap(),
+    )
+    .await;
+    assert_eq!(response.status(), StatusCode::OK);
+    let html = body_string(response).await;
+    if std::env::var_os("MWE_DUMP_HTML").is_some() {
+        println!("{html}");
+    }
+
+    assert!(
+        html.contains("Nothing is kept") && html.contains("does not go to the trash"),
+        "it must say a copy is not kept: {html}"
+    );
+    assert!(
+        html.contains("external subject"),
+        "it must name what the other people's facts will carry: {html}"
+    );
+    assert!(
+        html.contains("behaviour rule"),
+        "it must say the rules about them go too: {html}"
+    );
+    assert!(
+        html.contains("passes to") && html.contains("whoever said it"),
+        "it must say the other people's memories change hands: {html}"
+    );
+    assert!(
+        html.contains("name=\"confirm_id\""),
+        "and it must ask for the id in writing: {html}"
+    );
+
+    // Both actions are offered from the person's own page, and the export
+    // link comes first — once they are forgotten it cannot be built.
+    let response = send(
+        &app,
+        Request::builder()
+            .uri("/users/galadriel")
+            .header(header::COOKIE, &admin_cookie)
+            .body(Body::empty())
+            .unwrap(),
+    )
+    .await;
+    assert_eq!(response.status(), StatusCode::OK);
+    let page = body_string(response).await;
+    if std::env::var_os("MWE_DUMP_HTML").is_some() {
+        println!("{page}");
+    }
+    let export_at = page
+        .find("/dashboard/users/galadriel/export")
+        .expect("the person's page offers the export");
+    let forget_at = page
+        .find("/dashboard/users/galadriel/forget")
+        .expect("the person's page offers the erasure");
+    assert!(
+        export_at < forget_at,
+        "the copy is offered before the erasure, because afterwards there is none"
+    );
 }
 
 /// POST `/users/new` with a fully explicit body (so a test can omit or

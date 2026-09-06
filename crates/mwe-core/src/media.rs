@@ -405,6 +405,83 @@ pub async fn find_by_id(pool: &SqlitePool, catalog_id: &CatalogId) -> Result<Opt
     raw.map(decode_row).transpose()
 }
 
+/// Every catalog row whose SUBJECT is `subject`, oldest first.
+///
+/// Media has no capturer distinct from its subject — `sender_id` is
+/// materialised to the subject at upload — so this *is* "what this principal
+/// uploaded". Read by the two person-scoped movements
+/// ([`crate::gdpr::export_user`] and [`crate::gdpr::forget_user`]).
+///
+/// # Errors
+///
+/// `Db` on query failure, `Decode` on a corrupt stored row.
+pub async fn find_by_subject(pool: &SqlitePool, subject: &Principal) -> Result<Vec<MediaRow>> {
+    let raw: Vec<RawMediaRow> = sqlx::query_as(&format!(
+        "SELECT {COLUMNS} FROM media_catalog WHERE subject_id = ? ORDER BY created_at ASC"
+    ))
+    .bind(subject.to_string())
+    .fetch_all(pool)
+    .await?;
+    raw.into_iter().map(decode_row).collect()
+}
+
+/// What [`remove`] took away.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub struct MediaRemoval {
+    /// The catalog row was there and is gone.
+    pub row_removed: bool,
+    /// The blob was removed too, because no surviving row addresses those
+    /// bytes.
+    pub blob_removed: bool,
+}
+
+/// Delete one catalog row, and the blob behind it when nothing else
+/// addresses the same bytes.
+///
+/// The store is content-addressed and two principals uploading the same file
+/// share one blob, so the row goes first and the blob only when the last
+/// reference to that hash is gone — otherwise erasing one person's copy would
+/// blank somebody else's.
+///
+/// A blob already missing from disk counts as not removed; the row still
+/// goes.
+///
+/// # Errors
+///
+/// `Db` on query failure, `Io` when the blob is there and cannot be
+/// unlinked.
+pub async fn remove(
+    pool: &SqlitePool,
+    workdir: &Path,
+    catalog_id: &CatalogId,
+) -> Result<MediaRemoval> {
+    let Some(row) = find_by_id(pool, catalog_id).await? else {
+        return Ok(MediaRemoval::default());
+    };
+    sqlx::query("DELETE FROM media_catalog WHERE catalog_id = ?")
+        .bind(catalog_id.as_str())
+        .execute(pool)
+        .await?;
+    let still_referenced: i64 =
+        sqlx::query_scalar("SELECT COUNT(*) FROM media_catalog WHERE sha256 = ?")
+            .bind(&row.sha256)
+            .fetch_one(pool)
+            .await?;
+    let mut removal = MediaRemoval {
+        row_removed: true,
+        blob_removed: false,
+    };
+    if still_referenced == 0 {
+        let blob = blob_path(workdir, &row.sha256);
+        match std::fs::remove_file(&blob) {
+            Ok(()) => removal.blob_removed = true,
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => {},
+            Err(e) => return Err(MediaError::Io(e)),
+        }
+    }
+    Ok(removal)
+}
+
 /// The upload dedup probe: the row for this content hash owned by this
 /// principal, when one exists.
 async fn find_by_sha_and_subject(

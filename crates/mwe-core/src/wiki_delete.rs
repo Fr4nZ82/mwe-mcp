@@ -28,21 +28,26 @@
 //!   fact in the subtree is tombstoned regardless of sender, destroying others'
 //!   contributions; the verb layer requires an informed confirmation.
 //!
-//! Either way the on-disk directory is then **moved** into `<workdir>/trash/`
-//! rather than erased — an operator who deleted the wrong wiki can move the
-//! directory back and let the watcher re-index it, for as long as the
+//! Whatever the mode did to the facts, the on-disk directory is then disposed
+//! of by [`HuskFate`]. The admin delete **moves** it into `<workdir>/trash/`
+//! rather than erasing it — an operator who deleted the wrong wiki can move
+//! the directory back and let the watcher re-index it, for as long as the
 //! subtree is there: housekeeping removes it once it is past
 //! `retention.trash_days` (30 days out of the box), which is why the
-//! directory's name carries the moment of the deletion. Tombstoned rows survive as
-//! audit tombstones (visible under the dashboard "include inactive" filter);
-//! evacuated facts are already safe in the queue.
+//! directory's name carries the moment of the deletion. A person's erasure
+//! ([`crate::gdpr::forget_user`]) **erases** it instead: a trashed subtree is
+//! a full copy of their memory in cleartext, and the promise there is that no
+//! copy is kept. Tombstoned rows survive as audit tombstones (visible under
+//! the dashboard "include inactive" filter); evacuated facts are already safe
+//! in the queue.
 //!
 //! Identity wikis (`wiki-user` / `wiki-group`) are refused here **while their
-//! principal is enrolled**: they are an account's autobiographical store and
-//! are removed through the user/group deletion flow instead. Once the
-//! user/group is gone the wiki is an orphan (user deletion keeps the memory —
-//! the sender-scrub invariant) and that flow can never be re-run for it, so
-//! the admin may delete it here like any other wiki.
+//! principal is enrolled**: they are an account's autobiographical store, and
+//! the flow that removes the principal is the flow that decides what becomes
+//! of the store — [`crate::gdpr::forget_user`] for a person (which erases it),
+//! the group delete for a group (which leaves it). A wiki whose principal is
+//! already gone is an orphan, no flow can be re-run for it, and the admin may
+//! delete it here like any other wiki.
 //!
 //! ## A smart wiki is deleted, not disposed of
 //!
@@ -84,6 +89,20 @@ use crate::wiki::{
 /// `deleted_reason` stamped on every fact the deleted subtree carried.
 pub const DELETE_REASON: &str = "wiki_deleted";
 
+/// What becomes of the directory subtree once its facts are disposed of.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum HuskFate {
+    /// Move it into `<workdir>/trash/`, where it waits out
+    /// `retention.trash_days` and an operator who deleted the wrong wiki can
+    /// move it back. The admin wiki delete.
+    Trash,
+    /// Erase it now, in place. What a person's erasure asks for: a trashed
+    /// subtree is a full copy of their memory in cleartext, so the promise
+    /// "no copy is kept" and a trash window are the same sentence twice, with
+    /// opposite answers.
+    Erase,
+}
+
 /// What the deletion touched — surfaced to the operator and the logs.
 #[derive(Debug, Clone)]
 pub struct WikiDeleteReport {
@@ -115,7 +134,8 @@ pub struct WikiDeleteReport {
     /// that is gone.
     pub link_keys_dropped: u64,
     /// Where the directory subtree now lives under `<workdir>/trash/`.
-    pub trash_dir: PathBuf,
+    /// `None` under [`HuskFate::Erase`] — there is nowhere it went.
+    pub trash_dir: Option<PathBuf>,
 }
 
 /// Failure modes of [`delete_wiki_subtree`].
@@ -152,6 +172,15 @@ pub enum WikiDeleteError {
     #[error("moving {path} to trash: {source}")]
     Move {
         /// The path the move failed on.
+        path: PathBuf,
+        /// The underlying IO error.
+        #[source]
+        source: std::io::Error,
+    },
+    /// Erasing the directory subtree in place failed.
+    #[error("erasing {path}: {source}")]
+    Erase {
+        /// The path the erase failed on.
         path: PathBuf,
         /// The underlying IO error.
         #[source]
@@ -204,23 +233,27 @@ pub fn collect_subtree(tree: &WikiTree, target: &WikiId) -> Result<Vec<Discovere
         .collect())
 }
 
-/// Soft-delete the wiki `target` and its whole subtree (see module docs),
-/// disposing of its facts by `mode` on the `deleter`'s authority.
+/// Delete the wiki `target` and its whole subtree (see module docs),
+/// disposing of its facts by `mode` on the `deleter`'s authority and of its
+/// directory by `husk`.
 ///
 /// `mode` is the admin's choice: [`DeletionMode::Dissolve`] **frees every**
 /// fact for re-placement; [`DeletionMode::SenderKeyed`] **hands
 /// back** every foreign-authored one (tombstoning only the deleter's own +
 /// homeless facts); [`DeletionMode::TombstoneAll`] **tombstones every** fact.
-/// Disposal runs before the directory move, so a failure leaves a retry-able
-/// subtree instead of rows pointing at a vanished directory.
+/// Disposal runs before the directory is disposed of, so a failure leaves a
+/// retry-able subtree instead of rows pointing at a vanished directory.
+///
+/// `husk` says where the files go: [`HuskFate::Trash`] for the recoverable
+/// admin delete, [`HuskFate::Erase`] for a person's erasure.
 ///
 /// # Errors
 ///
 /// [`WikiDeleteError`] — unknown id, identity-wiki refusal, tree/engine
-/// failure, a hand-back to the buffer, or the directory move.
+/// failure, a hand-back to the buffer, or the directory move / erase.
 #[allow(
     clippy::too_many_lines,
-    reason = "one linear disposition pass per mode, then the husk move; splitting hides the order the guarantees depend on"
+    reason = "one linear disposition pass per mode, then the husk's fate; splitting hides the order the guarantees depend on"
 )]
 pub async fn delete_wiki_subtree(
     pool: &SqlitePool,
@@ -228,6 +261,7 @@ pub async fn delete_wiki_subtree(
     target: &WikiId,
     deleter: &Principal,
     mode: DeletionMode,
+    husk: HuskFate,
 ) -> Result<WikiDeleteReport, WikiDeleteError> {
     let subtree = collect_subtree(tree, target)?;
     // `collect_subtree` guarantees the target is present.
@@ -313,21 +347,33 @@ pub async fn delete_wiki_subtree(
         link_keys_dropped += crate::link_key::drop_wiki(pool, wiki_id).await?;
     }
 
-    let trash_root = tree.workdir().join("trash");
-    std::fs::create_dir_all(&trash_root).map_err(|source| WikiDeleteError::Move {
-        path: trash_root.clone(),
-        source,
-    })?;
-    // The name is the record of *when*: moving a directory does not touch
-    // its own mtime, so the retention sweep that empties the trash reads
-    // the moment of the deletion from here and from nowhere else (see
-    // `housekeeping::purge_aged_trash`).
-    let stamp = chrono::Utc::now().format("%Y%m%dT%H%M%SZ");
-    let trash_dir = trash_root.join(format!("{}__{stamp}", target.as_str()));
-    std::fs::rename(&root_abs, &trash_dir).map_err(|source| WikiDeleteError::Move {
-        path: root_abs.clone(),
-        source,
-    })?;
+    let trash_dir = match husk {
+        HuskFate::Trash => {
+            let trash_root = tree.workdir().join("trash");
+            std::fs::create_dir_all(&trash_root).map_err(|source| WikiDeleteError::Move {
+                path: trash_root.clone(),
+                source,
+            })?;
+            // The name is the record of *when*: moving a directory does not
+            // touch its own mtime, so the retention sweep that empties the
+            // trash reads the moment of the deletion from here and from
+            // nowhere else (see `housekeeping::purge_aged_trash`).
+            let stamp = chrono::Utc::now().format("%Y%m%dT%H%M%SZ");
+            let trash_dir = trash_root.join(format!("{}__{stamp}", target.as_str()));
+            std::fs::rename(&root_abs, &trash_dir).map_err(|source| WikiDeleteError::Move {
+                path: root_abs.clone(),
+                source,
+            })?;
+            Some(trash_dir)
+        },
+        HuskFate::Erase => {
+            std::fs::remove_dir_all(&root_abs).map_err(|source| WikiDeleteError::Erase {
+                path: root_abs.clone(),
+                source,
+            })?;
+            None
+        },
+    };
 
     Ok(WikiDeleteReport {
         wiki_id: target.clone(),
@@ -344,7 +390,7 @@ pub async fn delete_wiki_subtree(
 
 #[cfg(test)]
 mod tests {
-    use super::{collect_subtree, delete_wiki_subtree, is_identity_type};
+    use super::{HuskFate, collect_subtree, delete_wiki_subtree, is_identity_type};
     use crate::capture::{CaptureAction, CaptureRequest, wiki_capture};
     use crate::embedder::{Embedder, FakeEmbedder};
     use crate::fact_index;
@@ -504,6 +550,7 @@ mod tests {
             &WikiId::parse("acme").unwrap(),
             &Principal::User("franz".to_owned()),
             DeletionMode::SenderKeyed,
+            HuskFate::Trash,
         )
         .await
         .expect("delete acme (move)");
@@ -536,7 +583,7 @@ mod tests {
 
         // The husk moved to trash, not erased.
         assert!(!tree.wikis_dir().join("acme").exists());
-        assert!(report.trash_dir.exists());
+        assert!(report.trash_dir.expect("trashed").exists());
     }
 
     #[tokio::test]
@@ -560,6 +607,7 @@ mod tests {
             &WikiId::parse("acme").unwrap(),
             &Principal::User("franz".to_owned()),
             DeletionMode::TombstoneAll,
+            HuskFate::Trash,
         )
         .await
         .expect("delete acme (tombstone all)");
@@ -588,6 +636,7 @@ mod tests {
             &WikiId::parse("bob").unwrap(),
             &Principal::User("franz".to_owned()),
             DeletionMode::TombstoneAll,
+            HuskFate::Trash,
         )
         .await
         .expect_err("bob is enrolled — his identity wiki must be refused");
@@ -603,9 +652,8 @@ mod tests {
     async fn orphan_identity_wiki_is_deletable() {
         let dir = tempdir().unwrap();
         let tree = WikiTree::open(dir.path()).unwrap();
-        // An identity wiki whose user is NOT enrolled — the leftover of a
-        // user deletion (memory outlives the identity). No other flow can
-        // remove it, so the admin delete must accept it.
+        // An identity wiki whose principal is NOT enrolled. No other flow
+        // can remove it, so the admin delete must accept it.
         seed(&tree, "ghost", "wiki-user");
         let tree = WikiTree::open(dir.path()).unwrap();
         let db_dir = tempdir().unwrap();
@@ -619,6 +667,7 @@ mod tests {
             &WikiId::parse("ghost").unwrap(),
             &Principal::User("franz".to_owned()),
             DeletionMode::TombstoneAll,
+            HuskFate::Trash,
         )
         .await
         .expect("orphan identity wiki deletes like any other");
@@ -626,7 +675,10 @@ mod tests {
         assert_eq!(report.wikis_removed, 1);
         assert_eq!(report.facts_tombstoned, 1);
         assert!(!tree.wikis_dir().join("ghost").exists());
-        assert!(report.trash_dir.exists(), "husk in trash, recoverable");
+        assert!(
+            report.trash_dir.expect("trashed").exists(),
+            "husk in trash, recoverable"
+        );
     }
 
     // ---------- dissolve ----------
@@ -653,6 +705,7 @@ mod tests {
             &WikiId::parse("dossier").unwrap(),
             &Principal::User("admin".to_owned()),
             DeletionMode::Dissolve,
+            HuskFate::Trash,
         )
         .await
         .expect("dissolve");
@@ -660,7 +713,10 @@ mod tests {
         // Nothing destroyed: a dissolve never tombstones.
         assert_eq!(report.facts_tombstoned, 0);
         assert_eq!(report.facts_unplaced, 2);
-        assert!(report.trash_dir.exists(), "the husk went to trash");
+        assert!(
+            report.trash_dir.expect("trashed").exists(),
+            "the husk went to trash"
+        );
 
         // Both claims are back in the queue under their own ids, and no
         // `fact_index` row is left pointing into the trash.
@@ -703,6 +759,7 @@ mod tests {
             &WikiId::parse("dossier").unwrap(),
             &Principal::User("nobody".to_owned()),
             DeletionMode::Dissolve,
+            HuskFate::Trash,
         )
         .await
         .expect("dissolve");
@@ -784,6 +841,7 @@ mod tests {
             &WikiId::parse("progetto").unwrap(),
             &Principal::User("admin".to_owned()),
             DeletionMode::Dissolve,
+            HuskFate::Trash,
         )
         .await
         .expect("delete");
@@ -842,6 +900,7 @@ mod tests {
             &WikiId::parse("dossier").unwrap(),
             &Principal::User("admin".to_owned()),
             DeletionMode::Dissolve,
+            HuskFate::Trash,
         )
         .await
         .expect("delete");

@@ -969,13 +969,19 @@ pub async fn mark_forgotten_in_wiki(pool: &SqlitePool, wiki_id: &str, reason: &s
 /// authored in the family wiki becomes `sender = group:famiglia` once `franz`
 /// is gone, instead of pointing at a principal that no longer exists.
 ///
+/// This is the **group** deletion's answer, and the one a group can give: a
+/// group is a collective, not a person, so its contributions belong to the
+/// wiki they were filed in. Forgetting a **person** answers differently — the
+/// author's name is replaced by an identity nobody holds
+/// ([`crate::gdpr::forget_user`]), because an erasure must not put somebody
+/// else's name on what they did not say.
+///
 /// Facts are grouped by wiki and each wiki's scope is resolved from topology
 /// ([`crate::wiki::WikiTree::resolve_scope_principal`]). A wiki whose scope is
-/// *itself* `gone` (the removed principal's own identity wiki) is **skipped** —
-/// the substitute would not lift the dangle; those facts belong to the
-/// forget-user pass. A wiki that fails
-/// to locate or resolve is logged and skipped, never aborting the removal. Only
-/// active (non-tombstoned) rows are touched. Returns the number reassigned.
+/// *itself* `gone` is **skipped** — the substitute would not lift the dangle.
+/// A wiki that fails to locate or resolve is logged and skipped, never
+/// aborting the removal. Only active (non-tombstoned) rows are touched.
+/// Returns the number reassigned.
 ///
 /// # Errors
 ///
@@ -1032,6 +1038,141 @@ pub async fn reassign_sender_to_scope(
         reassigned += res.rows_affected();
     }
     Ok(reassigned)
+}
+
+/// Re-stamp every active fact `from` authored with `to`.
+///
+/// The authorship half of forgetting a person ([`crate::gdpr::forget_user`]):
+/// what they said about somebody else is that person's memory and stays where
+/// it is, but the name of who said it goes. `to` is
+/// [`crate::gdpr::removed_sender`] — a principal nobody answers to, so the
+/// fact keeps its provenance slot filled without granting read, amendment or
+/// deletion to anyone (`crate::acl::can_read`, `crate::acl::can_delete`).
+///
+/// Only active (non-tombstoned) rows are touched. Returns the number
+/// re-stamped.
+///
+/// # Errors
+///
+/// As [`sqlx::Error`].
+pub async fn replace_sender(pool: &SqlitePool, from: &Principal, to: &Principal) -> Result<u64> {
+    let now = chrono::Utc::now().to_rfc3339();
+    let res = sqlx::query(
+        "UPDATE fact_index
+            SET sender_id = ?, updated_at = ?
+          WHERE sender_id = ? AND deleted_at IS NULL",
+    )
+    .bind(to.to_string())
+    .bind(&now)
+    .bind(from.to_string())
+    .execute(pool)
+    .await?;
+    Ok(res.rows_affected())
+}
+
+/// Hand one fact to a new subject, and record as a plain name what it is
+/// about.
+///
+/// The subject half of forgetting a person ([`crate::gdpr::forget_user`]): a
+/// fact somebody else told about them is *that speaker's* memory, so the
+/// principal that answers for it becomes the speaker's, and the person
+/// survives on it as a name in [`FactIndexRow::subject_external`] — which
+/// grants nothing and addresses nobody, so the sentence keeps its meaning
+/// without keeping an identity.
+///
+/// A fact that **already** names something (the dog, the car, a relative who
+/// never used the product) keeps that name: `COALESCE` leaves an existing
+/// value alone, because the fact is about that thing and always was.
+///
+/// Returns the number of rows touched (0 when the fact is gone or
+/// tombstoned).
+///
+/// # Errors
+///
+/// As [`sqlx::Error`].
+pub async fn retarget_subject(
+    pool: &SqlitePool,
+    fact_id: &FactId,
+    subject: &Principal,
+    name: &str,
+) -> Result<u64> {
+    let now = chrono::Utc::now().to_rfc3339();
+    let res = sqlx::query(
+        "UPDATE fact_index
+            SET subject_id = ?, subject_external = COALESCE(subject_external, ?), updated_at = ?
+          WHERE fact_id = ? AND deleted_at IS NULL",
+    )
+    .bind(subject.to_string())
+    .bind(name)
+    .bind(&now)
+    .bind(fact_id.as_str())
+    .execute(pool)
+    .await?;
+    Ok(res.rows_affected())
+}
+
+/// Hard-delete one fact row — the only retirement that leaves nothing
+/// behind.
+///
+/// Every other one leaves a tombstone: a retired row keeps its claim text, so
+/// the audit surface can say what was withdrawn and the hygiene sweep has
+/// something to key on while the prose is still on the page. A person's
+/// erasure ([`crate::gdpr::forget_user`]) can afford neither, because the
+/// claim text **is** the personal datum.
+///
+/// Safe on a standard wiki, which is where a person's facts live: a
+/// `{{f=…}}` marker whose row is gone is left alone by the reindex (the DB is
+/// authoritative there — `crate::reindex`) and rewritten away by the next
+/// compile, so a row-less marker never brings the fact back. Call it once the
+/// prose is gone, or once the page it sits on is about to be.
+///
+/// Returns the number of rows removed.
+///
+/// # Errors
+///
+/// As [`sqlx::Error`].
+pub async fn erase(pool: &SqlitePool, fact_id: &FactId) -> Result<u64> {
+    let res = sqlx::query("DELETE FROM fact_index WHERE fact_id = ?")
+        .bind(fact_id.as_str())
+        .execute(pool)
+        .await?;
+    Ok(res.rows_affected())
+}
+
+/// Strike `principal` from every active fact's `allow_ids`.
+///
+/// The audience half of forgetting a person: the read extension is a list of
+/// principals, and a forgotten one must not stay written on other people's
+/// facts. The subject and the sender axes are governed separately
+/// ([`retarget_subject`], [`replace_sender`]) — this touches the list and
+/// nothing else, so a fact whose only tie to them was permission to read
+/// simply loses that entry.
+///
+/// Returns the number of rows amended.
+///
+/// # Errors
+///
+/// As [`sqlx::Error`].
+pub async fn strike_from_allow(pool: &SqlitePool, principal: &Principal) -> Result<u64> {
+    let now = chrono::Utc::now().to_rfc3339();
+    let wire = principal.to_string();
+    let res = sqlx::query(
+        "UPDATE fact_index
+            SET allow_ids = (SELECT json_group_array(kept.value)
+                               FROM json_each(fact_index.allow_ids) kept
+                              WHERE kept.value <> ?1),
+                updated_at = ?2
+          WHERE deleted_at IS NULL
+            AND allow_ids IS NOT NULL
+            AND json_valid(allow_ids)
+            AND EXISTS (SELECT 1 FROM json_each(fact_index.allow_ids) hit
+                         WHERE hit.value = ?1)",
+    )
+    .bind(&wire)
+    .bind(&now)
+    .execute(pool)
+    .await?;
+    Ok(res.rows_affected())
 }
 
 /// Bulk self-delete: tombstone every still-active fact `sender` authored.
@@ -1578,6 +1719,29 @@ pub async fn find_active_by_subject(
 ) -> Result<Vec<FactIndexRow>> {
     let rows = sqlx::query_as::<_, RawFactRow>(SELECT_ACTIVE_BY_SUBJECT)
         .bind(subject.to_string())
+        .fetch_all(pool)
+        .await?;
+    rows.into_iter().map(decode_row).collect()
+}
+
+/// Fetch every active row **one principal authored**, across the whole
+/// forest, oldest first — the mirror of [`find_active_by_subject`] on the
+/// provenance axis.
+///
+/// Read when a person is forgotten and what they said has to be found
+/// wherever it was filed ([`crate::gdpr::forget_user`]): authorship crosses
+/// wikis exactly as subjecthood does, so the scope is the principal and never
+/// the wiki.
+///
+/// # Errors
+///
+/// `sqlx::Error` + decode errors on the embedding / JSON columns.
+pub async fn find_active_by_sender(
+    pool: &SqlitePool,
+    sender: &Principal,
+) -> Result<Vec<FactIndexRow>> {
+    let rows = sqlx::query_as::<_, RawFactRow>(SELECT_ACTIVE_BY_SENDER)
+        .bind(sender.to_string())
         .fetch_all(pool)
         .await?;
     rows.into_iter().map(decode_row).collect()
@@ -2876,6 +3040,21 @@ const SELECT_ACTIVE_BY_SUBJECT: &str = r#"
            subject_external
       FROM fact_index
      WHERE subject_id = ?
+       AND superseded_at IS NULL
+       AND deleted_at IS NULL
+     ORDER BY created_at ASC
+"#;
+
+const SELECT_ACTIVE_BY_SENDER: &str = r#"
+    SELECT fact_id, wiki_id, source_path, region_start, region_end,
+           "text", embedding, subject_id, allow_ids, sender_id,
+           fact_type, topics, created_at, updated_at, superseded_at,
+           superseded_by, successor_fact_id, deleted_at, deleted_reason, last_recall_at,
+           recall_count_30d, valid_from, valid_to, decay_reason,
+           target_page, style, salience, source_ref, authored_refs,
+           subject_external
+      FROM fact_index
+     WHERE sender_id = ?
        AND superseded_at IS NULL
        AND deleted_at IS NULL
      ORDER BY created_at ASC

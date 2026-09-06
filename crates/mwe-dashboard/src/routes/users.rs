@@ -4,7 +4,7 @@
 //! The handlers:
 //!
 //! - GET  `/users`            — list of users with status (active /
-//!   pending invitation) and per-row edit / delete / regenerate-invite
+//!   pending invitation) and per-row edit / forget / regenerate-invite
 //!   links.
 //! - GET  `/users/new`        — form to create a new regular user.
 //! - POST `/users/new`        — validate, insert user row, mint a fresh
@@ -13,10 +13,16 @@
 //! - GET  `/users/:id`        — edit form for `email` and `aliases`.
 //! - POST `/users/:id`        — apply the edit. `is_admin` is never
 //!   shown.
-//! - POST `/users/:id/delete` — delete the user via
-//!   [`enrollment::remove_user`]: consumers bound to the identity
-//!   (`consumers.system_user_id`) are dismantled with it, and CASCADE
-//!   clears `user_credentials` + `user_invitations`.
+//! - GET  `/users/:id/export` — download everything this memory holds
+//!   about the person as a tar archive ([`gdpr::export_user`]): their
+//!   wiki, the facts other wikis hold about them, their uploads and
+//!   their card.
+//! - GET  `/users/:id/forget` — the strong-confirmation page for the
+//!   erasure, with what it will destroy and what will change hands.
+//! - POST `/users/:id/forget` — erase the person ([`gdpr::forget_user`]).
+//!   This is the only way the dashboard removes a person: what somebody
+//!   else remembers about them passes to that person, their own memory
+//!   goes, and no copy is kept.
 //! - POST `/users/:id/reinvite` — replace any open invitation for this
 //!   user with a fresh one, email the new link when SMTP is configured,
 //!   and re-render the list with it as a backup.
@@ -25,17 +31,21 @@
 
 use axum::Router;
 use axum::extract::{Path, State};
-use axum::response::{Html, IntoResponse, Redirect, Response};
+use axum::http::header;
+use axum::response::{Html, IntoResponse, Response};
 use axum::routing::{get, post};
 use chrono::Utc;
 use maud::html;
 use mwe_core::enrollment;
+use mwe_core::gdpr;
 use mwe_core::types::WikiId;
 use mwe_core::wiki::{IdentityKind, create_identity_wiki};
 use serde::Deserialize;
 
 use crate::auth::AdminUser;
 use crate::error::{DashboardError, Result};
+use crate::form::HtmlForm;
+use crate::routes::llm_config::require_memory;
 use crate::routes::setup::is_plausible_email;
 use crate::state::DashboardState;
 use crate::ui::{components, layout};
@@ -46,7 +56,8 @@ pub fn router() -> Router<DashboardState> {
         .route("/users", get(list))
         .route("/users/new", get(new_form).post(new_submit))
         .route("/users/:id", get(edit_form).post(edit_submit))
-        .route("/users/:id/delete", post(delete))
+        .route("/users/:id/export", get(export_archive))
+        .route("/users/:id/forget", get(forget_confirm).post(forget_apply))
         .route("/users/:id/reinvite", post(reinvite))
         .route("/users/:id/reset-2fa", post(reset_2fa))
 }
@@ -194,14 +205,8 @@ fn render_list(
                                     button type="submit" class="link-button" { "reinvite" }
                                 }
                                 " · "
-                                form action=(format!("/dashboard/users/{}/delete", u.user_id))
-                                     method="post" class="inline-form"
-                                     onsubmit=(format!(
-                                        "return confirm('Delete user {}? This also drops their credentials.')",
-                                        u.user_id
-                                     )) {
-                                    button type="submit" class="link-button danger" { "delete" }
-                                }
+                                a href=(format!("/dashboard/users/{}/forget", u.user_id))
+                                  class="danger" { "forget" }
                             }
                         }
                     }
@@ -726,7 +731,7 @@ fn render_edit_form(
 
         p.muted {
             "The user id and the admin role cannot be changed here. "
-            "Delete and re-create if you really need a new id."
+            "Forget this person and enrol them again if you really need a new id."
         }
 
         form action=(format!("/dashboard/users/{user_id}")) method="post" {
@@ -776,6 +781,35 @@ fn render_edit_form(
             ))
         }
 
+        @if !is_admin {
+            h3 { "What this person can ask you for" }
+            p.muted {
+                "A copy of everything this memory holds about them, and its removal. "
+                "Take the copy first — once they are forgotten it cannot be built."
+            }
+            p {
+                a href=(format!("/dashboard/users/{user_id}/export")) class="primary-action" {
+                    "Export everything about this person"
+                }
+            }
+            p.help.muted {
+                "A tar archive: their wiki, the facts other people's wikis hold about "
+                "them with who said each one and when, the files they uploaded, and "
+                "their card."
+            }
+            p {
+                a href=(format!("/dashboard/users/{user_id}/forget")) class="danger" {
+                    "Forget this person"
+                }
+            }
+            p.help.muted {
+                "Their own memory goes and no copy is kept. What other people said "
+                "about them is those people's memory and stays, carrying their name "
+                "as a plain external subject. The next page says exactly what happens "
+                "and asks you to type the id."
+            }
+        }
+
         p { a href="/dashboard/users" { "Back to the list" } }
     };
     layout::authenticated_reading_page(chrome, &title, session, &body)
@@ -801,70 +835,315 @@ async fn reset_2fa(
     .into_response())
 }
 
-async fn delete(
+/// Admin-only download of everything this memory holds about one person, as
+/// a portable tar archive (`mwe_core::gdpr::export_user`) — the portability
+/// half of the two data-subject rights.
+///
+/// The archive carries every fragment about them in clear, so it is gated
+/// exactly like the wiki export: on a deployment where
+/// `instance.admin_reveal_locked` is set, the panel admin does not get it.
+async fn export_archive(
     State(state): State<DashboardState>,
     admin: AdminUser,
     Path(user_id): Path<String>,
 ) -> Result<Response> {
+    let memory = require_memory(&state)?;
+    if state.config.admin_reveal_locked {
+        return Err(DashboardError::Forbidden);
+    }
+    let export = gdpr::export_user(&state.pool, &memory.tree, &user_id)
+        .await
+        .map_err(|e| DashboardError::Internal(format!("export {user_id}: {e}")))?
+        .ok_or(DashboardError::NotFound)?;
+    tracing::info!(
+        actor = admin.sender_id(),
+        user = %user_id,
+        wiki_entries = export.report.wiki_entries,
+        facts_elsewhere = export.report.facts_elsewhere,
+        media_bundled = export.report.media_bundled,
+        media_missing = export.report.media_missing,
+        "dashboard: personal data export served"
+    );
+    let filename = format!("{}-personal-data.tar", export.root_dir);
+    Ok((
+        [
+            (header::CONTENT_TYPE, "application/x-tar".to_owned()),
+            (
+                header::CONTENT_DISPOSITION,
+                format!("attachment; filename=\"{filename}\""),
+            ),
+        ],
+        export.tar_bytes,
+    )
+        .into_response())
+}
+
+/// Confirmation form body of `POST /dashboard/users/:id/forget`.
+#[derive(Debug, Default, Deserialize)]
+struct ForgetUserForm {
+    /// The admin must re-type the person's id here. A mismatch is refused
+    /// server-side — the same strength of confirmation a wiki delete asks
+    /// for, and for a heavier act.
+    #[serde(default)]
+    confirm_id: String,
+}
+
+/// GET `/dashboard/users/:id/forget` — what the erasure will do, then the
+/// form that asks the admin to type the id.
+async fn forget_confirm(
+    State(state): State<DashboardState>,
+    admin: AdminUser,
+    Path(user_id): Path<String>,
+) -> Result<Html<String>> {
+    let chrome = layout::Chrome::of(&state);
     let is_admin: Option<i64> =
         sqlx::query_scalar("SELECT is_admin FROM enrollment_users WHERE user_id = ?")
             .bind(&user_id)
             .fetch_optional(&state.pool)
             .await?;
-    let Some(is_admin_raw) = is_admin else {
-        return Err(DashboardError::NotFound);
+    // The deployment admin is refused on identity alone, so the refusal is
+    // rendered before anything is counted — there is nothing to count.
+    if is_admin.ok_or(DashboardError::NotFound)? != 0 {
+        return Ok(Html(render_forget_confirm(
+            chrome,
+            admin.session(),
+            &user_id,
+            true,
+            &gdpr::ForgetPreview::default(),
+        )));
+    }
+    let memory = require_memory(&state)?;
+    let preview = gdpr::forget_preview(&state.pool, &memory.tree, &user_id)
+        .await
+        .map_err(|e| DashboardError::Internal(format!("forget preview {user_id}: {e}")))?
+        .ok_or(DashboardError::NotFound)?;
+    Ok(Html(render_forget_confirm(
+        chrome,
+        admin.session(),
+        &user_id,
+        false,
+        &preview,
+    )))
+}
+
+fn render_forget_confirm(
+    chrome: layout::Chrome,
+    session: &crate::auth::SessionUser,
+    user_id: &str,
+    is_admin: bool,
+    preview: &gdpr::ForgetPreview,
+) -> String {
+    let title = format!("Forget — {user_id}");
+    let body = html! {
+        h2 { "Forget " code { (user_id) } }
+        @if is_admin {
+            p.flash.flash-error {
+                "This is the deployment admin. Forgetting them would leave nobody who "
+                "can operate the deployment, so it is refused here."
+            }
+            p { a href="/dashboard/users" { "Back to the list" } }
+        } @else {
+            p.flash.flash-error {
+                strong { "Nothing is kept." }
+                " Their wiki is erased where it stands — it does not go to the trash, "
+                "and the 30-day window a deleted wiki gets does not apply. There is "
+                "nothing to put back afterwards."
+            }
+
+            h3 { "What is destroyed" }
+            ul {
+                li {
+                    "Wikis erased, theirs and everything under it (the wiki a "
+                    "connected app writes for them lives there too): "
+                    strong { (preview.wikis) }
+                }
+                li {
+                    "Facts destroyed — everything they said about themselves, plus "
+                    "every behaviour rule about them: " strong { (preview.facts_destroyed) }
+                    ". A rule is an instruction, not a memory: handed to somebody "
+                    "else it would become an instruction about " em { "them" } "."
+                }
+                li {
+                    "Files they uploaded: " strong { (preview.media) }
+                    ". The copies on disk go too, unless somebody else uploaded the "
+                    "same file."
+                }
+                li {
+                    "Their sign-in and aliases, their group memberships, the "
+                    "permissions letting an app speak as them, the notices waiting "
+                    "for them, and the recent conversation window."
+                }
+            }
+
+            h3 { "What stays, because it is somebody else's memory" }
+            ul {
+                li {
+                    "Facts other people told about them: "
+                    strong { (preview.facts_handed_over) } ". "
+                    em { "\"" (user_id) " did a great job on the client presentation\"" }
+                    " is the speaker's memory of their own working life, and it does "
+                    "not go because " code { (user_id) } " leaves. Each one passes to "
+                    "whoever said it, and " code { (user_id) } " stays written on it "
+                    "as a plain name — an "
+                    strong { "external subject" }
+                    ", a name the memory holds without it being anybody's account, so "
+                    "it gives nobody the right to read or change anything. A fact "
+                    "filed in their wiki moves into the new owner's."
+                }
+                li {
+                    "Facts they told about other people: "
+                    strong { (preview.facts_disowned) }
+                    ". They stay exactly where they are, and only the name of who "
+                    "said it goes, replaced by " code { "user:_removed" }
+                    " — an identity nobody can hold."
+                }
+                li {
+                    "The record of what was done on this deployment stays; the name "
+                    "of who did it is replaced the same way."
+                }
+            }
+
+            p.muted {
+                "Take the copy first if they asked for one: "
+                a href=(format!("/dashboard/users/{user_id}/export")) {
+                    "download everything about " (user_id)
+                }
+                ". You cannot build it afterwards."
+            }
+
+            form action=(format!("/dashboard/users/{user_id}/forget")) method="post" {
+                p {
+                    label for="confirm-id" {
+                        "Type the person's id (" code { (user_id) } ") to confirm:"
+                    }
+                }
+                input id="confirm-id" type="text" name="confirm_id"
+                    autocomplete="off" placeholder=(user_id);
+                p {
+                    button type="submit" class="danger" { "Forget this person" }
+                    " · "
+                    a href="/dashboard/users" { "Cancel" }
+                }
+            }
+        }
     };
-    if is_admin_raw != 0 {
+    layout::authenticated_reading_page(chrome, &title, session, &body)
+}
+
+/// POST `/dashboard/users/:id/forget` — erase the person.
+///
+/// Refuses unless `confirm_id` matches the path id exactly, then runs
+/// [`gdpr::forget_user`] and re-renders the list with what it did.
+async fn forget_apply(
+    State(state): State<DashboardState>,
+    admin: AdminUser,
+    Path(user_id): Path<String>,
+    HtmlForm(form): HtmlForm<ForgetUserForm>,
+) -> Result<Response> {
+    let chrome = layout::Chrome::of(&state);
+    let memory = require_memory(&state)?;
+    if form.confirm_id.trim() != user_id {
         return Err(DashboardError::Validation(
-            "Refusing to delete the deployment admin from the dashboard. \
-             Use the CLI / direct DB if you really mean it."
-                .into(),
+            "Confirmation failed: type the exact user id to forget this person.".to_owned(),
         ));
     }
-
-    // One transactional teardown: consumers bound to this identity
-    // (`consumers.system_user_id`), their delegation grants, the user's
-    // web-agent OAuth rows, then the enrollment row itself (CASCADE takes
-    // credentials, invitations, 2FA, votes).
-    let removal = enrollment::remove_user(&state.pool, &user_id)
-        .await?
+    let embedder = std::sync::Arc::clone(&memory.embedder);
+    let report = gdpr::forget_user(&state.pool, &memory.tree, embedder, &user_id)
+        .await
+        .map_err(|e| match e {
+            gdpr::GdprError::IsDeploymentAdmin(id) => DashboardError::Validation(format!(
+                "Refusing to forget the deployment admin {id}: it would leave nobody \
+                 who can operate this deployment."
+            )),
+            other => DashboardError::Internal(format!("forget {user_id}: {other}")),
+        })?
         .ok_or(DashboardError::NotFound)?;
-    if !removal.consumers_dismantled.is_empty() {
-        // Act-as for the dismantled consumers must die on the next call,
-        // not within the cache TTL. Best-effort: the TTL self-heals.
-        if let Err(error) = state.delegations.refresh(&state.pool).await {
-            tracing::warn!(%error, "delegation cache refresh failed after user delete");
-        }
-        tracing::info!(
-            user = %user_id,
-            consumers = ?removal.consumers_dismantled,
-            oauth_rows = removal.oauth_rows_removed,
-            "user delete dismantled bound consumer registrations"
+
+    // Act-as must die on the next call, not within the cache TTL: the
+    // erasure both dismantles the consumers bound to the identity and strikes
+    // the id out of every other consumer's grant list, and until the cache
+    // reloads an app could still speak as somebody who is gone.
+    // Best-effort: the TTL self-heals.
+    if let Err(error) = state.delegations.refresh(&state.pool).await {
+        tracing::warn!(%error, "delegation cache refresh failed after forget");
+    }
+    // The engine already logged the full tally; this line records WHO asked
+    // for it, which is the half the audit trail needs and the engine has no
+    // way to know.
+    tracing::info!(
+        actor = admin.sender_id(),
+        user = %user_id,
+        "dashboard: person forgotten"
+    );
+
+    let users = fetch_users(&state).await?;
+    let msg = forget_summary(&report);
+    Ok(Html(render_list(
+        chrome,
+        &users,
+        admin.session(),
+        Some(("success", &msg)),
+    ))
+    .into_response())
+}
+
+/// One sentence per category, in the order the erasure did them.
+fn forget_summary(report: &gdpr::ForgetReport) -> String {
+    let mut msg = format!(
+        "Forgot {user}. Destroyed {destroyed} facts and erased {wikis} wikis with no copy \
+         kept. {handed} facts other people told about them passed to whoever said them, \
+         carrying \"{user}\" as an external subject ({moved} moved into the new owner's \
+         wiki, {unplaced} freed for the cartographer to re-place). {disowned} facts they \
+         told about other people stayed put with the author's name replaced. \
+         {media} uploaded files removed, and their name struck out of {lists} lists that \
+         granted something by naming it. {notices} notices and proposals addressed to them \
+         went, along with {personal} rows of their own activity; {audit} audit entries kept \
+         what happened and lost who did it.",
+        user = report.user_id,
+        destroyed = report.facts_tombstoned,
+        wikis = report.wikis_erased,
+        handed = report.facts_handed_over,
+        moved = report.facts_moved,
+        unplaced = report.facts_unplaced,
+        disowned = report.facts_disowned,
+        media = report.media_removed,
+        lists = report.lists_amended + report.allow_lists_pruned,
+        notices = report.notices_removed,
+        personal = report.personal_rows_removed,
+        audit = report.audit_rows_anonymised,
+    );
+    if report.captures_handed_over + report.captures_dropped > 0 {
+        use std::fmt::Write as _;
+        let _ = write!(
+            msg,
+            " Of the claims still waiting to be filed, {handed} changed hands and \
+             {dropped} went.",
+            handed = report.captures_handed_over,
+            dropped = report.captures_dropped,
         );
     }
-
-    // A contribution outlives its author. Reassign any fact this user authored
-    // (sender = user:<id>) to its wiki's scope principal so no active fact is
-    // left pointing at a vanished sender (the sender-scrub invariant).
-    // Best-effort — a failure (or absent memory handles) is logged, never
-    // blocks the delete.
-    if let Some(memory) = state.memory.as_ref() {
-        let gone = mwe_core::types::Principal::User(user_id.clone());
-        match mwe_core::fact_index::reassign_sender_to_scope(&state.pool, &memory.tree, &gone).await
-        {
-            Ok(n) => {
-                tracing::info!(user = %user_id, reassigned = n, "user delete reassigned facts' sender to wiki scope");
-            },
-            Err(e) => {
-                tracing::warn!(user = %user_id, error = %e, "sender reassignment failed after user delete");
-            },
-        }
-    } else {
-        tracing::warn!(user = %user_id, "memory handles unavailable — facts' sender not reassigned");
+    if report.facts_left_as_tombstone > 0 {
+        use std::fmt::Write as _;
+        let _ = write!(
+            msg,
+            " {n} of the destroyed facts still have their sentence on a page: the row is \
+             retired and out of recall, and the nightly hygiene pass takes the words off \
+             the page, but those pages are worth a look.",
+            n = report.facts_left_as_tombstone,
+        );
     }
-
-    tracing::info!(actor = admin.sender_id(), user = %user_id, "dashboard deleted user");
-    Ok(Redirect::to("/dashboard/users").into_response())
+    if !report.orphan_smart_wikis.is_empty() {
+        use std::fmt::Write as _;
+        let _ = write!(
+            msg,
+            " Note: {n} wikis outside their own still name them as owner and were left \
+             standing — nobody can read them now, and you can delete them from the wiki \
+             list: {list}.",
+            n = report.orphan_smart_wikis.len(),
+            list = report.orphan_smart_wikis.join(", "),
+        );
+    }
+    msg
 }
 
 async fn reinvite(

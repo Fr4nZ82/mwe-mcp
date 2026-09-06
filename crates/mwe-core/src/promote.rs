@@ -2358,6 +2358,50 @@ pub async fn apply_fact_refile_direct(
     })
 }
 
+/// Move **one** fact onto a page of a **different** wiki, leaving **no
+/// receipt** — the same engine as [`apply_fact_refile_direct`], same commit
+/// order, without the `wiki_promote` row.
+///
+/// The destination page does not have to exist: it is created, holding the
+/// moved region.
+///
+/// A receipt is a record addressed to the operator, and it carries the
+/// source wiki and page in clear. The one caller that must not leave one is
+/// the erasure of a person ([`crate::gdpr::forget_user`]), where the
+/// source wiki *is* the person's id: a receipt there would re-write, into a
+/// table the pass does not touch, the very name the pass exists to remove.
+///
+/// # Errors
+///
+/// [`ApplyError`] when the refile refuses or fails — nothing changed on
+/// disk.
+pub async fn refile_fact_across_wikis(
+    pool: &SqlitePool,
+    tree: &WikiTree,
+    fact_id: &FactId,
+    source_wiki_id: &str,
+    source_page: &str,
+    dest_wiki_id: &str,
+    dest_page: &str,
+) -> Result<(), ApplyError> {
+    let context = fact_refile_context(
+        fact_id,
+        source_wiki_id,
+        source_page,
+        dest_wiki_id,
+        dest_page,
+        None,
+    );
+    let answers = json!({
+        "variant": VARIANT_FACT_REFILE,
+        "dest_wiki_id": dest_wiki_id,
+        "dest_page": dest_page,
+    });
+    apply_fact_refile(pool, tree, &context, &answers)
+        .await
+        .map(|_| ())
+}
+
 /// Inputs of [`apply_page_merge_direct`] — the husk + survivor identity the
 /// REM merge sub-job resolved from the compilation plan, plus presentation
 /// hints for the receipt.

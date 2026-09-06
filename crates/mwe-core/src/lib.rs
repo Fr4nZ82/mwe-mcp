@@ -39,6 +39,7 @@ pub mod error;
 pub mod events;
 pub mod export;
 pub mod fact_index;
+pub mod gdpr;
 pub mod housekeeping;
 pub mod ingest;
 pub mod jwt;

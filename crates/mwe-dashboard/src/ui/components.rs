@@ -187,7 +187,7 @@ pub fn truncate_chars(s: &str, max: usize) -> String {
 }
 
 /// Render a small inline destructive form: one button that POSTs to
-/// `action`. Used for "delete user", "revoke token", "logout".
+/// `action`. Used for "reset this user's 2FA", "revert", "forget this fact".
 #[must_use]
 pub fn destructive_form(action: &str, label: &str, confirm: &str) -> Markup {
     html! {

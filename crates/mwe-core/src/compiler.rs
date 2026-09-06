@@ -1917,6 +1917,8 @@ const fn principal_name(p: &Principal) -> &str {
 /// (`subject ∪ allow ∪ sender`, sorted + deduped) so the Cronista keeps that
 /// fact's substance **inside its own `<fN>` span** rather than leaking it into
 /// the untagged prose every reader of the page sees (prompt FACT TAGS rule).
+/// A forgotten author ([`crate::gdpr::removed_sender`]) is left out of the
+/// names: it is an identity nobody holds, so it is nobody to name.
 /// A one-way projection: the DB ACL stays authoritative and the marker is
 /// still rendered by code from the fact — the hint is never parsed back.
 fn audience_hint(subject: &Principal, allow: &[Principal], sender: Option<&Principal>) -> String {
@@ -1926,6 +1928,7 @@ fn audience_hint(subject: &Principal, allow: &[Principal], sender: Option<&Princ
     let mut names: Vec<&str> = std::iter::once(subject)
         .chain(allow.iter())
         .chain(sender)
+        .filter(|p| !crate::gdpr::is_removed(p))
         .map(principal_name)
         .collect();
     names.sort_unstable();

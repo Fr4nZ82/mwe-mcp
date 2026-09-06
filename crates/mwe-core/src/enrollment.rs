@@ -997,10 +997,9 @@ pub struct UserRemoval {
 ///   credentials, invitations, 2FA and proposal votes.
 ///
 /// Outstanding JWTs are stateless and cannot be enumerated; they expire at
-/// their TTL. Group member lists and delegation allow-lists naming the
-/// user are left as-is: a stale id in those JSON arrays never matches an
-/// effective sender, which is the documented failure mode
-/// (`crate::delegations`).
+/// their TTL. Group member lists and delegation allow-lists naming the user
+/// are not touched **here** — striking an id out of them is the erasure's
+/// job, and [`crate::gdpr::forget_user`] does it before calling this.
 ///
 /// Returns `Ok(None)` when no such user exists.
 ///
