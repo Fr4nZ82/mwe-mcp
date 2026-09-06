@@ -467,6 +467,29 @@ and in the dashboard's session check. Eight migrations, `0068` through `0075`.
   box — and a `rate_limit_id` with no profile falls back to `default`, so a
   token cannot name its way out of a ceiling.
 
+- **Signing out ends every session, on every device — and it now ends
+  this one.** Two faults, one surface. Signing out revoked only the
+  cookie doing the signing out, so a phone left on a train, a browser on
+  a shared machine and a copied cookie all kept working until they
+  expired on their own; there was no way to end them, because a session
+  is a stateless JWT re-minted with a fresh id on every request and
+  nothing holds a list of them. And the sliding refresher, which re-mints
+  that cookie after every request, was re-minting it on the sign-out
+  response too — appending a brand-new valid session cookie *after* the
+  cleared one, which is the one a browser keeps. Signing out did nothing
+  at all in a browser.
+
+  Every session JWT now carries the generation its user was on when it
+  was minted (migration `0076`), and signing out moves that number on:
+  every session of that person is refused from its next request, one
+  UPDATE, nothing to clean up afterwards. Changing the password does the
+  same and keeps the browser that changed it signed in; a password reset
+  through the recovery link does the same and signs nobody in. And a
+  handler that has decided about the session cookie now has the last
+  word over the refresher. MCP bearer tokens are untouched: those are a
+  consumer's credential, not a person's session, and they are revoked
+  from the Tokens page.
+
 ## 1.9.0 — 2026-08-02
 
 Recall was handing the model the wrong material and reaching the right page by

@@ -206,7 +206,7 @@ pub async fn enter(
     // The visitor is shown that person, role included. What keeps this
     // safe is the freeze, not a downgraded session.
     let is_admin = is_admin != 0;
-    let cookie = issue_session_cookie(&state, wanted, is_admin)?;
+    let cookie = issue_session_cookie(&state, wanted, is_admin).await?;
     let landing = destination(headers.get(REFERER).and_then(|v| v.to_str().ok()));
     tracing::info!(identity = wanted, is_admin, "demo entrance: session issued");
     Ok((jar.add(cookie), Redirect::to(&landing)).into_response())

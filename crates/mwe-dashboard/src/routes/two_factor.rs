@@ -153,7 +153,7 @@ async fn challenge_submit(
     // Second factor passed: burn the challenge, mint the real session,
     // clear the challenge cookie.
     twofa::delete_pending(&state.pool, &id).await?;
-    let session = issue_session_cookie(&state, &pending.user_id, pending.is_admin)?;
+    let session = issue_session_cookie(&state, &pending.user_id, pending.is_admin).await?;
     let jar = jar.add(session).add(clear_challenge_cookie(&state));
     let dest = pending.next.as_deref().unwrap_or("/dashboard/home");
     tracing::info!(user = %pending.user_id, "2fa: challenge passed, session minted");

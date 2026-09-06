@@ -15,8 +15,9 @@
 //! - GET  `/dashboard/reset-password/:token` — the "choose a new
 //!   password" form (or a dead-link page).
 //! - POST `/dashboard/reset-password/:token` — burn the token and write
-//!   the new Argon2id hash in one transaction, then send the user to
-//!   `/login` (no auto-sign-in, so the next login re-runs any 2FA gate).
+//!   the new Argon2id hash in one transaction, end every session the
+//!   account has open, then send the user to `/login` (no auto-sign-in,
+//!   so the next login re-runs any 2FA gate).
 //!
 //! The recovery email is sent only when the admin has configured and
 //! enabled the [`EmailConfig`] SMTP backend (the Email section of
@@ -215,7 +216,17 @@ async fn reset_submit(
     .await?;
 
     tx.commit().await?;
-    tracing::info!(user = %user_id, "password-reset: password updated via recovery link");
+
+    // Whoever asked for this link may be locked out of their own account,
+    // and a session opened with the old password is exactly what they are
+    // trying to close. Every one of them ends here; the reset itself
+    // signs nobody in.
+    let generation = mwe_core::jwt::end_all_sessions(&state.pool, &user_id).await?;
+    tracing::info!(
+        user = %user_id,
+        generation,
+        "password-reset: password updated via recovery link, every session ended"
+    );
 
     // No auto-sign-in: send them to /login so the next sign-in runs any
     // 2FA gate the user has enabled.
@@ -439,6 +450,60 @@ mod tests {
             current_hash(&state, "frodo").await,
             before_replay,
             "a burned token must not change the password again"
+        );
+    }
+
+    /// Whoever used the link may be locking somebody else out, so a
+    /// completed reset ends every session the account has open. A refused
+    /// one leaves them exactly where they were.
+    #[tokio::test]
+    async fn a_completed_reset_ends_every_session_and_a_refused_one_does_not() {
+        let (state, _workdir) = make_state().await;
+        seed_user(&state, "frodo", "frodo@example.com", "old-password-1").await;
+        assert_eq!(
+            mwe_core::jwt::session_generation(&state.pool, "frodo")
+                .await
+                .expect("generation"),
+            0,
+            "premise: nobody has ended this account's sessions yet"
+        );
+
+        // A refused attempt (too short) changes nothing.
+        let token = mint_reset(&state, "frodo").await;
+        let _ = reset_submit(
+            State(state.clone()),
+            Path(token.clone()),
+            axum::Form(ResetSubmission {
+                password: "short".to_owned(),
+                password_confirm: "short".to_owned(),
+            }),
+        )
+        .await
+        .expect("handler");
+        assert_eq!(
+            mwe_core::jwt::session_generation(&state.pool, "frodo")
+                .await
+                .expect("generation"),
+            0,
+            "a reset that did not happen must not sign anybody out"
+        );
+
+        let _ = reset_submit(
+            State(state.clone()),
+            Path(token),
+            axum::Form(ResetSubmission {
+                password: "brand-new-password-2".to_owned(),
+                password_confirm: "brand-new-password-2".to_owned(),
+            }),
+        )
+        .await
+        .expect("handler");
+        assert!(
+            mwe_core::jwt::session_generation(&state.pool, "frodo")
+                .await
+                .expect("generation")
+                > 0,
+            "the completed reset ends every session opened with the old password"
         );
     }
 

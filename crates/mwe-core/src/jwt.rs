@@ -6,7 +6,8 @@
 //! - **Payload required**: `sender_id`, `device_label`, `rate_limit_id`,
 //!   `iat`, `exp`, `jti` (`UUIDv7`).
 //! - **Payload optional**: `isAdmin` (UI gating only — does **not**
-//!   bypass ACL), `consumer_id` (for multi-consumer ack tracking).
+//!   bypass ACL), `consumer_id` (for multi-consumer ack tracking),
+//!   `session_gen` (dashboard sessions only — see [`end_all_sessions`]).
 //! - **No scopes / no permissions**: the token only proves identity;
 //!   authorization is region-level ACL via inline markers.
 //! - **Signature**: HS256 default (shared secret).
@@ -25,6 +26,8 @@
 //!   the secret never leaks into traces.
 //! - [`issue`] / [`verify_offline`] / [`verify`] — the three primitives.
 //! - [`revoke`] — append a `jti` to `token_blacklist`.
+//! - [`session_generation`] / [`end_all_sessions`] — the one number that
+//!   ends every dashboard session a person has open, on every device.
 //! - [`BlacklistCache`] — bounded in-memory mirror of the blacklist
 //!   with a 60s TTL.
 
@@ -178,6 +181,20 @@ pub struct TokenClaims {
     /// [`ConsumerProfile::Local`] so earlier tokens stay wire-identical.
     #[serde(default, skip_serializing_if = "ConsumerProfile::is_local")]
     pub profile: ConsumerProfile,
+    /// The sender's [session generation](session_generation) at mint
+    /// time — set on dashboard session cookies, absent everywhere else.
+    ///
+    /// It is what makes "sign out everywhere" possible on a stateless
+    /// cookie: the dashboard refuses a session whose number is below the
+    /// sender's current one, so one UPDATE ends every session that person
+    /// has open. Absent reads as `0`, the generation of a user who has
+    /// never signed everything out.
+    ///
+    /// **Not consulted for MCP bearer tokens.** Those are a consumer's
+    /// credential, not a person's session, and they are revoked one by
+    /// one from the dashboard's Tokens page.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub session_gen: Option<i64>,
 }
 
 impl TokenClaims {
@@ -203,6 +220,7 @@ impl TokenClaims {
             consumer_id: None,
             consumer_class: ConsumerClass::Standard,
             profile: ConsumerProfile::Local,
+            session_gen: None,
         }
     }
 }
@@ -398,6 +416,55 @@ pub async fn revoke(
     .execute(pool)
     .await?;
     Ok(())
+}
+
+/// The sender's current session generation — `0` when they have never
+/// ended their sessions.
+///
+/// Read on every dashboard request, so it is one primary-key lookup
+/// against a table with a row per user who has ever signed out
+/// everywhere, and none for anybody else.
+///
+/// # Errors
+///
+/// Propagates the DB error from the lookup.
+pub async fn session_generation(pool: &SqlitePool, user_id: &str) -> Result<i64, TokenError> {
+    let current: Option<i64> =
+        sqlx::query_scalar("SELECT generation FROM user_session_generation WHERE user_id = ?")
+            .bind(user_id)
+            .fetch_optional(pool)
+            .await?;
+    Ok(current.unwrap_or(0))
+}
+
+/// End every dashboard session this person has open, anywhere, and
+/// return the generation their next sign-in will carry.
+///
+/// One UPDATE: every session JWT already minted names a lower generation
+/// and is refused from the next request on — the phone left on a train,
+/// the browser on a shared machine, the cookie copied out of a laptop.
+/// The caller that wants to keep the session it is serving alive mints a
+/// fresh cookie with the returned number.
+///
+/// MCP bearer tokens are untouched: see [`TokenClaims::session_gen`].
+///
+/// # Errors
+///
+/// Propagates the DB error from the upsert.
+pub async fn end_all_sessions(pool: &SqlitePool, user_id: &str) -> Result<i64, TokenError> {
+    let now = chrono::Utc::now().to_rfc3339();
+    let next: i64 = sqlx::query_scalar(
+        "INSERT INTO user_session_generation (user_id, generation, updated_at)
+              VALUES (?, 1, ?)
+         ON CONFLICT(user_id) DO UPDATE
+                SET generation = generation + 1, updated_at = excluded.updated_at
+           RETURNING generation",
+    )
+    .bind(user_id)
+    .bind(&now)
+    .fetch_one(pool)
+    .await?;
+    Ok(next)
 }
 
 /// Single-use variant of [`revoke`]: blacklist `jti` only if absent.

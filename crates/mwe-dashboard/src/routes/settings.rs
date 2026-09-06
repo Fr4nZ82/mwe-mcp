@@ -196,10 +196,34 @@ async fn submit(
     .execute(&state.pool)
     .await?;
 
-    tracing::info!(user = %user.sender_id, "self-service password change");
+    // A new password ends every session opened with the old one — that is
+    // the point of changing it after a laptop went missing. The session
+    // doing the changing is kept alive by minting it the one cookie that
+    // carries the new generation; the sliding refresher stands back
+    // because this response sets the cookie itself.
+    let generation = mwe_core::jwt::end_all_sessions(&state.pool, &user.sender_id).await?;
+    let fresh = crate::auth::session::mint_session_cookie(
+        &state,
+        &user.sender_id,
+        user.is_admin,
+        generation,
+    )?;
 
-    let body = render_page(&state, &user, &jar, None, Some("Password updated.")).await?;
-    Ok(body.into_response())
+    tracing::info!(
+        user = %user.sender_id,
+        generation,
+        "self-service password change: every other session ended"
+    );
+
+    let body = render_page(
+        &state,
+        &user,
+        &jar,
+        None,
+        Some("Password updated. Every other session has been signed out."),
+    )
+    .await?;
+    Ok((jar.add(fresh), body).into_response())
 }
 
 /// The admin-only Admin reveal section: a short explainer + the
@@ -285,8 +309,8 @@ fn render(
         p.muted {
             "You are signed in as " strong { (user.sender_id) } "."
             @if !chrome.read_only {
-                " Changing your password keeps you signed in here, and leaves "
-                "your other sessions signed in too until they expire on their own."
+                " Signing out ends every session you have open, on every device. "
+                "Changing your password does the same and keeps you signed in here."
             }
         }
         // A frozen deployment shows this page whole and lets none of it

@@ -198,7 +198,7 @@ pub async fn submit(
         .await;
     }
 
-    let cookie = issue_session_cookie(&state, &user_id, is_admin)?;
+    let cookie = issue_session_cookie(&state, &user_id, is_admin).await?;
     // A local `next` (e.g. the OAuth consent deep-link) wins; otherwise the
     // profile-wizard gate sends never-initialised users to `/welcome` instead
     // of straight home. See `welcome.rs` for the flag semantics. A frozen

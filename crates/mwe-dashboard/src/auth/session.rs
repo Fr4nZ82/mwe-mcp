@@ -17,6 +17,9 @@
 //!   lifetime (60 minutes max), revocation via [`mwe_core::jwt::revoke`].
 //! - `consumer_id`   — never set on session cookies (act-as is for the
 //!   MCP transport, not for browsers).
+//! - `session_gen`   — the user's session generation at mint time; a
+//!   cookie below the current one was signed out, wherever it is
+//!   presented from ([`mwe_core::jwt::end_all_sessions`]).
 //!
 //! ## Sliding TTL
 //!
@@ -88,8 +91,13 @@ pub struct SessionUser {
     /// Whether the user has the admin role. Trusted for the 60-minute
     /// cookie lifetime.
     pub is_admin: bool,
-    /// `jti` of the cookie that authenticated this request — handy for
-    /// `/dashboard/logout`, which revokes exactly this token.
+    /// `jti` of the cookie that authenticated this request.
+    ///
+    /// `/dashboard/logout` blacklists it as the record that this
+    /// credential was ended deliberately; what actually ends the
+    /// person's sessions is their [session
+    /// generation](mwe_core::jwt::end_all_sessions), which covers every
+    /// device at once.
     pub session_jti: String,
 }
 
@@ -129,12 +137,18 @@ impl AdminUser {
 }
 
 /// Build a fresh session JWT for `sender_id` with the given `is_admin`
-/// flag and the configured sliding TTL.
-fn build_session_claims(state: &DashboardState, sender_id: &str, is_admin: bool) -> TokenClaims {
+/// flag, session generation and the configured sliding TTL.
+fn build_session_claims(
+    state: &DashboardState,
+    sender_id: &str,
+    is_admin: bool,
+    generation: i64,
+) -> TokenClaims {
     let ttl =
         Duration::from_secs(u64::try_from(state.config.session_ttl_minutes * 60).unwrap_or(0));
     let mut claims = TokenClaims::new(sender_id, SESSION_DEVICE_LABEL, SESSION_RATE_LIMIT_ID, ttl);
     claims.is_admin = is_admin;
+    claims.session_gen = Some(generation);
     claims
 }
 
@@ -150,14 +164,48 @@ fn cookie_for_claims(state: &DashboardState, token: String) -> Cookie<'static> {
     cookie
 }
 
-/// Issue a fresh session JWT, sign it, and return the cookie ready
-/// to be added to a [`CookieJar`].
-pub fn issue_session_cookie(
+/// Issue a fresh session JWT for somebody who has just proved who they
+/// are, sign it, and return the cookie ready to be added to a
+/// [`CookieJar`].
+///
+/// Reads the sender's [session
+/// generation](mwe_core::jwt::session_generation) so the cookie is valid
+/// until their next "sign out everywhere" — every sign-in path goes
+/// through here, so none of them can forget to.
+///
+/// # Errors
+///
+/// The generation lookup failed, or the JWT could not be signed.
+pub async fn issue_session_cookie(
     state: &DashboardState,
     sender_id: &str,
     is_admin: bool,
 ) -> Result<Cookie<'static>, DashboardError> {
-    let claims = build_session_claims(state, sender_id, is_admin);
+    let generation = jwt::session_generation(&state.pool, sender_id)
+        .await
+        .map_err(DashboardError::Token)?;
+    mint_session_cookie(state, sender_id, is_admin, generation)
+}
+
+/// Sign a session cookie carrying an already-known generation.
+///
+/// Two callers, and both hold the right number rather than reading it:
+/// the sliding refresher carries forward the generation it has just
+/// verified — re-reading it would hand a fresh, valid cookie to a session
+/// that was signed out while its request was in flight — and a handler
+/// that has just ended every session of the person in front of it mints
+/// the one cookie that survives.
+///
+/// # Errors
+///
+/// The JWT could not be signed.
+pub fn mint_session_cookie(
+    state: &DashboardState,
+    sender_id: &str,
+    is_admin: bool,
+    generation: i64,
+) -> Result<Cookie<'static>, DashboardError> {
+    let claims = build_session_claims(state, sender_id, is_admin, generation);
     let token = jwt::issue(&state.secret, &claims).map_err(DashboardError::Token)?;
     Ok(cookie_for_claims(state, token))
 }
@@ -198,6 +246,21 @@ async fn verify_session(
     if claims.device_label != SESSION_DEVICE_LABEL {
         return Err(DashboardError::Unauthenticated);
     }
+    // "Sign out everywhere" is one number: a cookie minted before the
+    // sender last ended their sessions names a lower generation and is
+    // over, wherever it is being presented from. A cookie with no number
+    // at all reads as generation 0, which is where a user who has never
+    // ended their sessions still is.
+    //
+    // A failed lookup refuses the session, like every other step of this
+    // function: whether a credential is still good is not a question to
+    // answer optimistically when the answer is unavailable.
+    let current = jwt::session_generation(&state.pool, &claims.sender_id)
+        .await
+        .map_err(|_| DashboardError::Unauthenticated)?;
+    if claims.session_gen.unwrap_or(0) < current {
+        return Err(DashboardError::Unauthenticated);
+    }
     Ok(claims)
 }
 
@@ -218,6 +281,7 @@ pub async fn refresh_session_layer(
         is_admin: claims.is_admin,
         session_jti: claims.jti.clone(),
     };
+    let generation = claims.session_gen.unwrap_or(0);
     request.extensions_mut().insert(user.clone());
 
     // 2FA enforcement: a user obliged to have 2FA but not yet
@@ -237,13 +301,36 @@ pub async fn refresh_session_layer(
 
     let response = next.run(request).await;
 
-    match issue_session_cookie(&state, &user.sender_id, user.is_admin) {
+    // A handler that has decided about the session cookie has the last
+    // word. The refresher's `Set-Cookie` is appended *after* the
+    // handler's, and a browser keeps the last one it is given: without
+    // this, signing out handed the browser a cleared cookie and then a
+    // brand-new valid one, and the person stayed signed in.
+    if sets_session_cookie(&response) {
+        return response;
+    }
+
+    // Carried forward, not re-read: a session signed out while this
+    // request was in flight must not be handed a fresh cookie by the
+    // response to it.
+    match mint_session_cookie(&state, &user.sender_id, user.is_admin, generation) {
         Ok(fresh) => (jar.add(fresh), response).into_response(),
         Err(e) => {
             tracing::error!(error = %e, "failed to mint refreshed session cookie");
             response
         },
     }
+}
+
+/// Does this response already set the session cookie itself?
+fn sets_session_cookie(response: &Response) -> bool {
+    let prefix = format!("{SESSION_COOKIE_NAME}=");
+    response
+        .headers()
+        .get_all(axum::http::header::SET_COOKIE)
+        .iter()
+        .filter_map(|v| v.to_str().ok())
+        .any(|v| v.starts_with(&prefix))
 }
 
 /// Paths reachable while a user is trapped by 2FA enforcement: the setup
@@ -302,12 +389,24 @@ mod tests {
         )
     }
 
+    /// Enrol a user so the rows keyed on `enrollment_users` (the session
+    /// generation among them) have their referent.
+    async fn enrol(state: &DashboardState, user_id: &str) {
+        sqlx::query("INSERT OR IGNORE INTO enrollment_users (user_id) VALUES (?)")
+            .bind(user_id)
+            .execute(&state.pool)
+            .await
+            .expect("enrol");
+    }
+
     /// Issuing then verifying a session cookie roundtrips the
     /// `sender_id` and the admin flag.
     #[tokio::test]
     async fn issue_then_verify_roundtrips_claims() {
         let (state, _workdir) = make_state().await;
-        let cookie = issue_session_cookie(&state, "frodo", true).expect("issue");
+        let cookie = issue_session_cookie(&state, "frodo", true)
+            .await
+            .expect("issue");
 
         let jar = CookieJar::new().add(cookie);
         let claims = verify_session(&state, &jar).await.expect("verify");
@@ -324,7 +423,9 @@ mod tests {
     #[tokio::test]
     async fn revoked_session_fails_verify() {
         let (state, _workdir) = make_state().await;
-        let cookie = issue_session_cookie(&state, "frodo", true).expect("issue");
+        let cookie = issue_session_cookie(&state, "frodo", true)
+            .await
+            .expect("issue");
         let jar = CookieJar::new().add(cookie.clone());
 
         let claims = verify_session(&state, &jar).await.expect("first verify");
@@ -339,6 +440,54 @@ mod tests {
 
         let err = verify_session(&state, &jar).await.expect_err("must reject");
         assert!(matches!(err, DashboardError::Unauthenticated));
+    }
+
+    /// A session minted before the user ended their sessions is over,
+    /// wherever it is presented from — that is what makes signing out on
+    /// one device reach the others. A session minted after it is fine.
+    #[tokio::test]
+    async fn a_session_from_before_the_last_sign_out_is_refused() {
+        let (state, _workdir) = make_state().await;
+        enrol(&state, "frodo").await;
+        let old = issue_session_cookie(&state, "frodo", true)
+            .await
+            .expect("issue");
+        let jar = CookieJar::new().add(old);
+        verify_session(&state, &jar).await.expect("live before");
+
+        mwe_core::jwt::end_all_sessions(&state.pool, "frodo")
+            .await
+            .expect("end all");
+
+        let err = verify_session(&state, &jar).await.expect_err("must reject");
+        assert!(matches!(err, DashboardError::Unauthenticated));
+
+        let fresh = issue_session_cookie(&state, "frodo", true)
+            .await
+            .expect("issue");
+        let jar = CookieJar::new().add(fresh);
+        verify_session(&state, &jar)
+            .await
+            .expect("a session opened afterwards is not touched");
+    }
+
+    /// Another person's sign-out is not this person's: the generation is
+    /// per user.
+    #[tokio::test]
+    async fn one_users_sign_out_leaves_another_users_session_alone() {
+        let (state, _workdir) = make_state().await;
+        enrol(&state, "frodo").await;
+        enrol(&state, "samvise").await;
+        let cookie = issue_session_cookie(&state, "frodo", false)
+            .await
+            .expect("issue");
+        let jar = CookieJar::new().add(cookie);
+
+        mwe_core::jwt::end_all_sessions(&state.pool, "samvise")
+            .await
+            .expect("end all");
+
+        verify_session(&state, &jar).await.expect("still live");
     }
 
     /// A token that was not minted as a browser session — an MCP bearer

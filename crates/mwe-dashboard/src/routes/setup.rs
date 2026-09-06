@@ -161,7 +161,7 @@ pub async fn submit(
         );
     }
 
-    let cookie = issue_session_cookie(&state, admin_id, true)?;
+    let cookie = issue_session_cookie(&state, admin_id, true).await?;
     // Fresh admin → the LLM config page first. It is step 1 of onboarding:
     // the profile primer that follows calls `wiki_ingest_message` and needs
     // a usable ingest model, so the model is wired before the primer runs.

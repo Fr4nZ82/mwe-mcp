@@ -118,7 +118,7 @@ async fn redeem(
 
     // 5. No 2FA: mint the real sliding session cookie for the token's
     //    subject and redirect to the validated deep-link (token stripped).
-    let cookie = issue_session_cookie(&state, &claims.sender_id, claims.is_admin)?;
+    let cookie = issue_session_cookie(&state, &claims.sender_id, claims.is_admin).await?;
     Ok((jar.add(cookie), Redirect::to(&dest)).into_response())
 }
 

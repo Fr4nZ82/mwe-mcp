@@ -146,7 +146,7 @@ async fn submit(
 
     tracing::info!(user = %invitation.user_id, "invitation consumed; credentials set");
 
-    let cookie = issue_session_cookie(&state, &invitation.user_id, invitation.is_admin)?;
+    let cookie = issue_session_cookie(&state, &invitation.user_id, invitation.is_admin).await?;
     Ok((jar.add(cookie), Redirect::to("/dashboard/home")).into_response())
 }
 
