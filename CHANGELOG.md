@@ -490,6 +490,30 @@ and in the dashboard's session check. Eight migrations, `0068` through `0075`.
   consumer's credential, not a person's session, and they are revoked
   from the Tokens page.
 
+- **A link the server sends is never built from the browser's `Host`
+  header.** The password-reset email took its origin from that header
+  whenever the operator had not set one — and the header is chosen by
+  whoever sends the request, so anybody could make the reset link in
+  somebody else's inbox point at a machine of theirs. The invitation email
+  had the same fallback.
+
+  The address a deployment is reached at is now a key of its own,
+  `public_base_url`, at the top level of `mwe-mcp.config.yaml` — it is not
+  a property of the mail server, which is where it used to live, but of
+  the deployment, and three things need it. Validated where it is written
+  (`https://…`, `http://` only for a loopback host) and editable from
+  Settings → *Public address of this server*. **Without it the two emails
+  are not sent at all**: the forgot-password form says recovery is
+  unavailable, the invitation flash says the address is missing and hands
+  over the link, and the server says so at boot. `dashboard_link` answers
+  with a full address when the key is set and, as before, with a path for
+  the consumer to complete when it is not.
+
+  **Configuration change**: the key inside `email:` is still read when it
+  is the only one set, with a line at boot naming the new one; saving the
+  public address from the dashboard moves it up. There is no longer a
+  field for it in the Email section.
+
 ## 1.9.0 — 2026-08-02
 
 Recall was handing the model the wrong material and reaching the right page by

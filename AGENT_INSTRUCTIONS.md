@@ -117,10 +117,10 @@ For each MCP call the bot picks one of:
   notice**: drain `events_poll`, read `recipient_id` from the
   `structure_applied` payload, strip the `user:` prefix, and call
   `dashboard_link` with `X-MWE-Act-As: <that user>` — then hand that
-  human the link (e.g. on Telegram). The returned `url` is a single-use
-  **path** on the server, pointing at the notice's `dashboard_path`
-  where the receipt is read: prefix it with the operator's base URL
-  before you deliver it. On a `null` recipient, fall back to the
+  human the link (e.g. on Telegram). The returned `url` is single-use and
+  points at the notice's `dashboard_path` where the receipt is read: it
+  is a full address when the operator has declared the server's public
+  one, and a path to prefix with the operator's base URL when it is not. On a `null` recipient, fall back to the
   admin. A `fact_minted_for_you` notice routes the same way but is a
   **delivery, not a pointer**: its `facts[].body` array carries the
   content another user's turn minted for the recipient, so phrase and

@@ -167,9 +167,9 @@ def main():
         link = json.loads(provider.handle_tool_call("mwe_dashboard_link", {}))
         ok("dashboard link proxied",
            stub.calls("dashboard_link")[0]["arguments"]["intent"] == "home")
-        # The server mints the link as a path — it does not know the origin it
-        # is reached at. A path is not something a user can open from a phone,
-        # so the bridge puts the dashboard origin in front of it.
+        # The server mints the link as a path when its operator has not
+        # declared the address it is reached at. A path is not something a user
+        # can open from a phone, so the bridge puts the origin in front of it.
         ok("the minted link is an address, not a path",
            link["url"] == f"{origin}{minted['url']}", link["url"])
         stub.responses["dashboard_link"] = dict(

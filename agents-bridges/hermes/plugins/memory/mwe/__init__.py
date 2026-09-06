@@ -180,10 +180,11 @@ DISAMBIG_COMMITTED_LINE = (
 def _absolute_dashboard(value: str, origin: str) -> str:
     """A dashboard address the user can open, from what the server sends.
 
-    The server mints its dashboard links as **paths** (`/dashboard/auth/link?…`)
-    because it does not know the origin it is reached at; the bridge does, and
-    completes them. An address that already carries a scheme comes back as it
-    stands, and so does anything at all when there is no origin to hang it on.
+    The server mints a dashboard link as a **path** (`/dashboard/auth/link?…`)
+    whenever its operator has not declared the address it is reached at; the
+    bridge knows that address, and completes them. One that already carries a
+    scheme comes back as it stands, and so does anything at all when there is
+    no origin to hang it on.
     """
     value = (value or "").strip()
     if not value or not origin or "://" in value:

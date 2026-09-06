@@ -1,7 +1,8 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
-//! Admin-only editors for four YAML config sections: the ingest
-//! timezone (`recall.ingest_timezone`), the dream cadence
-//! (`rem.schedule`), `logging`, and the `document` pipeline resources.
+//! Admin-only editors for five YAML config keys: the server's public
+//! address (`public_base_url`), the ingest timezone
+//! (`recall.ingest_timezone`), the dream cadence (`rem.schedule`),
+//! `logging`, and the `document` pipeline resources.
 //!
 //! No page of their own: like [`super::email_settings`], each renders
 //! as an admin-only **section of the Settings page**
@@ -11,12 +12,12 @@
 //! (backup `.bak`, replace one section, atomic-write) and re-rendering
 //! the Settings page with a flash.
 //!
-//! Apply semantics differ per section and each form says so: the
-//! ingest timezone **hot-swaps** into the shared recall handle (next
-//! ingest turn, both transports); the dream cadence, logging, and the
-//! document pipeline are read once at boot, so their saves apply **at
-//! the next server restart** (the sibling of the Backup console's
-//! `initial_delay_secs`).
+//! Apply semantics differ per section and each form says so: the public
+//! address and the ingest timezone apply **immediately** (each is read
+//! from the file where it is used, so no restart and no shared handle);
+//! the dream cadence, logging, and the document pipeline are read once at
+//! boot, so their saves apply **at the next server restart** (the sibling
+//! of the Backup console's `initial_delay_secs`).
 
 use std::collections::HashMap;
 use std::fs;
@@ -45,6 +46,7 @@ use crate::ui::components;
 /// tree, next to the Settings page that embeds the forms.
 pub fn router() -> Router<DashboardState> {
     Router::new()
+        .route("/settings/public-address", post(save_public_address))
         .route("/settings/ingest-timezone", post(save_timezone))
         .route("/settings/dream-cadence", post(save_cadence))
         .route("/settings/logging", post(save_logging))
@@ -80,13 +82,58 @@ fn restart_note() -> Markup {
 
 // ---------- section markup ----------
 
-/// All four blocks, in the order the Settings page shows them.
+/// All five blocks, in the order the Settings page shows them.
 pub(super) fn sections(cfg: &Config) -> Markup {
     html! {
+        (public_address_section(cfg))
         (timezone_section(cfg.recall.ingest_timezone.as_deref()))
         (cadence_section(&cfg.rem.schedule))
         (logging_section(&cfg.logging))
         (document_section(&cfg.document))
+    }
+}
+
+fn public_address_section(cfg: &Config) -> Markup {
+    let current = cfg.public_base_url().unwrap_or_default();
+    html! {
+        section.public-address-settings {
+            h2 { "Public address of this server" }
+            p.muted {
+                "The address people reach this server at from outside — the "
+                code { "public_base_url" } " key. Three things are built on it and "
+                "none of them works without it: the password-reset link, the "
+                "invitation email, and the link an agent mints with "
+                code { "dashboard_link" } " so somebody can open their own memory. "
+                "The server never guesses it from the request: an address taken "
+                "from the browser's " code { "Host" } " header is one whoever sent "
+                "the request chose, and these links carry credentials. Leave it "
+                "blank and the two emails are not sent at all (the dashboard still "
+                "shows you the link to hand over), while " code { "dashboard_link" }
+                " answers with a path for the consumer to complete."
+            }
+            @if cfg.public_base_url_only_in_email() {
+                p.flash.flash-info {
+                    "This address is currently set inside the " strong { "email" }
+                    " section. It still works, and saving it here moves it to the "
+                    "key the whole server reads."
+                }
+            }
+            form action="/dashboard/settings/public-address" method="post" {
+                p {
+                    label for="public_base_url" { "Public base URL" }
+                    input id="public_base_url" name="public_base_url" type="text"
+                        value=(current)
+                        placeholder="https://memory.example";
+                }
+                p.muted {
+                    "Must start with " code { "https://" } " — "
+                    code { "http://" } " is accepted only for a loopback host "
+                    "(" code { "http://127.0.0.1:8742" } "), because a reset link "
+                    "over plain HTTP travels in clear. Applies immediately."
+                }
+                (components::submit("Save public address"))
+            }
+        }
     }
 }
 
@@ -388,6 +435,53 @@ const fn rotation_value(r: LogFileRotation) -> &'static str {
 }
 
 // ---------- POST handlers ----------
+
+/// Save the top-level `public_base_url`.
+///
+/// Written to the top-level key whatever the file had before, and the
+/// copy inside `email:` is cleared in the same save: two places holding
+/// an address is how one of them goes stale, and this one is the key the
+/// whole server reads.
+async fn save_public_address(
+    State(state): State<DashboardState>,
+    admin: AdminUser,
+    jar: CookieJar,
+    HtmlForm(form): HtmlForm<HashMap<String, String>>,
+) -> Result<Response> {
+    let raw = form
+        .get("public_base_url")
+        .map(|v| v.trim().to_owned())
+        .filter(|v| !v.is_empty());
+    if let Some(value) = raw.as_deref() {
+        mwe_core::config::check_public_base_url(value).map_err(|detail| {
+            DashboardError::Validation(format!("`{value}` is not a public address: {detail}"))
+        })?;
+    }
+
+    let workdir = workdir_of(&state)?;
+    let mut cfg = Config::load_raw(&workdir)
+        .map_err(|e| DashboardError::Internal(format!("config load: {e}")))?;
+    cfg.public_base_url = raw.as_ref().map(|v| v.trim_end_matches('/').to_owned());
+    cfg.email.public_base_url = None;
+    write_config(&workdir, &cfg)?;
+
+    tracing::info!(
+        admin = %admin.session().sender_id,
+        address = raw.as_deref().unwrap_or("(unset)"),
+        "server-settings: public address saved"
+    );
+    let msg = raw.map_or_else(
+        || {
+            "Public address cleared — recovery and invitation emails are not sent until one \
+             is set."
+                .to_owned()
+        },
+        |v| format!("Public address set to {v} — links are built on it from now on."),
+    );
+    let body =
+        super::settings::render_page(&state, admin.session(), &jar, None, Some(&msg)).await?;
+    Ok(body.into_response())
+}
 
 async fn save_timezone(
     State(state): State<DashboardState>,

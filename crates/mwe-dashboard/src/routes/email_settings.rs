@@ -1,6 +1,8 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 //! Admin-only editor for `<workdir>/mwe-mcp.config.yaml > email` — the
-//! SMTP backend that powers self-service password recovery.
+//! SMTP backend that powers self-service password recovery. The address
+//! the links inside those messages are built on is a key of its own —
+//! see [`super::server_settings`].
 //!
 //! No page of its own: the editor renders as an admin-only **section of
 //! the Settings page** (`/dashboard/settings/me`, [`super::settings`]),
@@ -179,19 +181,14 @@ fn email_form(cfg: &EmailConfig) -> Markup {
                             ") holding the SMTP password. Never the YAML."
                         }
                     }
-                    tr {
-                        td { label for="public_base_url" { "Public base URL (optional)" } }
-                        td {
-                            input id="public_base_url" name="public_base_url" type="text"
-                                value=(cfg.public_base_url.clone().unwrap_or_default())
-                                placeholder="https://mwe.example.com";
-                        }
-                        td.muted {
-                            "Origin used to build the reset link in the email. Blank → derived "
-                            "from the request host."
-                        }
-                    }
                 }
+            }
+            p.muted {
+                "The link inside these emails is built on the server's "
+                strong { "public address" } " — the section above. Without it "
+                "no recovery or invitation email is sent at all, because the "
+                "only other way to address the link would be the browser's own "
+                code { "Host" } " header."
             }
             p { button type="submit" { "Save email settings" } }
         }
@@ -215,7 +212,10 @@ async fn save(
     let workdir = workdir_of(&state)?;
     let mut cfg = Config::load_raw(&workdir)
         .map_err(|e| DashboardError::Internal(format!("config load: {e}")))?;
-    cfg.email = parsed;
+    cfg.email = EmailConfig {
+        public_base_url: cfg.email.public_base_url.clone(),
+        ..parsed
+    };
 
     write_config(&workdir, &cfg)?;
 
@@ -312,7 +312,10 @@ fn parse_form(form: &HashMap<String, String>) -> Result<EmailConfig> {
         from_name: val("from_name"),
         username: val("username"),
         password_env: val("password_env").unwrap_or(d.password_env),
-        public_base_url: val("public_base_url"),
+        // Not on this form: the server's public address is one key, and it
+        // is edited in its own section. Carried over from disk by the
+        // caller so a save here never drops a deployment that set it here.
+        public_base_url: None,
     })
 }
 

@@ -75,6 +75,21 @@ pub enum ConfigError {
         count: usize,
     },
 
+    /// `public_base_url` is not an address a link can be built on.
+    ///
+    /// The value ends up in an email somebody clicks, so a typo here is
+    /// a dead link in the one message that has to work. `http://` is
+    /// refused away from the loopback host for the same reason the
+    /// `Host` header is not consulted at all: a recovery link must not
+    /// travel in clear.
+    #[error("config public_base_url {value:?}: {detail}")]
+    InvalidPublicBaseUrl {
+        /// The offending value.
+        value: String,
+        /// What is wrong with it, in one clause.
+        detail: String,
+    },
+
     /// `logging.level` value was not one of the accepted choices.
     #[error("config logging.level {value:?}: expected `info` or `debug`")]
     InvalidLogLevel {
@@ -2006,9 +2021,9 @@ pub struct EmailConfig {
     /// time. Ignored when `username` is `None`.
     #[serde(default = "default_smtp_password_env")]
     pub password_env: String,
-    /// Public origin used to build the absolute reset link in the email
-    /// (e.g. `https://mwe.contea.casa`). `None` → derived from the
-    /// request `Host` + forwarded scheme at send time.
+    /// The deployment's public address, read only when the top-level
+    /// [`Config::public_base_url`] is unset — see it for what the value
+    /// means and how it is validated.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub public_base_url: Option<String>,
 }
@@ -2639,6 +2654,66 @@ impl InstanceConfig {
     }
 }
 
+// ---------- Public address ----------
+
+/// Is `raw` an address a link can be built on?
+///
+/// Returns the reason it is not, ready to be shown to whoever typed it
+/// — the config loader refuses the file with it, and the dashboard
+/// editor refuses the save.
+///
+/// The rules, and why each one:
+///
+/// - **A scheme, and only these two.** The value is pasted in front of
+///   `/dashboard/…` and handed to a person; anything else does not make
+///   an address.
+/// - **`http://` only on the loopback host.** A password-reset link is
+///   a credential in transit. `http://127.0.0.1:8742` is the documented
+///   first run and stays legal; `http://memory.example` is a link that
+///   travels in clear and is refused.
+/// - **A host after the scheme**, and no spaces anywhere.
+///
+/// A trailing `/` is accepted and trimmed by
+/// [`Config::public_base_url`]; a path prefix is kept, so a deployment
+/// served under `https://example/mwe` works.
+///
+/// # Errors
+///
+/// The reason the value cannot be used, as one clause.
+pub fn check_public_base_url(raw: &str) -> std::result::Result<(), String> {
+    let value = raw.trim();
+    if value.chars().any(char::is_whitespace) {
+        return Err("contains whitespace".to_owned());
+    }
+    let (scheme, rest) = value
+        .split_once("://")
+        .ok_or_else(|| "expected an address starting with `https://` or `http://`".to_owned())?;
+    let host = rest.split(['/', '?', '#']).next().unwrap_or_default();
+    if host.is_empty() {
+        return Err("expected a host after the scheme".to_owned());
+    }
+    match scheme {
+        "https" => Ok(()),
+        "http" if is_loopback_host(host) => Ok(()),
+        "http" => Err(format!(
+            "`http://` is only accepted for a loopback host (this one is `{host}`) — a link to              this address carries a password-reset credential in clear"
+        )),
+        other => Err(format!(
+            "`{other}://` is not an address a browser opens; use `https://`"
+        )),
+    }
+}
+
+/// Is this host the machine itself? `localhost`, the IPv4 loopback
+/// range and the IPv6 loopback, with or without a port.
+fn is_loopback_host(host: &str) -> bool {
+    let bare = host
+        .strip_prefix('[')
+        .and_then(|h| h.split_once(']').map(|(inner, _)| inner))
+        .unwrap_or_else(|| host.split(':').next().unwrap_or(host));
+    bare == "localhost" || bare == "::1" || bare.starts_with("127.")
+}
+
 // ---------- Config ----------
 
 /// Top-level config object.
@@ -2700,6 +2775,21 @@ pub struct Config {
     /// announces itself. See [`RemindersConfig`].
     #[serde(default)]
     pub reminders: RemindersConfig,
+    /// `public_base_url:` — the address this deployment is reached at
+    /// from outside, e.g. `https://memory.example`.
+    ///
+    /// Top level because it is not a property of the mail server, the
+    /// dashboard or the tool surface: it is where **this deployment**
+    /// lives, and three things need it — the password-reset link, the
+    /// invitation link, and the dashboard link `dashboard_link` mints
+    /// for a person to open.
+    ///
+    /// Read through [`Self::public_base_url`], which also honours the
+    /// same key inside `email:` for a deployment that set it there.
+    /// Validated at load: `https://…`, or `http://` only for a loopback
+    /// host.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub public_base_url: Option<String>,
     /// `rate_limits:` section — how many calls one token may make, per
     /// `rate_limit_id`. See [`RateLimitsConfig`].
     ///
@@ -2716,6 +2806,36 @@ pub struct Config {
 }
 
 impl Config {
+    /// The address this deployment is reached at from outside, without a
+    /// trailing slash — `None` when the operator has not declared one.
+    ///
+    /// The top-level `public_base_url` is the key; the same key inside
+    /// `email:` is read when it is the only one set, so a deployment
+    /// that declared its address there keeps working. Nothing derives
+    /// this from a request: an address taken from the `Host` header is
+    /// an address whoever sent the request chose, and the links built on
+    /// it are a password reset and a dashboard sign-in.
+    #[must_use]
+    pub fn public_base_url(&self) -> Option<String> {
+        self.public_base_url
+            .as_deref()
+            .or(self.email.public_base_url.as_deref())
+            .map(str::trim)
+            .filter(|s| !s.is_empty())
+            .map(|s| s.trim_end_matches('/').to_owned())
+    }
+
+    /// The address is declared only in the `email:` section — the
+    /// operator should move it up, and until they do the links keep
+    /// working.
+    ///
+    /// Answered here rather than warned about here, because the answer
+    /// is wanted once at boot and this type is loaded on many requests.
+    #[must_use]
+    pub const fn public_base_url_only_in_email(&self) -> bool {
+        self.public_base_url.is_none() && self.email.public_base_url.is_some()
+    }
+
     /// Absolute path of the on-disk config file in `workdir`.
     #[must_use]
     pub fn path_in(workdir: &Path) -> PathBuf {
@@ -2827,6 +2947,7 @@ impl Config {
                 path: path.to_path_buf(),
                 detail: format!("yaml: {e}"),
             })?;
+        Self::validate_public_base_url(&value)?;
         Self::validate_log_level(&value)?;
         Self::validate_log_file_rotation(&value)?;
         Self::validate_rem_schedule_mode(&value)?;
@@ -2844,6 +2965,34 @@ impl Config {
             });
         }
         Ok(cfg)
+    }
+
+    /// Both places a public address may be written are checked, so an
+    /// operator who set the older one inside `email:` is told about a
+    /// typo there too.
+    fn validate_public_base_url(value: &serde_yaml::Value) -> Result<()> {
+        let map = value.as_mapping();
+        let top = map.and_then(|m| m.get(serde_yaml::Value::String("public_base_url".into())));
+        let in_email = map
+            .and_then(|m| m.get(serde_yaml::Value::String("email".into())))
+            .and_then(serde_yaml::Value::as_mapping)
+            .and_then(|m| m.get(serde_yaml::Value::String("public_base_url".into())));
+        for candidate in [top, in_email].into_iter().flatten() {
+            let Some(raw) = candidate.as_str() else {
+                return Err(ConfigError::InvalidPublicBaseUrl {
+                    value: format!("{candidate:?}"),
+                    detail: "expected a string".to_owned(),
+                });
+            };
+            if raw.trim().is_empty() {
+                continue;
+            }
+            check_public_base_url(raw).map_err(|detail| ConfigError::InvalidPublicBaseUrl {
+                value: raw.to_owned(),
+                detail,
+            })?;
+        }
+        Ok(())
     }
 
     fn validate_log_level(value: &serde_yaml::Value) -> Result<()> {
@@ -4352,5 +4501,83 @@ mod tests {
         let raw = "rate_limits:\n  default:\n    calls_per_minute: 7\n";
         let cfg = Config::parse(Path::new("test.yaml"), raw).expect("parse");
         assert_eq!(cfg.rate_limits.profile("invented").calls_per_minute, 7);
+    }
+
+    /// The address a link is built on is validated where it is written:
+    /// `https://` anywhere, `http://` only on the machine itself.
+    #[test]
+    fn a_public_address_must_be_one_a_browser_can_open_safely() {
+        assert!(check_public_base_url("https://memory.example").is_ok());
+        assert!(check_public_base_url("https://memory.example/mwe").is_ok());
+        assert!(check_public_base_url("http://127.0.0.1:8742").is_ok());
+        assert!(check_public_base_url("http://localhost:8742").is_ok());
+        assert!(check_public_base_url("http://[::1]:8742").is_ok());
+
+        let err = check_public_base_url("http://memory.example").expect_err("plain http");
+        assert!(err.contains("loopback"), "{err}");
+        assert!(
+            check_public_base_url("memory.example").is_err(),
+            "no scheme"
+        );
+        assert!(check_public_base_url("ftp://memory.example").is_err());
+        assert!(check_public_base_url("https://").is_err(), "no host");
+        assert!(check_public_base_url("https://a b").is_err(), "whitespace");
+    }
+
+    /// The top-level key is the one the whole server reads; the copy
+    /// inside `email:` is read only when it is the only one there.
+    #[test]
+    fn the_top_level_public_address_outranks_the_one_in_the_email_section() {
+        let raw = "public_base_url: 'https://memory.example/'\n\
+                   email:\n  public_base_url: 'https://old.example'\n";
+        let cfg = Config::parse(Path::new("test.yaml"), raw).expect("parse");
+        assert_eq!(
+            cfg.public_base_url().as_deref(),
+            Some("https://memory.example"),
+            "the top-level key wins, and the trailing slash is trimmed"
+        );
+        assert!(!cfg.public_base_url_only_in_email());
+
+        let raw = "email:\n  public_base_url: 'https://old.example'\n";
+        let cfg = Config::parse(Path::new("test.yaml"), raw).expect("parse");
+        assert_eq!(
+            cfg.public_base_url().as_deref(),
+            Some("https://old.example"),
+            "a deployment that declared it in the email section keeps working"
+        );
+        assert!(
+            cfg.public_base_url_only_in_email(),
+            "and the operator is told to move it"
+        );
+
+        let cfg =
+            Config::parse(Path::new("test.yaml"), "logging:\n  level: info\n").expect("parse");
+        assert_eq!(cfg.public_base_url(), None);
+    }
+
+    /// A bad address is refused at load, in either place it can be
+    /// written — a typo here is a dead link in the one email that has to
+    /// work.
+    #[test]
+    fn a_bad_public_address_refuses_the_file() {
+        let err = Config::parse(
+            Path::new("test.yaml"),
+            "public_base_url: 'http://memory.example'\n",
+        )
+        .expect_err("must refuse");
+        assert!(
+            matches!(err, ConfigError::InvalidPublicBaseUrl { .. }),
+            "{err}"
+        );
+
+        let err = Config::parse(
+            Path::new("test.yaml"),
+            "email:\n  public_base_url: 'not-a-url'\n",
+        )
+        .expect_err("must refuse");
+        assert!(
+            matches!(err, ConfigError::InvalidPublicBaseUrl { .. }),
+            "{err}"
+        );
     }
 }

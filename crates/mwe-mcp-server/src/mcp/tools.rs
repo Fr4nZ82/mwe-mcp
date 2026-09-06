@@ -46,6 +46,21 @@ const DASHBOARD_DEVICE_LABEL: &str = "dashboard-session";
 /// `rate_limits:` profile they are held to, and the same name
 /// `mwe-dashboard::auth::session::SESSION_RATE_LIMIT_ID` mints.
 const DASHBOARD_RATE_LIMIT_ID: &str = mwe_core::config::DASHBOARD_RATE_LIMIT_ID;
+/// The address this deployment is reached at, when the operator has
+/// declared one (`public_base_url` in `mwe-mcp.config.yaml`).
+///
+/// Read from the file per call rather than held in [`McpState`]: a link
+/// is minted when a person asks for one, the dashboard's own editor
+/// writes the key, and reading it here means a change reaches the next
+/// link without a restart. `None` when no address is declared, or when
+/// the file cannot be read — a link that opens nowhere is worse than a
+/// path the consumer knows how to complete.
+fn public_base_url(state: &McpState) -> Option<String> {
+    mwe_core::config::Config::load(&state.workdir)
+        .ok()
+        .and_then(|c| c.public_base_url())
+}
+
 /// Sliding TTL the dashboard cookie middleware refreshes. We mint the
 /// initial link with the same length so the URL stamp matches the
 /// cookie behaviour the user will see after the first interaction.
@@ -2409,10 +2424,16 @@ pub(super) async fn call_dashboard_link(
         Some(seed) => format!("{path}?chat_seed={}", urlencode(seed)),
         None => path,
     };
-    let url = format!(
+    let path = format!(
         "/dashboard/auth/link?token={token}&next={}",
         urlencode(&next)
     );
+    // An address when the operator has declared one, a path when they
+    // have not. The consumer holding this hands it to a person, and it
+    // cannot know the origin either — a bridge completes a path against
+    // its own configured base URL, and leaves an address that already has
+    // a scheme exactly as it stands.
+    let url = public_base_url(state).map_or_else(|| path.clone(), |base| format!("{base}{path}"));
     let exp_iso = chrono::DateTime::<chrono::Utc>::from_timestamp(claims.exp, 0)
         .map(|d| d.to_rfc3339())
         .unwrap_or_default();

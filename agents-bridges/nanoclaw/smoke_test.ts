@@ -420,8 +420,9 @@ async function main(): Promise<void> {
   ok('the window keeps the newest, not the oldest', !lastWindow.some((m) => m.text === 'ciao, sono tornata'));
 
   // -- the dashboard link the agent offers is an address, not a path --------
-  // The memory mints it as a path: it does not know the origin it is reached
-  // at. What the agent puts in front of a person has to open from a phone.
+  // The memory mints it as a path when its operator has not declared the
+  // address it is reached at. What the agent puts in front of a person has to
+  // open from a phone.
   const link = await callMweTool('mwe_dashboard_link', {});
   ok('the link tool answers', !link.isError, link.text.slice(0, 160));
   const minted = JSON.parse(link.text) as { url: string };

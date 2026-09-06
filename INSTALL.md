@@ -198,7 +198,7 @@ Snapshot that one folder and you've backed up the whole memory.
 
 ## Hardening checklist
 
-The defaults are already conservative; production exposure adds six habits:
+The defaults are already conservative; production exposure adds seven habits:
 
 1. **Keep the bind on loopback** (both the exposure prompt and the
    non-interactive default resolve to `127.0.0.1:8742`) and expose the port
@@ -211,28 +211,41 @@ The defaults are already conservative; production exposure adds six habits:
    opaque `403` from the edge that looks like a revoked token but never
    reaches mwe-mcp at all. `/dashboard` is the browser surface; leave its
    filtering alone.
-2. **Once the dashboard is behind TLS, mark its cookies for HTTPS only.**
+2. **Tell the server the address people reach it at.** Set
+   `public_base_url` in `mwe-mcp.config.yaml` (or from Settings → *Public
+   address of this server*) to the address your tunnel or proxy publishes,
+   e.g. `https://memory.example`. Three things are built on it: the
+   password-reset link, the invitation email, and the link an agent mints
+   with `dashboard_link` so somebody can open their own memory. The server
+   never derives it from the request — an address taken from the browser's
+   `Host` header is one whoever sent the request chose, and these links
+   carry credentials — so **without it the two emails are not sent at
+   all** (the dashboard still shows you the link to hand over) and
+   `dashboard_link` answers with a path for the consumer to complete.
+   `https://` is required away from the machine itself; `http://` is
+   accepted only for a loopback host, which is the documented first run.
+3. **Once the dashboard is behind TLS, mark its cookies for HTTPS only.**
    Set `instance.cookie_secure: true` in `mwe-mcp.config.yaml` and
    restart: the session, reveal and 2FA cookies are then sent by the
    browser over HTTPS alone. It is off by default only because the first
    run is plain `http://127.0.0.1:8742`, where such a cookie would never
    come back.
-3. **Treat tokens as per-consumer credentials.** Mint one token per agent
+4. **Treat tokens as per-consumer credentials.** Mint one token per agent
    from the dashboard, scope it with its delegation list at mint time, and
    revoke it there the moment the consumer is retired. The signing secret
    lives in the workdir's `mwe-mcp.env` — it travels with backups, so backups
    inherit the workdir's confidentiality requirements.
-4. **Back up the workdir as one unit.** `engine.db` is the authoritative
+5. **Back up the workdir as one unit.** `engine.db` is the authoritative
    fact store — it is *not* rebuildable from the Markdown — so a backup is
    only valid when it snapshots **both halves together**. The dashboard's
    Backup console takes a hot snapshot of the whole workdir on demand; to
    restore, stop the server and put the snapshot back in place.
-5. **Mind who shares the machine.** Per-reader redaction happens at render
+6. **Mind who shares the machine.** Per-reader redaction happens at render
    time; the files are cleartext on disk. The workdir permission rules and
    the consumer co-location topology are in
    [`INTEGRATING.md`](INTEGRATING.md#deployment-security--where-to-run-the-consumer)
    — `mwe-mcp doctor` audits the current install and prints fixes.
-6. **Give a busy consumer its own ceiling.** Every token is already held to
+7. **Give a busy consumer its own ceiling.** Every token is already held to
    one: 120 calls a minute and 3 000 an hour, of which 30 a minute and 600 an
    hour may be the calls that run a model or an embedding (`wiki_ingest_message`,
    `wiki_ingest_external`, `wiki_navigate`, `wiki_search`, `recall_core_global`).

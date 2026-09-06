@@ -25,7 +25,6 @@
 
 use axum::Router;
 use axum::extract::{Path, State};
-use axum::http::HeaderMap;
 use axum::response::{Html, IntoResponse, Redirect, Response};
 use axum::routing::{get, post};
 use chrono::Utc;
@@ -302,7 +301,6 @@ async fn new_form(State(state): State<DashboardState>, admin: AdminUser) -> Html
 async fn new_submit(
     State(state): State<DashboardState>,
     admin: AdminUser,
-    headers: HeaderMap,
     axum::Form(form): axum::Form<NewUserSubmission>,
 ) -> Result<Response> {
     let chrome = layout::Chrome::of(&state);
@@ -398,23 +396,24 @@ async fn new_submit(
         }
     }
 
-    let emailed = deliver_invitation(&state, &headers, Some(email), &invitation_id);
+    let emailed = deliver_invitation(&state, Some(email), &invitation_id);
     let users = fetch_users(&state).await?;
     let ttl = state.config.invitation_ttl_hours;
-    let msg = emailed.map_or_else(
-        || {
-            format!(
-                "Created {user_id}. Share this single-use link \
-                 (expires in {ttl}h): /dashboard/accept-invite/{invitation_id}"
-            )
+    let link = format!("/dashboard/accept-invite/{invitation_id}");
+    let msg = match emailed {
+        Delivery::Sent(to) => format!(
+            "Created {user_id} and emailed the sign-in link to {to}. Backup single-use \
+             link (expires in {ttl}h): {link}"
+        ),
+        Delivery::LinkOnly => {
+            format!("Created {user_id}. Share this single-use link (expires in {ttl}h): {link}")
         },
-        |to| {
-            format!(
-                "Created {user_id} and emailed the sign-in link to {to}. Backup single-use \
-                 link (expires in {ttl}h): /dashboard/accept-invite/{invitation_id}"
-            )
-        },
-    );
+        Delivery::NoPublicAddress => format!(
+            "Created {user_id}, but the invitation email was not sent: set the server's \
+             public address in Settings first. Share this single-use link meanwhile \
+             (expires in {ttl}h): {link}"
+        ),
+    };
     Ok(Html(render_list(
         chrome,
         &users,
@@ -871,7 +870,6 @@ async fn delete(
 async fn reinvite(
     State(state): State<DashboardState>,
     admin: AdminUser,
-    headers: HeaderMap,
     Path(user_id): Path<String>,
 ) -> Result<Response> {
     let chrome = layout::Chrome::of(&state);
@@ -925,23 +923,20 @@ async fn reinvite(
 
     tracing::info!(actor = admin.sender_id(), user = %user_id, "dashboard regenerated invitation");
 
-    let emailed = deliver_invitation(&state, &headers, email.as_deref(), &invitation_id);
+    let emailed = deliver_invitation(&state, email.as_deref(), &invitation_id);
     let users = fetch_users(&state).await?;
     let ttl = state.config.invitation_ttl_hours;
-    let msg = emailed.map_or_else(
-        || {
-            format!(
-                "Fresh link for {user_id}: /dashboard/accept-invite/{invitation_id} \
-                 (expires in {ttl}h)"
-            )
+    let link = format!("/dashboard/accept-invite/{invitation_id}");
+    let msg = match emailed {
+        Delivery::Sent(to) => {
+            format!("Emailed a fresh sign-in link to {to}. Backup link (expires in {ttl}h): {link}")
         },
-        |to| {
-            format!(
-                "Emailed a fresh sign-in link to {to}. Backup link \
-                 (expires in {ttl}h): /dashboard/accept-invite/{invitation_id}"
-            )
-        },
-    );
+        Delivery::LinkOnly => format!("Fresh link for {user_id}: {link} (expires in {ttl}h)"),
+        Delivery::NoPublicAddress => format!(
+            "Fresh link for {user_id}: {link} (expires in {ttl}h). The email was not sent: \
+             set the server's public address in Settings first."
+        ),
+    };
     Ok(Html(render_list(
         chrome,
         &users,
@@ -951,24 +946,46 @@ async fn reinvite(
     .into_response())
 }
 
-/// Fire-and-forget the invitation email when SMTP is configured and the
-/// account has an address, returning the recipient so the caller can note
-/// it in the flash. The raw accept-invite link stays the source of truth
-/// (shown as a backup): a slow relay never blocks the response, and a send
-/// failure only logs — the admin can still hand the link over. Returns
-/// `None` (link-only) when email is off or the account has no address.
+/// What became of the invitation email.
+enum Delivery {
+    /// On its way to this address.
+    Sent(String),
+    /// Nothing was sent, and nothing is wrong: no SMTP backend, or the
+    /// account has no address. The link the admin hands over is the whole
+    /// delivery, as it is on a deployment that never configured email.
+    LinkOnly,
+    /// SMTP is configured, but the server does not know the address it is
+    /// reached at, so the link in the message would have to be built from
+    /// the request `Host` header. The admin is told, because this one is
+    /// a setting away from working.
+    NoPublicAddress,
+}
+
+/// Fire-and-forget the invitation email when SMTP is configured, the
+/// account has an address, and the server knows its own.
+///
+/// The raw accept-invite link stays the source of truth (shown as a
+/// backup): a slow relay never blocks the response, and a send failure
+/// only logs — the admin can still hand the link over.
 fn deliver_invitation(
     state: &DashboardState,
-    headers: &HeaderMap,
     email: Option<&str>,
     invitation_id: &str,
-) -> Option<String> {
-    let to = email.map(str::trim).filter(|e| !e.is_empty())?;
+) -> Delivery {
+    let Some(to) = email.map(str::trim).filter(|e| !e.is_empty()) else {
+        return Delivery::LinkOnly;
+    };
     let cfg = crate::email::email_cfg(state);
     if !cfg.is_sendable() {
-        return None;
+        return Delivery::LinkOnly;
     }
-    let origin = crate::email::origin_of(cfg.public_base_url.as_deref(), headers);
+    let Some(origin) = crate::email::public_origin(state) else {
+        tracing::warn!(
+            "invitation email not sent: no `public_base_url` in mwe-mcp.config.yaml, and a link \
+             built from the request `Host` header is one the requester chose"
+        );
+        return Delivery::NoPublicAddress;
+    };
     let url = format!("{origin}/dashboard/accept-invite/{invitation_id}");
     let to_owned = to.to_owned();
     let send_to = to_owned.clone();
@@ -977,7 +994,7 @@ fn deliver_invitation(
             tracing::warn!(error = %e, "invitation email send failed");
         }
     });
-    Some(to_owned)
+    Delivery::Sent(to_owned)
 }
 
 fn parse_aliases(raw: &str) -> Vec<String> {

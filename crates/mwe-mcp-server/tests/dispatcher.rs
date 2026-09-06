@@ -1056,6 +1056,33 @@ async fn dashboard_link_home_returns_signed_url() {
     assert!(out["token_expires_at"].as_str().unwrap().contains('T'));
 }
 
+/// With the server's public address declared, the same link comes back
+/// as an address a person can open — not a path somebody downstream has
+/// to complete.
+#[tokio::test]
+async fn dashboard_link_is_absolute_when_the_server_knows_its_own_address() {
+    let (state, identity, dir) = fixture(false, None).await;
+    std::fs::write(
+        dir.path().join("mwe-mcp.config.yaml"),
+        "public_base_url: 'https://memory.example/'\n",
+    )
+    .expect("write config");
+
+    let out = call(
+        &state,
+        &identity,
+        "dashboard_link",
+        json!({"intent": "home"}),
+    )
+    .await
+    .expect("link");
+    let url = out["url"].as_str().unwrap();
+    assert!(
+        url.starts_with("https://memory.example/dashboard/auth/link?token="),
+        "the declared address is the origin, with no doubled slash: {url}"
+    );
+}
+
 #[tokio::test]
 async fn dashboard_link_admin_only_intents_gated() {
     let (state, identity, _dir) = fixture(false, None).await;

@@ -613,19 +613,27 @@ fn seed_config_file(
         ..Default::default()
     };
     let mut yaml = serde_yaml::to_string(&config).context("serialising mwe-mcp.config.yaml")?;
-    yaml.push_str(RATE_LIMITS_TEMPLATE);
+    yaml.push_str(COMMENTED_KEYS);
     std::fs::write(path, yaml).with_context(|| format!("writing {}", path.display()))?;
     Ok(format!("wrote {}", path.display()))
 }
 
-/// The `rate_limits:` section as a worked example, commented out, appended
-/// to a freshly seeded config.
+/// The keys a fresh install has no value for, commented out at the foot
+/// of the seeded config.
 ///
-/// The ceilings bind whether or not the section is written, so this is not
-/// a switch that has to be turned on — it is the shape to copy when a
-/// consumer needs a different number from everybody else, and the place an
-/// operator finds out that a number exists at all.
-const RATE_LIMITS_TEMPLATE: &str = "\
+/// Not switches that have to be turned on — each has a working default —
+/// but the place an operator finds out that the key exists at all, with
+/// the shape to copy when they need it.
+const COMMENTED_KEYS: &str = "\
+# The address this server is reached at from outside. The password-reset
+# link, the invitation email and the link `dashboard_link` mints are built
+# on it, and none of them is derived from the request: an address taken
+# from a browser's `Host` header is one the requester chose. `https://`,
+# or `http://` only for a loopback host. Editable from the dashboard
+# Settings page.
+#
+# public_base_url: https://memory.example
+#
 # Per-token call ceilings, by the `rate_limit_id` a token carries
 # (`mwe-mcp token-issue --rate-limit-id`, default `default`). The values
 # below are the built-in ones and apply with the section absent; write a
@@ -1114,6 +1122,33 @@ async fn cmd_recall_eval(
         report.deviating_found(),
     );
     Ok(())
+}
+
+/// Say what the deployment's public address is, once, at boot.
+///
+/// Three things are built on it — the password-reset link, the invitation
+/// email and the link `dashboard_link` mints — and none of them is
+/// derived from a request header, so a server without one sends no mail
+/// and answers `dashboard_link` with a path. That is a working
+/// configuration for a household on loopback and a broken one for a
+/// deployment behind a tunnel, and only the operator can tell which they
+/// are: hence a line at boot rather than a refusal.
+fn warn_public_base_url(config: &Config) {
+    match config.public_base_url() {
+        None => warn!(
+            "no `public_base_url` in mwe-mcp.config.yaml: password-reset and invitation emails \
+             are not sent (their link would have to be built from the request `Host` header), \
+             and `dashboard_link` answers with a path for the consumer to complete. Set it from \
+             the dashboard Settings page or in the file"
+        ),
+        Some(url) if config.public_base_url_only_in_email() => warn!(
+            url,
+            "`public_base_url` is set inside the `email:` section: it is read, and it belongs at \
+             the top level, where every link the server builds looks for it. Saving the public \
+             address from the dashboard Settings page moves it"
+        ),
+        Some(_) => {},
+    }
 }
 
 /// HTTP transport. Same Axum process binds `/dashboard/*` (built-in
@@ -1660,6 +1695,7 @@ async fn cmd_serve_http(
     // Advisory perms check — fires in the bypass case and for a dedicated user
     // whose workdir is still group/world-reachable.
     warn_loose_workdir(workdir);
+    warn_public_base_url(config);
 
     let (state, dashboard_state) = bootstrap_state(workdir, config).await?;
     // The one gate the two dream loops and the dashboard's Dream console

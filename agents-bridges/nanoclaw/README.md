@@ -396,10 +396,10 @@ and nanoclaw rejects a plugin MCP server whose host reaches the container host
 The three explicit tools are registered on the container's own in-process MCP
 server instead, each acting as the person speaking.
 
-**What two of them answer.** The memory mints a dashboard link as a *path* — it
-does not know the origin it is reached at — so the host puts the dashboard
-origin in front of it and `mwe_dashboard_link` hands the agent an address a
-person can open. `mwe_disambig_commit` is an ingest like any other, so it
+**What two of them answer.** The memory mints a dashboard link as a *path*
+whenever its operator has not declared the address it is reached at, so the host
+puts the dashboard origin in front of it and `mwe_dashboard_link` hands the agent
+an address a person can open. `mwe_disambig_commit` is an ingest like any other, so it
 answers with the recall block for the message it just stored, in the same
 `<memory-context>` fence a turn arrives in, under one line saying it is stored;
 the response's operational fields never reach the agent.

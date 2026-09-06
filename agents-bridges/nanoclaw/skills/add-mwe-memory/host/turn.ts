@@ -103,12 +103,12 @@ function errorOf(err: unknown, actAs: string): MweResponse {
 /**
  * A dashboard address a person can open, from what the server sends.
  *
- * The server mints its dashboard links as **paths** (`/dashboard/auth/link?…`)
- * because it does not know the origin it is reached at. The host does — the
- * same origin the reverse channel hangs its notices on — so the host completes
- * them, and the container never has to hold one. An address that already names
- * its origin comes back as it stands, and so does anything at all when there
- * is no origin to hang it on.
+ * The server mints a dashboard link as a **path** (`/dashboard/auth/link?…`)
+ * whenever its operator has not declared the address it is reached at. The
+ * host knows that address — the same origin the reverse channel hangs its
+ * notices on — so the host completes them, and the container never has to hold
+ * one. One that already names its origin comes back as it stands, and so does
+ * anything at all when there is no origin to hang it on.
  */
 function absoluteDashboard(value: string, origin: string): string {
   const raw = value.trim();

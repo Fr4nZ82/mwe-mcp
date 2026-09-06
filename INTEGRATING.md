@@ -438,11 +438,12 @@ below directly.
    `recipient_id` (the addressed human — strip the `user:` prefix; `null`
    ⇒ operator/admin) and a `dashboard_path`; the agent mints a one-shot
    signed link with `dashboard_link` (acting as that human) and relays it —
-   *"I reorganized X — see it here: [link]"*. What comes back in `url` is
-   a **path on the server**, not a full address — the server does not know
-   the origin it is reached at — so prefix it with the operator's base URL
-   before the link reaches a person, the same rule as `dashboard_path`
-   above. A structural change is not undone: the person steers the memory
+   *"I reorganized X — see it here: [link]"*. What comes back in `url` is a
+   **full address** when the operator has declared the server's public one
+   (`public_base_url`), and a **path on the server** when they have not —
+   in that case prefix it with the base URL you reach the server at, the
+   same rule as `dashboard_path` above. A value that already carries a
+   scheme is handed on as it stands. A structural change is not undone: the person steers the memory
    by talking to it. **Cadence:**
    piggyback one poll
    on each user turn (in parallel with the ingest call) as the floor;

@@ -645,7 +645,7 @@ fn skill_fetch() -> Tool {
 fn dashboard_link() -> Tool {
     materialize(
         "dashboard_link",
-        "Mint a single-use URL into the built-in dashboard for the effective sender (G family). The consumer agent surfaces it as a button / inline link. Opening it burns the link and starts the browser session, so the same URL does not work twice; `base_ttl_seconds` is how long it stays redeemable.",
+        "Mint a single-use link into the built-in dashboard for the effective sender (G family). The consumer agent surfaces it as a button / inline link. `url` is a full address when the operator has declared the server's public one, and a path starting with `/dashboard/` when they have not — in that case prefix it with the base URL you reach this server at before handing it to a person. Opening it burns the link and starts the browser session, so the same link does not work twice; `base_ttl_seconds` is how long it stays redeemable.",
         json!({
             "type": "object",
             "required": ["intent"],

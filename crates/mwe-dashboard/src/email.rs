@@ -19,10 +19,10 @@
 //! request, and the raw link stays the source of truth if delivery fails.
 //!
 //! [`email_cfg`] loads the `email:` section from the workdir and
-//! [`origin_of`] resolves the public origin for the links carried in
-//! these messages; both are shared by every caller that mints one.
+//! [`public_origin`] answers the deployment's public address for the
+//! links carried in these messages; both are shared by every caller that
+//! mints one.
 
-use axum::http::HeaderMap;
 use lettre::message::Mailbox;
 use lettre::message::header::ContentType;
 use lettre::transport::smtp::AsyncSmtpTransport;
@@ -163,20 +163,21 @@ pub fn email_cfg(state: &DashboardState) -> EmailConfig {
         .unwrap_or_default()
 }
 
-/// Public origin for the link in an email: the configured override wins,
-/// else derived from the request `Host` + forwarded scheme.
+/// The address this deployment is reached at, for the links these
+/// messages carry — `None` when the operator has not declared one.
+///
+/// Nothing here reads the request. A link built from the `Host` header
+/// is a link whoever sent the request chose, and both messages that
+/// carry one hand over a credential: the reset link sets a password, the
+/// invitation link opens an account. So a deployment with no
+/// `public_base_url` sends no mail at all, and says so where the admin
+/// is looking.
 #[must_use]
-pub fn origin_of(configured: Option<&str>, headers: &HeaderMap) -> String {
-    if let Some(base) = configured {
-        return base.trim_end_matches('/').to_owned();
-    }
-    let host = headers
-        .get("host")
-        .and_then(|v| v.to_str().ok())
-        .unwrap_or("localhost:8742");
-    let proto = headers
-        .get("x-forwarded-proto")
-        .and_then(|v| v.to_str().ok())
-        .unwrap_or("http");
-    format!("{proto}://{host}")
+pub fn public_origin(state: &DashboardState) -> Option<String> {
+    state
+        .memory
+        .as_ref()
+        .map(|m| m.workdir.clone())
+        .and_then(|wd| Config::load(&wd).ok())
+        .and_then(|c| c.public_base_url())
 }

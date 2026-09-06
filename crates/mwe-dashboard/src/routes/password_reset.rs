@@ -19,11 +19,12 @@
 //!   account has open, then send the user to `/login` (no auto-sign-in,
 //!   so the next login re-runs any 2FA gate).
 //!
-//! The recovery email is sent only when the admin has configured and
-//! enabled the [`EmailConfig`] SMTP backend (the Email section of
-//! `/dashboard/settings/me`);
-//! otherwise the form explains that recovery is unavailable and the POST
-//! is inert.
+//! The recovery email is sent only when two things are set: the SMTP
+//! backend (the Email section of `/dashboard/settings/me`) and the
+//! server's `public_base_url`, which the link inside the message is built
+//! on. Missing either, the form explains that recovery is unavailable and
+//! the POST is inert — the link is never addressed from the request's own
+//! `Host` header, which is whatever the requester sent.
 
 use std::time::Duration as StdDuration;
 
@@ -34,7 +35,6 @@ use axum::response::{Html, IntoResponse, Response};
 use axum::routing::get;
 use chrono::{Duration, Utc};
 use maud::html;
-use mwe_core::config::EmailConfig;
 use serde::Deserialize;
 use uuid::Uuid;
 
@@ -64,8 +64,15 @@ fn rate_ok(key: &str) -> bool {
 // ---------- request (forgot password) ----------
 
 async fn request_form(State(state): State<DashboardState>) -> Html<String> {
-    let cfg = crate::email::email_cfg(&state);
-    Html(render_request_form(&cfg))
+    Html(render_request_form(recovery_available(&state)))
+}
+
+/// Can a recovery email actually be sent and opened? Both halves are
+/// needed: an SMTP backend to send it, and the server's public address to
+/// build the link on. Missing either, the form says recovery is
+/// unavailable instead of promising a message that never arrives.
+fn recovery_available(state: &DashboardState) -> bool {
+    crate::email::email_cfg(state).is_sendable() && crate::email::public_origin(state).is_some()
 }
 
 #[derive(Debug, Deserialize)]
@@ -93,6 +100,20 @@ async fn request_submit(
         // users that actually have a credential row (system/bot users do
         // not). A miss is silent — same response as a hit.
         if let Some(user_id) = lookup_user_by_email(&state, &addr).await? {
+            // No public address, no link: one built from the request
+            // `Host` header is one whoever sent the request chose, and
+            // this one sets a password. The answer below is the same
+            // either way (anti-enumeration), so the operator's own log is
+            // where this is visible — as it is on the Email settings
+            // section, which refuses to promise recovery without it.
+            let Some(origin) = crate::email::public_origin(&state) else {
+                tracing::error!(
+                    "password-reset: no `public_base_url` in mwe-mcp.config.yaml — the recovery \
+                     email is not sent, because the link in it would have to be built from the \
+                     request `Host` header"
+                );
+                return Ok(Html(render_request_sent()).into_response());
+            };
             let reset_id = Uuid::now_v7().to_string();
             let now = Utc::now();
             let expires = now + Duration::minutes(state.config.reset_ttl_minutes);
@@ -107,7 +128,6 @@ async fn request_submit(
             .execute(&state.pool)
             .await?;
 
-            let origin = crate::email::origin_of(cfg.public_base_url.as_deref(), &headers);
             let url = format!("{origin}/dashboard/reset-password/{reset_id}");
             tracing::info!(user = %user_id, "password-reset: link minted, emailing");
 
@@ -269,10 +289,10 @@ async fn lookup_live_reset(state: &DashboardState, token: &str) -> Result<Option
 
 // ---------- render ----------
 
-fn render_request_form(cfg: &EmailConfig) -> String {
+fn render_request_form(available: bool) -> String {
     let body = html! {
         h1 { "Forgot your password?" }
-        @if cfg.is_sendable() {
+        @if available {
             p.muted {
                 "Enter your account email and we'll send you a link to choose a new "
                 "password. The link expires shortly and can be used once."
