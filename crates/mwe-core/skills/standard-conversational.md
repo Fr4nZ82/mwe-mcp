@@ -13,10 +13,12 @@ status: implemented
 This skill defines the per-turn conversation loop for **standard
 consumers** — agents that do **not** bring their own subscription LLM
 budget and route every user turn through mwe-mcp's server-side
-`ingest` LLM slot. Concrete examples shipped today: openclaw (Telegram
-bridge), hermes (CLI), nanoclaw (containerised agent host). The same
-pattern applies to any future consumer that wants mwe-mcp to do the
-classification + recall + capture work for them.
+`ingest` LLM slot. Two hosts have a bridge today: **nanoclaw**, the
+ready-made assistant an operator installs when they have no agent of
+their own, and **hermes**, a plugin bridge for hermes-agent, whose
+Telegram gateway is where the conversation arrives. The same pattern
+applies to any other host that wants mwe-mcp to do the classification
++ recall + capture work for it.
 
 ## When this skill applies
 
@@ -192,12 +194,12 @@ via `wiki_admin_notify`. They cannot **write** — `wiki_admin_push` /
 `wiki_admin_pull` return `403 requires_consumer_class_smart`.
 
 Concrete scenario: Frodo says in Telegram "note this down: document the
-recovery codes in the MFA flow". openclaw (standard consumer) routes
+recovery codes in the MFA flow". hermes (standard consumer) routes
 that through `wiki_ingest_message` first. Ingest never targets a
 smart wiki: smart wikis are filtered out of the classifier's
 `available_wikis` window, so the capture lands in Frodo's standard
 personal memory, not the project's smart wiki. To get the note in
-front of the project's smart consumer, openclaw calls
+front of the project's smart consumer, hermes calls
 `wiki_admin_notify(wiki_id=frodo-lnprint, topic="recovery codes",
 body=<...>, source={kind: "user", ref: "telegram"})` — the item
 lands in `_briefing.md` and Frodo's smart consumer (Claude Code on
@@ -273,11 +275,9 @@ no pending tool calls. **During** an in-flight tool-use cycle
 calls; presentation of an event-driven dashboard URL chained from a
 previous turn), the history is sacred.
 
-This lesson cost real production bugs in the predecessor `mwe`
-deployment running under OpenClaw — truncation fired mid-cycle,
-orphaned the `tool_use`, and the LLM API rejection masked the actual
-underlying bug for hours. Configure your agent's truncation to be
-cycle-aware.
+An orphan-`tool_use` rejection also masks what went wrong underneath:
+the error names the orphan, not whatever the turn was really failing
+at. Configure your agent's truncation to be cycle-aware.
 
 ### Keep `recent_messages` short
 

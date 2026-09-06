@@ -518,8 +518,8 @@ whether the user's question has anything to do with it.
 smart wiki. It is the **inbox** through which the rest of the
 mwe-mcp ecosystem talks to the smart consumer: REM's Briefing
 dispatcher drops stale-draft and recall-hot observations there,
-openclaw forwards user observations from chat there, and shared-with
-team members notify there too.
+a standard consumer forwards user observations from chat there, and
+shared-with team members notify there too.
 
 ### Read at session start
 
@@ -535,7 +535,7 @@ unread items to the user **before** discussing any other topic:
 >    *`status: draft` since 2026-05-08. Promote it, supersede it, or*
 >    *archive it?*
 >
-> *2. (openclaw, 2026-05-24 18:02) Frodo via Telegram: "note this down:*
+> *2. (hermes, 2026-05-24 18:02) Frodo via Telegram: "note this down:*
 >    *document the recovery codes in the MFA flow."*
 >
 > *3. (bob @lnprint-devs, 2026-05-25 09:30) "the MFA flow I updated in*
@@ -579,7 +579,7 @@ warrants it:
 
 | `kind` | Meaning | Typical sources |
 |---|---|---|
-| `observation` | A factual delta the user or a peer noticed | openclaw forwards; team notifies via `shared_with` |
+| `observation` | A factual delta the user or a peer noticed | a standard consumer forwards; team notifies via `shared_with` |
 | `reasoning` | An inference REM made (stale draft, recall-hot section, dedup candidate) | Briefing dispatcher, dedup-source |
 | `external` | A reference outside the wiki that the user wants tied in | Citations from chat, links from the dashboard |
 
@@ -640,8 +640,8 @@ paths differently:
 When a fresh token arrives, the next `smart_bootstrap` does:
 
 1. `wiki_admin_pull` first — absorbs any `_briefing.md` items that
-   landed in the gap (REM Briefing dispatcher findings, openclaw
-   forwards, team notifications via `shared_with`).
+   landed in the gap (REM Briefing dispatcher findings,
+   standard-consumer forwards, team notifications via `shared_with`).
 2. Diff pulled state vs the local mirror (`state.local_wiki_root`).
 3. Replay queued local edits with `wiki_admin_push mode: upsert` (one
    push per page that diverged locally). Optimistic concurrency via

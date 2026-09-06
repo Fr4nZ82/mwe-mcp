@@ -259,7 +259,7 @@ async fn view_briefing(
 
         p.muted {
             "This is the inbox channel — REM's Briefing dispatcher, "
-            "openclaw forwards and shared-with "
+            "standard-consumer forwards and shared-with "
             "team notifications all land here. The smart consumer reads "
             "it at session start and archives items into " code { "_briefing.archive.md" }
             " on action."
