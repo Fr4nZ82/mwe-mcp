@@ -31,9 +31,10 @@ What changes for an agent in a group carrying the `mwe` plugin:
 - **No session is carried between turns.** Each turn opens a fresh provider
   query whose conversational context is the recent window plus the recall
   block, so nothing ever needs compacting and no summary is ever written.
-- **The memory can start a conversation.** When it stores something that
+- **The memory can start a conversation, once.** When it stores something that
   belongs to somebody else, or a commitment comes due, the agent delivers it
-  to that person's own chat.
+  to that person's own chat — everything waiting for one person in one round
+  as a single message, and never interrupted halfway by somebody writing in.
 
 Everything else NanoClaw gives an agent — chat, the web, its own container,
 scheduled tasks — is untouched.

@@ -77,6 +77,32 @@ const DOCUMENT_PROMOTED_LINE =
   'again. The reading finishes in the background — do not go looking for it this turn.';
 
 /**
+ * How close a voting deadline has to be before the agent brings it up.
+ *
+ * The voting window is seven days (`VOTE_WINDOW`, `crates/mwe-core/src/votes.rs`)
+ * and the block rides every turn for all of it. A person does not want to be
+ * asked about the same vote for a week, and they do not want to discover it
+ * after silence has already counted as consent — so it is raised in the last
+ * day and left alone before that. The founder set the day.
+ */
+const VOTE_REMINDER_WINDOW_MS = 24 * 60 * 60 * 1000;
+
+/**
+ * Milliseconds until the nearest deadline among the requests, or `undefined`
+ * when none of them carries one that parses.
+ */
+function soonestDeadlineIn(requests: PendingVoteRequest[]): number | undefined {
+  let soonest: number | undefined;
+  for (const request of requests) {
+    const parsed = Date.parse((request.deadline ?? '').trim());
+    if (Number.isNaN(parsed)) continue;
+    const remaining = parsed - Date.now();
+    if (soonest === undefined || remaining < soonest) soonest = remaining;
+  }
+  return soonest;
+}
+
+/**
  * The framing for `pending_votes`: somebody asked the memory to forget a fact
  * this person is part of, and their vote is still missing.
  *
@@ -84,11 +110,13 @@ const DOCUMENT_PROMOTED_LINE =
  * line hands over what is waiting and points at the dashboard. The request
  * names the fact by id only, so the agent is told not to invent its words.
  *
- * The block rides every turn until the vote is cast or the window closes, and
- * nothing server-side records that the agent mentioned it. The line therefore
- * carries its own cadence: raise it, then let the thread be the proof it was
- * raised — a reminder repeated on every message until the window closes is the
- * notification voice this product does not use.
+ * **When to say it is decided here, not by the model.** The block rides every
+ * turn until the vote is cast or the window closes, so the line has to carry
+ * its own cadence; and the clock is the bridge's to read, not something to
+ * hand a model as two timestamps to subtract. Inside
+ * [`VOTE_REMINDER_WINDOW_MS`] of the nearest deadline the agent is told to
+ * raise it; outside, to leave it alone unless the person asks — the block
+ * stays either way, so a direct question still has an answer.
  */
 function pendingVotesLine(block: PendingVotes): string {
   const requests = block.requests ?? [];
@@ -105,12 +133,21 @@ function pendingVotesLine(block: PendingVotes): string {
     const deadline = (request.deadline ?? '').trim();
     lines.push(`- asked by ${requester}${deadline ? `, open until ${deadline}` : ''}`);
   }
+  // A deadline nothing can read is treated as due: raising a vote a day early
+  // costs a sentence, and missing it costs the fact, because silence consents.
+  const remaining = soonestDeadlineIn(requests);
+  const due = remaining === undefined || remaining <= VOTE_REMINDER_WINDOW_MS;
   lines.push(
-    'Tell them what is waiting and offer them the link from mwe_dashboard_link: the vote is cast ' +
-      `on the dashboard${path ? `, under ${path},` : ''} and nowhere else. The request does not ` +
-      'carry the fact\'s own words — do not guess them. Saying nothing until the deadline is ' +
-      'consent and the fact is forgotten; it takes enough noes to keep it. This rides every turn ' +
-      'until they vote: if the thread above shows you raising it already, do not raise it again.',
+    due
+      ? 'The deadline is within a day, so raise it this turn: tell them what is waiting and offer ' +
+          `them the link from mwe_dashboard_link — the vote is cast on the dashboard${
+            path ? `, under ${path},` : ''
+          } and nowhere else. The request does not carry the fact's own words — do not guess them. ` +
+          'Saying nothing until the deadline is consent and the fact is forgotten; it takes enough ' +
+          'noes to keep it.'
+      : 'The deadline is still more than a day away: do not bring this up. Answer it only if they ' +
+          'ask about their votes, and then offer the link from mwe_dashboard_link — the vote is ' +
+          `cast on the dashboard${path ? `, under ${path},` : ''} and nowhere else.`,
   );
   return lines.join('\n');
 }

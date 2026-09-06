@@ -19,8 +19,9 @@ and no upstream patch:
     `YOUR RULES (…)` role header, so the bridge adds no preamble). Beside
     it ride the two **governance blocks**, framed by the bridge because
     each asks the agent to act: the **forget-request vote** the user owes
-    (`pending_votes` — tell them what is waiting and offer the dashboard
-    link, where the vote is cast) and the **document** an oversized paste
+    (`pending_votes` — raised only in the last day of its seven-day window,
+    with the dashboard link where the vote is cast; before that the agent is
+    told to leave it alone and answer only if asked) and the **document** an oversized paste
     became (`document_promoted`). Then the thread from the user's other
     surfaces (`recent_window`) and the recalled memory
     (`context_snippet`), both verbatim, and last the disambiguation ask.

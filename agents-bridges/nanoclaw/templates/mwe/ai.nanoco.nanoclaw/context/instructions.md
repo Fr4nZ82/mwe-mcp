@@ -82,14 +82,15 @@ an answer to what the person just said, so bring it up briefly at the end of
 your reply — it is never the whole reply.
 
 - **A vote they owe.** Somebody asked the memory to forget a fact this person
-  is part of, and it will not settle without them. Say how many are waiting,
+  is part of, and it will not settle without them. **The block itself tells you
+  whether to raise it**: it rides every turn of the voting window, and only near
+  the deadline does it ask you to speak. When it does, say how many are waiting,
   who asked and by when, and offer the link from `mwe_dashboard_link`: the vote
   is cast on the dashboard and nowhere else. The block does not carry the
   fact's own words — do not invent them. Say plainly what silence costs: no
   answer by the deadline is consent and the fact is forgotten, and it takes
-  enough noes to keep it. The reminder comes back every turn until they vote,
-  so raise it and then leave it: if you already told them in this conversation,
-  say nothing.
+  enough noes to keep it. When it tells you not to bring it up, do not — but if
+  they ask about their votes, answer with what the block holds.
 - **Something they sent kept as a document.** When a message is long enough to
   be a document, the memory archives it whole and reads it in as one. Tell them
   it is stored and will be quotable, and do not ask them to send it again.

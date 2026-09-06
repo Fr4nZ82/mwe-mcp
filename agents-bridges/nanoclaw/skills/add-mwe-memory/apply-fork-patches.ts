@@ -25,7 +25,11 @@ interface Patch {
   /** Exact upstream text this patch keys on. */
   anchor: string;
   /** What the anchor becomes. Carries an `// mwe:` comment so a reader of the
-   * fork can see at a glance which lines are the bridge's. */
+   * fork can see at a glance which lines are the bridge's.
+   *
+   * Both fields are template literals, so a backtick in the code or in a
+   * comment has to be escaped (`\``) — an unescaped one ends the literal and
+   * the file stops parsing. */
   replacement: string;
 }
 
@@ -133,7 +137,7 @@ import type { AgentGroup } from './types.js';`,
     file: POLL_LOOP,
     anchor: `import type { AgentProvider, AgentQuery, ProviderEvent, ProviderExchange } from './providers/types.js';`,
     replacement: `import type { AgentProvider, AgentQuery, ProviderEvent, ProviderExchange } from './providers/types.js';
-import { beginTurn, endTurn } from './mwe/turn.js'; // mwe: the per-turn contract
+import { beginTurn, endTurn, mayEndForFollowUp } from './mwe/turn.js'; // mwe: the per-turn contract
 import { mweStateless } from './mwe/active.js';
 import { clearWindow } from './mwe/window.js';`,
   },
@@ -205,7 +209,13 @@ import { clearWindow } from './mwe/window.js';`,
         // It sits here, after the poller has found a real trigger=1 follow-up,
         // and not at the top: asked earlier it would fire on the poller's own
         // schedule and end every turn before the agent had written a word.
+        //
+        // mayEndForFollowUp() is what says no: a turn carrying the memory's own
+        // delivery instructions must not be dropped, because nothing stores one
+        // and the daemon acked it when it enqueued it. The follow-up is still
+        // pending when the turn ends, so it costs one turn's wait.
         if (mweStateless()) {
+          if (!mayEndForFollowUp()) return;
           log('mwe: follow-up arrived — ending this query so the next turn gets its own ingest and recall');
           endedForCommand = true;
           query.abort();

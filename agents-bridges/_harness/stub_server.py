@@ -48,6 +48,7 @@ import email.policy
 import json
 import os
 import threading
+from datetime import datetime, timedelta, timezone
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 # Mirrors the wire payload of `call_wiki_ingest_message`
@@ -82,13 +83,21 @@ DEFAULT_RESPONSES = {
 # vote on a request to forget a fact they are part of. Voting is a dashboard
 # action, so the block carries where to go, not a way to vote from here — and
 # no fact text, only its id.
+#
+# The deadline is relative because a bridge reads it against the clock to
+# decide whether to raise the vote at all: a fixed date would drift out of the
+# window it is meant to sit inside and quietly test the other branch.
+PENDING_VOTES_DEADLINE = (
+    datetime.now(timezone.utc) + timedelta(hours=6)
+).isoformat().replace("+00:00", "Z")
+
 PENDING_VOTES = {
     "count": 1,
     "requests": [{
         "proposal_id": "p-forget-1",
         "fact_id": "f-2026-06-12-0001",
         "requester": "bob",
-        "deadline": "2026-06-19T09:00:00Z",
+        "deadline": PENDING_VOTES_DEADLINE,
         "dashboard_path": "/dashboard/proposals/p-forget-1/open-in-chat",
     }],
     "dashboard_path": "/dashboard/proposals",

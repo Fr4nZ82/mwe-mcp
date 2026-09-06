@@ -76,30 +76,67 @@ describe('the recall block', () => {
     expect(block).not.toContain('risposta pronta');
   });
 
+  /** A deadline `hours` from now, in the RFC 3339 the server sends. */
+  const deadlineIn = (hours: number): string => new Date(Date.now() + hours * 3_600_000).toISOString();
+
   it('hands over the owed vote: what is waiting, where it is cast, what silence costs', () => {
     const block = renderRecallBlock({
       context_snippet: 'RELEVANT MEMORY\nnothing much',
       pending_votes: {
         count: 1,
-        requests: [{ requester: 'bob', deadline: '2026-06-19T09:00:00Z' }],
+        requests: [{ requester: 'bob', deadline: deadlineIn(6) }],
         // The host completes the page before the container sees it, so this is
         // the shape that actually arrives.
         dashboard_path: 'https://memory.example/dashboard/proposals',
       },
     });
     expect(block).toContain('1 open request');
-    expect(block).toContain('asked by bob, open until 2026-06-19T09:00:00Z');
+    expect(block).toContain('asked by bob, open until ');
     expect(block).toContain('mwe_dashboard_link');
     expect(block).toContain('https://memory.example/dashboard/proposals');
     expect(block).toContain('Saying nothing until the deadline is consent');
     // The block names the fact by id: an agent that fills the gap in would be
     // telling the person what somebody wants forgotten, invented.
     expect(block).toContain('do not guess them');
-    // The reminder rides every turn until the vote is cast: the agent raises
-    // it and then leaves it, rather than repeating it on every message.
-    expect(block).toContain('do not raise it again');
+    // Six hours out is inside the day: this is the turn to speak.
+    expect(block).toContain('The deadline is within a day, so raise it this turn');
     // Governance is not memory: it rides with the rules, ahead of the facts.
     expect(block.indexOf('waiting on this person')).toBeLessThan(block.indexOf('RELEVANT MEMORY'));
+  });
+
+  it('keeps quiet about a vote whose deadline is days away', () => {
+    // The window is seven days and the block rides every turn of it. Raising
+    // it on all of them is the notification voice this product does not use;
+    // raising it in the last day is a person remembering something for you.
+    const block = renderRecallBlock({
+      pending_votes: {
+        count: 1,
+        requests: [{ requester: 'bob', deadline: deadlineIn(5 * 24) }],
+        dashboard_path: 'https://memory.example/dashboard/proposals',
+      },
+    });
+    expect(block).toContain('The deadline is still more than a day away: do not bring this up');
+    expect(block).not.toContain('raise it this turn');
+    // It is still there to answer a direct question with, and the link with it.
+    expect(block).toContain("waiting on this person's vote");
+    expect(block).toContain('https://memory.example/dashboard/proposals');
+  });
+
+  it('speaks when the nearest of several deadlines is close, not when the last is', () => {
+    const block = renderRecallBlock({
+      pending_votes: {
+        count: 2,
+        requests: [{ requester: 'bob', deadline: deadlineIn(5 * 24) }, { requester: 'carol', deadline: deadlineIn(3) }],
+      },
+    });
+    expect(block).toContain('The deadline is within a day, so raise it this turn');
+  });
+
+  it('treats a deadline it cannot read as due — a missed vote costs the fact', () => {
+    const block = renderRecallBlock({
+      pending_votes: { count: 1, requests: [{ requester: 'bob', deadline: 'whenever' }] },
+    });
+    expect(block).toContain('The deadline is within a day, so raise it this turn');
   });
 
   it('says a long paste became a document, and not to go looking for it', () => {
@@ -167,7 +204,7 @@ describe('the answer a disambiguation commit gives', () => {
     const answer = renderCommitAnswer({
       pending_votes: {
         count: 1,
-        requests: [{ requester: 'bob', deadline: '2026-06-19T09:00:00Z' }],
+        requests: [{ requester: 'bob', deadline: new Date(Date.now() + 3_600_000).toISOString() }],
         dashboard_path: 'https://memory.example/dashboard/proposals',
       },
     });

@@ -16,7 +16,7 @@ const read = (file: string): string => fs.readFileSync(file, 'utf-8');
 describe('the fork carries the mwe reach-ins', () => {
   it('runs the per-turn contract before the provider query', () => {
     const pollLoop = read('container/agent-runner/src/poll-loop.ts');
-    expect(pollLoop).toContain("import { beginTurn, endTurn } from './mwe/turn.js'");
+    expect(pollLoop).toContain("import { beginTurn, endTurn, mayEndForFollowUp } from './mwe/turn.js'");
     expect(pollLoop).toContain('await beginTurn(keep, formatMessagesWithCommands(');
     expect(pollLoop).toContain('await endTurn(event.text);');
   });
@@ -36,12 +36,15 @@ describe('the fork carries the mwe reach-ins', () => {
 
   it('ends the query for a follow-up, and only when there is one', () => {
     const pollLoop = read('container/agent-runner/src/poll-loop.ts');
-    // The guard sits AFTER the poller has decided there is a real trigger=1
-    // follow-up to push. Placement is the whole behaviour: a guard that asked
-    // `mweStateless()` on its own would fire on the poller's own 500ms
-    // schedule and end every turn before the agent wrote a word, so the
-    // ordering is asserted and the short-circuit form is denied.
-    const guard = pollLoop.indexOf('if (mweStateless()) {\n          log(\'mwe: follow-up arrived');
+    // Two things decide whether a query ends, and both are asserted here.
+    // Placement: the guard sits AFTER the poller has found a real trigger=1
+    // follow-up — asked on its own it would fire on the poller's own 500ms
+    // schedule and end every turn before the agent wrote a word. And the
+    // question it asks is `mayEndForFollowUp()`, which says no while the turn
+    // is carrying the memory's delivery instructions: nothing stores one, and
+    // the daemon acked it when it enqueued it, so what the turn has not spoken
+    // yet cannot be given back.
+    const guard = pollLoop.indexOf('if (!mayEndForFollowUp()) return;');
     const decided = pollLoop.indexOf('if (!newMessages.some((m) => m.trigger === 1)) return;');
     expect(guard).toBeGreaterThan(-1);
     expect(decided).toBeGreaterThan(-1);

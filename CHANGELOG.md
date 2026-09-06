@@ -87,6 +87,17 @@ and in the dashboard's session check. Eight migrations, `0068` through `0075`.
 
 ### Changed
 
+- **A forget-request vote is raised near its deadline, not every turn.** The
+  `pending_votes` block rides every turn of its seven-day window, and both
+  bridges told the agent to raise it once and then judge from the thread
+  whether it had. That is a week of a reminder the agent has to keep deciding
+  about. Each bridge now reads the clock itself — the nearest deadline among
+  the listed requests — and tells the agent to speak only inside the **last
+  day**, and to leave it alone before that. The block stays in the prompt
+  either way, so somebody who asks about their votes still gets an answer, and
+  a deadline the bridge cannot parse counts as due: raising a vote early costs
+  a sentence, missing it costs the fact, because silence is consent.
+
 - **BREAKING — the per-fragment ACL axis is named `subject`, after what it
   actually holds.** The field saying *who or what a fact is about* had been
   called `owner` since the first commit — one of the three that decide who may
@@ -258,6 +269,19 @@ and in the dashboard's session check. Eight migrations, `0068` through `0075`.
   `conversations/`. **The agent's name is now the memory's**: NanoClaw's
   configured name is not injected, so anybody it serves can tell it what to be
   called, in chat, and it holds.
+
+- **A backlog of memory notices arrives, and arrives once.** The reverse
+  channel enqueued one chat message per notice, so an agent catching up after
+  an outage delivered eight of them in the same second — a burst of alerts
+  rather than somebody who remembers. Everything waiting for the same person in
+  one round is now composed into a **single** delivery, each item keeping its
+  own source and its own link, and acked as a group; two people's notices stay
+  two deliveries, and the operator's daily recap stays separate. The same
+  batching closes a hole beside it: a delivery instruction is stored nowhere
+  and is acked to the server the moment it is enqueued, so a turn ended halfway
+  through a batch of them lost the rest. **A turn carrying notices is no longer
+  interrupted** — somebody writing in mid-delivery waits that turn out and is
+  served next, with an ingest and a recall block of their own.
 
 - **The Users page says where an agent is created.** The "new user" form needs
   an email because it makes a person who signs in; a bot has neither. It now

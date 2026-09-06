@@ -14,12 +14,18 @@ hermes-agent checkout with the engine symlinked in (smoke.sh sets both).
 import json
 import os
 import sys
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 BRIDGE = Path(__file__).resolve().parent
 sys.path.insert(0, str(BRIDGE.parent / "_harness"))
 
-from stub_server import DOCUMENT_PROMOTED, PENDING_VOTES, StubMwe  # noqa: E402
+from stub_server import (  # noqa: E402
+    DOCUMENT_PROMOTED,
+    PENDING_VOTES,
+    PENDING_VOTES_DEADLINE,
+    StubMwe,
+)
 
 HOME = Path(os.environ["HERMES_HOME"])
 PASSED = 0
@@ -239,7 +245,7 @@ def main():
         ok("the owed vote reaches the agent",
            "waiting on this user's vote" in block and "1 open request" in block)
         ok("the vote line names who asked and by when",
-           "asked by bob" in block and "2026-06-19T09:00:00Z" in block)
+           "asked by bob" in block and PENDING_VOTES_DEADLINE in block)
         # The page is named as an address, for the same reason the minted link
         # is: what the agent puts in front of a person has to be openable.
         ok("the vote line sends the user to the dashboard, the only place to vote",
@@ -249,8 +255,33 @@ def main():
         ok("the vote line carries the consent rule and forbids inventing the fact",
            "Saying nothing until the deadline is consent" in block
            and "do not guess them" in block)
-        ok("the reminder is raised once, not repeated on every message",
-           "do not raise it again" in block)
+        # The window is seven days and the block rides every turn of it; the
+        # last day is when it asks to be spoken, and the plugin reads the
+        # clock rather than handing the model two timestamps to subtract.
+        ok("the vote is raised because its deadline is inside the day",
+           "The deadline is within a day, so raise it this turn" in block
+           and "do not bring this up" not in block)
+        # The other side of the threshold, on the same code path: a vote five
+        # days out is not something to bring up. It stays in the block so a
+        # user who asks about their votes still gets an answer — what changes
+        # is whether the agent volunteers it.
+        # Reached through the provider hermes already discovered: the plugin
+        # tree is loaded by hermes's own loader, not importable by path.
+        mwe_module = sys.modules[type(provider).__module__]
+        far = mwe_module._pending_votes_line(
+            dict(PENDING_VOTES, requests=[dict(
+                PENDING_VOTES["requests"][0],
+                deadline=(datetime.now(timezone.utc) + timedelta(days=5))
+                .isoformat().replace("+00:00", "Z"),
+            )]),
+            origin,
+        )
+        ok("a vote days from its deadline is not raised",
+           "The deadline is still more than a day away: do not bring this up" in far
+           and "raise it this turn" not in far)
+        ok("and it is still there to answer a direct question with",
+           "waiting on this user's vote" in far and "mwe_dashboard_link" in far)
+
         ok("the promoted document reaches the agent",
            "kept this turn's message as a document" in block
            and "do not ask them to send it again" in block)

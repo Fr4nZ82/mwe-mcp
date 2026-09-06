@@ -180,6 +180,20 @@ function insertChat(id: string, sender: string, senderId: string, text: string, 
     .run(id, JSON.stringify({ sender, senderId, text, ...extra }));
 }
 
+/**
+ * A delivery instruction, written exactly as the host's `enqueueDelivery`
+ * writes one: an ordinary chat row carrying the `mweNotice` marker, so the
+ * runner knows this is the memory speaking and not a person.
+ */
+function insertNotice(id: string, text: string): void {
+  getInboundDb()
+    .prepare(
+      `INSERT INTO messages_in (id, seq, kind, timestamp, status, trigger, platform_id, channel_type, thread_id, content)
+       VALUES (?, (SELECT COALESCE(MAX(seq), 0) + 1 FROM messages_in), 'chat', datetime('now'), 'pending', 1, 'chat-1', 'telegram', NULL, ?)`,
+    )
+    .run(id, JSON.stringify({ sender: 'mwe-memory', text, mweNotice: true }));
+}
+
 function outboundChat(): Array<Record<string, unknown>> {
   return getUndeliveredMessages()
     .filter((m) => m.kind === 'chat')
@@ -505,7 +519,8 @@ async function main(): Promise<void> {
             proposal_id: 'p-forget-1',
             fact_id: 'f-2026-06-12-0001',
             requester: 'bob',
-            deadline: '2026-06-19T09:00:00Z',
+            // Six hours out: inside the day in which the vote is raised.
+            deadline: new Date(Date.now() + 6 * 3_600_000).toISOString(),
             dashboard_path: '/dashboard/proposals/p-forget-1/open-in-chat',
           },
         ],
@@ -524,7 +539,7 @@ async function main(): Promise<void> {
   ok('the owed vote reaches the agent', governancePrompt.includes("waiting on this person's vote"));
   ok(
     'the vote line names who asked and by when',
-    governancePrompt.includes('asked by bob, open until 2026-06-19T09:00:00Z'),
+    governancePrompt.includes('asked by bob, open until '),
   );
   ok(
     // The page is named as an address, for the same reason the minted link is.
@@ -539,8 +554,11 @@ async function main(): Promise<void> {
       governancePrompt.includes('do not guess them'),
   );
   ok(
-    'the reminder is raised once, not repeated on every message',
-    governancePrompt.includes('do not raise it again'),
+    // The window is seven days and the block rides every turn of it; the last
+    // day is when it asks to be spoken. Days out it says the opposite.
+    'the vote is raised because its deadline is inside the day',
+    governancePrompt.includes('The deadline is within a day, so raise it this turn') &&
+      !governancePrompt.includes('do not bring this up'),
   );
   ok(
     'the promoted document reaches the agent',
@@ -618,6 +636,48 @@ async function main(): Promise<void> {
   ok(
     'and it arrives with a recall block of its own',
     followUpPrompts.some((p) => p.includes('anzi, aspetta') && p.startsWith('<memory-context>')),
+  );
+
+  // -- a backlog of notices survives a follow-up ----------------------------
+  // A delivery instruction is not stored anywhere and the daemon acked it to
+  // the server the moment it enqueued it, so a turn dropped halfway through a
+  // batch of them loses the ones it had not spoken. A person writing mid-turn
+  // must therefore wait one turn, not cost the backlog.
+  const beforeBacklog = outboundChat().length;
+  for (const n of [1, 2, 3]) insertNotice(`n${n}`, `Deliver a personal memory notice number ${n}.`);
+  const backlog = slowProvider('<message to="famiglia">passo tutto</message>', 1_500);
+  const interrupt = setTimeout(() => insertChat('m20', 'Alice', '1', 'ciao, ci sei?'), 700);
+  await runTurn(
+    backlog.provider,
+    () => outboundChat().length > beforeBacklog,
+    'the notice backlog to be delivered',
+  );
+  clearTimeout(interrupt);
+  const noticePrompt = backlog.prompts[0] ?? '';
+  ok(
+    'every notice of the batch reached the agent in one turn',
+    [1, 2, 3].every((n) => noticePrompt.includes(`notice number ${n}`)),
+    noticePrompt.slice(0, 200),
+  );
+  ok(
+    'the person who wrote mid-delivery did not ride that turn',
+    !noticePrompt.includes('ciao, ci sei?'),
+  );
+  ok('the turn the notices were carried on did answer', outboundChat().length > beforeBacklog);
+  // And the person is not lost either: still pending, so the next turn serves
+  // them with an ingest and a recall block of their own.
+  await runTurn(
+    recordingProvider('<message to="famiglia">ci sono</message>').provider,
+    () => ingests().some((c) => c.arguments.text === 'ciao, ci sei?'),
+    'the interrupted person to get their own turn',
+  );
+  ok(
+    'the person who waited is served next, and ingested as themselves',
+    ingests().some((c) => c.arguments.text === 'ciao, ci sei?'),
+  );
+  ok(
+    'a notice is never ingested — the memory does not store what it just said',
+    !ingests().some((c) => String(c.arguments.text ?? '').includes('notice number')),
   );
 
   // -- degradation: the memory falls over and the turn still answers --------

@@ -319,10 +319,67 @@ describe('the reverse channel', () => {
   });
 
   it('tells the agent the recipient was not there, and hands it the content', () => {
-    const instruction = buildInstruction(minted(11, 'bob') as never, 'bob', config());
+    const instruction = buildInstruction([minted(11, 'bob')] as never, 'bob', config());
     expect(instruction).toContain('the viewing is at six');
     expect(instruction).toContain('took no part in that conversation');
     expect(instruction).toContain('https://memory.example/dashboard/wiki/bob');
+  });
+
+  it('gives one person one delivery, however many notices are waiting', async () => {
+    // A backlog is the case that made this matter: the memory catching up
+    // after the bridge was down put one chat message per notice into the same
+    // second. One message, with the items in it, is what somebody who
+    // remembers sounds like.
+    const backlog = [minted(21, 'bob'), minted(22, 'bob'), minted(23, 'bob')];
+    const client = recordingClient({ events_poll: [{ events: backlog }, { events: [] }] });
+    const enqueued: Array<{ senderKey: string; instruction: string }> = [];
+    const deps = {
+      config: config(),
+      token: 'jwt',
+      enqueue: async (d: { senderKey: string; instruction: string }) => {
+        enqueued.push(d);
+        return true;
+      },
+    };
+    const result = await personalTick(deps as never, newEventsState(), client as never, 'consumer-1');
+    expect(enqueued).toHaveLength(1);
+    expect(result.delivered).toBe(1);
+    // All three are in it, in order, each keeping where it came from.
+    expect(enqueued[0].instruction).toContain('Deliver 3 memory notices');
+    expect(enqueued[0].instruction).toContain('ITEM 1');
+    expect(enqueued[0].instruction).toContain('ITEM 3');
+    expect(enqueued[0].instruction).toContain('One message, not one per item');
+    expect(enqueued[0].instruction).toContain('took no part in those conversations');
+    // And they are acked together: acking only some would drop the notices
+    // whose words never reached anybody.
+    const ack = client.calls.find((c) => c.tool === 'events_ack');
+    expect(ack?.args.event_ids).toEqual([21, 22, 23]);
+  });
+
+  it('keeps two people apart even when their notices arrive together', async () => {
+    const client = recordingClient({
+      events_poll: [{ events: [minted(31, 'bob'), minted(32, 'alice'), minted(33, 'bob')] }, { events: [] }],
+    });
+    const enqueued: Array<{ senderKey: string; recipient: string }> = [];
+    const deps = {
+      config: config(),
+      token: 'jwt',
+      enqueue: async (d: { senderKey: string; recipient: string }) => {
+        enqueued.push(d);
+        return true;
+      },
+    };
+    await personalTick(deps as never, newEventsState(), client as never, 'consumer-1');
+    expect(enqueued.map((d) => d.recipient).sort()).toEqual(['alice', 'bob']);
+    expect(enqueued.map((d) => d.senderKey).sort()).toEqual(['telegram:1', 'telegram:2']);
+  });
+
+  it('holds a whole group back when its one delivery could not be written', async () => {
+    const client = recordingClient({ events_poll: [{ events: [minted(41, 'bob'), minted(42, 'bob')] }, { events: [] }] });
+    const deps = { config: config(), token: 'jwt', enqueue: async () => false };
+    const result = await personalTick(deps as never, newEventsState(), client as never, 'consumer-1');
+    expect(result.pending).toBe(2);
+    expect(client.calls.some((c) => c.tool === 'events_ack')).toBe(false);
   });
 });
 

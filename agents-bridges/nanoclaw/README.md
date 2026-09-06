@@ -40,12 +40,16 @@ per-turn contract **v1**
 - **No session is carried between turns.** Every turn is a fresh provider
   query; its conversational context is the bridge's own recent window plus the
   recall block. Nothing is ever compacted or summarized.
-- **The memory can start a conversation.** A fact minted for somebody else, or
-  a commitment coming due, is delivered to that person's own chat, phrased by
-  the agent, in their language.
-- **What the memory needs from a person reaches them.** A request to forget a
-  fact they are part of comes back as a heads-up on their next turn, with the
-  dashboard link where the vote is cast and what silence costs; a message long
+- **The memory can start a conversation, once.** A fact minted for somebody
+  else, or a commitment coming due, is delivered to that person's own chat,
+  phrased by the agent, in their language. Everything waiting for one person
+  in one round travels as **one** message — a backlog is a paragraph with the
+  items in it, never a burst of notifications.
+- **What the memory needs from a person reaches them, when it is due.** A
+  request to forget a fact they are part of rides every turn of its seven-day
+  window, but the agent is told to raise it only in the **last day** — with the
+  dashboard link where the vote is cast and what silence costs. Before that it
+  is told to leave it alone, and to answer only if they ask. A message long
   enough to be a document is archived whole, and the agent says so.
 
 Everything else nanoclaw gives an agent — chat, the web, its own container,
@@ -278,6 +282,21 @@ Every `eventsPollSeconds` the host polls the memory for notices:
   their language, saying where it came from, never implying they were present.
 - **`reminder_due`** — something they committed to has come round.
 
+**One delivery per person per round.** Whatever is waiting for the same
+recipient is composed into a single instruction — each item keeping its own
+source line and its own link — and the agent is told to answer with one
+message. This is what a backlog looks like when the bridge has been down for a
+while, and one message per notice would be a burst of system alerts rather than
+somebody who remembers. Two people's notices in the same round stay two
+deliveries. A group is acked as a group: acking part of it would drop the
+notices whose words never reached anybody.
+
+**A turn carrying notices is never cut short.** A person's message can be
+dropped mid-turn and lose nothing — it is already ingested and it sits in the
+recent window — but a delivery instruction is stored nowhere and was acked when
+it was enqueued. So a follow-up arriving while the agent is delivering notices
+waits for that turn to end instead of ending it.
+
 The notice is acked only once the instruction is durably written, so a crash
 between the two costs a repeat, never a loss. A recipient with no `senderMap`
 entry is retried for about ten minutes — the map can be fixed live — and then
@@ -301,18 +320,21 @@ with the mock provider against a recording stub of the MCP endpoint. What it
 asserts: one ingest per turn and one per reply; the window threaded, trimmed
 and persisted; act-as per sender and `guest` for the unmapped; the recall block
 ahead of the formatted batch; the disambiguation and its commit; the owed
-forget-request vote and the promoted document reaching the agent, and neither
-line showing up on a turn that did not earn it; the media upload and its
+forget-request vote and the promoted document reaching the agent, neither
+line showing up on a turn that did not earn it, and the vote raised because
+its deadline is inside the day; the media upload and its
 catalog id; a memory outage that leaves the turn answering; no continuation
 between turns; and the reverse channel's poll → enqueue → ack order, including
 a notice that must not be delivered to the wrong person.
 
-Two of those turns run **on the clock**: a provider that takes longer to answer
-than the follow-up poller's interval, with the host answering slowly too. A
-turn that outlives that poller must still reach the person, and a follow-up
-arriving mid-query must end the query rather than ride it. A mock that answers
-in the same microtask never lets that timer fire, which is how a loop that
-aborted every turn before writing a word stayed green here.
+Three of those turns run **on the clock**: a provider that takes longer to
+answer than the follow-up poller's interval, with the host answering slowly
+too. A turn that outlives that poller must still reach the person; a follow-up
+arriving mid-query must end the query rather than ride it; and a turn carrying
+a backlog of notices must deliver every one of them even when somebody writes
+in halfway, with that person served next and nothing lost either way. A mock
+that answers in the same microtask never lets that timer fire, so none of these
+three can be seen without real time on the clock.
 
 `NANOCLAW_SRC=/path/to/a/local/checkout` clones from disk instead of GitHub;
 `MWE_SMOKE_KEEP=1` leaves the scratch fork behind to poke at.
@@ -387,6 +409,8 @@ the response's operational fields never reach the agent.
 - **A follow-up message arriving mid-turn ends the query** and starts a fresh
   one, so it is a little slower than nanoclaw's default of pushing it into the
   live stream. That is the price of every turn having its own ingest and recall.
+  The exception is a turn delivering memory notices, which runs to its end
+  first — so a message sent during one waits that turn out.
 - **Each memory call costs a host round trip** — up to about a second and a
   quarter, because the host's delivery poll runs once a second and the
   container polls for the answer four times a second. The ingest sits on the

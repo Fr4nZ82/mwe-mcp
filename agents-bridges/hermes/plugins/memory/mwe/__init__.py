@@ -148,6 +148,15 @@ DISAMBIG_SCHEMA = {
 # whole on the media rail and queued it for document ingestion, filing only an
 # excerpt as conversation. Reading it in finishes in the background, which is
 # why the agent is told not to go looking for it on this turn.
+
+# How close a voting deadline has to be before the agent brings it up. The
+# voting window is seven days (VOTE_WINDOW, crates/mwe-core/src/votes.rs) and
+# the block rides every turn for all of it. A user does not want to be asked
+# about the same vote for a week, and does not want to discover it after
+# silence has already counted as consent — so it is raised in the last day and
+# left alone before that. The founder set the day.
+VOTE_REMINDER_WINDOW_SECONDS = 24 * 60 * 60
+
 DOCUMENT_PROMOTED_LINE = (
     "The memory kept this turn's message as a document: it was long enough to "
     "be one, so it is archived whole and word for word, and is being read into "
@@ -182,6 +191,31 @@ def _absolute_dashboard(value: str, origin: str) -> str:
     return f"{origin.rstrip('/')}{value if value.startswith('/') else '/' + value}"
 
 
+def _soonest_deadline_in(requests: List[Dict[str, Any]]) -> float | None:
+    """Seconds until the nearest deadline among the requests.
+
+    ``None`` when none of them carries one that parses — which the caller
+    treats as due, because a vote raised a day early costs a sentence and one
+    raised too late costs the fact.
+    """
+    soonest: float | None = None
+    now = datetime.now(timezone.utc)
+    for req in requests:
+        raw = str(req.get("deadline") or "").strip()
+        if not raw:
+            continue
+        try:
+            parsed = datetime.fromisoformat(raw.replace("Z", "+00:00"))
+        except ValueError:
+            continue
+        if parsed.tzinfo is None:
+            parsed = parsed.replace(tzinfo=timezone.utc)
+        remaining = (parsed - now).total_seconds()
+        if soonest is None or remaining < soonest:
+            soonest = remaining
+    return soonest
+
+
 def _pending_votes_line(block: Dict[str, Any], origin: str) -> str:
     """Frame the `pending_votes` block for the agent.
 
@@ -191,11 +225,13 @@ def _pending_votes_line(block: Dict[str, Any], origin: str) -> str:
     points at the dashboard. The block names the fact by id only, so the agent
     is told not to invent its words.
 
-    The block rides every turn until the vote is cast or the window closes, and
-    nothing server-side records that the agent has mentioned it. The line
-    therefore carries its own cadence: raise it, then let the thread be the
-    proof it was raised — a reminder repeated on every message until the
-    window closes is the notification voice this product does not use.
+    **When to say it is decided here, not by the model.** The block rides every
+    turn until the vote is cast or the window closes, so the line has to carry
+    its own cadence; and the clock is the bridge's to read, not two timestamps
+    to hand a model to subtract. Inside ``VOTE_REMINDER_WINDOW_SECONDS`` of the
+    nearest deadline the agent is told to raise it; outside, to leave it alone
+    unless the user asks — the block stays either way, so a direct question
+    still has an answer.
     """
     if not isinstance(block, dict):
         return ""
@@ -219,15 +255,23 @@ def _pending_votes_line(block: Dict[str, Any], origin: str) -> str:
         deadline = str(req.get("deadline") or "").strip()
         until = f", open until {deadline}" if deadline else ""
         lines.append(f"- asked by {requester}{until}")
-    lines.append(
-        "Tell the user what is waiting and offer them the link from "
-        f"mwe_dashboard_link: the vote is cast on the dashboard{where} and "
-        "nowhere else. The request does not carry the fact's own words — do "
-        "not guess them. Saying nothing until the deadline is consent and the "
-        "fact is forgotten; it takes enough noes to keep it. This rides every "
-        "turn until they vote: if the thread above shows you raising it "
-        "already, do not raise it again."
-    )
+    remaining = _soonest_deadline_in(requests)
+    if remaining is None or remaining <= VOTE_REMINDER_WINDOW_SECONDS:
+        lines.append(
+            "The deadline is within a day, so raise it this turn: tell the user "
+            "what is waiting and offer them the link from mwe_dashboard_link — "
+            f"the vote is cast on the dashboard{where} and nowhere else. The "
+            "request does not carry the fact's own words — do not guess them. "
+            "Saying nothing until the deadline is consent and the fact is "
+            "forgotten; it takes enough noes to keep it."
+        )
+    else:
+        lines.append(
+            "The deadline is still more than a day away: do not bring this up. "
+            "Answer it only if they ask about their votes, and then offer the "
+            "link from mwe_dashboard_link — the vote is cast on the "
+            f"dashboard{where} and nowhere else."
+        )
     return "\n".join(lines)
 
 

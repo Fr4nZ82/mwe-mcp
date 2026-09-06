@@ -206,6 +206,8 @@ async function ingestGroup(
  */
 export async function beginTurn(messages: MessageInRow[], formatted: string): Promise<string> {
   pending = undefined;
+  carriedNotices = countNotices(messages);
+  noticeWaitLogged = false;
   if (!mweActive()) return formatted;
 
   const rows = conversationalRows(messages);
@@ -276,6 +278,48 @@ function deliveredBodies(text: string): string {
 }
 
 /**
+ * How many of the memory's own delivery instructions this turn is carrying.
+ *
+ * A person's message is safe to interrupt: it was ingested before the query
+ * opened and it sits in the recent window, so the turn that follows still has
+ * it. **A delivery instruction is not.** Nothing stores it — the daemon acked
+ * it to the server the moment it was enqueued — so a turn dropped halfway
+ * through a batch of them loses the ones it had not spoken yet. The poll loop
+ * asks this before ending a query for a follow-up.
+ */
+let carriedNotices = 0;
+
+function countNotices(messages: MessageInRow[]): number {
+  let count = 0;
+  for (const row of messages) {
+    if (row.kind !== 'chat' && row.kind !== 'chat-sdk') continue;
+    if (parseContent(row.content)[NOTICE_MARKER] === true) count++;
+  }
+  return count;
+}
+
+let noticeWaitLogged = false;
+
+/**
+ * May the poll loop end this query because a follow-up arrived?
+ *
+ * Yes for an ordinary turn: the follow-up needs an ingest and a recall block
+ * of its own, and what this turn was serving survives being dropped. No while
+ * the turn is carrying notices, which nothing can give back — the follow-up is
+ * still pending when the turn ends, so it costs one turn's wait and no more.
+ *
+ * The poller asks every 500 ms, so the wait is said once.
+ */
+export function mayEndForFollowUp(): boolean {
+  if (carriedNotices === 0) return true;
+  if (!noticeWaitLogged) {
+    noticeWaitLogged = true;
+    log(`follow-up arrived while delivering ${carriedNotices} memory notice(s) — it waits for this turn to finish`);
+  }
+  return false;
+}
+
+/**
  * Feed the agent's own reply back for extraction, so it remembers its half of
  * the turn — a deadline it worked out, advice it gave, a decision reached.
  *
@@ -290,6 +334,8 @@ function deliveredBodies(text: string): string {
  * way, so the memory is thinner, never wrong.
  */
 export async function endTurn(resultText: string | null): Promise<void> {
+  // The turn reached its boundary: whatever it was carrying has been spoken.
+  carriedNotices = 0;
   const turn = pending;
   pending = undefined;
   if (!turn || !mweActive()) return;
