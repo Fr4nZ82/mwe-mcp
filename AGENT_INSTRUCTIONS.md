@@ -116,9 +116,11 @@ For each MCP call the bot picks one of:
   that user. This is also how you route a **structural-change
   notice**: drain `events_poll`, read `recipient_id` from the
   `structure_applied` payload, strip the `user:` prefix, and call
-  `dashboard_link` with `X-MWE-Act-As: <that user>` — then relay the
-  returned single-use URL (pointing at the notice's `dashboard_path`,
-  where the receipt is read) to that human (e.g. on Telegram). On a `null` recipient, fall back to the
+  `dashboard_link` with `X-MWE-Act-As: <that user>` — then hand that
+  human the link (e.g. on Telegram). The returned `url` is a single-use
+  **path** on the server, pointing at the notice's `dashboard_path`
+  where the receipt is read: prefix it with the operator's base URL
+  before you deliver it. On a `null` recipient, fall back to the
   admin. A `fact_minted_for_you` notice routes the same way but is a
   **delivery, not a pointer**: its `facts[].body` array carries the
   content another user's turn minted for the recipient, so phrase and
@@ -257,7 +259,7 @@ bootstrap is which family covers which job:
 | **D — Read (consumer UI)** | ACL-filtered page read + vector / full-text search. | any |
 | **E — Audit / health** | Audit-trail query + wiki lint pass. | admin |
 | **F — Setup** | First-time consumer registration + bulk external import. | any |
-| **G — Dashboard** | Mint a one-shot signed URL into the built-in PWA. | any |
+| **G — Dashboard** | Mint a one-shot signed link into the built-in PWA. | any |
 | **H — Smart-wiki admin** | Authoritative smart-wiki management: push / pull, briefing notify, cooperative lease. | smart |
 | **I — Skills** | Enumerate + fetch skill bodies (bundled). | any |
 | **J** *(unused)* | `J` is a hole in the MCP family scheme; a wiki's shape is decided per fact, not by a registered type. | — |

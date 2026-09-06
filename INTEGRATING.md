@@ -411,9 +411,13 @@ below directly.
    payload carries `proposal_id`, `variant`, the `closed_facts`,
    `recipient_id` (the addressed human — strip the `user:` prefix; `null`
    ⇒ operator/admin) and a `dashboard_path`; the agent mints a one-shot
-   signed URL with `dashboard_link` (acting as that human) and relays it —
-   *"I reorganized X — see it here: [link]"*. A structural change is not
-   undone: the person steers the memory by talking to it. **Cadence:**
+   signed link with `dashboard_link` (acting as that human) and relays it —
+   *"I reorganized X — see it here: [link]"*. What comes back in `url` is
+   a **path on the server**, not a full address — the server does not know
+   the origin it is reached at — so prefix it with the operator's base URL
+   before the link reaches a person, the same rule as `dashboard_path`
+   above. A structural change is not undone: the person steers the memory
+   by talking to it. **Cadence:**
    piggyback one poll
    on each user turn (in parallel with the ingest call) as the floor;
    add a background tick (≈30 s for a chat bot, never faster than ~5 s)
