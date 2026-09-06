@@ -413,21 +413,22 @@ pub async fn forget_user(
     report.lists_amended = strike_from_lists(pool, user_id, &gone).await?;
     report.orphan_smart_wikis = orphan_smart_wikis(pool, &gone, &hers).await?;
 
-    // 8 — the training spool, which is on disk and not in the database. It
-    // records whole prompts, and a prompt carries the recalled memory
+    // 8 and 9 run here, ahead of the enrollment row, and the order is the
+    // point. Removing that row is the point of no return for a **retry**:
+    // past it `forget_user` answers `Ok(None)`, so a step that fails after
+    // it is a step nobody can run again. Both of these can fail — one
+    // touches the filesystem, one the database — and neither may be
+    // silently skipped, so both happen while the person is still enrolled.
+    // Doing them early costs nothing in the other direction: the spent-id
+    // list gates the *creation* of a user and no part of the erasure reads
+    // it, and its insert is idempotent.
+
+    // 8 — the training spool, which lives on disk and not in the database.
+    // It records whole prompts, and a prompt carries the recalled memory
     // verbatim, so it holds what every step above has been removing.
-    //
-    // Before the enrollment row goes, and so is the id below, because
-    // [`enrollment::remove_user`] is the point of no return for a **retry**:
-    // once that row is gone `forget_user` answers `Ok(None)` and there is no
-    // second attempt. Anything that can fail and must not be silently
-    // skipped therefore runs while the person is still enrolled.
     report.training_spool_files_emptied = crate::training_spool::erase_all(tree.workdir())?;
 
-    // 9 — the id is spent. Recorded while the row still exists, which is
-    // safe in the other direction too: the list gates the *creation* of a
-    // user and nothing consults it here, so an entry written before a run
-    // that then fails blocks nothing, and the insert is idempotent.
+    // 9 — the id is spent.
     enrollment::record_forgotten_id(pool, user_id).await?;
 
     // 10 — the enrollment row, the consumers bound to the identity, the
