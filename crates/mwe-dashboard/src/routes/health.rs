@@ -234,9 +234,12 @@ fn slot_status_cells(status: &SlotStatus) -> Markup {
             td { "reachable" }
             td.muted { code { (backend) } " · " code { (model) } }
         },
+        // Not a healthy state and not a switched-off feature: all six
+        // slots are mandatory, so an empty one is an install that is not
+        // finished. The row says so and points at the page that fixes it.
         SlotStatus::Unconfigured => html! {
-            td.muted { "unconfigured" }
-            td.muted { "feature off" }
+            td { "NO MODEL" }
+            td { "the memory does not work until this slot has one — set it on the LLM config page" }
         },
         SlotStatus::LoginPending => html! {
             td { "login pending" }
@@ -303,8 +306,19 @@ mod tests {
         let out = slots_table(&slots).into_string();
 
         assert!(out.contains("ingest") && out.contains("qwen3.5:9b-q8_0"));
-        assert!(out.contains("unconfigured"));
         assert!(out.contains("FAILED") && out.contains("connection refused"));
+
+        // A slot with no model is a fault, not a switched-off feature: the
+        // six are mandatory, so the row has to read as something to fix.
+        assert!(out.contains("NO MODEL"), "{out}");
+        assert!(
+            out.contains("the memory does not work until this slot has one"),
+            "{out}"
+        );
+        assert!(
+            !out.contains("feature off") && !out.contains("unconfigured"),
+            "an empty slot must not read as a feature somebody turned off: {out}"
+        );
     }
 
     #[test]

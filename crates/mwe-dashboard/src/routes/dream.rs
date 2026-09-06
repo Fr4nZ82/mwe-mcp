@@ -419,8 +419,11 @@ async fn run_dream(
 
     let body = match kind {
         DreamKind::Light => {
-            // Light can promote without any LLM bag; the compile step inside is
-            // skipped when the bag is absent or lacks a `cronista`.
+            // The bag is resolved leniently here because a slot that will not
+            // build must not turn a hand-run cycle into a 500 with nothing to
+            // read: the run drains the queue deterministically and the report
+            // says what it did. That is a broken install failing visibly, not
+            // a mode — all six slots are mandatory.
             let backends = DreamBackends::resolve(memory).ok();
             let bag = backends.as_ref().map(DreamBackends::bag);
             let out = mwe_core::dream::run_light(
@@ -571,9 +574,12 @@ fn render_index_body(runs: &[DreamRun]) -> Markup {
         }
         (dream_forms())
         p.muted style="font-size:.78rem" {
-            "Cycle behaviour knobs (per-cycle caps, mass bars, the briefing grace) are the "
-            a href="/dashboard/admin/rem-settings" { "REM policy settings" }
-            "."
+            "How much one cycle may touch — the per-cycle caps, the page sizes "
+            "that trigger a split, the grace before a comment is read — is on the "
+            a href="/dashboard/admin/rem-settings" { "REM settings" }
+            " page; when the two scheduled runs fire is the dream cadence on the "
+            a href="/dashboard/settings/me" { "Settings" }
+            " page."
         }
         (run_history(runs))
         (dream_log_modal())
@@ -589,17 +595,17 @@ fn dream_forms() -> Markup {
             (dream_form(
                 "/dashboard/dream/light",
                 "Light",
-                "Promotes captures into facts and recompiles dirty pages. Frequent, cheap (promotion without an LLM; the Cronista only touches the dirty ones)."
+                "The frequent cycle: places the waiting captures on pages, writes them as facts, and rewrites only the pages that changed. It runs on the cheap ingest slot, which is what lets it fire every few minutes."
             ))
             (dream_form(
                 "/dashboard/dream/compile",
                 "Compile",
-                "Narrative recompilation only (Cartografo → Conciliatore → Architetto → Cronista → Revisore) on dirty pages. For isolating the compiler."
+                "The page-writing half on its own (Cartografo → Conciliatore → Architetto → Cronista → Revisore), over the pages that changed. For isolating the compiler."
             ))
             (dream_form(
                 "/dashboard/dream/full",
                 "Full REM",
-                "Full cycle: reorg (dedup, auto-promote, archive) + apply parked comments + recompile the prose."
+                "The nightly reorganisation, on the strong models: dedup, auto-promote, archive, apply the parked comments, then rewrite the prose."
             ))
         }
     }

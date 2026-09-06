@@ -1,14 +1,14 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
-//! Admin-only LLM configuration page: the per-role model assignment in
+//! Admin-only LLM configuration page: the per-slot model assignment in
 //! `<workdir>/mwe-mcp.config.yaml > llm`, the API-key env-vars it
 //! references, the Claude Code login store, and the models.dev catalog.
 //!
-//! The page is **credentials-first**: a "Provider e credenziali" section
+//! The page is **credentials-first**: a "Providers & credentials" section
 //! (one card per backend) where keys are set and Anthropic's auth mode is
-//! chosen, then a "Ruoli" section that assigns each canonical LLM function
-//! a provider + model with plain-language guidance. The `api_key_env` is
-//! **derived** from the chosen provider on save ([`derive_api_key_env`]),
-//! never an operator-edited column.
+//! chosen, then a "Model slots" section that assigns each of the six
+//! canonical [`LlmFunction`] slots a provider + model with plain-language
+//! guidance. The `api_key_env` is **derived** from the chosen provider on
+//! save ([`derive_api_key_env`]), never an operator-edited column.
 //!
 //! Routes (all behind [`AdminUser`]):
 //!
@@ -17,7 +17,7 @@
 //!   YAML section (backup `.bak`, serialise, atomic-write) + hot-reload.
 //!   Operator comments in the YAML are flattened (`serde_yaml` keeps none).
 //! - POST `/admin/llm-config/profile/:name`  — apply a preset
-//!   [`mwe_core::config::LlmProfile`] to every role.
+//!   [`mwe_core::config::LlmProfile`] to every slot.
 //! - POST `/admin/api-keys/:name`            — upsert a key env-var in
 //!   `<workdir>/mwe-mcp.env` via [`mwe_core::env_file::write_key`].
 //! - POST `/admin/llm-catalog/refresh`       — re-fetch the models.dev
@@ -60,9 +60,9 @@ use crate::ui::{components, layout};
 /// dashboard crate does not depend on the binary crate.
 const ENV_FILENAME: &str = "mwe-mcp.env";
 
-/// Env vars the credentials section always renders, even when no role
+/// Env vars the credentials section always renders, even when no slot
 /// references them — so the admin can pre-load a key before assigning the
-/// provider to a role. One per selectable cloud backend in
+/// provider to a slot. One per selectable cloud backend in
 /// [`ALLOWED_BACKENDS`].
 const WELL_KNOWN_KEYS: &[&str] = &[
     "ANTHROPIC_API_KEY",
@@ -73,20 +73,20 @@ const WELL_KNOWN_KEYS: &[&str] = &[
     "OLLAMA_API_KEY",
 ];
 
-/// Env-var holding the provider-level Ollama endpoint (per-role `base_url`
+/// Env-var holding the provider-level Ollama endpoint (per-slot `base_url`
 /// under «Advanced» still overrides it; the runtime falls back to
 /// [`mwe_core::llm::DEFAULT_OLLAMA_URL`]). Mirrors the cloud keys: set from
 /// the dashboard, hot-reloaded via the override map, persisted to the env
 /// file.
 const OLLAMA_BASE_URL_ENV: &str = "OLLAMA_BASE_URL";
 
-/// Backends accepted by the per-role provider dropdown. Pinned to the five
+/// Backends accepted by the per-slot provider dropdown. Pinned to the five
 /// the runtime can actually materialise
 /// ([`LlmFunctionConfig::build_backend`]); other strings parsed from YAML
 /// are tolerated by `Config::load` but the editor refuses to emit them.
 const ALLOWED_BACKENDS: &[&str] = &["ollama", "anthropic", "gemini", "openai", "openrouter"];
 
-/// A provider surfaced in the credentials section and the per-role
+/// A provider surfaced in the credentials section and the per-slot
 /// provider dropdown.
 struct ProviderInfo {
     /// Backend tag stored in `LlmFunctionConfig::backend`.
@@ -96,7 +96,7 @@ struct ProviderInfo {
 }
 
 /// Providers in display order: the local backend first, then the cloud
-/// provider/aggregators. Drives the per-role provider `<select>`.
+/// provider/aggregators. Drives the per-slot provider `<select>`.
 const PROVIDERS: &[ProviderInfo] = &[
     ProviderInfo {
         tag: "ollama",
@@ -120,54 +120,60 @@ const PROVIDERS: &[ProviderInfo] = &[
     },
 ];
 
-/// Plain-language guidance for each role — the point of the redesign:
-/// telling the operator, in plain English, what strength each function
-/// needs (a local 9B, a mid-tier model, or a strong one).
-struct RoleGuide {
+/// Plain-language guidance for one model slot: what the engine asks of
+/// it, and how strong a model that asks for (a local 9B, a mid-tier
+/// model, or a strong one).
+struct SlotGuide {
     /// The canonical slot this guide describes.
     slot: LlmFunction,
     /// Short human title.
     title: &'static str,
-    /// One-line description of what the role does.
+    /// One-line description of what this slot does for the memory.
     blurb: &'static str,
     /// Capability-tier hint + a concrete model suggestion.
     tier: &'static str,
 }
 
-/// Roles in display order — conversational first, then the nightly /
-/// per-turn functions. All six [`LlmFunction`] slots, ordered for the UX.
-const ROLE_GUIDES: &[RoleGuide] = &[
-    RoleGuide {
+/// The six slots in display order — conversational first, then the
+/// nightly and per-turn ones. All six [`LlmFunction`] variants, ordered
+/// for the UX.
+///
+/// A blurb says what the slot **does**, never what happens without it:
+/// the six are mandatory, and the engine's unconfigured-slot arms exist
+/// to make a half-wired install fail visibly, not to offer a cheaper way
+/// to run.
+const SLOT_GUIDES: &[SlotGuide] = &[
+    SlotGuide {
         slot: LlmFunction::Ingest,
         title: "Conversation & capture",
         blurb: "Classifies intent and extracts facts on every message.",
         tier: "workhorse — a local 9B is fine; for structural judgements a mid-tier model is better (Sonnet / Gemini Flash)",
     },
-    RoleGuide {
+    SlotGuide {
         slot: LlmFunction::OperatorChat,
         title: "Operator chat",
-        blurb: "Powers this dashboard's operational chat — multi-step tool calls (recall, forget, move, supersede) that must handle fact ids faithfully. It has no fallback: with this unset the chat is unavailable.",
+        blurb: "Powers this dashboard's operational chat — multi-step tool calls (recall, forget, move, supersede) that must handle fact ids faithfully.",
         tier: "strong, with reliable function-calling (Sonnet / Gemini Pro / a 32B+ local); the 9B struggles with multi-tool reasoning and ids",
     },
-    RoleGuide {
+    SlotGuide {
         slot: LlmFunction::RemPromotions,
         title: "Nightly optimisation",
         blurb: "Promotes paragraphs, files and wikis at night. Quality-critical, cost acceptable.",
         tier: "strong — not the 9B (Opus 4.8 / Gemini Pro)",
     },
-    RoleGuide {
+    SlotGuide {
         slot: LlmFunction::Cronista,
         title: "Prose compilation",
-        blurb: "Compiles captured facts into the readable wiki pages — without it the memory still recalls, but the pages stay blank.",
+        blurb: "Writes the readable wiki pages out of the captured facts.",
         tier: "strong — not the 9B (Opus 4.8 / Gemini Pro)",
     },
-    RoleGuide {
+    SlotGuide {
         slot: LlmFunction::Navigator,
         title: "Recall navigation",
         blurb: "Decides which wikis and pages to open on every turn.",
         tier: "strong but cheap (Haiku / Gemini Flash)",
     },
-    RoleGuide {
+    SlotGuide {
         slot: LlmFunction::RemDedupSemantic,
         title: "Dedup",
         blurb: "Yes/no classifier after the jaccard pre-pass.",
@@ -183,7 +189,7 @@ const ROLE_GUIDES: &[RoleGuide] = &[
 /// internally — see `mwe_core::llm::GEMINI_THINKING_LEVEL`).
 const REASONING_EFFORTS: &[&str] = &["low", "medium", "high", "extra-high"];
 
-/// The canonical LLM slots surfaced as role cards in the admin UI, in
+/// The canonical LLM slots surfaced as slot cards in the admin UI, in
 /// display order — **every** [`LlmFunction`] variant. `save()` rebuilds
 /// the config from exactly this list, so a slot left off here is dropped
 /// on every save: omitting `Cronista` meant the dashboard silently wiped
@@ -454,7 +460,7 @@ pub(super) fn unconfigured_slots(llm: &LlmConfig) -> Vec<&'static str> {
 }
 
 /// Which providers currently have usable authentication — drives the
-/// per-role "needs a key" warning and the JS gating map.
+/// per-slot "needs a key" warning and the JS gating map.
 #[allow(
     clippy::struct_excessive_bools,
     reason = "one flag per cloud provider — the set is fixed and known at compile time; a map would only hide that"
@@ -484,7 +490,7 @@ fn provider_auth(rows: &[ApiKeyRow]) -> ProviderAuth {
     }
 }
 
-/// True when any Anthropic role is wired to the Claude Code login store —
+/// True when any Anthropic slot is wired to the Claude Code login store —
 /// the current "auth mode" the credential card's toggle reflects.
 fn anthropic_uses_login(llm: &LlmConfig) -> bool {
     SLOTS.iter().any(|s| {
@@ -494,7 +500,7 @@ fn anthropic_uses_login(llm: &LlmConfig) -> bool {
 }
 
 /// Can the runtime materialise this backend tag with the credentials
-/// present right now? Mirrors the per-role "needs a key" gating: the
+/// present right now? Mirrors the per-slot "needs a key" gating: the
 /// local backend needs none, each cloud backend needs its provider auth.
 fn backend_usable(backend: &str, auth: &ProviderAuth) -> bool {
     match backend {
@@ -508,7 +514,7 @@ fn backend_usable(backend: &str, auth: &ProviderAuth) -> bool {
     }
 }
 
-/// True when the **ingest** role is wired to a usable backend. This is the
+/// True when the **ingest** slot is wired to a usable backend. This is the
 /// gate for reaching the first-login profile primer, which calls
 /// `wiki_ingest_message` and degrades to an empty `skip` turn without a
 /// usable ingest model. Config-level only — no network probe (the redesign
@@ -522,7 +528,7 @@ fn ingest_ready(llm: &LlmConfig, auth: &ProviderAuth) -> bool {
 /// First-run onboarding banner pinned to the top of the page while the
 /// admin has not yet completed the profile primer: it frames the page as
 /// step 1 of 2 and offers the path forward. The "continue" link is live
-/// only once the ingest role is usable — otherwise the primer would bounce
+/// only once the ingest slot is usable — otherwise the primer would bounce
 /// straight back here (the [`super::welcome`] guard), so we show a hint
 /// instead of a dead-ending link.
 fn onboarding_banner(ingest_ready: bool) -> Markup {
@@ -531,7 +537,7 @@ fn onboarding_banner(ingest_ready: bool) -> Markup {
             div {
                 strong { "First-run setup · step 1 of 2 — wire the model." }
                 " The profile setup that follows uses the " code { "ingest" }
-                " role, so configure it here first."
+                " slot, so configure it here first."
             }
             @if ingest_ready {
                 a href="/dashboard/welcome"
@@ -540,7 +546,7 @@ fn onboarding_banner(ingest_ready: bool) -> Markup {
                 }
             } @else {
                 span.muted style="white-space:nowrap;font-size:.85rem" {
-                    "Give the ingest role a usable provider to continue."
+                    "Give the ingest slot a usable provider to continue."
                 }
             }
         }
@@ -571,17 +577,16 @@ fn render(
         @if !missing.is_empty() {
             p.flash.flash-error {
                 strong {
-                    (missing.len()) " of the six model roles " (if missing.len() == 1 { "has" } else { "have" })
+                    (missing.len()) " of the six model slots " (if missing.len() == 1 { "has" } else { "have" })
                     " no model: " (missing.join(", ")) "."
                 }
-                " The memory does not work until every role has one — a turn on a "
-                "missing role is refused, the nightly cycle and the page writer skip."
+                " The memory does not work until every slot has one. Fill them below."
             }
         }
 
         p.flash.flash-info {
             strong { "Changes take effect on the next request." }
-            " Roles and keys are applied to the running process as well as "
+            " Slots and keys are applied to the running process as well as "
             "written to disk — no " code { "mwe-mcp serve" } " restart. "
             "Keys set here live in memory; the on-disk copy ("
             code { (ENV_FILENAME) } ") is what survives a restart."
@@ -590,29 +595,29 @@ fn render(
         // ── Section 1 — providers & credentials ───────────────────────────
         h2 { "1 · Providers & credentials" }
         p.muted {
-            "Set up credentials here, before the roles. A role can only use a "
+            "Set up credentials here, before the slots. A slot can only use a "
             "provider with valid authentication. The cleartext key never leaves "
             "the server — only its last 4 characters render."
         }
         (providers_section(memory, &rows, &llm, anthropic_login))
 
-        // ── Section 2 — roles ─────────────────────────────────────────────
-        h2 { "2 · Roles" }
+        // ── Section 2 — the six model slots ───────────────────────────────
+        h2 { "2 · Model slots" }
         p.muted {
-            "Give each function a provider and a model. Start from a quick "
-            "profile, then fine-tune. Leave a provider on «— disabled —» only "
-            "for the optional functions; the others are needed to run."
+            "Give each of the six a provider and a model. Start from a quick "
+            "profile, then fine-tune. All six are needed: the memory does not "
+            "run on a subset of them."
         }
         (profile_quickset())
         (catalog_refresh(&catalog))
         form #llm-roles action="/dashboard/admin/llm-config" method="post" {
-            // Role cards flow in an auto-fit grid (≈2–3 columns on a wide
+            // Slot cards flow in an auto-fit grid (≈2–3 columns on a wide
             // screen, one column on mobile) so they use the page width instead
             // of stacking in a tall narrow strip. `.card-grid` also opts this
             // form out of the single-column form width cap (see `tailwind/app.css`).
             div.card-grid {
-                @for guide in ROLE_GUIDES {
-                    (role_row(guide, llm.slot(guide.slot)))
+                @for guide in SLOT_GUIDES {
+                    (slot_row(guide, llm.slot(guide.slot)))
                 }
             }
             p style="margin-top:.9rem" { button type="submit" { "Save configuration" } }
@@ -643,7 +648,7 @@ fn providers_section(
     anthropic_login: bool,
 ) -> Markup {
     html! {
-        // Provider cards flow in the same auto-fit grid as the role cards
+        // Provider cards flow in the same auto-fit grid as the slot cards
         // below (≈2–3 columns on a wide screen, one column on mobile).
         div.card-grid style="margin:.3rem 0 1rem" {
             (provider_card_ollama(memory, rows))
@@ -686,7 +691,7 @@ fn current_env_value(memory: &MemoryHandles, name: &str) -> Option<String> {
 /// The Ollama card. Unlike the cloud cards it carries an **endpoint** (a
 /// local daemon needs no key) plus an *optional* Bearer token for a remote
 /// / cloud / proxied daemon. Both are provider-level and hot-reloaded; the
-/// per-role `base_url` under «Advanced» still wins.
+/// per-slot `base_url` under «Advanced» still wins.
 fn provider_card_ollama(memory: &MemoryHandles, rows: &[ApiKeyRow]) -> Markup {
     let endpoint = current_env_value(memory, OLLAMA_BASE_URL_ENV)
         .unwrap_or_else(|| mwe_core::llm::DEFAULT_OLLAMA_URL.to_owned());
@@ -699,7 +704,7 @@ fn provider_card_ollama(memory: &MemoryHandles, rows: &[ApiKeyRow]) -> Markup {
             p.muted style="margin:.3rem 0 .5rem;font-size:.8rem" {
                 "A local daemon needs no key. For a remote or cloud daemon set the "
                 "endpoint and, if it is authenticated, a Bearer token. The model field "
-                "then lists what is installed there; a per-role endpoint override stays "
+                "then lists what is installed there; a per-slot endpoint override stays "
                 "under «Advanced»."
             }
             form action="/dashboard/admin/ollama-endpoint" method="post"
@@ -745,8 +750,8 @@ fn provider_card_key(
 }
 
 /// The Anthropic card: an auth-mode toggle (API key vs Claude Code login)
-/// whose radios are associated with the roles form (`form="llm-roles"`), so
-/// the save derives each Anthropic role's `api_key_env` from the choice.
+/// whose radios are associated with the slots form (`form="llm-roles"`), so
+/// the save derives each Anthropic slot's `api_key_env` from the choice.
 fn provider_card_anthropic(rows: &[ApiKeyRow], llm: &LlmConfig, anthropic_login: bool) -> Markup {
     html! {
         div style=(CARD_STYLE) {
@@ -802,7 +807,7 @@ fn api_key_form(env_name: &str, rows: &[ApiKeyRow]) -> Markup {
     }
 }
 
-/// Quick-set buttons that apply a whole preset profile to every role.
+/// Quick-set buttons that apply a whole preset profile to every slot.
 fn profile_quickset() -> Markup {
     html! {
         div style="display:flex;align-items:center;gap:.5rem;flex-wrap:wrap;margin:.2rem 0 .7rem" {
@@ -810,7 +815,7 @@ fn profile_quickset() -> Markup {
             (profile_button("all-local", "All local"))
             (profile_button("hybrid", "Hybrid"))
             (profile_button("all-api", "All API"))
-            span.muted style="font-size:.72rem" { "fills every role — then fine-tune" }
+            span.muted style="font-size:.72rem" { "fills every slot — then fine-tune" }
         }
     }
 }
@@ -937,13 +942,13 @@ fn remaining_minutes(expires_at: u64) -> u64 {
     expires_at.saturating_sub(now) / 60
 }
 
-/// One role card: title + guidance, a provider `<select>` (gated client-
+/// One slot card: title + guidance, a provider `<select>` (gated client-
 /// side), a free-text model combobox (datalist suggestions from the
 /// catalog), a JS-filled metadata strip + auth warning, and an Advanced
 /// `<details>` for the temperature / max-tokens / reasoning / base-URL
 /// knobs. The `api_key_env` is not an operator-edited column: it is derived
 /// from the chosen provider on save ([`derive_api_key_env`]).
-fn role_row(guide: &RoleGuide, cfg: Option<&LlmFunctionConfig>) -> Markup {
+fn slot_row(guide: &SlotGuide, cfg: Option<&LlmFunctionConfig>) -> Markup {
     let key = guide.slot.yaml_key();
     let backend = cfg.map_or("", |c| c.backend.as_str());
     let model = cfg.map_or("", |c| c.model.as_str());
@@ -972,7 +977,7 @@ fn role_row(guide: &RoleGuide, cfg: Option<&LlmFunctionConfig>) -> Markup {
                 label style="flex:1 1 11rem;display:flex;flex-direction:column;gap:.2rem" {
                     span.muted style=(FIELD_LABEL_STYLE) { "Provider" }
                     select name=(format!("{key}__backend")) data-role-provider style=(INPUT_STYLE) {
-                        option value="" selected[backend.is_empty()] { "— disabled —" }
+                        option value="" selected[backend.is_empty()] { "— not set —" }
                         @for p in PROVIDERS {
                             option value=(p.tag) selected[p.tag == backend] { (p.label) }
                         }
@@ -999,7 +1004,7 @@ fn role_row(guide: &RoleGuide, cfg: Option<&LlmFunctionConfig>) -> Markup {
                     (adv_field(&format!("{key}__base_url"), "Base URL", base_url, "(default)", "14rem"))
                 }
                 p.muted style="margin:.4rem 0 0;font-size:.72rem" {
-                    "Empty = the model's own default. Gemini ignores temperature; max tokens varies by model/role. "
+                    "Empty = the model's own default. Gemini ignores temperature; max tokens varies by model and slot. "
                     "Base URL matters mostly for a remote Ollama."
                 }
             }
@@ -1090,7 +1095,7 @@ async fn save(
 
     tracing::info!(
         admin = %admin.session().sender_id,
-        "llm-config: saved llm roles from dashboard (hot-reloaded)"
+        "llm-config: saved llm slots from dashboard (hot-reloaded)"
     );
 
     let onboarding = in_onboarding(&state, &admin).await?;
@@ -1126,7 +1131,7 @@ fn parse_form_into_llm_config(
 
     // The Anthropic auth mode is a page-level radio in the credential card
     // (associated with this form via `form="llm-roles"`): it decides whether
-    // Anthropic roles authenticate with the API key or the Claude Code login
+    // Anthropic slots authenticate with the API key or the Claude Code login
     // store. `api_key_env` is derived from it, never an operator-edited field.
     let anthropic_login = form.get("anthropic_auth_mode").map(String::as_str) == Some("login");
 
@@ -1139,14 +1144,14 @@ fn parse_form_into_llm_config(
         }
         if !ALLOWED_BACKENDS.contains(&backend.as_str()) {
             return Err(DashboardError::Validation(format!(
-                "role `{key}`: backend `{backend}` is not supported (allowed: {})",
+                "slot `{key}`: backend `{backend}` is not supported (allowed: {})",
                 ALLOWED_BACKENDS.join(", "),
             )));
         }
         let model = trimmed_field(form, key, "model");
         if model.is_empty() {
             return Err(DashboardError::Validation(format!(
-                "role `{key}`: a model is required when the provider is set"
+                "slot `{key}`: a model is required when the provider is set"
             )));
         }
         // Derive the API-key env-var from the chosen provider: the
@@ -1300,7 +1305,7 @@ struct OllamaEndpointSubmission {
 /// Set the provider-level Ollama endpoint (`OLLAMA_BASE_URL`). Mirrors
 /// [`set_api_key`]: persisted to the workdir env file and pushed into the
 /// override map so the next request uses it without a restart. The
-/// per-role `base_url` under «Advanced» still overrides it.
+/// per-slot `base_url` under «Advanced» still overrides it.
 async fn set_ollama_endpoint(
     State(state): State<DashboardState>,
     admin: AdminUser,
@@ -1364,7 +1369,7 @@ async fn ollama_models(State(state): State<DashboardState>, _admin: AdminUser) -
 // ---------- POST /admin/llm-config/profile/:name ----------
 
 /// Apply a preset profile (`all-local` / `hybrid` / `all-api`) to every
-/// role in one click, then persist + hot-reload — the operator fine-tunes
+/// slot in one click, then persist + hot-reload — the operator fine-tunes
 /// from there.
 async fn apply_profile(
     State(state): State<DashboardState>,
@@ -1377,7 +1382,7 @@ async fn apply_profile(
         .map_err(|bad| DashboardError::Validation(format!("unknown profile: `{bad}`")))?;
     if matches!(profile, mwe_core::config::LlmProfile::Custom) {
         return Err(DashboardError::Validation(
-            "the `custom` profile does not fill the roles — configure them manually".to_owned(),
+            "the `custom` profile does not fill the slots — configure them manually".to_owned(),
         ));
     }
     persist_llm_config(memory, profile.build())?;
@@ -1393,7 +1398,7 @@ async fn apply_profile(
         memory,
         Some(Flash {
             kind: "success",
-            msg: "Profile applied to every role — fine-tune from here.",
+            msg: "Profile applied to every slot — fine-tune from here.",
         }),
         onboarding,
     );
@@ -1440,7 +1445,7 @@ async fn refresh_catalog(
     Ok(Html(body).into_response())
 }
 
-/// Catalog size + a refresh button, shown above the roles.
+/// Catalog size + a refresh button, shown above the slot cards.
 fn catalog_refresh(catalog: &Catalog) -> Markup {
     html! {
         div style="display:flex;align-items:center;gap:.5rem;flex-wrap:wrap;margin:0 0 .8rem" {
@@ -1545,7 +1550,7 @@ mod tests {
     }
 
     /// Anthropic in the default (key) mode derives `ANTHROPIC_API_KEY` — the
-    /// operator does not pick the env-var per role.
+    /// operator does not pick the env-var per slot.
     #[test]
     fn parse_form_derives_anthropic_api_key_in_key_mode() {
         let mut form: HashMap<String, String> = HashMap::new();
@@ -1563,7 +1568,7 @@ mod tests {
         );
     }
 
-    /// With the credential card's auth mode set to "login", Anthropic roles
+    /// With the credential card's auth mode set to "login", Anthropic slots
     /// derive the Claude Code login sentinel instead of the key env-var.
     #[test]
     fn parse_form_anthropic_login_mode_derives_claude_code() {
@@ -1615,7 +1620,7 @@ mod tests {
         );
     }
 
-    /// A gemini role round-trips through the parser, with `api_key_env`
+    /// A gemini slot round-trips through the parser, with `api_key_env`
     /// derived — the form does not carry it.
     #[test]
     fn parse_form_round_trips_gemini_slot() {
@@ -1672,11 +1677,11 @@ mod tests {
         assert_eq!(hw.base_url.as_deref(), Some("https://example.test"));
     }
 
-    /// A role card renders the four provider options (the selected one
+    /// A slot card renders the four provider options (the selected one
     /// marked), a free-text model combobox bound to the catalog datalist,
     /// and the JS hooks the page logic depends on.
     #[test]
-    fn role_row_renders_providers_and_model_combobox() {
+    fn slot_row_renders_providers_and_model_combobox() {
         let cfg = LlmFunctionConfig {
             backend: "openrouter".into(),
             model: "anthropic/claude-sonnet-4-6".into(),
@@ -1686,7 +1691,7 @@ mod tests {
             temperature: None,
             max_tokens: None,
         };
-        let html = role_row(&ROLE_GUIDES[0], Some(&cfg)).into_string();
+        let html = slot_row(&SLOT_GUIDES[0], Some(&cfg)).into_string();
         assert!(html.contains(">OpenRouter<"), "{html}");
         assert!(html.contains(">Ollama (local)<"), "{html}");
         assert!(html.contains("value=\"openrouter\" selected"), "{html}");

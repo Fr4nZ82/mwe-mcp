@@ -1,10 +1,14 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 //! Authenticated landing page.
 //!
-//! Intentionally small: a welcome panel, three
-//! counts (users / groups / consumer delegations), and the deep links
-//! into the CRUD pages. The dashboards-of-substance (memory explorer,
-//! proposals, audit, costs, chat) ship later.
+//! A row of counts read straight off the database, the MCP endpoint a
+//! consumer connects to, and the deep links into the rest of the
+//! dashboard. Nothing here is a console of its own: every card sends the
+//! reader to the page that does the work.
+//!
+//! The one thing it says loudly is a model slot with nothing behind it —
+//! all six are mandatory, so a missing one is an unfinished install and
+//! the banner is the first thing an admin sees.
 
 use axum::extract::State;
 use axum::http::{HeaderMap, header};
@@ -112,11 +116,11 @@ pub async fn index(
         @if !missing_slots.is_empty() {
             p.flash.flash-error {
                 strong {
-                    (missing_slots.len()) " of the six model roles "
+                    (missing_slots.len()) " of the six model slots "
                     (if missing_slots.len() == 1 { "has" } else { "have" })
                     " no model: " (missing_slots.join(", ")) "."
                 }
-                " The memory does not work until every role has one. "
+                " The memory does not work until every slot has one. "
                 a href="/dashboard/admin/llm-config" { "Set them →" }
             }
         }
