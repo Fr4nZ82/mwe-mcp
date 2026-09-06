@@ -1205,13 +1205,15 @@ pub enum RevertError {
     /// `op_id` does not match any row in `wiki_admin_op_log`.
     #[error("op {0} not found in wiki_admin_op_log")]
     NotFound(i64),
-    /// The target row has `pre_image_json IS NULL` — either a legacy
-    /// row (no pre-image was captured at the time), a `pull` / `notify`
-    /// row (reads + side-channel notifications never carry pre-images),
-    /// or a previous `system` compensation row (which we explicitly
-    /// refuse to revert: chained revert-of-revert is performed by
-    /// clicking the original target again, not by reverting the
-    /// compensation).
+    /// The target row has `pre_image_json IS NULL`. Four ways a row gets
+    /// there: the push is older than the undo window and housekeeping
+    /// dropped its page bodies (`retention.undo_days` —
+    /// [`crate::housekeeping`]); it is a `pull` / `notify` row (reads and
+    /// side-channel notifications never carry pre-images); it is a
+    /// `system` compensation row, which we explicitly refuse to revert
+    /// (chained revert-of-revert is performed by clicking the original
+    /// target again); or the push created the wiki, which had no bodies
+    /// to snapshot.
     #[error("op {op_id} cannot be reverted: {reason}")]
     NoPreImage {
         /// Target `op_id`.

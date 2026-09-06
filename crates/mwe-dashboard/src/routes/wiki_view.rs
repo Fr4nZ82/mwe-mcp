@@ -319,7 +319,9 @@ async fn delete_confirm(
             }
             p {
                 "Deleting moves the whole directory subtree into "
-                code { "<workdir>/trash/" } " — the files are never erased. What happens to the "
+                code { "<workdir>/trash/" } ", where it waits — 30 days out of the box, "
+                "the " code { "retention.trash_days" } " window — and is then erased for "
+                "good. Putting it back before then is a move. What happens to the "
                 strong { "facts" } " is a separate choice, and for a wiki that holds facts it "
                 "is the one that matters: a tombstoned fact leaves recall, and putting the "
                 "directory back does not bring it back."
@@ -369,9 +371,9 @@ async fn delete_confirm(
 /// them by what they destroy: nothing, your own, everyone's.
 ///
 /// Split out of [`delete_confirm`] because this markup — not the blast-radius
-/// numbers above it — is what the operator actually has to read: the files
-/// always survive in the trash, so the only irreversible choice on the page is
-/// this one.
+/// numbers above it — is what the operator actually has to read: the files wait
+/// in the trash for the retention window, so the only choice on the page that
+/// is irreversible today is this one.
 fn disposition_fieldset() -> Markup {
     html! {
         fieldset {
@@ -471,7 +473,13 @@ async fn delete_apply(
     // The deleted subtree may have been a web-agent consumer's smart wiki:
     // drain the now-dangling consumer (and its OAuth rows) right away
     // instead of waiting for the next scheduled sweep. Best-effort.
-    match mwe_core::housekeeping::run(&state.pool, &memory.tree).await {
+    // The retention windows come from the file rather than a default:
+    // this sweep is the same one the daily loop runs, and an operator who
+    // widened a window must not have it narrowed by a wiki deletion.
+    let retention = mwe_core::config::Config::load(&memory.workdir)
+        .map(|c| c.retention)
+        .unwrap_or_default();
+    match mwe_core::housekeeping::run(&state.pool, &memory.tree, &retention).await {
         Ok(hk) if hk.is_noop() => {},
         Ok(hk) => tracing::info!(
             dangling_consumers_removed = hk.dangling_consumers_removed,
@@ -480,6 +488,9 @@ async fn delete_apply(
             delegations_removed = hk.delegations_removed,
             expired_revocations_purged = hk.expired_revocations_purged,
             events_purged = hk.events_purged,
+            audit_rows_purged = hk.audit_rows_purged,
+            undo_images_dropped = hk.undo_images_dropped,
+            trash_dirs_removed = hk.trash_dirs_removed,
             "dashboard: post-delete housekeeping swept"
         ),
         Err(error) => tracing::warn!(%error, "dashboard: post-delete housekeeping failed"),

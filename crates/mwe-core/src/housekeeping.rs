@@ -2,8 +2,8 @@
 //! Runtime housekeeping — the hygiene sweeps the hot paths defer.
 //!
 //! One entry point, [`run`], invoked at `serve` boot, once a day while the
-//! server is up, and after a dashboard wiki deletion. It drains five kinds
-//! of residue that otherwise accumulate unbounded — the first three
+//! server is up, and after a dashboard wiki deletion. It drains eight
+//! kinds of residue that otherwise accumulate unbounded — the first three
 //! observed live on the dogfood deployment:
 //!
 //! - **Expired authorization codes** — a code self-deletes on redemption
@@ -33,12 +33,27 @@
 //! - **Aged `wiki_events`** — the queue is append-only and every
 //!   `events_poll` scans it, so an unswept row costs every consumer on
 //!   every poll for ever.
+//!
+//! The last three are the operator's [retention
+//! windows](crate::config::RetentionConfig), which is why they take their
+//! ages from the config rather than from a constant here:
+//!
+//! - **Aged `tool_executions`** — one row per tool call for ever,
+//!   answering a question about the recent past.
+//! - **Spent undo images** — the page bodies a push kept so it could be
+//!   undone. The row stays and only `pre_image_json` goes, which is the
+//!   value the op-log already reads as "no revert possible from here", so
+//!   the window on the images *is* the undo window.
+//! - **Aged trash** — the wiki subtrees a deletion moved to
+//!   `<workdir>/trash/` instead of erasing. Full copies of a memory, in
+//!   cleartext, that nobody is coming back for.
 
 use std::collections::{BTreeMap, HashSet};
 
 use sqlx::SqlitePool;
 use tracing::{info, warn};
 
+use crate::config::RetentionConfig;
 use crate::error::Result;
 use crate::events::EventKind;
 use crate::oauth_server::now_iso;
@@ -71,6 +86,14 @@ pub struct HousekeepingReport {
     pub expired_revocations_purged: u64,
     /// `wiki_events` rows dropped past their retention.
     pub events_purged: u64,
+    /// `tool_executions` rows dropped past `retention.audit_days`.
+    pub audit_rows_purged: u64,
+    /// `wiki_admin_op_log` rows whose undo image was dropped past
+    /// `retention.undo_days`. The rows themselves stay.
+    pub undo_images_dropped: u64,
+    /// Directories removed from `<workdir>/trash/` past
+    /// `retention.trash_days`.
+    pub trash_dirs_removed: u64,
 }
 
 impl HousekeepingReport {
@@ -89,14 +112,22 @@ impl HousekeepingReport {
 ///
 /// As [`sqlx::Error`] — a failed sweep aborts the run (callers treat the
 /// whole pass as best-effort and log instead of dying).
-pub async fn run(pool: &SqlitePool, tree: &WikiTree) -> Result<HousekeepingReport> {
+pub async fn run(
+    pool: &SqlitePool,
+    tree: &WikiTree,
+    retention: &RetentionConfig,
+) -> Result<HousekeepingReport> {
     let now = now_iso();
+    let clock = chrono::Utc::now();
     let auth_codes_purged = purge_expired_auth_codes(pool, &now).await?;
     let (dangling_consumers_removed, delegations_removed) =
         sweep_dangling_consumers(pool, tree).await?;
     let stale_refresh_pruned = prune_stale_refresh_rows(pool, &now).await?;
     let expired_revocations_purged = purge_expired_revocations(pool, &now).await?;
-    let events_purged = purge_aged_events(pool, chrono::Utc::now()).await?;
+    let events_purged = purge_aged_events(pool, clock).await?;
+    let audit_rows_purged = purge_aged_audit(pool, clock, retention.audit_days).await?;
+    let undo_images_dropped = drop_spent_undo_images(pool, clock, retention.undo_days).await?;
+    let trash_dirs_removed = purge_aged_trash(tree, clock, retention.trash_days);
     Ok(HousekeepingReport {
         auth_codes_purged,
         stale_refresh_pruned,
@@ -104,7 +135,141 @@ pub async fn run(pool: &SqlitePool, tree: &WikiTree) -> Result<HousekeepingRepor
         delegations_removed,
         expired_revocations_purged,
         events_purged,
+        audit_rows_purged,
+        undo_images_dropped,
+        trash_dirs_removed,
     })
+}
+
+/// The cutoff `days` before `now`, or `None` when the window is `0` —
+/// which every retention window reads as *keep for ever*.
+fn cutoff(now: chrono::DateTime<chrono::Utc>, days: i64) -> Option<chrono::DateTime<chrono::Utc>> {
+    (days > 0).then(|| now - chrono::Duration::days(days))
+}
+
+/// Delete audit rows past `retention.audit_days`.
+///
+/// The trail answers *who called what, when, and did it fail* — a
+/// question about the recent past, one row per tool call. It is not the
+/// memory: nothing recalls from it, and the facts a call filed are in
+/// `fact_index` either way.
+async fn purge_aged_audit(
+    pool: &SqlitePool,
+    now: chrono::DateTime<chrono::Utc>,
+    days: i64,
+) -> Result<u64> {
+    let Some(cutoff) = cutoff(now, days) else {
+        return Ok(0);
+    };
+    let res = sqlx::query("DELETE FROM tool_executions WHERE timestamp < ?")
+        .bind(cutoff.to_rfc3339())
+        .execute(pool)
+        .await?;
+    Ok(res.rows_affected())
+}
+
+/// Drop the undo image of pushes older than `retention.undo_days`,
+/// keeping the row.
+///
+/// `pre_image_json` holds every page body a push overwrote, so the log is
+/// a second copy of the memory in proportion to how much has been pushed.
+/// `NULL` is not a hole in the row: it is what the op-log surface already
+/// reads as "no revert possible from here", and it is what a `system`
+/// revert row has carried since the column existed — so the window on the
+/// images is exactly the window in which an undo is offered.
+async fn drop_spent_undo_images(
+    pool: &SqlitePool,
+    now: chrono::DateTime<chrono::Utc>,
+    days: i64,
+) -> Result<u64> {
+    let Some(cutoff) = cutoff(now, days) else {
+        return Ok(0);
+    };
+    let res = sqlx::query(
+        "UPDATE wiki_admin_op_log SET pre_image_json = NULL
+          WHERE pre_image_json IS NOT NULL AND ts < ?",
+    )
+    .bind(cutoff.to_rfc3339())
+    .execute(pool)
+    .await?;
+    Ok(res.rows_affected())
+}
+
+/// Remove the wiki subtrees in `<workdir>/trash/` deleted more than
+/// `retention.trash_days` ago.
+///
+/// **When the deletion happened is read from the directory's name**, not
+/// from its timestamps: moving a directory into the trash does not touch
+/// its own mtime, so a wiki last written to a year ago would look a year
+/// old the moment it was deleted. `wiki_delete` names each one
+/// `<wiki-id>__<YYYYMMDD>T<HHMMSS>Z`, and that suffix is the record of
+/// the moment.
+///
+/// Anything in `trash/` whose name does not carry a stamp the engine
+/// wrote is left where it is, for ever. It is somebody's own file, put
+/// there by hand, and this sweep is not entitled to it.
+///
+/// Best-effort by design: an unreadable trash directory, or a removal
+/// that fails, is logged and skipped — never an error that aborts the
+/// rest of the housekeeping run.
+fn purge_aged_trash(tree: &WikiTree, now: chrono::DateTime<chrono::Utc>, days: i64) -> u64 {
+    let Some(cutoff) = cutoff(now, days) else {
+        return 0;
+    };
+    let trash_root = tree.workdir().join("trash");
+    let entries = match std::fs::read_dir(&trash_root) {
+        Ok(e) => e,
+        // No trash directory is the normal case: nothing has been deleted.
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return 0,
+        Err(error) => {
+            warn!(%error, path = %trash_root.display(), "housekeeping: trash unreadable; skipped");
+            return 0;
+        },
+    };
+
+    let mut removed = 0u64;
+    for entry in entries.flatten() {
+        let path = entry.path();
+        if !path.is_dir() {
+            continue;
+        }
+        let Some(name) = path.file_name().and_then(|n| n.to_str()) else {
+            continue;
+        };
+        let Some(deleted_at) = deletion_stamp(name) else {
+            continue;
+        };
+        if deleted_at >= cutoff {
+            continue;
+        }
+        match std::fs::remove_dir_all(&path) {
+            Ok(()) => {
+                removed += 1;
+                info!(
+                    path = %path.display(),
+                    deleted_at = %deleted_at.to_rfc3339(),
+                    retention_days = days,
+                    "housekeeping: trashed wiki subtree removed past its retention"
+                );
+            },
+            Err(error) => {
+                warn!(%error, path = %path.display(), "housekeeping: trash removal failed");
+            },
+        }
+    }
+    removed
+}
+
+/// The moment a trashed directory was deleted, read from the
+/// `<wiki-id>__<YYYYMMDD>T<HHMMSS>Z` name `wiki_delete` writes.
+///
+/// `None` for any other name — including a wiki id that itself contains
+/// `__`, since the stamp is taken from the **last** separator.
+fn deletion_stamp(name: &str) -> Option<chrono::DateTime<chrono::Utc>> {
+    let (_, stamp) = name.rsplit_once("__")?;
+    chrono::NaiveDateTime::parse_from_str(stamp, "%Y%m%dT%H%M%SZ")
+        .ok()
+        .map(|naive| naive.and_utc())
 }
 
 /// Delete authorization codes past their expiry.
@@ -383,7 +548,9 @@ mod tests {
         .await
         .unwrap();
 
-        let report = run(&pool, &tree).await.unwrap();
+        let report = run(&pool, &tree, &RetentionConfig::default())
+            .await
+            .unwrap();
         assert_eq!(report.dangling_consumers_removed, 1);
         assert_eq!(report.delegations_removed, 1);
         assert!(!consumer_exists(&pool, "ghost").await);
@@ -406,7 +573,9 @@ mod tests {
         .unwrap();
         seed_consumer(&pool, "bot", Some("bot")).await;
 
-        let report = run(&pool, &tree).await.unwrap();
+        let report = run(&pool, &tree, &RetentionConfig::default())
+            .await
+            .unwrap();
         assert_eq!(report.dangling_consumers_removed, 0);
         assert!(consumer_exists(&pool, "alive").await);
         assert!(consumer_exists(&pool, "bot").await);
@@ -444,7 +613,9 @@ mod tests {
             "premise: the broken meta makes walk fail"
         );
 
-        let report = run(&pool, &tree).await.unwrap();
+        let report = run(&pool, &tree, &RetentionConfig::default())
+            .await
+            .unwrap();
         // The sweep bailed instead of judging `alive` dangling.
         assert_eq!(report.dangling_consumers_removed, 0);
         assert!(consumer_exists(&pool, "alive").await);
@@ -485,7 +656,9 @@ mod tests {
         }
         assert_eq!(refresh_rows(&pool, "idle").await, 4);
 
-        let report = run(&pool, &tree).await.unwrap();
+        let report = run(&pool, &tree, &RetentionConfig::default())
+            .await
+            .unwrap();
         // Three pruned, the newest stale row kept as the wiki binding;
         // the consumer survives (its wiki still exists).
         assert_eq!(report.stale_refresh_pruned, 3);
@@ -495,7 +668,9 @@ mod tests {
         // Once the wiki goes away, the kept binding row routes the
         // consumer into the dangling sweep.
         std::fs::remove_dir_all(tree.wikis_dir().join("franz-idle")).unwrap();
-        let report = run(&pool, &tree).await.unwrap();
+        let report = run(&pool, &tree, &RetentionConfig::default())
+            .await
+            .unwrap();
         assert_eq!(report.dangling_consumers_removed, 1);
         assert!(!consumer_exists(&pool, "idle").await);
         assert_eq!(refresh_rows(&pool, "idle").await, 0);
@@ -514,7 +689,9 @@ mod tests {
             .unwrap();
         insert_stale_refresh(&pool, "hot", "franz-hot", "h-old").await;
 
-        let report = run(&pool, &tree).await.unwrap();
+        let report = run(&pool, &tree, &RetentionConfig::default())
+            .await
+            .unwrap();
         // The active row makes the stale keeper unnecessary.
         assert_eq!(report.stale_refresh_pruned, 1);
         assert_eq!(refresh_rows(&pool, "hot").await, 1);
@@ -533,7 +710,9 @@ mod tests {
         .execute(&pool)
         .await
         .unwrap();
-        let report = run(&pool, &tree).await.unwrap();
+        let report = run(&pool, &tree, &RetentionConfig::default())
+            .await
+            .unwrap();
         assert_eq!(report.auth_codes_purged, 1);
         assert!(report.stale_refresh_pruned == 0 && report.dangling_consumers_removed == 0);
     }
@@ -541,7 +720,9 @@ mod tests {
     #[tokio::test]
     async fn noop_run_reports_noop() {
         let (pool, tree, _dir) = fixture().await;
-        let report = run(&pool, &tree).await.unwrap();
+        let report = run(&pool, &tree, &RetentionConfig::default())
+            .await
+            .unwrap();
         assert!(report.is_noop());
     }
 
@@ -567,13 +748,146 @@ mod tests {
             .unwrap();
         }
 
-        let report = run(&pool, &tree).await.unwrap();
+        let report = run(&pool, &tree, &RetentionConfig::default())
+            .await
+            .unwrap();
         assert_eq!(report.expired_revocations_purged, 1);
         let left: Vec<String> = sqlx::query_scalar("SELECT jti FROM token_blacklist")
             .fetch_all(&pool)
             .await
             .unwrap();
         assert_eq!(left, vec!["live".to_owned()]);
+    }
+
+    /// Insert one audit row `age_days` old.
+    async fn insert_audit(pool: &SqlitePool, tool: &str, age_days: i64) {
+        let ts = (chrono::Utc::now() - chrono::Duration::days(age_days)).to_rfc3339();
+        sqlx::query(
+            "INSERT INTO tool_executions
+                 (timestamp, tool_name, sender_id, device_label, latency_ms)
+             VALUES (?, ?, 'alice', 'mcp', 1)",
+        )
+        .bind(ts)
+        .bind(tool)
+        .execute(pool)
+        .await
+        .unwrap();
+    }
+
+    async fn audit_tools(pool: &SqlitePool) -> Vec<String> {
+        sqlx::query_scalar("SELECT tool_name FROM tool_executions ORDER BY tool_name")
+            .fetch_all(pool)
+            .await
+            .unwrap()
+    }
+
+    /// The audit trail is kept for `retention.audit_days` and no longer.
+    #[tokio::test]
+    async fn audit_rows_past_the_window_go_and_the_rest_stay() {
+        let (pool, tree, _dir) = fixture().await;
+        insert_audit(&pool, "recent", 1).await;
+        insert_audit(&pool, "aged", 91).await;
+
+        let report = run(&pool, &tree, &RetentionConfig::default())
+            .await
+            .unwrap();
+
+        assert_eq!(report.audit_rows_purged, 1);
+        assert_eq!(audit_tools(&pool).await, vec!["recent".to_owned()]);
+    }
+
+    /// `0` is the operator saying "keep everything", not "keep nothing".
+    #[tokio::test]
+    async fn a_zero_window_keeps_the_whole_audit_trail() {
+        let (pool, tree, _dir) = fixture().await;
+        insert_audit(&pool, "ancient", 4_000).await;
+
+        let retention = RetentionConfig {
+            audit_days: 0,
+            ..RetentionConfig::default()
+        };
+        let report = run(&pool, &tree, &retention).await.unwrap();
+
+        assert_eq!(report.audit_rows_purged, 0);
+        assert_eq!(audit_tools(&pool).await, vec!["ancient".to_owned()]);
+    }
+
+    /// Insert one push row `age_days` old, carrying an undo image.
+    async fn insert_push(pool: &SqlitePool, wiki: &str, age_days: i64) {
+        let ts = (chrono::Utc::now() - chrono::Duration::days(age_days)).to_rfc3339();
+        sqlx::query(
+            "INSERT INTO wiki_admin_op_log
+                 (wiki_id, sender_id, op_kind, payload_hash, pages_affected, ts,
+                  actor_kind, pre_image_json)
+             VALUES (?, 'alice', 'push_upsert', 'h', 1, ?, 'smart_consumer',
+                     '{\"pages\":[]}')",
+        )
+        .bind(wiki)
+        .bind(ts)
+        .execute(pool)
+        .await
+        .unwrap();
+    }
+
+    /// The undo image is what ages out; the row that says who pushed what
+    /// stays, because the audit and the undo are two different questions.
+    #[tokio::test]
+    async fn a_spent_undo_image_goes_and_its_row_stays() {
+        let (pool, tree, _dir) = fixture().await;
+        insert_push(&pool, "alice", 3).await;
+        insert_push(&pool, "bob", 31).await;
+
+        let report = run(&pool, &tree, &RetentionConfig::default())
+            .await
+            .unwrap();
+
+        assert_eq!(report.undo_images_dropped, 1);
+        let rows: Vec<(String, Option<String>)> = sqlx::query_as(
+            "SELECT wiki_id, pre_image_json FROM wiki_admin_op_log ORDER BY wiki_id",
+        )
+        .fetch_all(&pool)
+        .await
+        .unwrap();
+        assert_eq!(rows.len(), 2, "both pushes are still in the log");
+        assert_eq!(rows[0].0, "alice");
+        assert!(rows[0].1.is_some(), "the recent push can still be undone");
+        assert_eq!(rows[1].0, "bob");
+        assert!(rows[1].1.is_none(), "the old one cannot, and says so");
+    }
+
+    /// Put a directory in the trash as `wiki_delete` names it.
+    fn seed_trash(tree: &WikiTree, name: &str) -> std::path::PathBuf {
+        let dir = tree.workdir().join("trash").join(name);
+        std::fs::create_dir_all(dir.join("pages")).unwrap();
+        std::fs::write(dir.join("pages").join("a.md"), "body").unwrap();
+        dir
+    }
+
+    /// A deleted wiki waits in the trash for the window and is then gone
+    /// — and the moment of the deletion is read from the name, because
+    /// moving a directory does not touch its own mtime.
+    #[tokio::test]
+    async fn trash_past_the_window_is_removed_and_the_rest_is_left_alone() {
+        let (pool, tree, _dir) = fixture().await;
+        let stamp = |age_days: i64| {
+            (chrono::Utc::now() - chrono::Duration::days(age_days))
+                .format("%Y%m%dT%H%M%SZ")
+                .to_string()
+        };
+        let recent = seed_trash(&tree, &format!("franz-recent__{}", stamp(2)));
+        let aged = seed_trash(&tree, &format!("franz-aged__{}", stamp(40)));
+        // Not ours: no stamp the engine wrote, so no claim on it — whatever
+        // an operator put in `trash/` by hand stays there for ever.
+        let by_hand = seed_trash(&tree, "notes-i-moved-here");
+
+        let report = run(&pool, &tree, &RetentionConfig::default())
+            .await
+            .unwrap();
+
+        assert_eq!(report.trash_dirs_removed, 1);
+        assert!(!aged.exists(), "the aged subtree is gone");
+        assert!(recent.exists(), "the recent one is still recoverable");
+        assert!(by_hand.exists(), "an unstamped directory is never swept");
     }
 
     /// The queue is swept at [`EVENT_RETENTION_DAYS`], and a `reminder_due`
@@ -601,7 +915,9 @@ mod tests {
             .await
             .unwrap();
 
-        let report = run(&pool, &tree).await.unwrap();
+        let report = run(&pool, &tree, &RetentionConfig::default())
+            .await
+            .unwrap();
         assert_eq!(report.events_purged, 2);
         let mut left: Vec<String> = sqlx::query_scalar("SELECT fact_id FROM wiki_events")
             .fetch_all(&pool)

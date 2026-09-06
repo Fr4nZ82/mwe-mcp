@@ -2654,6 +2654,89 @@ impl InstanceConfig {
     }
 }
 
+// ---------- Retention ----------
+
+/// Days of `tool_executions` history kept.
+const fn default_audit_days() -> i64 {
+    90
+}
+
+/// Days a push keeps the page bodies that undo it.
+const fn default_undo_days() -> i64 {
+    30
+}
+
+/// Days a deleted wiki subtree waits in `<workdir>/trash/`.
+const fn default_trash_days() -> i64 {
+    30
+}
+
+/// `retention:` section — how long the three things that grow with use,
+/// and are read by nobody after a while, are kept.
+///
+/// Every window is in **days**, and `0` on any of them means *keep for
+/// ever* — the value an operator who wants the growth sets deliberately,
+/// rather than the value they get by not reading this.
+///
+/// The sweep is the daily one in [`crate::housekeeping`], which is also
+/// what applies them at boot.
+///
+/// Two more windows exist and are **not** here, because each belongs to
+/// the section that owns the thing it bounds: `usage.retention_days`
+/// (the per-call token ledger, 400 days) and
+/// `recall.trace_retention_days` (the recall-trace journal, 90 days,
+/// which holds recalled memory verbatim).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct RetentionConfig {
+    /// Days of the per-call audit trail (`tool_executions`) kept.
+    /// Default `90`.
+    ///
+    /// One row per tool call, and the surface it answers — *who called
+    /// what, when, and did it fail* — is a question about the recent
+    /// past. A quarter covers the incident somebody comes to
+    /// investigate; a year of it is a table nobody reads and a growing
+    /// share of the database.
+    #[serde(default = "default_audit_days")]
+    pub audit_days: i64,
+    /// Days the page bodies that undo a push are kept in
+    /// `wiki_admin_op_log`. Default `30`.
+    ///
+    /// **This is the undo window.** Each push stores what its pages said
+    /// before it, and that snapshot is what the operation log's Revert
+    /// button restores; once it is dropped the row stays — who pushed
+    /// what, when — and only the undo is gone. A month, because an undo
+    /// is something a person reaches for when they notice a mistake, and
+    /// they notice within days; keeping every previous version of every
+    /// page for ever is a second copy of the memory.
+    #[serde(default = "default_undo_days")]
+    pub undo_days: i64,
+    /// Days a deleted wiki subtree stays in `<workdir>/trash/`.
+    /// Default `30`.
+    ///
+    /// Deleting a wiki moves its directory there instead of erasing it,
+    /// so a deletion regretted the same afternoon is a `mv` away. A month
+    /// later nobody is coming back for it, and it is still a full copy of
+    /// a memory sitting in cleartext under the workdir.
+    ///
+    /// Only directories the engine put there are swept: the name it
+    /// writes carries the moment of the deletion, and anything in
+    /// `trash/` whose name does not is somebody's own file and is left
+    /// alone.
+    #[serde(default = "default_trash_days")]
+    pub trash_days: i64,
+}
+
+impl Default for RetentionConfig {
+    fn default() -> Self {
+        Self {
+            audit_days: default_audit_days(),
+            undo_days: default_undo_days(),
+            trash_days: default_trash_days(),
+        }
+    }
+}
+
 // ---------- Public address ----------
 
 /// Is `raw` an address a link can be built on?
@@ -2790,6 +2873,10 @@ pub struct Config {
     /// host.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub public_base_url: Option<String>,
+    /// `retention:` section — how long the audit trail, the undo images
+    /// and the trash are kept. See [`RetentionConfig`].
+    #[serde(default)]
+    pub retention: RetentionConfig,
     /// `rate_limits:` section — how many calls one token may make, per
     /// `rate_limit_id`. See [`RateLimitsConfig`].
     ///

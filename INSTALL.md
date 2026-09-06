@@ -186,6 +186,21 @@ Everything mwe-mcp owns lives under `--workdir`:
 
 Snapshot that one folder and you've backed up the whole memory.
 
+**What the server keeps, and for how long.** Three things grow with use and
+are swept once a day, on the windows in the `retention:` section of
+`mwe-mcp.config.yaml` — `0` on any of them means keep for ever:
+
+| Key | Default | What it bounds |
+|---|---|---|
+| `retention.audit_days` | 90 days | The per-call audit trail: who called what, when, and did it fail. |
+| `retention.undo_days` | 30 days | The page bodies a smart consumer's push overwrote — **this is the undo window**: past it the operation log still says who pushed what, and the Revert button is gone. |
+| `retention.trash_days` | 30 days | Deleted wiki subtrees, which are moved to `<workdir>/trash/` rather than erased. Past the window they are erased. Anything you put in `trash/` yourself is never touched — the sweep only removes directories whose name carries the deletion stamp the server wrote. |
+
+Two more windows live in the sections that own what they bound:
+`usage.retention_days` (the per-call token ledger, 400 days) and
+`recall.trace_retention_days` (the recall-trace journal, 90 days, which holds
+recalled memory verbatim).
+
 > **Keep the workdir private.** The Markdown under it is **cleartext on disk** —
 > per-reader redaction happens when the server renders a response, not on disk.
 > Keep the workdir on a machine/user that is allowed to see the memory, and

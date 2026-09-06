@@ -28,9 +28,12 @@
 //!   fact in the subtree is tombstoned regardless of sender, destroying others'
 //!   contributions; the verb layer requires an informed confirmation.
 //!
-//! Either way the on-disk directory is then **moved** into `<workdir>/trash/`,
-//! never `rm -rf`'d — an operator who deleted the wrong wiki can move the
-//! directory back and let the watcher re-index it. Tombstoned rows survive as
+//! Either way the on-disk directory is then **moved** into `<workdir>/trash/`
+//! rather than erased — an operator who deleted the wrong wiki can move the
+//! directory back and let the watcher re-index it, for as long as the
+//! subtree is there: housekeeping removes it once it is past
+//! `retention.trash_days` (30 days out of the box), which is why the
+//! directory's name carries the moment of the deletion. Tombstoned rows survive as
 //! audit tombstones (visible under the dashboard "include inactive" filter);
 //! evacuated facts are already safe in the queue.
 //!
@@ -315,6 +318,10 @@ pub async fn delete_wiki_subtree(
         path: trash_root.clone(),
         source,
     })?;
+    // The name is the record of *when*: moving a directory does not touch
+    // its own mtime, so the retention sweep that empties the trash reads
+    // the moment of the deletion from here and from nowhere else (see
+    // `housekeeping::purge_aged_trash`).
     let stamp = chrono::Utc::now().format("%Y%m%dT%H%M%SZ");
     let trash_dir = trash_root.join(format!("{}__{stamp}", target.as_str()));
     std::fs::rename(&root_abs, &trash_dir).map_err(|source| WikiDeleteError::Move {

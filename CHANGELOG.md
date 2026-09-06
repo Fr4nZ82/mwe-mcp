@@ -514,6 +514,23 @@ and in the dashboard's session check. Eight migrations, `0068` through `0075`.
   public address from the dashboard moves it up. There is no longer a
   field for it in the Email section.
 
+- **Three things that grew for ever now have a window.** The per-call audit
+  trail kept a row per tool call since the day the deployment started; the
+  operation log kept, for every push a smart consumer ever made, the full
+  text of every page that push overwrote — a second copy of the memory,
+  growing in proportion to how much has been written; and a deleted wiki
+  waited in `<workdir>/trash/` for ever, a cleartext copy of a memory
+  somebody meant to remove. The new `retention:` section bounds all three
+  (`audit_days` 90, `undo_days` 30, `trash_days` 30; `0` on any of them
+  means keep for ever) and the daily housekeeping sweep applies them.
+
+  `undo_days` **is** the undo window, and the operation-log page says so:
+  past it the row stays — who pushed what, and when — and only the Revert
+  button goes. The trash sweep reads the moment of the deletion from the
+  directory's own name, because moving a directory does not change its
+  timestamps, and it touches nothing in `trash/` that the server did not
+  put there.
+
 ## 1.9.0 — 2026-08-02
 
 Recall was handing the model the wrong material and reaching the right page by

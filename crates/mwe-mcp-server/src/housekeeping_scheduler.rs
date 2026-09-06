@@ -8,13 +8,18 @@
 //! process that stays up for months is exactly the one that needs it most.
 //! This loop gives it a tick.
 //!
-//! One tick a day, and no config section: nothing the sweep removes is
-//! urgent — every row is already inert by the time it qualifies — while
-//! each run walks the whole wiki tree, so a shorter cadence would cost
-//! more than it buys. It is armed on a frozen instance too: the sweep
-//! takes residue, never memory, which is why the boot sweep runs there
-//! as well.
+//! One tick a day, and the cadence itself has no setting: nothing the
+//! sweep removes is urgent — every row is already inert, or past a
+//! window the operator set in days — while each run walks the whole wiki
+//! tree, so a shorter cadence would cost more than it buys. It is armed
+//! on a frozen instance too: the sweep takes residue, never memory,
+//! which is why the boot sweep runs there as well.
+//!
+//! The `retention:` windows are read once, at boot, and handed to the
+//! loop: a change to them applies at the next restart, like every other
+//! boot-read section.
 
+use mwe_core::config::RetentionConfig;
 use mwe_core::wiki::WikiTree;
 use sqlx::SqlitePool;
 use tokio::task::JoinHandle;
@@ -29,7 +34,12 @@ const INTERVAL_SECS: u64 = 24 * 60 * 60;
 /// run one inline, and repeating it immediately would only re-read an
 /// empty result.
 #[must_use]
-pub fn spawn<S>(pool: SqlitePool, tree: WikiTree, shutdown: S) -> JoinHandle<()>
+pub fn spawn<S>(
+    pool: SqlitePool,
+    tree: WikiTree,
+    retention: RetentionConfig,
+    shutdown: S,
+) -> JoinHandle<()>
 where
     S: std::future::Future<Output = ()> + Send + 'static,
 {
@@ -53,15 +63,15 @@ where
                     info!("housekeeping scheduler: shutdown signal received, exiting loop");
                     return;
                 },
-                _ = ticker.tick() => sweep(&pool, &tree).await,
+                _ = ticker.tick() => sweep(&pool, &tree, &retention).await,
             }
         }
     })
 }
 
 /// One sweep, logged the same way the boot sweep is.
-async fn sweep(pool: &SqlitePool, tree: &WikiTree) {
-    match mwe_core::housekeeping::run(pool, tree).await {
+async fn sweep(pool: &SqlitePool, tree: &WikiTree, retention: &RetentionConfig) {
+    match mwe_core::housekeeping::run(pool, tree, retention).await {
         Ok(report) if report.is_noop() => {},
         Ok(report) => info!(
             auth_codes_purged = report.auth_codes_purged,
@@ -70,6 +80,9 @@ async fn sweep(pool: &SqlitePool, tree: &WikiTree) {
             delegations_removed = report.delegations_removed,
             expired_revocations_purged = report.expired_revocations_purged,
             events_purged = report.events_purged,
+            audit_rows_purged = report.audit_rows_purged,
+            undo_images_dropped = report.undo_images_dropped,
+            trash_dirs_removed = report.trash_dirs_removed,
             "daily housekeeping: swept"
         ),
         Err(error) => warn!(%error, "daily housekeeping failed; retried tomorrow"),
@@ -95,7 +108,7 @@ mod tests {
         .await
         .unwrap();
 
-        sweep(&pool, &tree).await;
+        sweep(&pool, &tree, &RetentionConfig::default()).await;
 
         let left: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM token_blacklist")
             .fetch_one(&pool)

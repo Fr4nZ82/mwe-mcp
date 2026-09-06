@@ -634,6 +634,14 @@ const COMMENTED_KEYS: &str = "\
 #
 # public_base_url: https://memory.example
 #
+# How long the three things that grow with use are kept. `0` on any of
+# them means keep for ever. Applied by the daily housekeeping sweep.
+#
+# retention:
+#   audit_days: 90    # the per-call audit trail (`tool_executions`)
+#   undo_days: 30     # the page bodies that undo a push — the undo window
+#   trash_days: 30    # deleted wiki subtrees waiting in `<workdir>/trash/`
+#
 # Per-token call ceilings, by the `rate_limit_id` a token carries
 # (`mwe-mcp token-issue --rate-limit-id`, default `default`). The values
 # below are the built-in ones and apply with the section absent; write a
@@ -1850,9 +1858,11 @@ async fn cmd_serve_http(
     // Runtime housekeeping: drain the residue the inline paths cannot
     // reach retroactively — expired authorization codes, stale refresh
     // rows, web-agent consumers whose smart wiki was deleted, revocations
-    // of tokens that have expired anyway, aged `wiki_events`. The
-    // housekeeping scheduler below repeats it once a day.
-    match mwe_core::housekeeping::run(&state.pool, &state.tree).await {
+    // of tokens that have expired anyway, aged `wiki_events` — and apply
+    // the operator's retention windows to the audit trail, the undo
+    // images and the trash. The housekeeping scheduler below repeats it
+    // once a day.
+    match mwe_core::housekeeping::run(&state.pool, &state.tree, &config.retention).await {
         Ok(report) if report.is_noop() => {},
         Ok(report) => info!(
             auth_codes_purged = report.auth_codes_purged,
@@ -1861,6 +1871,9 @@ async fn cmd_serve_http(
             delegations_removed = report.delegations_removed,
             expired_revocations_purged = report.expired_revocations_purged,
             events_purged = report.events_purged,
+            audit_rows_purged = report.audit_rows_purged,
+            undo_images_dropped = report.undo_images_dropped,
+            trash_dirs_removed = report.trash_dirs_removed,
             "boot housekeeping: swept"
         ),
         Err(error) => warn!(%error, "boot housekeeping failed; serving anyway"),
@@ -1974,10 +1987,14 @@ async fn cmd_serve_http(
     // on a frozen instance — it takes residue, never memory, which is why
     // the boot sweep runs there too.
     let mut housekeeping_shutdown_rx = shutdown_tx.subscribe();
-    let housekeeping_handle =
-        housekeeping_scheduler::spawn(state.pool.clone(), state.tree.clone(), async move {
+    let housekeeping_handle = housekeeping_scheduler::spawn(
+        state.pool.clone(),
+        state.tree.clone(),
+        config.retention,
+        async move {
             let _ = housekeeping_shutdown_rx.recv().await;
-        });
+        },
+    );
 
     // Document worker: drives queued `wiki_ingest_external` jobs
     // (classify → segment → anchor → extract → reduce → file). Runs on

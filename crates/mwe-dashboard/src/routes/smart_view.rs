@@ -320,7 +320,7 @@ fn revert_disabled_reason(entry: &OpLogEntry) -> Option<&'static str> {
     }
     if !entry.has_pre_image {
         return Some(
-            "Not revertable: no pre-image captured (legacy row or create — the wiki did not exist before).",
+            "Not revertable: there are no page bodies to restore — this push is past the undo window, or it created the wiki, which did not exist before.",
         );
     }
     None
@@ -422,7 +422,10 @@ fn render_op_log(
             } @else {
                 "Admin users can revert individual " code { "push_*" } " rows "
                 "via the strict-conflict policy: a refusal banner "
-                "fires when any later op touched the same page."
+                "fires when any later op touched the same page. A push can be "
+                "reverted for as long as the page bodies it overwrote are kept — "
+                "the " code { "retention.undo_days" } " window, 30 days out of the "
+                "box; after that the row stays and the Revert button does not."
             }
         }
         @if entries.is_empty() {
