@@ -92,6 +92,12 @@ pub async fn submit(
     if let Err(e) = validate(&file) {
         return Ok(render_form(&state, Some(&e.to_string()), email, admin_id).into_response());
     }
+    // The same gate the admin "Add user" form applies: an id somebody was
+    // erased under is spent, and this wizard can run again on a memory that
+    // still holds what was said about them.
+    if let Err(msg) = mwe_core::enrollment::reject_if_forgotten(&state.pool, admin_id).await {
+        return Ok(render_form(&state, Some(&msg), email, admin_id).into_response());
+    }
 
     // Insert admin row + credentials in a single transaction so the
     // wizard cannot leave a half-finished bootstrap. The identity wiki

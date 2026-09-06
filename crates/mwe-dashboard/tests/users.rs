@@ -535,3 +535,46 @@ async fn user_list_tells_a_consumer_agent_from_a_person() {
     assert!(html.contains("<td>user</td>"), "{html}");
     assert!(html.contains("invited"), "{html}");
 }
+
+/// An id somebody was erased under is never handed to a new account.
+///
+/// What survives an erasure still names the person — a fact handed to
+/// another speaker keeps the name, and so does a page somebody else wrote —
+/// so a new account under the same id inherits all of it. The neighbouring
+/// id is nobody's and is created as usual, which is what makes this a gate
+/// on the id and not on the form.
+#[tokio::test]
+async fn an_erased_id_cannot_be_given_to_a_new_person() {
+    let (app, _pool, _tree, _dir) = make_app_with_memory().await;
+    let admin_cookie = login_as_admin(&app).await;
+    create_user(&app, &admin_cookie, "galadriel").await;
+
+    let response = send(
+        &app,
+        Request::builder()
+            .method("POST")
+            .uri("/users/galadriel/forget")
+            .header(header::CONTENT_TYPE, "application/x-www-form-urlencoded")
+            .header(header::COOKIE, &admin_cookie)
+            .body(Body::from("confirm_id=galadriel"))
+            .unwrap(),
+    )
+    .await;
+    assert_eq!(response.status(), StatusCode::OK);
+
+    let refused = create_user(&app, &admin_cookie, "galadriel").await;
+    assert!(
+        refused.contains("erased") && refused.contains("spent"),
+        "the form must say why the id is refused: {refused}"
+    );
+    assert!(
+        !refused.contains("/dashboard/accept-invite/"),
+        "a refused creation must not mint an invitation: {refused}"
+    );
+
+    let accepted = create_user(&app, &admin_cookie, "galadriel2").await;
+    assert!(
+        accepted.contains("/dashboard/accept-invite/"),
+        "an id nobody was erased under is still free: {accepted}"
+    );
+}

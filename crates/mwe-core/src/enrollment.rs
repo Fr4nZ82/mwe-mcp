@@ -154,6 +154,9 @@ pub enum EnrollmentError {
         /// The limit in force ([`MAX_GROUPS_PER_USER`]).
         cap: usize,
     },
+    /// The roster names an id a person was erased under.
+    #[error("{0}")]
+    IdWasForgotten(String),
     /// Underlying `sqlx` error while mirroring to the DB.
     #[error("enrollment db error: {0}")]
     Db(#[from] sqlx::Error),
@@ -810,6 +813,63 @@ pub async fn reject_if_agent(pool: &SqlitePool, user_id: &str) -> Result<(), Str
     Ok(())
 }
 
+/// Record that a person was erased under this id, so nobody is enrolled
+/// under it again ([`crate::gdpr::forget_user`], step 11).
+///
+/// Idempotent: erasing a second person who somehow held the same id keeps
+/// the first date, which is the one that matters — the id has been spent
+/// since then.
+///
+/// # Errors
+/// - [`sqlx::Error`] for any SQL failure.
+pub async fn mark_forgotten(pool: &SqlitePool, user_id: &str) -> Result<(), sqlx::Error> {
+    sqlx::query("INSERT OR IGNORE INTO forgotten_user_ids (user_id, forgotten_at) VALUES (?, ?)")
+        .bind(user_id)
+        .bind(chrono::Utc::now().to_rfc3339())
+        .execute(pool)
+        .await?;
+    Ok(())
+}
+
+/// Whether a person was erased under this id.
+///
+/// # Errors
+/// - [`sqlx::Error`] for any SQL failure.
+pub async fn is_forgotten(pool: &SqlitePool, user_id: &str) -> Result<bool, sqlx::Error> {
+    let hit: Option<i64> = sqlx::query_scalar("SELECT 1 FROM forgotten_user_ids WHERE user_id = ?")
+        .bind(user_id)
+        .fetch_optional(pool)
+        .await?;
+    Ok(hit.is_some())
+}
+
+/// The sentence a refused id is refused with. One place, because the three
+/// creation surfaces show it to the same admin.
+fn forgotten_id_refusal(user_id: &str) -> String {
+    format!(
+        "{user_id:?} was erased at a person's request and the id is spent. What the memory          still holds names them — a fact handed to another speaker keeps the name, and so          does a page somebody else wrote — so a new {user_id:?} would inherit all of it.          Choose a different id."
+    )
+}
+
+/// Gate every path that creates a user against the erased ids.
+///
+/// Returns `Err(message)` when a person was erased under `user_id`. The
+/// message is the operator's, and it says why rather than only that: the
+/// refusal looks arbitrary otherwise, and the admin is the one who has to
+/// pick another id.
+///
+/// # Errors
+/// - `Err(String)` when the id is spent, or surfacing a SQL failure.
+pub async fn reject_if_forgotten(pool: &SqlitePool, user_id: &str) -> Result<(), String> {
+    if is_forgotten(pool, user_id)
+        .await
+        .map_err(|e| e.to_string())?
+    {
+        return Err(forgotten_id_refusal(user_id));
+    }
+    Ok(())
+}
+
 /// How many people one memory may hold (founder, 2026-08-09).
 ///
 /// A **product** limit, not a scalability one: it is enforced by refusing the
@@ -884,17 +944,26 @@ async fn refuse_growth_past_limits(
 /// already passed [`validate`].
 ///
 /// Also the choke point for the **product limits** — see
-/// [`refuse_growth_past_limits`], which runs before anything is deleted.
+/// [`refuse_growth_past_limits`] — and for the erased ids
+/// ([`reject_if_forgotten`]). Both run before anything is deleted.
 ///
 /// # Errors
 ///
 /// [`EnrollmentError::TooManyUsers`] / [`EnrollmentError::TooManyGroupsForUser`]
-/// when the change would grow the roster past a limit, plus DB / JSON
-/// failures.
+/// when the change would grow the roster past a limit,
+/// [`EnrollmentError::IdWasForgotten`] when it names an id a person was
+/// erased under, plus DB / JSON failures.
 pub async fn mirror_to_db(pool: &SqlitePool, file: &EnrollmentFile) -> Result<(), EnrollmentError> {
     // Before the wholesale delete/re-insert: a refusal has to happen while
     // the old roster is still there to fall back on.
     refuse_growth_past_limits(pool, file).await?;
+    for user in &file.users {
+        if is_forgotten(pool, &user.id).await? {
+            return Err(EnrollmentError::IdWasForgotten(forgotten_id_refusal(
+                &user.id,
+            )));
+        }
+    }
     // Reads `preserved_agents` before the wholesale delete/re-insert, so
     // IMMEDIATE avoids the read→write snapshot upgrade (`database is locked`).
     let mut tx = crate::db::begin_immediate(pool).await?;

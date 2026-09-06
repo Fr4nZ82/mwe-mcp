@@ -528,6 +528,11 @@ async fn validate_user_id_for_create(
             "Id {user_id:?} clashes with an existing group — pick another id."
         )));
     }
+    // An id somebody was erased under is spent: what the memory still holds
+    // names them, and a new account under the same id would inherit it.
+    if let Err(msg) = enrollment::reject_if_forgotten(&state.pool, user_id).await {
+        return Ok(Some(msg));
+    }
     Ok(None)
 }
 
@@ -972,6 +977,13 @@ fn render_forget_confirm(
                     "Their sign-in and aliases, their group memberships, the "
                     "permissions letting an app speak as them, the notices waiting "
                     "for them, and the recent conversation window."
+                }
+                li {
+                    "The id " code { (user_id) } " itself is spent. What stays behind "
+                    "still names them, so handing the id to a new account would hand "
+                    "that person everything the memory keeps under the name. Creating "
+                    "a user under it is refused from here on; the same human coming "
+                    "back gets a different id."
                 }
             }
 

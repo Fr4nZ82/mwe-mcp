@@ -14,7 +14,7 @@ semver-governed surface: breaking changes are called out explicitly.
 The memory learned to say what a fact is *about* when that is not a person,
 and to link its pages on purpose. The rest is the engine catching up with its
 own promises — in the tool schemas, in the prompts a model obeys at runtime,
-and in the dashboard's session check. Eight migrations, `0068` through `0075`.
+and in the dashboard's session check. Ten migrations, `0068` through `0077`.
 
 ### Added
 
@@ -84,6 +84,14 @@ and in the dashboard's session check. Eight migrations, `0068` through `0075`.
   copy is kept — the wiki is erased where it stands rather than moved to the
   trash, and any subtree of theirs an earlier delete left in the trash is
   erased with it.
+
+  **The id is spent afterwards.** What survives the erasure still names the
+  person — a fact handed to another speaker keeps their name, and so does a
+  page somebody else wrote — so an account created under the same id would
+  inherit all of it, and the erasure would have moved the material instead of
+  removing it. Every path that creates a user refuses an erased id and says
+  why; the same human coming back gets a different one. Migration `0077`
+  holds that list, and it holds nothing but the id and the date.
 
 - **A fact can say what it is *about* when that is not a person.** The three
   governance axes are all principals, so none of them could hold the dog, the

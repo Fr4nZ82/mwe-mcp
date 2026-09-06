@@ -48,6 +48,18 @@
 //! subtree of theirs already sitting in the trash from an earlier delete is
 //! erased with it.
 //!
+//! ## The id does not come back
+//!
+//! What survives an erasure still names the person: a fact handed to another
+//! speaker keeps their name in `subject_external`, and a page somebody else
+//! wrote still says it. Hand the id to a new account and every one of those
+//! sentences reads as being about whoever holds it now — the erasure would
+//! have moved the material instead of removing it. So the id is written to
+//! `forgotten_user_ids` (migration `0077`) and
+//! [`crate::enrollment::reject_if_forgotten`] refuses it at every point a
+//! user is created. That list is the one thing an erasure keeps, and it
+//! keeps it in order to honour itself.
+//!
 //! ## Everything the identity is written on, in one place
 //!
 //! The rest of this module is a sweep across the tables that carry a user id,
@@ -411,6 +423,12 @@ pub async fn forget_user(
 
     // 10 — and whatever an earlier wiki delete left of theirs in the trash.
     report.trash_dirs_erased = erase_trashed_subtrees(tree, user_id);
+
+    // 11 — the id is spent. Last, so it is written only once every step
+    // above has succeeded: an erasure that failed half-way is retried under
+    // the same id, and a refusal recorded before the work would block the
+    // retry.
+    enrollment::mark_forgotten(pool, user_id).await?;
 
     tracing::info!(
         user = user_id,
@@ -1223,6 +1241,7 @@ mod tests {
     use super::{ForgetReport, REMOVED_USER_ID, export_user, forget_user, removed_sender};
     use crate::capture::{CaptureAction, CaptureRequest, wiki_capture};
     use crate::embedder::{Embedder, FakeEmbedder};
+    use crate::enrollment;
     use crate::fact_index;
     use crate::media;
     use crate::types::{FactId, Principal, WikiId};
@@ -1699,6 +1718,73 @@ mod tests {
             .await
             .unwrap();
         assert!(again.is_none());
+    }
+
+    /// The id is spent, and only that id.
+    ///
+    /// What survives the erasure still says her name — bob's fact keeps it in
+    /// `subject_external` — so an admin re-using the id would hand all of it
+    /// to a different person, and the erasure would have moved the material
+    /// rather than removed it. A neighbouring id is nobody's and passes.
+    #[tokio::test]
+    async fn her_id_is_refused_afterwards_and_a_free_one_is_not() {
+        let scene = forget_alice().await;
+
+        assert!(
+            enrollment::is_forgotten(&scene.pool, "alice")
+                .await
+                .unwrap(),
+            "the erasure records the id it spent"
+        );
+        let refusal = enrollment::reject_if_forgotten(&scene.pool, "alice")
+            .await
+            .expect_err("her id must not be handed to a new account");
+        assert!(
+            refusal.contains("alice") && refusal.contains("erased"),
+            "the refusal says whose id and why: {refusal}"
+        );
+        enrollment::reject_if_forgotten(&scene.pool, "alice2")
+            .await
+            .expect("a neighbouring id was never anybody's");
+
+        // And the roster sync refuses it too, which is the path a YAML
+        // import and the group editor both go through.
+        let file = enrollment::EnrollmentFile {
+            version: 1,
+            users: vec![
+                enrollment::UserEntry {
+                    id: "alice".to_owned(),
+                    aliases: Vec::new(),
+                    is_admin: false,
+                    locale: None,
+                    timezone: None,
+                },
+                enrollment::UserEntry {
+                    id: "bob".to_owned(),
+                    aliases: Vec::new(),
+                    is_admin: false,
+                    locale: None,
+                    timezone: None,
+                },
+            ],
+            groups: Vec::new(),
+        };
+        let err = enrollment::mirror_to_db(&scene.pool, &file)
+            .await
+            .expect_err("the roster may not re-enrol her id");
+        assert!(
+            matches!(err, enrollment::EnrollmentError::IdWasForgotten(_)),
+            "{err:?}"
+        );
+        // Refused before anything was deleted: bob is still enrolled.
+        assert!(
+            enrollment::list_users(&scene.pool)
+                .await
+                .unwrap()
+                .iter()
+                .any(|u| u.user_id == "bob"),
+            "a refused sync leaves the roster it was going to replace"
+        );
     }
 
     /// Being allowed to read somebody else's fact is not a memory of her:
