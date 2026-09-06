@@ -9,9 +9,11 @@ steps).
 through it — you may not need this guide.** Open the **Bridges** tab in the
 dashboard (or `/bridges` unauthenticated) for the copy-paste setup per supported
 host; the public front page at `/` points a capable agent straight at a
-machine-readable `install.md` it can run itself. Two hosts are covered
-point-and-click today: **Claude Code** (smart consumer, one command + OAuth) and
-**Hermes** (Nous Research — the ready-made per-turn plugin bridge).
+machine-readable `install.md` it can run itself. Three hosts are covered
+point-and-click today: **NanoClaw** (the ready-made assistant — start here if
+you have no agent of your own), **Claude Code** (smart consumer, one command +
+OAuth) and **Hermes** (Nous Research — a per-turn plugin bridge for a Hermes you
+already run).
 
 This guide is what's left once that path doesn't fit: the **per-turn contract** to
 write a bridge for a host we don't ship, and the **deployment-security rules**
@@ -20,8 +22,8 @@ LLM agent that *talks to* mwe-mcp over MCP reads
 [`AGENT_INSTRUCTIONS.md`](AGENT_INSTRUCTIONS.md) instead.
 
 > **What is solid vs. what is still moving.** The **per-turn contract** a host
-> bridge implements (below) is concrete and true of the shipped release, and the two
-> hosts in the `/bridges` catalog have working copy-paste setup. The remaining
+> bridge implements (below) is concrete and true of the shipped release, and the
+> three hosts in the `/bridges` catalog have working copy-paste setup. The remaining
 > consumer-side detail — an end-to-end worked integration for a host we don't
 > ship, the identity/delegation handshake from the consumer's point of view — is
 > still being hardened against real consumers. The authoritative answer on any
@@ -42,8 +44,8 @@ you hold a bearer token minted from its dashboard, an integration is two pieces:
 - **Pick or write a host bridge** — the thin adapter in your stack that implements
   the [per-turn contract](#the-per-turn-contract-v1--wiring-a-host-bridge) below.
   Ready-made **per-turn** bridges live under
-  [`agents-bridges/`](agents-bridges/README.md); today the one production bridge
-  there is **[Hermes](#the-ready-made-bridge-hermes)**. A *smart* consumer like
+  [`agents-bridges/`](agents-bridges/README.md): **[NanoClaw and
+  Hermes](#the-ready-made-bridges)**. A *smart* consumer like
   Claude Code needs no per-turn bridge at all — it connects natively over OAuth.
 
 **Prerequisites — all set up in [`INSTALL.md`](INSTALL.md):**
@@ -90,33 +92,45 @@ security topology below is unchanged, the memory stays behind the HTTP
 boundary. Clients that speak streamable HTTP natively (Claude Code, claude.ai,
 and most current SDKs) skip the shim entirely:
 `claude mcp add --transport http mwe-mcp https://your-server:8742/mcp --scope user`
-(then sign in over OAuth — see [below](#the-ready-made-bridge-hermes)).
+(then sign in over OAuth — see [below](#the-ready-made-bridges)).
 
 ---
 
-## The ready-made bridge (Hermes)
+## The ready-made bridges
 
-The one **per-turn** (standard-consumer) host bridge shipped today wires
-**[Hermes](https://github.com/NousResearch/hermes-agent)** (Nous Research) to a
-running mwe-mcp at full fidelity — the per-turn contract below, delivered as a
-plugin quartet with **no fork and no upstream patch**. You don't wire it by hand: the
-server serves the installer at **`/bridges/hermes`** (one command), and the
-complete step-by-step — plugins, `mwe.json`, the bot token, `config.yaml`, the
-Telegram gateway, media capture — lives in
-**[`agents-bridges/hermes/README.md`](agents-bridges/hermes/README.md)**. The
-token stays a dashboard step (issued from the home's *Connect a consumer* card);
-the installer never handles it.
+Two **per-turn** (standard-consumer) host bridges ship here, both wiring their
+host to a running mwe-mcp at full fidelity — the per-turn contract below. You
+don't wire either by hand: the server serves the installer, one command, and the
+token stays a dashboard step the installer never handles.
 
-> **One operational rule worth repeating up front:** turn Hermes's built-in
-> memory **off** (`memory_enabled: false` **and** `user_profile_enabled: false`
-> — two separate flags, both default on: the first gates `MEMORY.md`, the second
-> `USER.md`) and let mwe-mcp be the only memory.
+- **[NanoClaw](https://github.com/nanocoai/nanoclaw)** — the **ready-made
+  assistant**: the consumer to reach for when you have no agent of your own. The
+  installer at **`/bridges/nanoclaw`** places the `mwe` agent template and the
+  `add-mwe-memory` fork skill, cloning NanoClaw at the tested ref if you do not
+  have it. The complete step-by-step — the template, the skill, `mwe.json`,
+  `senderMap`, the reverse channel, media — is in
+  **[`agents-bridges/nanoclaw/README.md`](agents-bridges/nanoclaw/README.md)**.
+- **[Hermes](https://github.com/NousResearch/hermes-agent)** (Nous Research) —
+  for a Hermes you already run: a plugin quartet with **no fork and no upstream
+  patch**, served at **`/bridges/hermes`**. The step-by-step — plugins,
+  `mwe.json`, the bot token, `config.yaml`, the Telegram gateway, media
+  capture — is in
+  **[`agents-bridges/hermes/README.md`](agents-bridges/hermes/README.md)**.
+
+> **One operational rule worth repeating up front, and it binds both:** the
+> host's built-in memory goes **off**, so mwe-mcp is the only memory. In Hermes
+> that is two separate flags, both default on — `memory_enabled: false` (which
+> gates `MEMORY.md`) **and** `user_profile_enabled: false` (which gates
+> `USER.md`). In NanoClaw it is the `mwe` plugin the template stamps into a
+> group: a group carrying it creates no `memory/` tree, injects nothing at
+> session start, and carries no session between turns (the bridge README's
+> *The switches that turn nanoclaw's own memory off* names each one).
 > A second, ungoverned store accumulates stale duplicates, skips per-reader
 > redaction, and (when injected globally) leaks one user's facts into another's
 > prompts. Capture needs no "save" tool — the per-turn ingest *is* the capture
-> path. The reasoning is in the bridge README's *Design choices*.
+> path. The reasoning is in each bridge README's *Design choices*.
 
-If your host isn't Hermes, implement the
+If your host is neither, implement the
 [per-turn contract](#the-per-turn-contract-v1--wiring-a-host-bridge) below
 directly; the bridge-authoring guide is
 [`agents-bridges/README.md`](agents-bridges/README.md).
@@ -311,11 +325,36 @@ below directly.
    too, verbatim and adjacent to the block** — the field is self-labelled
    (`YOUR RULES (…)`, apply-don't-relay wording included), so add no preamble
    of your own; privacy/sharing is *not* here — it is enforced memory-side
-   by the ACL, so the agent simply never recalls what it may not see. Do **not** build a
-   separate pre-fetch recall path: the block's navigation step reuses the
-   classifier's own routing signals, which a raw pre-classification search
-   cannot reproduce. `wiki_search` remains available for explicit,
-   user-visible lookups.
+   by the ACL, so the agent simply never recalls what it may not see.
+
+   Two further **governance blocks** ride the same response and are injected
+   beside `rules`. Both are **absent, not null**, when they do not apply, and
+   neither is an answer to what the user just said — the agent raises them
+   briefly, at the end of its reply.
+   - **`pending_votes`** — the speaker owes a vote on a request to forget a
+     fact they are part of. `count` (how many are waiting), `requests` (each
+     with `proposal_id`, `fact_id`, `requester`, an RFC-3339 `deadline` and its
+     own `dashboard_path`), a top-level `dashboard_path` (`/dashboard/proposals`)
+     and `note: "vote_no_to_block_silence_is_consent"`. The vote is cast on the
+     dashboard and nowhere else, so prefix the path with the operator's base URL
+     and hand the human a link. The block carries **no fact text** — do not let
+     an agent invent it. It is pull-only and reappears every turn until the
+     member votes; silence past the deadline is consent and the fact is
+     forgotten. A guest turn never carries it.
+   - **`document_promoted`** — the turn was document-shaped, so the server
+     archived it verbatim on the media rail and queued it for document
+     ingestion; what the classifier read is a bounded excerpt plus a hand-off
+     note. `catalog_id` (the archived blob), `job_id` (the ingestion job) and
+     `existing` (the same bytes were already queued). Tell the user their
+     document is stored and will be quotable; do not ask them to send it again,
+     and do not look for its contents this turn — the reading finishes in the
+     background and lands on `events_poll` as `document_ingested`. A guest turn
+     never carries it either.
+
+   Do **not** build a separate pre-fetch recall path: the block's
+   navigation step reuses the classifier's own routing signals, which a raw
+   pre-classification search cannot reproduce. `wiki_search` remains
+   available for explicit, user-visible lookups.
 2. **You own the transcript.** mwe-mcp keeps no server-side raw-message
    archive; supply the sliding window via `recent_messages` (the server
    reads at most its configured cap, by default the last 16 entries) and
@@ -416,14 +455,15 @@ navigation off entirely by leaving the `navigator` slot unconfigured.
 
 ### Still being hardened
 
-Copy-paste client configs now ship for the two hosts in the `/bridges`
+Copy-paste client configs now ship for the three hosts in the `/bridges`
 catalog; the exact identity-claim handshake from the consumer's
 perspective, error/retry semantics, and versioning/compatibility
 guarantees are still being driven by real consumers. The
-**proactive out-of-turn delivery** in step 8 now ships in the hermes
-bridge (the `mwe-events` gateway hook drains `fact_minted_for_you`
-per-recipient and the daily-digest cron script batches the system
-kinds — see the bridge README §Reverse channel); a bridge without its
-own poll/ack loop delivers nothing out of turn. If you're
+**proactive out-of-turn delivery** in step 8 ships in both bridges
+(hermes drains `fact_minted_for_you` per-recipient in the `mwe-events`
+gateway hook and batches the system kinds in a daily-digest cron script;
+nanoclaw's host polls on its own tick and puts a delivery instruction in
+the recipient's own chat — see each bridge README §Reverse channel); a
+bridge without its own poll/ack loop delivers nothing out of turn. If you're
 integrating now and hit a gap, open an issue — real integration friction
 is exactly what we want to capture here.

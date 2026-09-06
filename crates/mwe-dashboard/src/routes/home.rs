@@ -144,8 +144,9 @@ pub async fn index(
             }
             p {
                 a href="/dashboard/bridges" { "Wire a consumer →" }
-                " — for a bridged host like hermes, the per-consumer install "
-                "instructions (plugins, install command, disabling its built-in memory)."
+                " — the ready-made assistant (NanoClaw), and the per-consumer "
+                "install instructions for any other bridged host (install "
+                "command, disabling its built-in memory)."
             }
         }
 

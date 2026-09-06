@@ -245,8 +245,24 @@ can rename a column, and the release notes say when one does.
 A running server is a memory waiting for a consumer, and your server **serves the
 setup itself**: visit `/bridges` for the copy-paste setup per consumer (the
 install address is tailored to how you reached the server), or use the
-**Bridges** tab once signed in. Two consumers are covered point-and-click today:
+**Bridges** tab once signed in. Three consumers are covered point-and-click
+today:
 
+- **[NanoClaw](https://github.com/nanocoai/nanoclaw)** (`/bridges/nanoclaw`) —
+  **the ready-made assistant**, and where to start if you have no agent of your
+  own. One command places the `mwe` agent template and the `add-mwe-memory` fork
+  skill, cloning NanoClaw at the tested ref if you do not have it:
+
+  ```bash
+  curl -fsSL http://127.0.0.1:8742/bridges/nanoclaw/install.sh | sh
+  ```
+
+  It arrives as a *standard* consumer with this memory as its **only** memory.
+  NanoClaw's own prerequisites are Node 22+, pnpm 10+ and Docker (its
+  `nanoclaw.sh` installs them), plus Claude Code to apply the skill
+  conversationally; on Windows it runs inside WSL2, so run the command there.
+  Its step-by-step setup is in
+  [`agents-bridges/nanoclaw/README.md`](agents-bridges/nanoclaw/README.md).
 - **Claude Code** (`/bridges/claude-code`) — one command plus an OAuth sign-in,
   with **no token to mint or paste**:
 
@@ -256,8 +272,8 @@ install address is tailored to how you reached the server), or use the
 
   It connects as a *smart* consumer and authors its own project wikis.
 - **[Hermes](https://github.com/NousResearch/hermes-agent)** (Nous Research,
-  `/bridges/hermes`) — the ready-made **per-turn** plugin bridge for a standard
-  consumer, installed with one command. Its step-by-step setup is in
+  `/bridges/hermes`) — the **per-turn** plugin bridge for a standard consumer
+  you already run, installed with one command. Its step-by-step setup is in
   [`agents-bridges/hermes/README.md`](agents-bridges/hermes/README.md).
 
 The public front page at `/` points an agent straight at the catalog, and each

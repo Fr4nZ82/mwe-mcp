@@ -88,7 +88,7 @@ mwe-mcp serve
 
 **3. Finish setup in the browser.** Open `http://127.0.0.1:8742/dashboard/setup`. The first-run wizard creates the admin account, your users and groups, and picks how the internal LLM runs: all-local via Ollama, hybrid, or API.
 
-**4. Connect an agent.** For Claude Code it's one command and an OAuth sign-in, with no token to paste:
+**4. Connect an agent.** If you have none of your own, take the ready-made assistant: `/bridges/nanoclaw` on your own server installs [NanoClaw](https://github.com/nanocoai/nanoclaw) with one command, preconfigured so this memory is its only memory. For Claude Code it's one command and an OAuth sign-in, with no token to paste:
 
 ```bash
 claude mcp add --transport http mwe-mcp http://127.0.0.1:8742/mcp --scope user

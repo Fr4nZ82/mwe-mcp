@@ -56,6 +56,35 @@ and in the dashboard's session check. Eight migrations, `0068` through `0075`.
   **`mwe-mcp reindex`** runs the safety-net sweep once, on demand, for a
   workdir restored from a backup or edited with the server down.
 
+- **A memory now ships with an assistant to talk to, and the server installs
+  it.** Every consumer the catalog covered was one the operator had to bring —
+  a Hermes they already ran, or a Claude Code subscription. The **NanoClaw**
+  bridge is an assistant the server installs itself: an `mwe` agent template
+  whose persona teaches that recall and capture are mechanical and that there
+  is no file on disk to keep a second copy in, plus an `add-mwe-memory` fork
+  skill that makes it true — one ingest per conversational turn, the recall
+  block in front of the turn, act-as per speaker and `guest` for anyone
+  unmapped, media out of band, and a reverse channel that delivers a notice to
+  its own recipient's chat. NanoClaw's built-in memory stands down for a group
+  carrying the plugin and no session is carried between turns, so the memory,
+  not a transcript, decides what the agent remembers. The dashboard serves it
+  at **`/bridges/nanoclaw`** as the first consumer it recommends —
+  `curl … | sh`, which clones NanoClaw at the tested ref when the operator has
+  none and writes two directories into the fork. The installer never touches
+  the token: minting it, applying the skill, the `senderMap` and the channel
+  stay the operator's five steps, printed when it finishes. There is no
+  PowerShell installer, because NanoClaw runs on Windows inside WSL2 and the
+  Windows path is the same command in a WSL2 shell.
+
+- **The per-turn contract names the two governance blocks a turn can carry.**
+  `INTEGRATING.md` documents `pending_votes` (the speaker owes a vote on a
+  request to forget a fact they are part of — the requests, the deadline past
+  which silence is consent, and the dashboard path where the vote is cast) and
+  `document_promoted` (a paste long enough to be a document was archived
+  verbatim on the media rail and queued for reading). Both are injected beside
+  `rules`, both are absent rather than null when they do not apply, and neither
+  is ever carried by a guest turn.
+
 ### Changed
 
 - **BREAKING — the per-fragment ACL axis is named `subject`, after what it

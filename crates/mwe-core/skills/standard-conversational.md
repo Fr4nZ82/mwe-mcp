@@ -14,7 +14,7 @@ This skill defines the per-turn conversation loop for **standard
 consumers** — agents that do **not** bring their own subscription LLM
 budget and route every user turn through mwe-mcp's server-side
 `ingest` LLM slot. Concrete examples shipped today: openclaw (Telegram
-bridge), hermes (CLI), nanoclaw (small embedded surface). The same
+bridge), hermes (CLI), nanoclaw (containerised agent host). The same
 pattern applies to any future consumer that wants mwe-mcp to do the
 classification + recall + capture work for them.
 

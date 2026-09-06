@@ -12,18 +12,20 @@
 //!     instructions"** link straight to its machine-readable `install.md`,
 //!     so an agent doesn't need the human guide at all.
 //!   - `GET /bridges/:consumer/install.{sh,ps1,md}` — the self-contained
-//!     installers (plugin tree embedded via [`rust_embed`] and inlined as
-//!     heredocs / here-strings; one `curl … | sh`, no `tar`/`jq`/bundle).
+//!     installers (each bridge's file tree embedded via [`rust_embed`] and
+//!     inlined as heredocs / here-strings; one `curl … | sh`, no
+//!     `tar`/`jq`/bundle). A consumer ships only the forms that can work:
+//!     claude-code has just an `install.md`, and nanoclaw no `.ps1`.
 //! - **Dashboard tab** (`/dashboard/bridges`, authenticated) for the
 //!   operator: the *same* catalog + guide bodies wrapped in the dashboard
 //!   shell, so "Bridges" sits in the nav next to Wikis / Facts / Settings.
 //!   Shared body functions take a base prefix so the in-page links resolve
 //!   under `/dashboard` there and at the root publicly.
 //!
-//! The **token never lives here** — it is a credential, issued from the
-//! dashboard home's "Connect a consumer" card. These pages and scripts
-//! only ever instruct the operator to mint it, disable the host's
-//! built-in memory, and restart.
+//! The **token never lives here** — it is a credential, minted on the
+//! dashboard's Tokens page, which the home's "Connect a consumer" card
+//! links to. These pages and scripts only ever instruct the operator to
+//! mint it, disable the host's built-in memory, and restart.
 
 use axum::Router;
 use axum::extract::{Host, Path, State};
@@ -39,7 +41,7 @@ use crate::ui::layout;
 
 /// The hermes bridge tree (plugins + gateway hooks + cron scripts),
 /// embedded from the in-repo bridge directory. Python build artifacts
-/// (`__pycache__`/`*.pyc`) are filtered out in [`plugin_files`] rather
+/// (`__pycache__`/`*.pyc`) are filtered out in [`bridge_files`] rather
 /// than via rust-embed's `#[exclude]` (which would pull in the
 /// `include-exclude` feature and its glob dependencies for no real
 /// gain), so they never reach a consumer's checkout; non-runtime files
@@ -49,17 +51,33 @@ use crate::ui::layout;
 #[folder = "$CARGO_MANIFEST_DIR/../../agents-bridges/hermes/"]
 struct HermesBridge;
 
+/// The nanoclaw bridge tree, embedded from the in-repo bridge
+/// directory. Exactly two of its directories travel to a fork — the
+/// `mwe` agent template and the `add-mwe-memory` skill; everything else
+/// (README, manifest, smokes and their stubs) is dropped by
+/// [`route_embedded_path`] returning `None`. The manifest is embedded
+/// too, unrouted, because [`nanoclaw_upstream`] reads the tested repo and
+/// ref out of it so the installer cannot drift from the bridge.
+#[derive(RustEmbed)]
+#[folder = "$CARGO_MANIFEST_DIR/../../agents-bridges/nanoclaw/"]
+struct NanoclawBridge;
+
 /// Catalog of bridged consumers, in display order. A consumer appears
 /// here only when its bridge ships a served onboarding surface — a
-/// `curl … | sh` plugin installer (hermes) **or** an agent-driven
+/// `curl … | sh` installer (nanoclaw, hermes) **or** an agent-driven
 /// `install.md` (claude-code).
+///
+/// nanoclaw leads: it is the ready-made assistant, the one consumer an
+/// operator with no agent of their own can install and talk to.
 const BRIDGES: &[(&str, &str)] = &[
+    ("nanoclaw", "NanoClaw (nanoco)"),
     ("hermes", "Hermes (Nous Research)"),
     ("claude-code", "Claude Code (Anthropic)"),
 ];
 
-/// Heredoc / here-string delimiter for the inlined plugin files. Chosen
-/// so it cannot appear in Python/YAML source; asserted by a test.
+/// Heredoc / here-string delimiter for the inlined bridge files. Chosen
+/// so it cannot appear in the Python, YAML, TypeScript, JSON or Markdown
+/// a bridge ships; asserted by a test over every embedded tree.
 const SH_DELIM: &str = "MWE_BRIDGE_EOF";
 
 fn bridge_label(consumer: &str) -> Option<&'static str> {
@@ -139,9 +157,13 @@ fn front_body(base: &str) -> Markup {
 fn catalog_body(base: &str, origin: &str) -> Markup {
     html! {
         p.muted {
-            "Bridges connect a host agent to mwe-mcp. A "
-            strong { "standard" } " consumer (hermes) is wired at full fidelity "
-            "— one ingest per turn, recall block, per-sender attribution. A "
+            "Bridges connect a host agent to mwe-mcp. Start with "
+            strong { "NanoClaw" } " if you have no agent yet: it is the "
+            "ready-made assistant, installed with one command and arriving "
+            "with this memory as its only memory. It and "
+            strong { "hermes" } " are the two " strong { "standard" }
+            " consumers, wired at full fidelity — one ingest per turn, recall "
+            "block, per-sender attribution. A "
             strong { "smart" } " consumer (Claude Code) brings its own LLM and "
             "authors a project's smart wiki over MCP. Pick your host for the "
             "setup, or hand the agent its " code { "install.md" } " directly."
@@ -220,12 +242,108 @@ fn claude_ai_section(origin: &str) -> Markup {
 
 /// Per-consumer install guide body. No token here — that lives on the
 /// dashboard home's "Connect a consumer" card. Dispatches on the
-/// consumer: hermes ships a `curl … | sh` plugin installer; claude-code
-/// is an agent-driven `install.md` (no plugins, no shell installer).
+/// consumer: nanoclaw and hermes ship a `curl … | sh` installer;
+/// claude-code is an agent-driven `install.md` (no files, no shell
+/// installer).
 fn guide_body(consumer: &str, origin: &str) -> Markup {
     match consumer {
+        "nanoclaw" => nanoclaw_guide_body(origin),
         "claude-code" => claude_code_guide_body(origin),
         _ => hermes_guide_body(consumer, origin),
+    }
+}
+
+/// Human guide for the **nanoclaw** bridge — the ready-made assistant,
+/// and the first consumer this catalog recommends. One command places
+/// the `mwe` agent template and the `add-mwe-memory` fork skill; the
+/// five steps after it are the operator's, and the token is one of them.
+///
+/// No PowerShell here on purpose: nanoclaw runs on Windows only inside
+/// WSL2, so the Windows path is the same `sh` command in a WSL2 shell —
+/// see [`render_install_ps1`].
+fn nanoclaw_guide_body(origin: &str) -> Markup {
+    let curl = format!("curl -fsSL {origin}/bridges/nanoclaw/install.sh | sh");
+    let agent_line = format!(
+        "Read {origin}/bridges/nanoclaw/install.md and follow the instructions to connect me to this memory."
+    );
+    html! {
+        p.muted {
+            strong { "Start here if you have no agent yet." } " NanoClaw is the "
+            "ready-made assistant: a chat agent that arrives with this memory "
+            "already wired as its " strong { "only" } " memory. Its built-in "
+            "memory stays off and no session is carried between turns, so what "
+            "it remembers is exactly what the memory recalls — per person, and "
+            "governed. Everything else NanoClaw gives an agent (chat, the web, "
+            "its own container, scheduled tasks, several channels at once) is "
+            "untouched."
+        }
+
+        h2 { "1. Install the template and the skill" }
+        p { "Run this anywhere. If you are already inside a NanoClaw checkout it "
+            "uses that one; otherwise it clones NanoClaw at the tested ref into "
+            code { "~/nanoclaw" } " (set " code { "NANOCLAW_DIR" }
+            " to put it elsewhere, or to point at a fork you already have):" }
+        pre.endpoint-display { (curl) }
+        p.muted {
+            "Where the files land: the " code { "mwe" } " agent template in "
+            code { "templates/mwe/" } " and the " code { "add-mwe-memory" }
+            " fork skill in " code { ".claude/skills/add-mwe-memory/" }
+            ", both inside the checkout. The installer itself needs only "
+            code { "git" } " — NanoClaw's own "
+            code { "nanoclaw.sh" } " installs Node, pnpm and Docker if they are "
+            "missing. Claude Code is what drives the skill conversationally in "
+            "step 2."
+        }
+        p.muted {
+            strong { "Windows:" } " NanoClaw runs under WSL2, so there is no "
+            "PowerShell installer. Open your WSL2 shell and run the command "
+            "above there."
+        }
+
+        h3 { "…or let the agent do it" }
+        p { "Paste this to an agent that already has a shell — it runs the same "
+            "installer and then hands you the steps below:" }
+        pre.endpoint-display { (agent_line) }
+        p.muted {
+            "Machine-readable form: "
+            a href="/bridges/nanoclaw/install.md" { "/bridges/nanoclaw/install.md" }
+        }
+
+        h2 { "2. Finish (the steps the installer leaves to you)" }
+        p { "The installer never touches your token. From the checkout:" }
+        ol {
+            li {
+                "Stamp the agent. On a fresh install run " code { "bash nanoclaw.sh" }
+                " and answer the first-agent question with "
+                strong { "From local templates" } ", then " code { "mwe" }
+                ". On an install that already has agents: "
+                code { "ncl groups create --template mwe --name mwe --new" }
+                " — " code { "--name" } " is yours, it becomes the agent's name "
+                "and its group folder."
+            }
+            li {
+                "Apply the skill: " code { "/add-mwe-memory" } " from Claude Code. "
+                "Without Claude Code, the same steps are ordinary shell commands "
+                "in " code { ".claude/skills/add-mwe-memory/SKILL.md" } "."
+            }
+            li {
+                "Issue a " strong { "standard" } " consumer token from the "
+                a href="/dashboard/tokens" { "Tokens" } " page and set it as "
+                code { "MWE_TOKEN" } " in the checkout's " code { ".env" }
+                ". In that consumer's delegations tick every person it will "
+                "speak for, plus " code { "guest" } " — without " code { "guest" }
+                " an unrecognised sender is refused instead of answered "
+                "anonymously."
+            }
+            li {
+                "Fill in " code { "senderMap" } " in " code { "mwe.json" }
+                " — one line per person, " code { "<channel>:<platform id>" }
+                " to their mwe user id — and restart NanoClaw. Anyone not listed "
+                "speaks as a guest; there is no fallback to the owner."
+            }
+            li { "Connect a channel (" code { "/manage-channels" }
+                ", or " code { "ncl wirings create" } ") and talk to it." }
+        }
     }
 }
 
@@ -395,11 +513,37 @@ enum Dest {
     HermesHome,
     /// Under `$HERMES_SRC/` — inside the hermes checkout.
     HermesSrc,
+    /// Under `$NANOCLAW_DIR/` — inside the nanoclaw checkout, which is
+    /// the one destination that bridge has.
+    NanoclawDir,
+}
+
+impl Dest {
+    /// The shell variable the POSIX installer writes this destination
+    /// through. Each bridge's routing only ever yields its own
+    /// destinations, so one table serves every installer.
+    const fn sh_var(&self) -> &'static str {
+        match self {
+            Self::HermesHome => "$HERMES_HOME",
+            Self::HermesSrc => "$HERMES_SRC",
+            Self::NanoclawDir => "$NANOCLAW_DIR",
+        }
+    }
 }
 
 /// Route an embedded path to its destination base + relative path.
 /// `None` drops non-runtime files (README, smokes, the manifest).
-fn route_embedded_path(rel: &str) -> Option<(Dest, String)> {
+fn route_embedded_path(consumer: &str, rel: &str) -> Option<(Dest, String)> {
+    match consumer {
+        "nanoclaw" => route_nanoclaw_path(rel),
+        _ => route_hermes_path(rel),
+    }
+}
+
+/// hermes: three out-of-tree plugin families plus hooks and cron
+/// scripts under `$HERMES_HOME`, and the context engine inside the
+/// checkout.
+fn route_hermes_path(rel: &str) -> Option<(Dest, String)> {
     // The three out-of-tree plugin families flatten into
     // `$HERMES_HOME/plugins/<name>/` — hermes's user plugin dir has no
     // family subdirectories.
@@ -419,34 +563,124 @@ fn route_embedded_path(rel: &str) -> Option<(Dest, String)> {
     None
 }
 
-/// Embedded plugin files in deterministic order, `(relpath, utf8)`.
-fn plugin_files() -> Vec<(String, String)> {
-    let mut names: Vec<String> = HermesBridge::iter()
-        .map(std::borrow::Cow::into_owned)
+/// nanoclaw: two directories travel, and nothing else. The agent
+/// template keeps its path; the fork skill moves under the checkout's
+/// `.claude/skills/`, which is where nanoclaw looks for one. Everything
+/// the skill needs to run in the fork — its modules, its patcher, its
+/// tests — is inside that directory and travels with it.
+fn route_nanoclaw_path(rel: &str) -> Option<(Dest, String)> {
+    if rel.starts_with("templates/mwe/") {
+        return Some((Dest::NanoclawDir, rel.to_owned()));
+    }
+    if rel.starts_with("skills/add-mwe-memory/") {
+        return Some((Dest::NanoclawDir, format!(".claude/{rel}")));
+    }
+    None
+}
+
+/// Embedded bridge files in deterministic order, `(relpath, utf8)`.
+fn bridge_files(consumer: &str) -> Vec<(String, String)> {
+    let mut files: Vec<(String, String)> = match consumer {
+        "nanoclaw" => NanoclawBridge::iter()
+            .filter_map(|rel| {
+                NanoclawBridge::get(&rel).map(|f| {
+                    (
+                        rel.into_owned(),
+                        String::from_utf8_lossy(&f.data).into_owned(),
+                    )
+                })
+            })
+            .collect(),
         // Keep Python build artifacts out of the consumer's checkout:
         // CPython writes them under `__pycache__`, so dropping that dir
         // drops every `.pyc` (the sole guard — see [`HermesBridge`]).
-        .filter(|rel| !rel.contains("__pycache__"))
-        .collect();
-    names.sort();
-    names
-        .into_iter()
-        .filter_map(|rel| {
-            HermesBridge::get(&rel).map(|f| (rel, String::from_utf8_lossy(&f.data).into_owned()))
-        })
-        .collect()
+        _ => HermesBridge::iter()
+            .filter(|rel| !rel.contains("__pycache__"))
+            .filter_map(|rel| {
+                HermesBridge::get(&rel).map(|f| {
+                    (
+                        rel.into_owned(),
+                        String::from_utf8_lossy(&f.data).into_owned(),
+                    )
+                })
+            })
+            .collect(),
+    };
+    files.sort();
+    files
 }
 
-/// Generate the self-contained POSIX installer, or `None` for an
-/// unknown consumer.
+/// Read one string key of the `[upstream]` table out of the nanoclaw
+/// bridge's embedded `bridge.toml`, so the installer clones the exact
+/// repo and ref the bridge is tested against and the two can never
+/// drift. `None` when the key is absent — the installer then 404s
+/// rather than shipping an unpinned `git clone`.
+///
+/// A hand-rolled scan rather than a TOML parser: this reads two string
+/// keys out of a file this repository writes, and a dependency to do it
+/// would be paid by every build.
+fn nanoclaw_upstream(key: &str) -> Option<String> {
+    let manifest = NanoclawBridge::get("bridge.toml")?;
+    let manifest = String::from_utf8_lossy(&manifest.data).into_owned();
+    let mut table = "";
+    for line in manifest.lines() {
+        let line = line.trim();
+        if let Some(name) = line.strip_prefix('[').and_then(|l| l.strip_suffix(']')) {
+            table = name;
+        } else if table == "upstream"
+            && let Some((k, value)) = line.split_once('=')
+            && k.trim() == key
+        {
+            return Some(value.trim().trim_matches('"').to_owned());
+        }
+    }
+    None
+}
+
+/// Generate the self-contained POSIX installer, or `None` for a
+/// consumer without one (claude-code registers itself over MCP; an
+/// unknown name has no bridge at all).
+fn render_install_sh(consumer: &str) -> Option<String> {
+    match consumer {
+        "hermes" => Some(render_install_sh_hermes()),
+        "nanoclaw" => render_install_sh_nanoclaw(),
+        _ => None,
+    }
+}
+
+/// Append every routed file of a bridge as a `mkdir -p` + quoted
+/// heredoc, so the installer carries its whole tree with no archive,
+/// no `tar` and no second fetch. The delimiter is quoted, so nothing
+/// inside a file is expanded by the shell.
+fn push_heredoc_writes(s: &mut String, consumer: &str) {
+    for (rel, content) in bridge_files(consumer) {
+        let Some((dest, dest_rel)) = route_embedded_path(consumer, &rel) else {
+            continue;
+        };
+        let full = format!("{}/{dest_rel}", dest.sh_var());
+        let parent = full.rsplit_once('/').map_or(full.as_str(), |(p, _)| p);
+        s.push_str("mkdir -p \"");
+        s.push_str(parent);
+        s.push_str("\"\n");
+        s.push_str("cat > \"");
+        s.push_str(&full);
+        s.push_str("\" <<'");
+        s.push_str(SH_DELIM);
+        s.push_str("'\n");
+        s.push_str(&content);
+        if !content.ends_with('\n') {
+            s.push('\n');
+        }
+        s.push_str(SH_DELIM);
+        s.push('\n');
+    }
+}
+
 #[allow(
     clippy::literal_string_with_formatting_args,
     reason = "shell ${VAR:-default} braces are not Rust format args"
 )]
-fn render_install_sh(consumer: &str) -> Option<String> {
-    if consumer != "hermes" {
-        return None;
-    }
+fn render_install_sh_hermes() -> String {
     let mut s = String::new();
     s.push_str("#!/bin/sh\n");
     s.push_str(
@@ -465,39 +699,100 @@ fn render_install_sh(consumer: &str) -> Option<String> {
     s.push_str("  fi\n");
     s.push_str("fi\n\n");
 
-    for (rel, content) in plugin_files() {
-        let Some((dest, dest_rel)) = route_embedded_path(&rel) else {
-            continue;
-        };
-        let base = match dest {
-            Dest::HermesHome => "$HERMES_HOME",
-            Dest::HermesSrc => "$HERMES_SRC",
-        };
-        let full = format!("{base}/{dest_rel}");
-        let parent = full.rsplit_once('/').map_or(full.as_str(), |(p, _)| p);
-        s.push_str("mkdir -p \"");
-        s.push_str(parent);
-        s.push_str("\"\n");
-        s.push_str("cat > \"");
-        s.push_str(&full);
-        s.push_str("\" <<'");
-        s.push_str(SH_DELIM);
-        s.push_str("'\n");
-        s.push_str(&content);
-        if !content.ends_with('\n') {
-            s.push('\n');
-        }
-        s.push_str(SH_DELIM);
-        s.push('\n');
-    }
+    push_heredoc_writes(&mut s, "hermes");
 
     s.push_str(
         "\nprintf '%s\\n' \"\" \\\n  \"mwe-mcp hermes bridge: files installed.\" \\\n  \"  memory + media + watchdog -> $HERMES_HOME/plugins/\" \\\n  \"  reverse-channel hook -> $HERMES_HOME/hooks/mwe-events/ (auto-discovered)\" \\\n  \"  daily digest script -> $HERMES_HOME/scripts/mwe-daily-digest.py\" \\\n  \"  context engine -> $HERMES_SRC/plugins/context_engine/\" \\\n  \"\" \\\n  \"Four steps remain — they are yours (the installer never handles your token):\" \\\n  \"  1. Issue a token from your mwe-mcp dashboard home and set MWE_TOKEN in hermes's .env.\" \\\n  \"  2. Disable hermes's built-in memory (memory_enabled: false AND user_profile_enabled: false) so mwe-mcp is the only memory.\" \\\n  \"  3. Enable the hook plugins in config.yaml plugins.enabled: mwe-watchdog (recommended) and mwe-media (if you want media capture).\" \\\n  \"  4. Restart hermes so it loads the new plugins.\" \\\n  \"Optional: the daily memory digest cron — see the header of mwe-daily-digest.py.\"\n",
     );
+    s
+}
+
+/// The nanoclaw installer resolves a fork before it writes anything:
+/// an explicit `NANOCLAW_DIR` wins, else the current directory when it
+/// is already a checkout, else `~/nanoclaw` — cloned at the manifest's
+/// pin when it does not exist, and refused when it exists as something
+/// else, because writing a template into a stranger's directory is
+/// worse than stopping.
+///
+/// `None` when the manifest carries no upstream repo or pin: an
+/// installer that cloned an unpinned `main` would place a bridge beside
+/// a nanoclaw it was never tested against.
+#[allow(
+    clippy::literal_string_with_formatting_args,
+    reason = "shell ${VAR:-default} braces are not Rust format args"
+)]
+fn render_install_sh_nanoclaw() -> Option<String> {
+    let repo = nanoclaw_upstream("repo")?;
+    let pin = nanoclaw_upstream("pin")?;
+    let mut s = String::new();
+    s.push_str("#!/bin/sh\n");
+    s.push_str(
+        "# mwe-mcp NanoClaw bridge installer — self-contained, served by your mwe-mcp server.\n",
+    );
+    s.push_str(
+        "# Places the `mwe` agent template and the add-mwe-memory fork skill into a\n\
+         # NanoClaw checkout, cloning one at the tested ref if you have none.\n\
+         # It needs only git: nanoclaw.sh installs Node, pnpm and Docker itself.\n\
+         # It never touches your token.\n",
+    );
+    s.push_str("set -eu\n\n");
+    s.push_str("NANOCLAW_REPO=\"");
+    s.push_str(&repo);
+    s.push_str("\"\nNANOCLAW_REF=\"");
+    s.push_str(&pin);
+    s.push_str("\"\n\n");
+    s.push_str("# A checkout is a directory carrying nanoclaw's own entry point and\n");
+    s.push_str("# package name — enough to tell a fork from an unrelated directory.\n");
+    s.push_str("is_nanoclaw_checkout() {\n");
+    s.push_str("  [ -f \"$1/nanoclaw.sh\" ] && grep -q '\"name\": *\"nanoclaw\"' \"$1/package.json\" 2>/dev/null\n");
+    s.push_str("}\n\n");
+    s.push_str("if [ -n \"${NANOCLAW_DIR:-}\" ]; then\n");
+    s.push_str("  :\n");
+    s.push_str("elif is_nanoclaw_checkout \"$(pwd)\"; then\n");
+    s.push_str("  NANOCLAW_DIR=\"$(pwd)\"\n");
+    s.push_str("else\n");
+    s.push_str("  NANOCLAW_DIR=\"$HOME/nanoclaw\"\n");
+    s.push_str("fi\n\n");
+    s.push_str("if [ -e \"$NANOCLAW_DIR\" ]; then\n");
+    s.push_str("  if ! is_nanoclaw_checkout \"$NANOCLAW_DIR\"; then\n");
+    s.push_str("    echo \"error: $NANOCLAW_DIR exists but is not a nanoclaw checkout.\" >&2\n");
+    s.push_str("    echo \"       Set NANOCLAW_DIR=/path/to/your/nanoclaw, or move that directory aside.\" >&2\n");
+    s.push_str("    exit 1\n");
+    s.push_str("  fi\n");
+    s.push_str("  echo \"using the nanoclaw checkout at $NANOCLAW_DIR\"\n");
+    s.push_str("else\n");
+    s.push_str("  command -v git >/dev/null 2>&1 || { echo \"error: git is needed to fetch nanoclaw\" >&2; exit 1; }\n");
+    s.push_str("  echo \"cloning nanoclaw $NANOCLAW_REF into $NANOCLAW_DIR\"\n");
+    s.push_str(
+        "  git clone --branch \"$NANOCLAW_REF\" --depth 1 \"$NANOCLAW_REPO\" \"$NANOCLAW_DIR\"\n",
+    );
+    s.push_str("fi\n\n");
+
+    push_heredoc_writes(&mut s, "nanoclaw");
+
+    s.push_str(
+        "\nprintf '%s\\n' \"\" \\\n  \
+         \"mwe-mcp NanoClaw bridge: files installed into $NANOCLAW_DIR.\" \\\n  \
+         \"  mwe agent template -> $NANOCLAW_DIR/templates/mwe/\" \\\n  \
+         \"  add-mwe-memory skill -> $NANOCLAW_DIR/.claude/skills/add-mwe-memory/\" \\\n  \
+         \"\" \\\n  \
+         \"Five steps remain — they are yours; the installer never handles your token:\" \\\n  \
+         \"  1. Stamp the agent. Fresh install: run 'bash nanoclaw.sh' from $NANOCLAW_DIR and answer the first-agent question with 'From local templates', then mwe. Existing install: ncl groups create --template mwe --name mwe --new (--name is yours).\" \\\n  \
+         \"  2. Apply the skill: /add-mwe-memory from Claude Code, or the shell commands listed in .claude/skills/add-mwe-memory/SKILL.md.\" \\\n  \
+         \"  3. Issue a STANDARD consumer token from your mwe-mcp dashboard, set MWE_TOKEN in $NANOCLAW_DIR/.env, and tick every person it speaks for plus guest in its delegations.\" \\\n  \
+         \"  4. Fill in senderMap in $NANOCLAW_DIR/mwe.json — one line per person — and restart nanoclaw.\" \\\n  \
+         \"  5. Connect a channel and talk to it.\"\n",
+    );
     Some(s)
 }
 
-/// Generate the self-contained PowerShell installer.
+/// Generate the self-contained PowerShell installer — hermes only.
+///
+/// nanoclaw runs on Windows inside WSL2, which is a Linux install: its
+/// Windows path is the same `install.sh` run from a WSL2 shell, and the
+/// guide says so. A PowerShell script would place a fork on the Windows
+/// side that `nanoclaw.sh` cannot be run from, so this bridge ships
+/// none.
 fn render_install_ps1(consumer: &str) -> Option<String> {
     if consumer != "hermes" {
         return None;
@@ -517,13 +812,16 @@ fn render_install_ps1(consumer: &str) -> Option<String> {
     s.push_str("  Set-Content -LiteralPath $path -Value $Content\n");
     s.push_str("}\n\n");
 
-    for (rel, content) in plugin_files() {
-        let Some((dest, dest_rel)) = route_embedded_path(&rel) else {
+    for (rel, content) in bridge_files("hermes") {
+        let Some((dest, dest_rel)) = route_embedded_path("hermes", &rel) else {
             continue;
         };
         let base_var = match dest {
             Dest::HermesHome => "$HermesHome",
             Dest::HermesSrc => "$HermesSrc",
+            // This installer is hermes-only (see the fn doc), so the
+            // nanoclaw destination can never be routed into it.
+            Dest::NanoclawDir => continue,
         };
         s.push_str("Write-PluginFile ");
         s.push_str(base_var);
@@ -563,10 +861,79 @@ fn render_install_ps1(consumer: &str) -> Option<String> {
 /// per consumer; `None` for one without a served `install.md`.
 fn render_install_md(consumer: &str, origin: &str) -> Option<String> {
     match consumer {
+        "nanoclaw" => Some(render_install_md_nanoclaw(origin)),
         "hermes" => Some(render_install_md_hermes(origin)),
         "claude-code" => Some(render_install_md_claude_code(origin)),
         _ => None,
     }
+}
+
+/// Agent-driven install for the **nanoclaw** bridge — points the agent
+/// at the served `curl … | sh` installer, then hands it the five steps
+/// it must have the *operator* do. The token is one of them: an agent
+/// that mints or pastes a credential on the operator's behalf is the
+/// one failure mode this whole surface is shaped to prevent.
+fn render_install_md_nanoclaw(origin: &str) -> String {
+    format!(
+        "# Install the mwe-mcp NanoClaw bridge\n\
+         \n\
+         You are connecting **NanoClaw** — the ready-made assistant of a\n\
+         first-party mwe-mcp memory server at `{origin}` — to that server. The\n\
+         installer is served by the same server:\n\
+         \n\
+         ```sh\n\
+         curl -fsSL {origin}/bridges/nanoclaw/install.sh | sh\n\
+         ```\n\
+         \n\
+         Run it from anywhere. If the current directory is already a NanoClaw\n\
+         checkout it uses that one; otherwise it clones NanoClaw at the tested\n\
+         ref into `~/nanoclaw`. Set `NANOCLAW_DIR` to install into a fork that\n\
+         lives elsewhere. If that path exists and is *not* a NanoClaw checkout\n\
+         the installer stops instead of writing into it — do not work around\n\
+         that, ask the operator which fork they mean.\n\
+         \n\
+         There is **no PowerShell installer**: NanoClaw runs on Windows inside\n\
+         WSL2, so on Windows the operator runs the same command in a WSL2 shell.\n\
+         \n\
+         The installer needs only `git`; NanoClaw's own `nanoclaw.sh` installs\n\
+         Node, pnpm and Docker if they are missing. It places two directories —\n\
+         the `mwe` agent template in `templates/mwe/` and the `add-mwe-memory`\n\
+         fork skill in `.claude/skills/add-mwe-memory/` — and **does not touch\n\
+         the token**.\n\
+         \n\
+         Once the files are in place, **tell your operator** to do these five\n\
+         things. Do not attempt them silently, and do not handle the token\n\
+         yourself:\n\
+         \n\
+         1. Stamp the agent. On a fresh install, run `bash nanoclaw.sh` from the\n\
+            checkout and answer the first-agent question with **From local\n\
+            templates**, then `mwe`. On an install that already has agents:\n\
+            `ncl groups create --template mwe --name mwe --new` — `--name` is\n\
+            theirs to choose, it becomes the agent's name and its group folder.\n\
+         2. Apply the skill: `/add-mwe-memory` from Claude Code. Without Claude\n\
+            Code, the same steps are ordinary shell commands in\n\
+            `.claude/skills/add-mwe-memory/SKILL.md`. It asks three questions —\n\
+            the endpoint, their chat id, their mwe user id — then copies the\n\
+            modules in, splices the reach-ins into NanoClaw's own files, writes\n\
+            `mwe.json`, builds and tests.\n\
+         3. Issue a **standard** consumer token from the mwe-mcp dashboard and\n\
+            set it as `MWE_TOKEN` in the checkout's `.env`, then tick every\n\
+            person the agent will speak for — plus `guest` — in that consumer's\n\
+            delegations. Without the `guest` delegation an unrecognised sender\n\
+            is refused rather than answered anonymously.\n\
+         4. Fill in `senderMap` in `mwe.json`, one line per person\n\
+            (`<channel>:<platform id>` → their mwe user id), and restart\n\
+            NanoClaw. Anyone not listed speaks as a guest; there is no fallback\n\
+            to the owner.\n\
+         5. Connect a channel (`/manage-channels`, or `ncl wirings create`) and\n\
+            talk to the agent.\n\
+         \n\
+         The `mwe` template is what switches NanoClaw's built-in memory off for\n\
+         a group: a group carrying that plugin creates no `memory/` tree, injects\n\
+         nothing at session start, and carries no session between turns, so\n\
+         mwe-mcp is its only memory. A group without it is an ordinary NanoClaw\n\
+         agent, untouched.\n"
+    )
 }
 
 /// Agent-driven install for the **Claude Code** smart-consumer bridge.
@@ -850,13 +1217,13 @@ mod tests {
 
     #[test]
     fn embed_excludes_pycache() {
-        for (rel, _) in plugin_files() {
+        for (rel, _) in bridge_files("hermes") {
             assert!(
                 !rel.contains("__pycache__"),
                 "embedded a __pycache__ path: {rel}"
             );
         }
-        let rels: Vec<String> = plugin_files().into_iter().map(|(r, _)| r).collect();
+        let rels: Vec<String> = bridge_files("hermes").into_iter().map(|(r, _)| r).collect();
         assert!(
             rels.iter().any(|r| r.starts_with("plugins/memory/mwe/")),
             "plugins/memory/mwe missing: {rels:?}"
@@ -887,24 +1254,206 @@ mod tests {
     }
 
     #[test]
-    fn delimiter_never_collides_with_plugin_source() {
-        for (rel, content) in plugin_files() {
-            // Only routed files travel inside heredocs/here-strings;
-            // README/smokes/manifest never reach an installer.
-            if route_embedded_path(&rel).is_none() {
-                continue;
-            }
-            for line in content.lines() {
-                assert_ne!(
-                    line, SH_DELIM,
-                    "{rel}: a line equals the sh heredoc delimiter"
-                );
-                assert!(
-                    !line.starts_with("'@"),
-                    "{rel}: a line starts with the PowerShell here-string terminator"
-                );
+    fn delimiter_never_collides_with_bridge_source() {
+        for consumer in ["hermes", "nanoclaw"] {
+            for (rel, content) in bridge_files(consumer) {
+                // Only routed files travel inside heredocs/here-strings;
+                // README/smokes/manifest never reach an installer.
+                if route_embedded_path(consumer, &rel).is_none() {
+                    continue;
+                }
+                for line in content.lines() {
+                    assert_ne!(
+                        line, SH_DELIM,
+                        "{consumer}/{rel}: a line equals the sh heredoc delimiter"
+                    );
+                    assert!(
+                        !line.starts_with("'@"),
+                        "{consumer}/{rel}: a line starts with the PowerShell here-string terminator"
+                    );
+                }
             }
         }
+    }
+
+    #[test]
+    fn nanoclaw_embed_carries_the_two_directories_that_travel() {
+        let rels: Vec<String> = bridge_files("nanoclaw")
+            .into_iter()
+            .map(|(r, _)| r)
+            .collect();
+        assert!(
+            rels.iter().any(|r| r == "templates/mwe/plugin.json"),
+            "the mwe template is missing: {rels:?}"
+        );
+        assert!(
+            rels.iter()
+                .any(|r| r == "templates/mwe/ai.nanoco.nanoclaw/context/instructions.md"),
+            "the template persona is missing"
+        );
+        assert!(
+            rels.iter().any(|r| r == "skills/add-mwe-memory/SKILL.md"),
+            "the fork skill is missing"
+        );
+        assert!(
+            rels.iter()
+                .any(|r| r.starts_with("skills/add-mwe-memory/host/")),
+            "the skill's host modules are missing"
+        );
+        assert!(
+            rels.iter()
+                .any(|r| r.starts_with("skills/add-mwe-memory/container/")),
+            "the skill's container modules are missing"
+        );
+    }
+
+    /// Two directories travel to a fork and nothing else: the bridge's
+    /// own README, manifest and smokes stay on the server. The skill's
+    /// tests DO travel — `SKILL.md` copies them into the fork, so an
+    /// upgrade that moves a reach-in fails there.
+    #[test]
+    fn nanoclaw_routing_keeps_the_bridge_scaffolding_at_home() {
+        for (rel, _) in bridge_files("nanoclaw") {
+            let routed = route_embedded_path("nanoclaw", &rel);
+            let travels =
+                rel.starts_with("templates/mwe/") || rel.starts_with("skills/add-mwe-memory/");
+            assert_eq!(
+                routed.is_some(),
+                travels,
+                "{rel}: routed={} but travels={travels}",
+                routed.is_some()
+            );
+        }
+        assert!(route_embedded_path("nanoclaw", "README.md").is_none());
+        assert!(route_embedded_path("nanoclaw", "bridge.toml").is_none());
+        assert!(route_embedded_path("nanoclaw", "smoke.sh").is_none());
+        assert!(route_embedded_path("nanoclaw", "smoke_test.ts").is_none());
+        assert!(route_embedded_path("nanoclaw", "stub_runner.py").is_none());
+    }
+
+    #[test]
+    fn nanoclaw_install_sh_writes_two_trees_and_leaves_the_token_alone() {
+        let sh = render_install_sh("nanoclaw").expect("nanoclaw sh");
+        assert!(sh.starts_with("#!/bin/sh"));
+        assert!(sh.contains("cat > \"$NANOCLAW_DIR/templates/mwe/plugin.json\""));
+        assert!(sh.contains(
+            "cat > \"$NANOCLAW_DIR/templates/mwe/ai.nanoco.nanoclaw/context/instructions.md\""
+        ));
+        assert!(sh.contains("cat > \"$NANOCLAW_DIR/.claude/skills/add-mwe-memory/SKILL.md\""));
+        assert!(
+            sh.contains("cat > \"$NANOCLAW_DIR/.claude/skills/add-mwe-memory/host/client.ts\"")
+        );
+        // The bridge's own scaffolding never reaches the fork.
+        assert!(
+            !sh.contains("$NANOCLAW_DIR/README.md")
+                && !sh.contains("$NANOCLAW_DIR/bridge.toml")
+                && !sh.contains("$NANOCLAW_DIR/smoke.sh")
+                && !sh.contains("$NANOCLAW_DIR/stub_runner.py"),
+            "non-runtime bridge files must not ride the installer"
+        );
+        // Fork resolution: an explicit dir, else the cwd when it is a
+        // checkout, else a clone into the default.
+        assert!(sh.contains("if [ -n \"${NANOCLAW_DIR:-}\" ]"));
+        assert!(sh.contains("NANOCLAW_DIR=\"$(pwd)\""));
+        assert!(sh.contains("NANOCLAW_DIR=\"$HOME/nanoclaw\""));
+        assert!(sh.contains("is not a nanoclaw checkout"));
+        assert!(sh.contains("git clone --branch \"$NANOCLAW_REF\" --depth 1"));
+        // The residual steps, and no token anywhere near them.
+        assert!(sh.contains("Five steps remain — they are yours"));
+        assert!(sh.contains("ncl groups create --template mwe --name mwe --new"));
+        assert!(sh.contains("From local templates"));
+        assert!(sh.contains("/add-mwe-memory"));
+        assert!(sh.contains("STANDARD consumer token"));
+        assert!(sh.contains("senderMap"));
+        assert!(sh.contains("Connect a channel"));
+    }
+
+    /// The installer clones the ref the bridge is tested against. The
+    /// pin is written once, in `bridge.toml`; this reads that file
+    /// straight off disk so a bumped manifest and a stale installer
+    /// cannot both be green.
+    #[test]
+    fn nanoclaw_install_sh_carries_the_manifest_pin() {
+        let manifest = include_str!(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/../../agents-bridges/nanoclaw/bridge.toml"
+        ));
+        let value_of = |key: &str| -> String {
+            let (_, value) = manifest
+                .lines()
+                .map(str::trim)
+                .find_map(|l| l.split_once('=').filter(|(k, _)| k.trim() == key))
+                .unwrap_or_else(|| panic!("bridge.toml has no {key}"));
+            value.trim().trim_matches('"').to_owned()
+        };
+        let pin = value_of("pin");
+        let repo = value_of("repo");
+        assert_eq!(nanoclaw_upstream("pin").as_deref(), Some(pin.as_str()));
+        let sh = render_install_sh("nanoclaw").expect("nanoclaw sh");
+        assert!(
+            sh.contains(&format!("NANOCLAW_REF=\"{pin}\"")),
+            "the installer does not carry the manifest pin {pin}"
+        );
+        assert!(sh.contains(&format!("NANOCLAW_REPO=\"{repo}\"")));
+    }
+
+    /// nanoclaw runs on Windows only inside WSL2, so the honest Windows
+    /// path is the same `sh` command in a WSL2 shell — not a PowerShell
+    /// installer that would place a fork bash cannot run from.
+    #[test]
+    fn nanoclaw_has_no_powershell_installer_and_the_guide_says_why() {
+        assert!(render_install_ps1("nanoclaw").is_none());
+        let html = guide_body("nanoclaw", "https://memory.anna.dev").into_string();
+        assert!(html.contains("WSL2"));
+        assert!(!html.contains("install.ps1"));
+        let md = render_install_md("nanoclaw", "https://memory.anna.dev").expect("nanoclaw md");
+        assert!(md.contains("WSL2"));
+        assert!(!md.contains("install.ps1"));
+    }
+
+    #[test]
+    fn nanoclaw_install_md_carries_origin_and_residual_steps() {
+        let md = render_install_md("nanoclaw", "https://memory.anna.dev").expect("nanoclaw md");
+        assert!(md.contains("curl -fsSL https://memory.anna.dev/bridges/nanoclaw/install.sh | sh"));
+        assert!(md.contains("tell your operator"));
+        assert!(md.contains("MWE_TOKEN"));
+        assert!(md.contains("do not handle the token"));
+        assert!(md.contains("ncl groups create --template mwe --name mwe --new"));
+        assert!(md.contains("/add-mwe-memory"));
+        assert!(md.contains("senderMap"));
+        assert!(md.contains("guest"));
+        assert!(md.contains("NANOCLAW_DIR"));
+    }
+
+    #[test]
+    fn nanoclaw_guide_leads_the_catalog_and_mints_no_token() {
+        // nanoclaw is the first entry: the ready-made assistant is what
+        // an operator with no agent of their own should reach for.
+        assert_eq!(BRIDGES[0].0, "nanoclaw");
+        assert_eq!(bridge_label("nanoclaw"), Some("NanoClaw (nanoco)"));
+
+        let html = catalog_body("", "https://memory.anna.dev").into_string();
+        let nano = html
+            .find("/bridges/nanoclaw")
+            .expect("nanoclaw in the catalog");
+        let hermes = html.find("/bridges/hermes").expect("hermes in the catalog");
+        assert!(nano < hermes, "nanoclaw must be listed before hermes");
+        assert!(html.contains("ready-made assistant"));
+        assert!(html.contains("/bridges/nanoclaw/install.md"));
+        // Under the dashboard the guide link is prefixed, the install.md is not.
+        let tab_html = catalog_body("/dashboard", "https://memory.anna.dev").into_string();
+        assert!(tab_html.contains("href=\"/dashboard/bridges/nanoclaw\""));
+        assert!(tab_html.contains("/bridges/nanoclaw/install.md"));
+
+        let guide = guide_body("nanoclaw", "https://memory.anna.dev").into_string();
+        assert!(
+            guide.contains("https://memory.anna.dev/bridges/nanoclaw/install.sh | sh"),
+            "the guide must show the served install command"
+        );
+        assert!(guide.contains("From local templates"));
+        assert!(guide.contains("MWE_TOKEN"));
+        // The token is issued from the Tokens page, never minted here.
+        assert!(guide.contains("href=\"/dashboard/tokens\""));
     }
 
     #[test]
@@ -1105,6 +1654,9 @@ mod tests {
             "/bridges/nope",
             "/bridges/nope/install.sh",
             "/bridges/nope/install.md",
+            // nanoclaw is a known consumer that ships no PowerShell
+            // installer: the Windows path is the sh command in WSL2.
+            "/bridges/nanoclaw/install.ps1",
         ] {
             let resp = public_site_router()
                 .oneshot(
@@ -1118,5 +1670,32 @@ mod tests {
                 .unwrap();
             assert_eq!(resp.status(), StatusCode::NOT_FOUND, "{uri} should 404");
         }
+    }
+
+    /// The public guide, the installer and the agent instructions all
+    /// answer for nanoclaw. The authenticated tab is gated by the same
+    /// [`bridge_label`] lookup, so a label is what decides 200 vs 404
+    /// there too.
+    #[tokio::test]
+    async fn nanoclaw_public_endpoints_serve() {
+        for (uri, needle) in [
+            ("/bridges/nanoclaw", "ready-made assistant"),
+            ("/bridges/nanoclaw/install.sh", "#!/bin/sh"),
+            ("/bridges/nanoclaw/install.md", "NanoClaw"),
+        ] {
+            let resp = public_site_router()
+                .oneshot(
+                    Request::builder()
+                        .uri(uri)
+                        .header("host", "memory.anna.dev")
+                        .body(Body::empty())
+                        .unwrap(),
+                )
+                .await
+                .unwrap();
+            assert_eq!(resp.status(), StatusCode::OK, "{uri}");
+            assert!(body_string(resp).await.contains(needle), "{uri}");
+        }
+        assert!(bridge_label("nanoclaw").is_some(), "the tab needs a label");
     }
 }
