@@ -15,8 +15,9 @@
 //! first asked freezes both the time and the wording.
 //!
 //! Idempotence and the catch-up bound both live in `mwe_core::reminders`
-//! (a `(kind, fact_id)` probe, and a grace window that stops a first run
-//! announcing the whole backlog), so this module is only the clock.
+//! (a `(kind, fact_id, recipient)` probe, and a grace window that stops a
+//! first run announcing the whole backlog), so this module is only the
+//! clock.
 //!
 //! The policy is read **once, at spawn**. Unlike the backup schedule there
 //! is no console editing it, so there is nothing to hot-swap: an edit to

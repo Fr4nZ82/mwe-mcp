@@ -814,7 +814,8 @@ pub async fn reject_if_agent(pool: &SqlitePool, user_id: &str) -> Result<(), Str
 }
 
 /// Record that a person was erased under this id, so nobody is enrolled
-/// under it again ([`crate::gdpr::forget_user`], step 11).
+/// under it again ([`crate::gdpr::forget_user`] calls it, while the person
+/// is still enrolled — see the ordering note there).
 ///
 /// Idempotent: erasing a second person who somehow held the same id keeps
 /// the first date, which is the one that matters — the id has been spent
@@ -847,7 +848,10 @@ pub async fn is_forgotten(pool: &SqlitePool, user_id: &str) -> Result<bool, sqlx
 /// creation surfaces show it to the same admin.
 fn forgotten_id_refusal(user_id: &str) -> String {
     format!(
-        "{user_id:?} was erased at a person's request and the id is spent. What the memory          still holds names them — a fact handed to another speaker keeps the name, and so          does a page somebody else wrote — so a new {user_id:?} would inherit all of it.          Choose a different id."
+        "{user_id:?} was erased at a person's request and the id is spent. What the memory \
+         still holds names them — a fact handed to another speaker keeps the name, and so \
+         does a page somebody else wrote — so a new {user_id:?} would inherit all of it. \
+         Choose a different id."
     )
 }
 

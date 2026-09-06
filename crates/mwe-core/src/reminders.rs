@@ -75,9 +75,12 @@
 //! trade: a reminder that arrives a day after the appointment is worse than
 //! none.
 //!
-//! Idempotence is the existing `(kind, fact_id)` probe
-//! ([`crate::events::find_recent_event_for`]) over a year-long window, so a
-//! fact rings once even if the grace window covers several ticks.
+//! Idempotence is a `(kind, fact_id, recipient)` probe
+//! ([`crate::events::find_recent_event_for_recipient`]) over a year-long
+//! window, so a commitment rings each of its people once even if the grace
+//! window covers several ticks. Per recipient and not per fact, because a
+//! household commitment emits one notice per member and a fact-wide probe
+//! would ring the first of them and silence the rest.
 
 use chrono::{DateTime, Datelike, Timelike, Utc};
 use sqlx::SqlitePool;
@@ -94,8 +97,9 @@ const PLAN: &str = "plan";
 /// happens in [`firing_instant`].
 const CANDIDATE_WINDOW_HOURS: i64 = 48;
 
-/// Idempotence horizon for the `(kind, fact_id)` probe. A dated commitment
-/// rings once, full stop; a year is "once" with room to spare.
+/// Idempotence horizon for the `(kind, fact_id, recipient)` probe. A dated
+/// commitment rings each of its people once, full stop; a year is "once"
+/// with room to spare.
 ///
 /// Read here and by [`crate::housekeeping`], which keeps `reminder_due`
 /// rows this long against the shorter retention it applies to the rest of

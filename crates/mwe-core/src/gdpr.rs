@@ -413,7 +413,24 @@ pub async fn forget_user(
     report.lists_amended = strike_from_lists(pool, user_id, &gone).await?;
     report.orphan_smart_wikis = orphan_smart_wikis(pool, &gone, &hers).await?;
 
-    // 8 — the enrollment row, the consumers bound to the identity, the
+    // 8 — the training spool, which is on disk and not in the database. It
+    // records whole prompts, and a prompt carries the recalled memory
+    // verbatim, so it holds what every step above has been removing.
+    //
+    // Before the enrollment row goes, and so is the id below, because
+    // [`enrollment::remove_user`] is the point of no return for a **retry**:
+    // once that row is gone `forget_user` answers `Ok(None)` and there is no
+    // second attempt. Anything that can fail and must not be silently
+    // skipped therefore runs while the person is still enrolled.
+    report.training_spool_files_emptied = crate::training_spool::erase_all(tree.workdir())?;
+
+    // 9 — the id is spent. Recorded while the row still exists, which is
+    // safe in the other direction too: the list gates the *creation* of a
+    // user and nothing consults it here, so an entry written before a run
+    // that then fails blocks nothing, and the insert is idempotent.
+    enrollment::record_forgotten_id(pool, user_id).await?;
+
+    // 10 — the enrollment row, the consumers bound to the identity, the
     // OAuth artefacts and the recent window. This is also what turns their
     // identity wiki into an orphan, which is the only shape the subtree
     // delete accepts.
@@ -422,7 +439,7 @@ pub async fn forget_user(
         report.oauth_rows_removed = removal.oauth_rows_removed;
     }
 
-    // 9 — their wikis, erased rather than trashed. By now every fact that
+    // 11 — their wikis, erased rather than trashed. By now every fact that
     // was in them has left: handed over and refiled, freed into the queue,
     // or destroyed. `TombstoneAll` is the net under that — it counts
     // anything that somehow stayed, and on a healthy run it counts nothing.
@@ -440,19 +457,8 @@ pub async fn forget_user(
         report.facts_tombstoned += deleted.facts_tombstoned;
     }
 
-    // 10 — and whatever an earlier wiki delete left of theirs in the trash.
+    // 12 — and whatever an earlier wiki delete left of theirs in the trash.
     report.trash_dirs_erased = erase_trashed_subtrees(tree, user_id);
-
-    // 11 — the training spool, which is on disk and not in the database.
-    // It records whole prompts, and a prompt carries the recalled memory
-    // verbatim, so it holds what was just erased everywhere else.
-    report.training_spool_files_emptied = crate::training_spool::erase_all(tree.workdir())?;
-
-    // 12 — the id is spent. Last, so it is written only once every step
-    // above has succeeded: an erasure that failed half-way is retried under
-    // the same id, and a refusal recorded before the work would block the
-    // retry.
-    enrollment::record_forgotten_id(pool, user_id).await?;
 
     tracing::info!(
         user = user_id,
@@ -1824,6 +1830,12 @@ mod tests {
         assert!(
             refusal.contains("alice") && refusal.contains("erased"),
             "the refusal says whose id and why: {refusal}"
+        );
+        // It is read by a person, so it is a sentence: a run of spaces means
+        // a wrapped literal lost its continuation on the way in.
+        assert!(
+            !refusal.contains("  "),
+            "the refusal reads as prose, not as a wrapped literal: {refusal:?}"
         );
         enrollment::reject_if_forgotten(&scene.pool, "alice2")
             .await

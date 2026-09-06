@@ -963,12 +963,13 @@ fn remaining_minutes(expires_at: u64) -> u64 {
     expires_at.saturating_sub(now) / 60
 }
 
-/// One slot card: title + guidance, a provider `<select>` (gated client-
-/// side), a free-text model combobox (datalist suggestions from the
-/// catalog), a JS-filled metadata strip + auth warning, and an Advanced
-/// `<details>` for the temperature / max-tokens / reasoning / base-URL
-/// knobs. The `api_key_env` is not an operator-edited column: it is derived
-/// from the chosen provider on save ([`derive_api_key_env`]).
+/// One slot card: title + guidance, a provider `<select>` listing the five
+/// providers and nothing else, a free-text model combobox (datalist
+/// suggestions from the catalog), a JS-filled metadata strip that warns
+/// when the chosen provider has no key, and an Advanced `<details>` for the
+/// temperature / max-tokens / reasoning / base-URL knobs. The `api_key_env`
+/// is not an operator-edited column: it is derived from the chosen provider
+/// on save ([`derive_api_key_env`]).
 fn slot_row(guide: &SlotGuide, cfg: Option<&LlmFunctionConfig>) -> Markup {
     let key = guide.slot.yaml_key();
     let backend = cfg.map_or("", |c| c.backend.as_str());
