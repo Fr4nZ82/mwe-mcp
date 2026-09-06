@@ -1983,9 +1983,10 @@ async fn cmd_serve_http(
     };
 
     // Housekeeping scheduler: re-runs the boot sweep once a day, because
-    // the residue it drains piles up while the process is up. Armed even
-    // on a frozen instance — it takes residue, never memory, which is why
-    // the boot sweep runs there too.
+    // the residue it drains piles up while the process is up, and the
+    // retention windows are measured in days. Armed even on a frozen
+    // instance — what it takes is residue and what the operator's own
+    // windows have released, never a page a reader can still open.
     let mut housekeeping_shutdown_rx = shutdown_tx.subscribe();
     let housekeeping_handle = housekeeping_scheduler::spawn(
         state.pool.clone(),
