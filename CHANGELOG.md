@@ -412,6 +412,22 @@ and in the dashboard's session check. Eight migrations, `0068` through `0075`.
   public documents got the same pass, and `install.sh` refuses to install a
   binary whose checksum it could not fetch.
 
+- **The boot probe sends what the slot's calls send.** A model was
+  declared reachable on a request the engine never makes: sixteen output
+  tokens, no system prompt, extended thinking forced off even where the
+  slot had asked for it, and no image on the slot whose calls carry
+  photographs. Each of those is a way a provider says no — and it said no
+  on the first real turn instead, where the failure reads as the memory
+  being broken.
+
+  The probe is now built per slot: the system prompt every call carries,
+  the temperature the hot paths pin, the slot's own configured reasoning
+  effort, the ceiling from the slot's own configuration rather than a toy
+  number, and — on `ingest`, the slot whose calls carry photo bytes — an
+  image, under the same gate the real path uses. What follows is that a
+  wrong model fails at startup with the provider's own words about what
+  it refused.
+
 ### Security
 
 - **A dashboard session is only a token minted for the browser.** Every JWT in

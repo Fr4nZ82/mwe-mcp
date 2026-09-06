@@ -345,10 +345,10 @@ impl LlmBackend for SpoolingBackend {
         Ok(response)
     }
 
-    async fn health_check(&self) -> Result<()> {
+    async fn health_check(&self, probe: &CompletionRequest) -> Result<()> {
         // Delegate so a backend's cheap liveness probe stays cheap —
         // and so probe pings never pollute the training set.
-        self.inner.health_check().await
+        self.inner.health_check(probe).await
     }
 }
 

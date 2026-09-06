@@ -677,37 +677,98 @@ pub trait LlmBackend: Send + Sync {
     }
 
     /// Sanity check that this backend is reachable and the configured
-    /// model responds. Called at `mwe-mcp serve` boot for every
-    /// configured slot so the server refuses to bind the listener
-    /// when an LLM is misconfigured or unreachable; called on-demand
-    /// by `mwe-mcp doctor` for the same check post-deploy.
+    /// model answers **the shape this slot's calls have**. Called at
+    /// `mwe-mcp serve` boot for every configured slot so the server
+    /// refuses to bind the listener when an LLM is misconfigured or
+    /// unreachable; called on-demand by `mwe-mcp doctor` and by the
+    /// dashboard health page for the same check post-deploy.
     ///
-    /// Default implementation: issue a `complete` with a 1-token cap.
-    /// Backends that have a cheaper liveness probe (e.g. an
-    /// `/api/version` endpoint that does not warm a model) override
-    /// this method.
+    /// `probe` is built by the caller — [`probe_request`] — because what
+    /// a real call carries is a property of the *slot*, not of the
+    /// backend. The default implementation sends it through `complete`,
+    /// so everything the engine puts in a request is put in this one:
+    /// the system prompt, the pinned temperature, the slot's configured
+    /// reasoning effort, and an image where that slot sends images.
+    /// Backends with a cheaper liveness probe (an `/api/version`
+    /// endpoint that does not warm a model) override this and may ignore
+    /// the request.
     ///
     /// # Errors
     ///
     /// Returns whatever the underlying transport / API surface
     /// produces. The caller (boot path, doctor) renders the error to
     /// the operator.
-    async fn health_check(&self) -> Result<()> {
-        // Pins the temperature the determinism-sensitive callers pin, so
-        // boot exercises the request shape the engine actually sends rather
-        // than a stripped-down one that always passes. It lives in the
-        // default rather than in one backend so every backend gets it. Safe
-        // because [`ModelPolicy`] drops the parameter for models known to
-        // refuse it and the OpenAI-shaped backends retry once without it when
-        // a model refuses unexpectedly. A small-but-non-trivial `max_tokens`
-        // because a `max_tokens: 1` probe can return zero content blocks.
-        let probe = CompletionRequest::new("ping")
-            .with_max_tokens(16)
-            .with_temperature(HOT_PATH_TEMPERATURE)
-            .with_truncation_expected();
-        let _ = self.complete(probe).await?;
+    async fn health_check(&self, probe: &CompletionRequest) -> Result<()> {
+        let _ = self.complete(probe.clone()).await?;
         Ok(())
     }
+}
+
+/// A 1×1 transparent PNG, base64.
+///
+/// The smallest thing that is genuinely an image: it costs a provider
+/// almost nothing to accept and is refused exactly as a photograph would
+/// be by a model that cannot see, or by an endpoint that rejects the
+/// image block outright.
+const PROBE_PNG_BASE64: &str = "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNkYPhfDwAChwGA60e6kgAAAABJRU5ErkJggg==";
+
+/// The system prompt the probe sends.
+///
+/// Every real call in this engine sends one — the classifier's rules, the
+/// navigator's instructions, the Cronista's brief — so a probe without
+/// one tests a shape the engine never uses.
+const PROBE_SYSTEM: &str = "You are a health probe. Answer with the single word: ok.";
+
+/// The request a boot probe should send for `function`.
+///
+/// The rule, in one line: **send what that slot's real calls send**, so
+/// that *reachable* means "your calls will work" and not "the endpoint
+/// answered". What that means field by field, and why each one is here:
+///
+/// - **A system prompt**, because every call the engine makes carries
+///   one and a provider can refuse the field itself.
+/// - **The pinned temperature.** The hot paths pin one (the navigator and
+///   the REM revisor at 0.1, ingest likewise), so a probe that omits it
+///   tests a request the engine never sends: on 2026-07-29 a
+///   temperature-free probe reported every slot reachable while Sonnet 5
+///   answered HTTP 400 to all 16 navigator calls of the first 20 turns,
+///   and `recall_nav` swallowed each one as a partial recall. Nothing is
+///   lost by pinning it, because [`ModelPolicy`] strips the parameter for
+///   the families known to refuse it *before* the probe goes out —
+///   exactly as it does for a real call. A listed model still passes, and
+///   an **unlisted** model that has quietly dropped sampling params fails
+///   here, at boot, instead of degrading every answer in silence.
+/// - **No `max_tokens`**, deliberately. Left unset, the slot's own
+///   configured ceiling is filled in by
+///   [`SlotDefaultsBackend`](crate::config) exactly as it is for a real
+///   call — so the number the operator wrote is the number that gets
+///   tried — and where they wrote none, the backend applies its own
+///   default. It also means the reply has room to arrive: a sixteen-token
+///   ceiling cannot get a single word out of a model that reasons before
+///   it answers, and that took a deployment down in a restart loop once.
+/// - **The slot's reasoning effort**, because it is built into the
+///   backend and rides `complete`. A model that refuses a thinking block
+///   now fails at boot rather than on the first turn.
+/// - **An image, on the slot that sends images.** `ingest` is the one:
+///   it carries the photo bytes of a turn to the classifier. The probe
+///   sends [`PROBE_PNG_BASE64`] under the same gate the real path uses —
+///   only when the model says it accepts images at all.
+#[must_use]
+pub fn probe_request(
+    function: crate::config::LlmFunction,
+    backend: &dyn LlmBackend,
+) -> CompletionRequest {
+    let mut probe = CompletionRequest::new("ping")
+        .with_system(PROBE_SYSTEM)
+        .with_temperature(HOT_PATH_TEMPERATURE)
+        .with_truncation_expected();
+    if matches!(function, crate::config::LlmFunction::Ingest) && backend.accepts_images() {
+        probe = probe.with_images(vec![ImageInput {
+            mime_type: "image/png".to_owned(),
+            data_base64: PROBE_PNG_BASE64.to_owned(),
+        }]);
+    }
+    probe
 }
 
 /// HTTP client for the Ollama generate API.
@@ -1227,10 +1288,13 @@ impl LlmBackend for OllamaBackend {
     /// Liveness probe for Ollama, in two cheap steps and no completion
     /// (which would warm the model into RAM): `/api/version` says the
     /// daemon answers, `/api/show` says the configured model is pulled.
+    /// The slot's request shape is therefore not exercised here — a local
+    /// daemon accepts what it is sent and answers what it can, so the
+    /// question worth asking at boot is whether the model is there.
     /// A model that is not there fails every later call with a 404 the
     /// ingest turn would report as "nothing to save", so it is caught
     /// here, at boot and on the health page, with its name in the error.
-    async fn health_check(&self) -> Result<()> {
+    async fn health_check(&self, _probe: &CompletionRequest) -> Result<()> {
         let base = self.base_url.trim_end_matches('/');
         let response = self
             .with_auth(self.client.get(format!("{base}/api/version")))
@@ -1365,8 +1429,8 @@ impl LlmBackend for RetryingBackend {
         self.inner.accepts_images()
     }
 
-    async fn health_check(&self) -> Result<()> {
-        self.inner.health_check().await
+    async fn health_check(&self, probe: &CompletionRequest) -> Result<()> {
+        self.inner.health_check(probe).await
     }
 }
 
@@ -1765,9 +1829,8 @@ impl AnthropicBackend {
     }
 
     /// Shared body of [`LlmBackend::complete`], parameterised on the
-    /// extended-thinking `budget` so [`LlmBackend::health_check`] can
-    /// force it off (`None`): the liveness probe must not engage the
-    /// ≥1024-token thinking floor on a slot that configured an effort.
+    /// extended-thinking `budget` so a caller can send one that is not
+    /// the slot's own — `None` for no thinking at all.
     #[allow(
         clippy::too_many_lines,
         reason = "one cohesive request lifecycle: build body, auth, send, parse"
@@ -1952,10 +2015,9 @@ fn anthropic_thinking_budget(effort: Option<&str>) -> Option<u32> {
 }
 
 /// The sampling temperature the engine's determinism-sensitive callers
-/// pin (`recall_nav`, the REM revisor, the ingest classifier). The
-/// Anthropic health probe sends this same value so that boot exercises
-/// the request shape the hot paths actually use — see
-/// [`AnthropicBackend::health_check`].
+/// pin (`recall_nav`, the REM revisor, the ingest classifier). Every boot
+/// probe sends this same value so that boot exercises the request shape
+/// the hot paths actually use — see [`probe_request`].
 const HOT_PATH_TEMPERATURE: f32 = 0.1;
 
 /// Extra output ceiling handed to models that think **adaptively**, on
@@ -1970,9 +2032,10 @@ const HOT_PATH_TEMPERATURE: f32 = 0.1;
 /// and every caller treats as a failure.
 ///
 /// Measured on 2026-07-29, the first hours of a household running on
-/// Claude 5: the REM dedup revisor lost 14 of 120 calls this way and the
-/// boot probe (`max_tokens: 16`) could not get a single word out of Opus
-/// 5, which took the whole deployment down in a restart loop. The
+/// Claude 5: the REM dedup revisor lost 14 of 120 calls this way, and a
+/// boot probe that asked for sixteen tokens could not get a single word
+/// out of Opus 5, which took the whole deployment down in a restart
+/// loop. The
 /// explicit-budget path already stacks its allowance on top of the
 /// caller's ceiling; this is the same courtesy for the implicit one.
 ///
@@ -2008,9 +2071,9 @@ const REASONING_TO_ANSWER_RATIO: u32 = 2;
 ///
 /// Kept separate from [`anthropic_rejects_sampling_params`] even though
 /// the two lists overlap today: they are different facts about a model,
-/// and Opus 4.7 / 4.8 reject sampling params while still answering a
-/// 16-token probe. Conflating them would have hidden which property
-/// actually caused the outage.
+/// and Opus 4.7 / 4.8 reject sampling params while still answering under
+/// a sixteen-token ceiling. Conflating them would have hidden which
+/// property actually caused the outage.
 ///
 /// **Offline fallback only.** [`ModelPolicy::resolve`] asks the model
 /// catalog first and reaches this list for a model the catalog has never
@@ -2137,7 +2200,7 @@ impl ModelPolicy {
             .unwrap_or_else(|| !offline_rejects_sampling_params(backend_tag, model))
             && !sampling_params_refused(backend_tag, model);
         // `reasoning: true` alone is the wrong signal — Haiku 4.5 carries
-        // it and still answers a 16-token probe, because it reasons only
+        // it and still answers under a sixteen-token ceiling, because it reasons only
         // when *asked*. What breaks a small `max_tokens` is the generation
         // that reasons whether or not you asked, and its tell in the
         // catalog is the pair: **reasons, and refuses the sampling
@@ -2714,41 +2777,6 @@ impl LlmBackend for AnthropicBackend {
         resp.usage.log_prefix_cache("anthropic", &self.model);
         warn_if_truncated_chat("anthropic", &self.model, &resp);
         Ok(resp)
-    }
-
-    /// Cheap liveness probe for Anthropic: a short completion against the
-    /// configured model. The Messages API has no dedicated "list models"
-    /// endpoint that does not also exercise auth, so we use the same path
-    /// as `complete` with a minimal payload. Refuses to bind the listener
-    /// when the API key is missing or the model is misspelled.
-    ///
-    /// Calls `complete_inner` with `None` so the probe never engages
-    /// extended thinking even on a slot that configured it. It asks for a
-    /// small-but-non-trivial `max_tokens` — a `max_tokens: 1` request can
-    /// come back with **zero** content blocks on some models (the ceiling
-    /// is hit before any text is emitted), which the response parser
-    /// rejects as "no `text` content block".
-    ///
-    /// It **pins a temperature**, and that is the point of the probe
-    /// rather than an oversight. The hot paths pin one (the navigator and
-    /// the REM revisor at 0.1, ingest likewise), so a probe that omits it
-    /// tests a request shape the engine never actually sends: on
-    /// 2026-07-29 a temperature-free probe reported every slot reachable
-    /// while Sonnet 5 returned HTTP 400 on all 16 navigator calls of the
-    /// first 20 turns, and `recall_nav` swallowed each one as a partial
-    /// recall. Nothing is lost by pinning it, because
-    /// [`anthropic_rejects_sampling_params`] strips the parameter for the
-    /// families known to reject it *before* the probe goes out — exactly
-    /// as it does for a real call. So a listed model still passes, and an
-    /// **unlisted** model that has quietly dropped sampling params fails
-    /// here, at boot, instead of degrading every answer in silence.
-    async fn health_check(&self) -> Result<()> {
-        let probe = CompletionRequest::new("ping")
-            .with_max_tokens(16)
-            .with_temperature(HOT_PATH_TEMPERATURE)
-            .with_truncation_expected();
-        let _ = self.complete_inner(probe, None).await?;
-        Ok(())
     }
 }
 
@@ -3598,17 +3626,6 @@ impl LlmBackend for GeminiBackend {
         resp.usage.log_prefix_cache("gemini", &self.model);
         warn_if_truncated_chat("gemini", &self.model, &resp);
         Ok(resp)
-    }
-
-    /// Cheap liveness probe for Gemini: a minimal `generateContent`
-    /// against the configured model. Gemini has no auth-only endpoint,
-    /// so we use the same path as `complete` with a 1-char prompt.
-    /// Pinned at the mandated [`GEMINI_TEMPERATURE`] (= 1.0) so the
-    /// default trait probe's `temperature: 0.0` is never sent.
-    async fn health_check(&self) -> Result<()> {
-        let probe = CompletionRequest::new(".").with_temperature(GEMINI_TEMPERATURE);
-        let _ = self.complete(probe).await?;
-        Ok(())
     }
 }
 
@@ -5354,6 +5371,79 @@ mod tests {
         assert_eq!(r3.message.content, "fallback");
     }
 
+    /// The `ingest` slot is the one whose real calls carry photo bytes,
+    /// so its probe carries an image — and the probe of a slot that never
+    /// sends one does not, because a boot that refused a text-only model
+    /// on an image it will never be sent would be refusing the wrong
+    /// thing.
+    #[test]
+    fn only_the_ingest_probe_carries_an_image() {
+        struct Seeing(bool);
+        #[async_trait]
+        impl LlmBackend for Seeing {
+            fn model_id(&self) -> &'static str {
+                "seeing"
+            }
+            fn accepts_images(&self) -> bool {
+                self.0
+            }
+            async fn complete(&self, _r: CompletionRequest) -> Result<CompletionResponse> {
+                unreachable!("the probe builder never calls the model")
+            }
+        }
+
+        let ingest = probe_request(crate::config::LlmFunction::Ingest, &Seeing(true));
+        assert_eq!(ingest.images.len(), 1, "ingest sends photo bytes");
+        assert_eq!(ingest.images[0].mime_type, "image/png");
+
+        for other in [
+            crate::config::LlmFunction::Navigator,
+            crate::config::LlmFunction::Cronista,
+            crate::config::LlmFunction::OperatorChat,
+        ] {
+            assert!(
+                probe_request(other, &Seeing(true)).images.is_empty(),
+                "{other:?} never sends an image, so its probe does not either"
+            );
+        }
+
+        assert!(
+            probe_request(crate::config::LlmFunction::Ingest, &Seeing(false))
+                .images
+                .is_empty(),
+            "a model that cannot see is probed without one, the same gate the \
+             real ingest path applies"
+        );
+    }
+
+    /// Every probe carries the shape a real call has: a system prompt and
+    /// the pinned temperature. It carries **no** `max_tokens`, so the
+    /// slot's own configured ceiling is what gets tried — filled in by
+    /// `SlotDefaultsBackend`, exactly as it is on a real call.
+    #[test]
+    fn a_probe_has_the_shape_of_a_real_call() {
+        struct Any;
+        #[async_trait]
+        impl LlmBackend for Any {
+            fn model_id(&self) -> &'static str {
+                "any"
+            }
+            async fn complete(&self, _r: CompletionRequest) -> Result<CompletionResponse> {
+                unreachable!("the probe builder never calls the model")
+            }
+        }
+        let probe = probe_request(crate::config::LlmFunction::Cronista, &Any);
+        assert!(
+            probe.system.is_some(),
+            "every real call sends a system prompt"
+        );
+        assert_eq!(probe.temperature, Some(HOT_PATH_TEMPERATURE));
+        assert_eq!(
+            probe.max_tokens, None,
+            "left to the slot's own ceiling, not pinned to a toy value"
+        );
+    }
+
     /// Backends that do not override `chat` (every non-Ollama provider
     /// today) surface a clear `LlmError::Backend` so the dashboard
     /// agentic loop can refuse to start instead of silently degrading.
@@ -5839,26 +5929,28 @@ mod tests {
     /// reject list, so the probe's pinned temperature is stripped before
     /// the request goes out — the sibling test below covers the model
     /// families that keep it.
+    /// The probe sends the slot's **configured reasoning**, so a model
+    /// that refuses a `thinking` block fails at boot instead of on the
+    /// first turn that asks for one.
+    ///
+    /// `body_json` is exact-match, so this pins the whole shape: the
+    /// budget the effort maps to, the output ceiling stacked on top of
+    /// it, the system prompt every real call carries, and no
+    /// `temperature` — Opus 4.7+ reject sampling params, and a thinking
+    /// budget rules the field out anyway.
     #[tokio::test]
-    async fn anthropic_health_check_probe_never_thinks() {
+    async fn anthropic_health_check_probe_carries_the_slots_thinking_budget() {
         let server = MockServer::start().await;
         Mock::given(method("POST"))
             .and(path("/v1/messages"))
-            // No `temperature`: Opus 4.7+ reject sampling params with a
-            // 400, so the policy drops it here exactly as it does on a real
-            // call. `with_reasoning_effort` below is ignored — the probe
-            // never thinks, so there is no `thinking` field.
-            //
-            // `max_tokens` is the probe's 16 **plus the reasoning
-            // headroom**: in the catalog this model is indistinguishable
-            // from the generation that reasons unbidden (reasons + refuses
-            // sampling params), and a ceiling it does not use costs
-            // nothing. Losing a whole deployment to a 16-token probe once
-            // was enough.
             .and(body_json(serde_json::json!({
                 "model": "claude-opus-4-8",
-                "max_tokens": 16 + ADAPTIVE_THINKING_HEADROOM,
+                // The default ceiling (no caller ceiling on a probe) plus
+                // the `extra-high` budget below it.
+                "max_tokens": AnthropicBackend::DEFAULT_MAX_TOKENS + 16_384,
                 "messages": [ { "role": "user", "content": "ping" } ],
+                "system": PROBE_SYSTEM,
+                "thinking": { "type": "enabled", "budget_tokens": 16_384 },
             })))
             .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
                 "id": "msg_01ABC",
@@ -5875,7 +5967,8 @@ mod tests {
             .expect("new")
             .with_base_url(server.uri())
             .with_reasoning_effort(Some("extra-high"));
-        backend.health_check().await.expect("health check");
+        let probe = probe_request(crate::config::LlmFunction::RemPromotions, &backend);
+        backend.health_check(&probe).await.expect("health check");
     }
 
     /// On a model that still accepts sampling params the probe **does**
@@ -5896,8 +5989,9 @@ mod tests {
             .and(path("/v1/messages"))
             .and(body_json(serde_json::json!({
                 "model": "claude-sonnet-4-6",
-                "max_tokens": 16,
+                "max_tokens": AnthropicBackend::DEFAULT_MAX_TOKENS,
                 "messages": [ { "role": "user", "content": "ping" } ],
+                "system": PROBE_SYSTEM,
                 "temperature": 0.1,
             })))
             .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
@@ -5914,7 +6008,8 @@ mod tests {
         let backend = AnthropicBackend::new(fake_key(), "claude-sonnet-4-6", "ANTHROPIC_API_KEY")
             .expect("new")
             .with_base_url(server.uri());
-        backend.health_check().await.expect("health check");
+        let probe = probe_request(crate::config::LlmFunction::Navigator, &backend);
+        backend.health_check(&probe).await.expect("health check");
     }
 
     /// A model that reasons before answering gets headroom above the
@@ -5922,7 +6017,7 @@ mod tests {
     ///
     /// The regression this guards took production down on 2026-07-29.
     /// Opus 5 was configured on the REM promotions slot; the boot probe
-    /// asks for `max_tokens: 16`; the model spent all sixteen reasoning
+    /// asked for sixteen tokens; the model spent all sixteen reasoning
     /// and returned a response with no text block; the health check
     /// refuses to bind the listener on a failed slot, so the service
     /// crash-looped. The same cause, quieter, had already cost the REM
@@ -5938,9 +6033,10 @@ mod tests {
             .and(path("/v1/messages"))
             .and(body_json(serde_json::json!({
                 "model": "claude-opus-5",
-                // 16 asked for + ADAPTIVE_THINKING_HEADROOM.
-                "max_tokens": 16 + 8192,
+                // The default ceiling + ADAPTIVE_THINKING_HEADROOM.
+                "max_tokens": AnthropicBackend::DEFAULT_MAX_TOKENS + 8192,
                 "messages": [ { "role": "user", "content": "ping" } ],
+                "system": PROBE_SYSTEM,
             })))
             .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
                 "id": "msg_01ABC",
@@ -5956,7 +6052,8 @@ mod tests {
         let backend = AnthropicBackend::new(fake_key(), "claude-opus-5", "ANTHROPIC_API_KEY")
             .expect("new")
             .with_base_url(server.uri());
-        backend.health_check().await.expect("health check");
+        let probe = probe_request(crate::config::LlmFunction::RemPromotions, &backend);
+        backend.health_check(&probe).await.expect("health check");
     }
 
     /// The headroom is for the models that need it and nobody else: a
@@ -5967,8 +6064,8 @@ mod tests {
         for m in ["claude-opus-5", "claude-sonnet-5", "claude-fable-5"] {
             assert!(anthropic_thinks_adaptively(m), "{m} thinks adaptively");
         }
-        // Opus 4.7/4.8 reject sampling params yet answer a 16-token
-        // probe — the two properties are not the same fact, and
+        // Opus 4.7/4.8 reject sampling params yet answer under a tiny
+        // ceiling — the two properties are not the same fact, and
         // conflating them would have hidden the real cause.
         for m in ["claude-opus-4-7", "claude-opus-4-8"] {
             assert!(anthropic_rejects_sampling_params(m));
@@ -6157,7 +6254,11 @@ mod tests {
         let backend = AnthropicBackend::new(fake_key(), "claude-newfamily-9", "ANTHROPIC_API_KEY")
             .expect("new")
             .with_base_url(server.uri());
-        let err = backend.health_check().await.expect_err("boot must fail");
+        let probe = probe_request(crate::config::LlmFunction::Navigator, &backend);
+        let err = backend
+            .health_check(&probe)
+            .await
+            .expect_err("boot must fail");
         assert!(
             matches!(err, LlmError::Invalid(ref m) if m.contains("temperature")),
             "the operator must see the rejected parameter, got {err}"
@@ -6532,7 +6633,11 @@ mod tests {
         let backend = AnthropicBackend::new(fake_key(), "claude-opus-4-7", "ANTHROPIC_API_KEY")
             .expect("new")
             .with_base_url(server.uri());
-        backend.health_check().await.expect("probe must succeed");
+        let probe = probe_request(crate::config::LlmFunction::Navigator, &backend);
+        backend
+            .health_check(&probe)
+            .await
+            .expect("probe must succeed");
     }
 
     /// `health_check` propagates auth failures from `complete` — the
@@ -6548,7 +6653,8 @@ mod tests {
         let backend = AnthropicBackend::new(fake_key(), "claude-opus-4-7", "ANTHROPIC_API_KEY")
             .expect("new")
             .with_base_url(server.uri());
-        let err = backend.health_check().await.expect_err("must fail");
+        let probe = probe_request(crate::config::LlmFunction::Navigator, &backend);
+        let err = backend.health_check(&probe).await.expect_err("must fail");
         assert!(matches!(err, LlmError::Auth(_)), "{err:?}");
     }
 
@@ -7424,10 +7530,9 @@ mod tests {
         assert!(matches!(err, LlmError::Invalid(_)), "{err:?}");
     }
 
-    /// `health_check` overrides the default trait probe so it never
-    /// sends `temperature: 0.0` (which Gemini rejects with degraded
-    /// behaviour). Wiremock matches the mandated body shape; a 200
-    /// makes the boot-time probe succeed.
+    /// Gemini clamps every caller's temperature to the mandated 1.0, the
+    /// probe included, so the boot check exercises the body Gemini
+    /// actually receives — system prompt and all.
     #[tokio::test]
     async fn gemini_backend_health_check_succeeds_on_200_with_mandated_temperature() {
         let server = MockServer::start().await;
@@ -7437,8 +7542,11 @@ mod tests {
             ))
             .and(body_json(serde_json::json!({
                 "contents": [
-                    { "role": "user", "parts": [{ "text": "." }] }
+                    { "role": "user", "parts": [{ "text": "ping" }] }
                 ],
+                "systemInstruction": {
+                    "parts": [{ "text": PROBE_SYSTEM }]
+                },
                 "generationConfig": {
                     "temperature": GEMINI_TEMPERATURE,
                     "maxOutputTokens": GEMINI_MAX_OUTPUT_TOKENS,
@@ -7463,7 +7571,11 @@ mod tests {
         )
         .expect("new")
         .with_base_url(server.uri());
-        backend.health_check().await.expect("probe must succeed");
+        let probe = probe_request(crate::config::LlmFunction::Navigator, &backend);
+        backend
+            .health_check(&probe)
+            .await
+            .expect("probe must succeed");
     }
 
     /// `health_check` propagates auth failures from `complete` — the
@@ -7485,7 +7597,8 @@ mod tests {
         )
         .expect("new")
         .with_base_url(server.uri());
-        let err = backend.health_check().await.expect_err("must fail");
+        let probe = probe_request(crate::config::LlmFunction::Navigator, &backend);
+        let err = backend.health_check(&probe).await.expect_err("must fail");
         assert!(matches!(err, LlmError::Auth(_)), "{err:?}");
     }
 

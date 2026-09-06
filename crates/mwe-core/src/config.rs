@@ -965,8 +965,14 @@ impl crate::llm::LlmBackend for SlotDefaultsBackend {
         self.inner.accepts_images()
     }
 
-    async fn health_check(&self) -> crate::llm::Result<()> {
-        self.inner.health_check().await
+    /// The probe carries the slot's own ceiling and temperature, filled
+    /// in here exactly as they are for a real call: a boot probe that
+    /// skipped these would be testing a request the operator's
+    /// configuration never produces.
+    async fn health_check(&self, probe: &crate::llm::CompletionRequest) -> crate::llm::Result<()> {
+        let mut probe = probe.clone();
+        self.defaults.apply_defaults_to_completion(&mut probe);
+        self.inner.health_check(&probe).await
     }
 }
 

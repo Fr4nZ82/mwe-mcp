@@ -135,8 +135,10 @@ pub const LLM_FUNCTIONS: [LlmFunction; 6] = LlmFunction::ALL;
 /// rather than dialled (it would fail until the dashboard login lands).
 /// For every other configured slot the `build` closure materialises the
 /// backend (the CLI builds from disk config; the dashboard builds via its
-/// live handles so dashboard-set API keys are honoured) and its
-/// `health_check` is awaited.
+/// live handles so dashboard-set API keys are honoured), and its
+/// `health_check` is awaited on the request shape that slot's real calls
+/// have ([`crate::llm::probe_request`]) — so *reachable* means "your
+/// calls will work", not "the endpoint answered".
 ///
 /// Unlike the boot gate this never short-circuits — every slot is probed
 /// so the operator sees the full picture. Use [`slots_failed`] to decide
@@ -166,12 +168,19 @@ where
         }
 
         let status = match build(func) {
-            Ok(backend) => match backend.health_check().await {
-                Ok(()) => SlotStatus::Reachable {
-                    backend: slot.backend.clone(),
-                    model: slot.model.clone(),
-                },
-                Err(e) => SlotStatus::Failed(format!("{e:#}")),
+            Ok(backend) => {
+                // The shape a real call of *this* slot has — see
+                // [`crate::llm::probe_request`]. Built from the backend
+                // that will answer it, because whether an image belongs
+                // in it is a fact about the model.
+                let probe = crate::llm::probe_request(func, backend.as_ref());
+                match backend.health_check(&probe).await {
+                    Ok(()) => SlotStatus::Reachable {
+                        backend: slot.backend.clone(),
+                        model: slot.model.clone(),
+                    },
+                    Err(e) => SlotStatus::Failed(format!("{e:#}")),
+                }
             },
             Err(e) => SlotStatus::Failed(format!("build: {e:#}")),
         };

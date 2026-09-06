@@ -408,11 +408,11 @@ impl LlmBackend for RecordingBackend {
         }
     }
 
-    async fn health_check(&self) -> Result<()> {
+    async fn health_check(&self, probe: &CompletionRequest) -> Result<()> {
         // A liveness ping is not usage, and recording it would put a
         // row in the ledger for every dashboard page that probes a
         // slot. Delegated untouched, same as the spool does.
-        self.inner.health_check().await
+        self.inner.health_check(probe).await
     }
 }
 
@@ -703,7 +703,7 @@ mod tests {
         async fn chat(&self, _r: ChatRequest) -> Result<ChatResponse> {
             Err(LlmError::RateLimit("slow down".to_owned()))
         }
-        async fn health_check(&self) -> Result<()> {
+        async fn health_check(&self, _probe: &CompletionRequest) -> Result<()> {
             Ok(())
         }
     }
@@ -788,7 +788,10 @@ mod tests {
     async fn a_health_probe_is_not_recorded() {
         let (_dir, ledger) = pool_with_ledger(UsageSource::Serve).await;
         let backend = wrap(&ledger, Billing::Api);
-        backend.health_check().await.expect("health");
+        backend
+            .health_check(&CompletionRequest::new("ping"))
+            .await
+            .expect("health");
         assert!(
             buckets(&ledger.pool, None)
                 .await

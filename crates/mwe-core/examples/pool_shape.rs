@@ -178,7 +178,7 @@ impl LlmBackend for OpenTheFirst {
         })
     }
 
-    async fn health_check(&self) -> LlmResult<()> {
+    async fn health_check(&self, _probe: &CompletionRequest) -> LlmResult<()> {
         Ok(())
     }
 }

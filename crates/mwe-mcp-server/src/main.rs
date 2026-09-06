@@ -2183,14 +2183,17 @@ const RESTART_EXIT_CODE: i32 = 75;
 const CONFIG_EXIT_CODE: i32 = 78;
 
 /// Run `LlmBackend::health_check` on every slot the operator has wired
-/// in `mwe-mcp.config.yaml > llm:`.
+/// in `mwe-mcp.config.yaml > llm:`, with the request shape that slot's
+/// real calls have — so a model that will refuse those calls is refused
+/// here, at boot, with what it refused in the message.
 ///
 /// Refuses to continue if even one configured slot fails (no silent
-/// fallbacks). Slots that are absent from the config are skipped — that
-/// is a deliberate choice to disable a function, not a misconfiguration —
-/// and a Claude Code login slot awaiting authentication is allowed
-/// through (the operator logs in from the dashboard once the server is
-/// up). The per-slot probe is the shared
+/// fallbacks). A slot the file does not mention is reported and passed:
+/// all six are required for the product to work, and a half-wired
+/// install has to boot far enough for the operator to finish it from the
+/// dashboard. A Claude Code login slot awaiting authentication is allowed
+/// through for the same reason (the operator logs in from the dashboard
+/// once the server is up). The per-slot probe is the shared
 /// [`mwe_core::diagnostics::probe_llm_slots`] the dashboard health page
 /// also uses; unlike that read-only view this gate aggregates the
 /// failures and refuses to bind when any remain.
