@@ -596,9 +596,11 @@ and in the dashboard's session check. Ten migrations, `0068` through `0077`.
   same and keeps the browser that changed it signed in; a password reset
   through the recovery link does the same and signs nobody in. And a
   handler that has decided about the session cookie now has the last
-  word over the refresher. MCP bearer tokens are untouched: those are a
-  consumer's credential, not a person's session, and they are revoked
-  from the Tokens page.
+  word over the refresher. The button says **Log out everywhere**, because
+  that is which of the two plausible things it does, and the settings page
+  names the button rather than describing it in its own words. MCP bearer
+  tokens are untouched: those are a consumer's credential, not a person's
+  session, and they are revoked from the Tokens page.
 
 - **A link the server sends is never built from the browser's `Host`
   header.** The password-reset email took its origin from that header

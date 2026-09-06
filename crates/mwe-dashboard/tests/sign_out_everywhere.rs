@@ -183,3 +183,38 @@ async fn changing_the_password_ends_the_other_sessions_and_keeps_this_one() {
         "the browser that changed the password stays signed in"
     );
 }
+
+/// The button is named after what it does.
+///
+/// One press ends every session this person has open, on every device. A
+/// bare "Log out" reads as ending this browser only, which is the other
+/// plausible behaviour and not the one the button has — so the label says
+/// which, and the settings page names the button by that same label rather
+/// than describing it in its own words.
+#[tokio::test]
+async fn the_button_and_the_settings_page_both_say_log_out_everywhere() {
+    let (app, _dir) = make_app().await;
+    let cookie = create_admin(&app).await;
+
+    for uri in ["/home", "/settings/me"] {
+        let response = send(
+            &app,
+            Request::builder()
+                .uri(uri)
+                .header(header::COOKIE, &cookie)
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await;
+        assert_eq!(response.status(), StatusCode::OK, "{uri}");
+        let html = body_string(response).await;
+        assert!(
+            html.contains("Log out everywhere"),
+            "`{uri}` must name the button by what it does: {html}"
+        );
+        assert!(
+            !html.contains(">Log out<"),
+            "`{uri}` still offers a bare \"Log out\": {html}"
+        );
+    }
+}

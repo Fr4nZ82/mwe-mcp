@@ -457,10 +457,15 @@ fn header(read_only: bool, demo_identities: &[String], user: Option<&SessionUser
                             span class="text-amber" { "admin" }
                         }
                     }
+                    // "Log out everywhere", because that is what the button
+                    // does: one press ends every session this person has open,
+                    // on every device. A bare "Log out" reads as ending this
+                    // browser's session, and somebody signing out of a shared
+                    // machine deserves to know which of the two they get.
                     form action="/dashboard/logout" method="post" class="logout-form contents" {
                         button type="submit"
-                            class="px-3 py-1.5 text-xs border border-border rounded bg-bg-3 text-text-dim hover:text-rose hover:border-rose transition-colors" {
-                            "Log out"
+                            class="px-3 py-1.5 text-xs border border-border rounded bg-bg-3 text-text-dim hover:text-rose hover:border-rose transition-colors whitespace-nowrap" {
+                            "Log out everywhere"
                         }
                     }
                 }

@@ -309,8 +309,9 @@ fn render(
         p.muted {
             "You are signed in as " strong { (user.sender_id) } "."
             @if !chrome.read_only {
-                " Signing out ends every session you have open, on every device. "
-                "Changing your password does the same and keeps you signed in here."
+                " " strong { "Log out everywhere" } " ends every session you have "
+                "open, on every device. Changing your password does the same and "
+                "keeps you signed in here."
             }
         }
         // A frozen deployment shows this page whole and lets none of it
