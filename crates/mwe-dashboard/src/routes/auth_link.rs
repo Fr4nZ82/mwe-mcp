@@ -206,13 +206,16 @@ mod tests {
             CookieJar::new(),
             Query(RedeemQuery {
                 token,
-                next: Some("/dashboard/proposals/p-1".to_owned()),
+                next: Some("/dashboard/proposals/p-1/open-in-chat".to_owned()),
             }),
         )
         .await
         .expect("handler ok");
         assert_eq!(resp.status(), StatusCode::SEE_OTHER);
-        assert_eq!(location(&resp).as_deref(), Some("/dashboard/proposals/p-1"));
+        assert_eq!(
+            location(&resp).as_deref(),
+            Some("/dashboard/proposals/p-1/open-in-chat")
+        );
         assert!(has_session_cookie(&resp), "must set mwe_session cookie");
     }
 
@@ -226,7 +229,7 @@ mod tests {
             CookieJar::new(),
             Query(RedeemQuery {
                 token: token.clone(),
-                next: Some("/dashboard/proposals/p-1".to_owned()),
+                next: Some("/dashboard/proposals/p-1/open-in-chat".to_owned()),
             }),
         )
         .await
@@ -238,7 +241,7 @@ mod tests {
             CookieJar::new(),
             Query(RedeemQuery {
                 token,
-                next: Some("/dashboard/proposals/p-1".to_owned()),
+                next: Some("/dashboard/proposals/p-1/open-in-chat".to_owned()),
             }),
         )
         .await
@@ -257,7 +260,7 @@ mod tests {
             CookieJar::new(),
             Query(RedeemQuery {
                 token,
-                next: Some("/dashboard/proposals/p-1".to_owned()),
+                next: Some("/dashboard/proposals/p-1/open-in-chat".to_owned()),
             }),
         )
         .await
@@ -287,8 +290,8 @@ mod tests {
     #[test]
     fn safe_next_guards_open_redirect() {
         assert_eq!(
-            safe_next(Some("/dashboard/proposals/p-1")),
-            "/dashboard/proposals/p-1"
+            safe_next(Some("/dashboard/proposals/p-1/open-in-chat")),
+            "/dashboard/proposals/p-1/open-in-chat"
         );
         assert_eq!(safe_next(Some("//evil.example")), DEFAULT_NEXT);
         assert_eq!(safe_next(Some("https://evil.example")), DEFAULT_NEXT);

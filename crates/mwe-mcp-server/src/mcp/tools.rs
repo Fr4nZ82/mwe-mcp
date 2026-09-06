@@ -587,14 +587,17 @@ fn build_navigator(state: &McpState) -> Option<Box<dyn mwe_core::llm::LlmBackend
     }
 }
 
-/// Wiki ingest path (`/dashboard/proposals`) the consumer agent should
-/// nudge the user toward when at least one structure proposal is in
-/// flight. Kept here (not derived from `dashboard_link` intents)
-/// because the warning is a structured hint, not a signed link: the
-/// consumer composes the user-visible URL via [`call_dashboard_link`]
-/// with `intent: "home"` and tells the user to navigate to this path,
-/// or surfaces it raw on already-authenticated dashboards.
-const PENDING_VOTES_DASHBOARD_PATH: &str = "/dashboard/proposals";
+/// Where a member goes to cast a vote they owe. The dashboard has no
+/// proposal tray: a vote is cast by talking to the chat, whose agentic
+/// loop calls `votes::cast_vote`, and that is where the topnav's
+/// in-flight badge sends them too.
+///
+/// Kept here rather than derived from a `dashboard_link` intent because
+/// the block is a structured hint, not a signed link: the consumer
+/// composes the user-visible URL via [`call_dashboard_link`] with
+/// `intent: "home"` and tells the user to navigate to this path, or
+/// surfaces it raw on already-authenticated dashboards.
+const PENDING_VOTES_DASHBOARD_PATH: &str = "/dashboard/chat";
 
 /// The governance block appended to an ingest response, suppressed on guest
 /// turns: a guest owes no vote and has no dashboard to open.
@@ -623,9 +626,9 @@ async fn governance_blocks(
 /// Pull-only by design: the reminder appears the next time the member interacts
 /// with their agent; there is no push. A member who never looks consents by
 /// silence when the request's window closes (the fact is then forgotten). The
-/// member casts the vote by asking their agent, which the operator resolves from
-/// the dashboard (`/dashboard/proposals`) — the same surface every other
-/// proposal action uses.
+/// member casts the vote by asking their agent, which the operator resolves in
+/// the dashboard chat ([`PENDING_VOTES_DASHBOARD_PATH`]) — the same surface
+/// every other proposal action uses.
 async fn pending_votes_block(
     pool: &sqlx::SqlitePool,
     identity: &IdentityProfile,
@@ -2345,8 +2348,25 @@ pub(super) async fn call_dashboard_link(
     let token = jwt::issue(&state.secret, &claims)
         .map_err(|e| ToolError::new(ToolErrorClass::InternalError, format!("jwt: {e}")))?;
 
+    // Every intent lands on a page `mwe_dashboard::routes` mounts. An
+    // intent is a job the user wants done, not a URL segment, so the two
+    // vocabularies are spelled out against each other here rather than
+    // composed from the intent name: a link that 404s reads to the person
+    // holding it as the memory being broken, and they have no way to tell
+    // that only the address was wrong.
     let path = match args.intent.as_str() {
-        "home" | "audit" | "costs" | "settings" => format!("/dashboard/{}", args.intent),
+        "home" => "/dashboard/home".to_owned(),
+        // How the memory reached the answers it gave, run by run.
+        "audit" => "/dashboard/recall-traces".to_owned(),
+        // What the model slots consumed, and what it cost.
+        "costs" => "/dashboard/admin/usage".to_owned(),
+        "settings" => "/dashboard/settings/me".to_owned(),
+        // The fact browser: everything the memory holds for this person,
+        // one row per fact, with the superseded and deleted rows behind
+        // the `include_inactive` filter. The dashboard mounts no page of
+        // its own for archived material, and this is the one that holds
+        // it.
+        "archive_view" => "/dashboard/facts".to_owned(),
         "modify_wiki" | "view_wiki" => {
             let wiki_id = args
                 .context
@@ -2363,9 +2383,13 @@ pub(super) async fn call_dashboard_link(
                 .and_then(|c| c.get("proposal_id"))
                 .and_then(Value::as_str)
                 .ok_or_else(|| invalid_input("context.proposal_id required for answer_proposal"))?;
-            format!("/dashboard/proposals/{pid}")
+            // A proposal is answered by talking to the dashboard chat —
+            // there is no form. The engine already points every proposal
+            // notice at the primer that opens that conversation, so the
+            // link takes the address from the same place rather than
+            // spelling a second one that can drift from it.
+            mwe_core::proposals::proposal_dashboard_path(pid)
         },
-        "archive_view" => "/dashboard/archive".to_owned(),
         _ => unreachable!(),
     };
     // Point the user-facing URL at the single-use redemption endpoint
@@ -3617,6 +3641,41 @@ fn urlencode(s: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// The one dashboard address the engine hands out **without** minting a
+    /// link — the nudge in the `pending_votes` block — has to be a page too.
+    /// It falls outside `dashboard_link`'s own coverage precisely because it
+    /// is not a link: nothing signs it, so nothing was checking it, and it
+    /// named a proposal tray the dashboard has never mounted.
+    #[tokio::test]
+    async fn the_pending_vote_nudge_points_at_a_mounted_page() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let pool = mwe_core::db::open_or_init(dir.path()).await.expect("db");
+        let dashboard = axum::Router::new().nest(
+            "/dashboard",
+            mwe_dashboard::router(mwe_dashboard::DashboardState::new(
+                pool,
+                mwe_core::jwt::TokenSecret::new(vec![0xCDu8; 32]).expect("secret"),
+                std::sync::Arc::new(mwe_core::jwt::BlacklistCache::new()),
+                std::sync::Arc::new(mwe_core::delegations::DelegationCache::new()),
+            )),
+        );
+        let response = tower::ServiceExt::oneshot(
+            dashboard,
+            axum::http::Request::builder()
+                .uri(PENDING_VOTES_DASHBOARD_PATH)
+                .body(axum::body::Body::empty())
+                .expect("request"),
+        )
+        .await
+        .expect("oneshot");
+        assert_ne!(
+            response.status(),
+            axum::http::StatusCode::NOT_FOUND,
+            "the pending-vote block sends people to `{PENDING_VOTES_DASHBOARD_PATH}`, \
+             which the dashboard does not mount"
+        );
+    }
 
     #[test]
     fn parse_ingest_metadata_collects_authored_refs() {

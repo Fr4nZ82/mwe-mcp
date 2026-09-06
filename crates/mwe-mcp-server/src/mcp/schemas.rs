@@ -596,7 +596,7 @@ fn wiki_admin_notify() -> Tool {
                 "kind": {
                     "type": "string",
                     "enum": ["observation", "reasoning", "external"],
-                    "description": "Optional three-layer classification. Defaults to `observation` when omitted."
+                    "description": "Optional three-layer classification: `observation` — a factual delta somebody noticed, which is what a standard consumer relaying what a person said sends; `reasoning` — an inference asking the smart consumer to decide something; `external` — a reference outside the wiki (a link, a commit id, a ticket) to tie in. Defaults to `observation` when omitted."
                 },
                 "target_cite": {
                     "type": "string",
@@ -645,7 +645,7 @@ fn skill_fetch() -> Tool {
 fn dashboard_link() -> Tool {
     materialize(
         "dashboard_link",
-        "Mint a sliding-TTL session token + URL for the built-in dashboard. The consumer agent surfaces it as a button / inline link.",
+        "Mint a single-use URL into the built-in dashboard for the effective sender (G family). The consumer agent surfaces it as a button / inline link. Opening it burns the link and starts the browser session, so the same URL does not work twice; `base_ttl_seconds` is how long it stays redeemable.",
         json!({
             "type": "object",
             "required": ["intent"],
@@ -656,7 +656,8 @@ fn dashboard_link() -> Tool {
                     "enum": [
                         "home", "modify_wiki", "view_wiki",
                         "answer_proposal", "archive_view", "audit", "costs", "settings"
-                    ]
+                    ],
+                    "description": "Which page the link lands on. `home` — the dashboard home. `view_wiki` / `modify_wiki` — one wiki, read or edit (needs `context.wiki_id`). `answer_proposal` — the proposal opened in the dashboard chat, summarised and waiting for the user's answer (needs `context.proposal_id`). `archive_view` — the fact browser: every fact the caller's memory holds, with the superseded and deleted rows one filter away (there is no separate archive page; this is the one that holds archived material). `audit` — the recall traces: how the memory reached its recent answers. `costs` — model usage and spend. `settings` — the caller's own settings page. `audit`, `costs` and `settings` answer `sender_unauthorized` for a non-admin."
                 },
                 "sender_id": { "type": "string" },
                 "context": {

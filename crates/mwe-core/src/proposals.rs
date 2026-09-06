@@ -1003,9 +1003,12 @@ impl EmitParams {
 /// Insert a new `pending` proposal. Returns the freshly minted
 /// `proposal_id`.
 ///
-/// Production callers go through the per-kind emitters in
-/// [`crate::dedup`] / [`crate::promote`] so the
-/// `context` shape lives next to the handler that reads it.
+/// A `pending` row is a question somebody has to answer, and the one caller
+/// that asks one is the forget vote in [`crate::votes`]: a fact's audience is
+/// consulted before somebody who is not its author takes it away. What the
+/// nightly cycle decides goes through [`emit_applied_proposal`] instead —
+/// born applied, a receipt the owner reads rather than a question nobody is
+/// awake to answer.
 ///
 /// # Errors
 ///
@@ -1060,9 +1063,9 @@ pub async fn emit_proposal(pool: &SqlitePool, params: EmitParams) -> Result<Stri
 /// Points at the real per-proposal **open-in-chat** primer
 /// (`GET /dashboard/proposals/:id/open-in-chat`): it lands the user inside the
 /// dashboard's agentic chat with the proposal already summarised, where they
-/// can ask to modify it. (There is deliberately no per-proposal detail page —
-/// the list at `/dashboard/proposals` carries the reading surface, and this
-/// primer carries the conversational path.) Relative on purpose: mwe-mcp has
+/// can ask to modify it. (There is deliberately no per-proposal detail page
+/// and no tray: reading a proposal and acting on it are the same
+/// conversation, which is what this primer opens.) Relative on purpose: mwe-mcp has
 /// no notion of a public base URL, so the consumer prepends whatever base it
 /// knows the operator serves the dashboard from.
 #[must_use]

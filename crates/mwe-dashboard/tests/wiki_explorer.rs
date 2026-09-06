@@ -1,9 +1,9 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 //! Dashboard MVP — memory explorer integration tests.
 //!
-//! Drives the new routes (`/dashboard/wiki`, `/dashboard/wiki/:id`,
-//! `/dashboard/proposals`, `/dashboard/chat`) against the live router
-//! mounted with a populated [`mwe_dashboard::MemoryHandles`].
+//! Drives the explorer routes (`/dashboard/wiki`, `/dashboard/wiki/:id`,
+//! `/dashboard/proposals/:id/open-in-chat`, `/dashboard/chat`) against the
+//! live router mounted with a populated [`mwe_dashboard::MemoryHandles`].
 
 mod common;
 

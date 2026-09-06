@@ -1075,7 +1075,125 @@ async fn dashboard_link_admin_only_intents_gated() {
     .expect("ok");
     let url = out["url"].as_str().unwrap();
     assert!(url.starts_with("/dashboard/auth/link?token="), "{url}");
-    assert!(url.contains("&next=%2Fdashboard%2Fsettings"), "{url}");
+    assert!(url.contains("&next=%2Fdashboard%2Fsettings%2Fme"), "{url}");
+}
+
+/// Every `dashboard_link` intent opens a page the dashboard mounts.
+///
+/// The two vocabularies are written by different hands and nothing binds
+/// them: an intent is a job somebody wants done, a route is a path in
+/// `mwe-dashboard`, and a link minted for an intent nobody wired to a page
+/// is accepted, signed, delivered, and dead on arrival — the person holding
+/// it reads that as the memory being broken, with no way to tell that only
+/// the address was wrong. So the roster comes from the tool's own schema (a
+/// ninth intent cannot be added without landing here) and the verdict comes
+/// from the router `main.rs` nests at `/dashboard`, never from a list of
+/// paths written beside the test, which would age exactly as the code did.
+///
+/// A page nothing mounts answers `404`; a path mounted for another method
+/// answers `405`. Everything else is a real page: with no session cookie an
+/// authenticated one bounces to the login form, which is the correct answer
+/// to this request and proof the route exists.
+#[tokio::test]
+async fn every_dashboard_link_intent_lands_on_a_mounted_route() {
+    // Admin: `audit`, `costs` and `settings` are refused to anybody else,
+    // and a refusal would mint no path to check.
+    let (state, identity, _dir) = fixture(true, None).await;
+
+    let tool = mcp::schemas::all_tools()
+        .into_iter()
+        .find(|t| t.name.as_ref() == "dashboard_link")
+        .expect("dashboard_link is on the tool surface");
+    let intents: Vec<String> = tool.input_schema["properties"]["intent"]["enum"]
+        .as_array()
+        .expect("the intent enum is the roster")
+        .iter()
+        .map(|v| v.as_str().expect("every intent is a string").to_owned())
+        .collect();
+    assert!(
+        intents.len() >= 8,
+        "read {} intents off the schema — an empty roster would pass this test saying nothing",
+        intents.len()
+    );
+
+    let dashboard = axum::Router::new().nest(
+        "/dashboard",
+        mwe_dashboard::router(mwe_dashboard::DashboardState::new(
+            state.pool.clone(),
+            state.secret.clone(),
+            Arc::clone(&state.blacklist),
+            Arc::clone(&state.delegations),
+        )),
+    );
+
+    for intent in &intents {
+        // The context each intent needs to name its target. Everything
+        // else about the path is the tool's own business.
+        let context = match intent.as_str() {
+            "modify_wiki" | "view_wiki" => json!({ "wiki_id": "alice" }),
+            "answer_proposal" => json!({ "proposal_id": "p-1" }),
+            _ => json!({}),
+        };
+        let out = call(
+            &state,
+            &identity,
+            "dashboard_link",
+            json!({ "intent": intent, "context": context }),
+        )
+        .await
+        .unwrap_or_else(|e| panic!("intent `{intent}` minted no link: {e}"));
+
+        let url = out["url"].as_str().expect("the link carries a url");
+        let encoded = url
+            .split("&next=")
+            .nth(1)
+            .unwrap_or_else(|| panic!("intent `{intent}` minted no deep-link: {url}"));
+        let path = percent_decode(encoded);
+
+        let response = tower::ServiceExt::oneshot(
+            dashboard.clone(),
+            axum::http::Request::builder()
+                .uri(&path)
+                .body(axum::body::Body::empty())
+                .expect("request"),
+        )
+        .await
+        .expect("oneshot");
+
+        assert_ne!(
+            response.status(),
+            axum::http::StatusCode::NOT_FOUND,
+            "intent `{intent}` lands on `{path}`, which the dashboard does not mount"
+        );
+        assert_ne!(
+            response.status(),
+            axum::http::StatusCode::METHOD_NOT_ALLOWED,
+            "intent `{intent}` lands on `{path}`, which no browser can open with a GET"
+        );
+    }
+}
+
+/// Percent-decode the deep-link `dashboard_link` folds into its redemption
+/// URL. Spelled out here so the test reads back the string the tool really
+/// emitted, rather than a path rebuilt beside it that would agree with a
+/// broken encoder.
+fn percent_decode(s: &str) -> String {
+    let bytes = s.as_bytes();
+    let mut out: Vec<u8> = Vec::with_capacity(bytes.len());
+    let mut i = 0;
+    while i < bytes.len() {
+        if bytes[i] == b'%'
+            && i + 3 <= bytes.len()
+            && let Ok(b) = u8::from_str_radix(&s[i + 1..i + 3], 16)
+        {
+            out.push(b);
+            i += 3;
+            continue;
+        }
+        out.push(bytes[i]);
+        i += 1;
+    }
+    String::from_utf8(out).expect("the deep-link is utf-8")
 }
 
 #[tokio::test]

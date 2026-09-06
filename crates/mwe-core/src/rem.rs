@@ -3,8 +3,9 @@
 //!
 //! Cron-driven job that runs without users connected. The write-jobs
 //! skip smart-family wikis (the smart consumer owns those writes via
-//! `wiki_admin_push`), while two smart-wiki-only read-jobs scan them
-//! for observations worth surfacing in `_briefing.md`.
+//! `wiki_admin_push`); the one sub-job that walks *only* smart wikis is
+//! the briefing dispatcher, which reads them and surfaces what it finds
+//! as `_briefing.md` items for the smart consumer to triage.
 //!
 //! ## Sub-jobs
 //!
@@ -15,7 +16,7 @@
 //! `structure_proposals` first; the consolidation and hygiene sweeps
 //! (dedup, promote, merge, completion, contradiction, refile,
 //! provenance, dates) reorganise the fact set act-first; and the archive
-//! detector and the smart-wiki read-jobs emit proposals/briefing items.
+//! detector and the briefing dispatcher emit proposals / briefing items.
 //!
 //! ## Cycle invariants
 //!
@@ -856,8 +857,8 @@ pub enum RemError {
     /// Fact-index layer failure.
     #[error("rem fact_index: {0}")]
     FactIndex(#[from] fact_index::FactIndexError),
-    /// Smart-wiki section-index failure (the read-jobs that scan a smart
-    /// wiki's content).
+    /// Smart-wiki section-index failure (the briefing dispatcher scanning a
+    /// smart wiki's content).
     #[error("rem wiki_sections: {0}")]
     Sections(#[from] sections::SectionError),
     /// Events layer failure.
@@ -948,9 +949,9 @@ pub async fn run_cycle(
     tracing::info!(cycle_id, "rem: cycle start");
 
     // Build the family index once per cycle: which wikis are
-    // smart wikis (per-wiki `_meta.md` flag). It decides which sub-jobs may
-    // write to a wiki: the ones that rewrite compiled prose skip a smart
-    // wiki, and the two that maintain a smart wiki run only there.
+    // smart wikis (per-wiki `_meta.md` flag). It decides where each sub-job
+    // is allowed to work: the ones that rewrite compiled prose skip a smart
+    // wiki, and the briefing dispatcher runs only there.
     let smart_wiki_index = load_smart_wiki_index(tree)?;
 
     // Expire aged confirmer memos before any sub-job reads them, so a
@@ -7991,8 +7992,8 @@ mod tests {
 
     /// Plant one **section** of a smart wiki's page, the smart-family
     /// counterpart of [`plant_fact`]. Smart content is content-indexed in
-    /// `wiki_sections` (no capture, no ACL, no lifecycle), so the REM
-    /// read-jobs that scan a smart wiki read these rows.
+    /// `wiki_sections` (no capture, no ACL, no lifecycle), so the briefing
+    /// dispatcher reads these rows when it scans a smart wiki.
     ///
     /// Returns the section's stable `"<source_path>#<ord>"` handle.
     async fn plant_section(pool: &SqlitePool, wiki: &str, body: &str) -> String {

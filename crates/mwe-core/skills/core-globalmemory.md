@@ -130,8 +130,6 @@ the user is allowed to read (ACL-filtered), including other people's pages they
 have access to. If the top snippet doesn't carry the exact fact, open the page
 the hit names — every hit carries `wiki_id` and `path`, and those two are
 `wiki_read`'s arguments — because the prose holds detail the snippet may omit.
-(Empirically confirmed: a "when was X born" query draws a blank on
-`recall_core_global` but lands the right page via `wiki_search`.)
 
 For a question that needs **depth or to connect things across pages** ("tell me
 everything about X", "how does Y relate to Z"), use **`wiki_navigate`** instead

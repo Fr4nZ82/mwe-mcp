@@ -2160,7 +2160,7 @@ enum ClosurePlanError {
         "closure target `{id}` is about {subject}, was said by somebody else, \
          and was not shared with you"
     )]
-    NotSubjectOrAuthor { id: String, subject: String },
+    NotEntitledToRetract { id: String, subject: String },
 }
 
 /// Validate one requested closure against this turn's recall window.
@@ -2210,7 +2210,7 @@ fn validate_closure<'a>(
         sender_id,
         sender_groups,
     ) {
-        return Err(ClosurePlanError::NotSubjectOrAuthor {
+        return Err(ClosurePlanError::NotEntitledToRetract {
             id: raw.to_owned(),
             subject: hit.subject_id.to_string(),
         });
@@ -2307,12 +2307,15 @@ struct LlmSupersede {
 ///   hallucinated id retires nothing;
 /// - the **successor** must be one of the facts this turn actually filed, so a
 ///   fact can never be welded to something that does not exist, or to itself;
-/// - the sender must **own** the target, through
-///   [`crate::acl::sender_is_subject`] — the same call its two siblings
-///   (`apply_plan_validity_edits`, `apply_plan_acl_changes`) make, so a member
-///   of an owning group counts as the subject. Reading a fact is not authority
+/// - the sender must be entitled to **rewrite** the target, through
+///   [`crate::acl::sender_may_rewrite`] — its subject, or whoever said it,
+///   with a group answered for by its members. Reading a fact is not authority
 ///   over it, and a supersede rewrites both its validity and its successor
-///   pointer.
+///   pointer. The two sibling verbs draw the line in their own places and for
+///   their own reasons: a validity edit is a withdrawal and reaches the
+///   audience the fact was shared with ([`crate::acl::sender_may_retract`]),
+///   while an ACL change discloses the subject's data and stays with the
+///   subject alone ([`crate::acl::sender_is_subject`]).
 fn vet_supersede<'a>(
     s: &LlmSupersede,
     candidates: &'a [RecallHit],
@@ -3234,8 +3237,7 @@ async fn emit_closure_paper_trail(
                     .map(|c| c.fact_id.as_str())
                     .collect::<Vec<_>>(),
                 "recipient_id": recipient,
-                "dashboard_path":
-                    format!("/dashboard/proposals/{}/open-in-chat", receipt.proposal_id),
+                "dashboard_path": proposals::proposal_dashboard_path(&receipt.proposal_id),
             });
             if let Err(err) = events::insert_event(
                 pool,
@@ -3342,10 +3344,13 @@ enum ValidityEditPlanError {
     #[error("validity_edit gave neither valid_from nor valid_to")]
     NoBounds,
     /// The retraction gate: editing a fact's validity from chat is open to
-    /// its subject and to whoever said it. See
-    /// [`crate::acl::sender_may_retract`].
-    #[error("validity_edit sender is neither the fact's subject nor its author")]
-    NotSubjectOrAuthor,
+    /// its subject, to whoever said it, and to whoever the fact was SHARED
+    /// with — and to nobody else. See [`crate::acl::sender_may_retract`].
+    #[error(
+        "validity_edit target is about somebody else, was said by somebody \
+         else, and was not shared with you"
+    )]
+    NotEntitledToRetract,
     /// A provided bound did not parse as ISO-8601 / RFC3339.
     #[error("validity_edit date `{0}` is not ISO-8601")]
     BadDate(String),
@@ -3396,7 +3401,7 @@ fn validate_validity_edit<'a>(
         sender_id,
         sender_groups,
     ) {
-        return Err(ValidityEditPlanError::NotSubjectOrAuthor);
+        return Err(ValidityEditPlanError::NotEntitledToRetract);
     }
     let valid_from = normalize_iso_bound(edit.valid_from.as_deref(), fact_index::DayEdge::Start)?;
     let valid_to = normalize_iso_bound(edit.valid_to.as_deref(), fact_index::DayEdge::End)?;
@@ -3599,8 +3604,7 @@ async fn emit_validity_edit_paper_trail(
                     .map(|e| e.fact_id.as_str())
                     .collect::<Vec<_>>(),
                 "recipient_id": recipient,
-                "dashboard_path":
-                    format!("/dashboard/proposals/{}/open-in-chat", receipt.proposal_id),
+                "dashboard_path": proposals::proposal_dashboard_path(&receipt.proposal_id),
             });
             if let Err(err) = events::insert_event(
                 pool,
@@ -3882,8 +3886,7 @@ async fn emit_acl_change_paper_trail(
                     .collect::<Vec<_>>(),
                 "widening": applied.iter().any(|c| c.widening),
                 "recipient_id": recipient,
-                "dashboard_path":
-                    format!("/dashboard/proposals/{}/open-in-chat", receipt.proposal_id),
+                "dashboard_path": proposals::proposal_dashboard_path(&receipt.proposal_id),
             });
             if let Err(err) = events::insert_event(
                 pool,
@@ -10067,15 +10070,18 @@ mod tests {
         assert!(ok.is_some());
     }
 
-    /// Who may close a fact from chat: its subject, and whoever said it.
+    /// Who may close a fact from chat: its subject, whoever said it, and
+    /// whoever it was shared with — and nobody else.
     ///
-    /// A stranger is neither, and a turn of theirs must not reach into
-    /// somebody else's memory to mark a fact finished. The author IS one of
-    /// the two — closing withdraws an assertion, and withdrawing your own
-    /// assertion is not editing somebody else's record — which is the half
-    /// this test's second block pins.
+    /// Each of the three blocks below pins one door, and the stranger who
+    /// walks into none of them is the reason the gate exists: a turn of
+    /// theirs must not reach into somebody else's memory to mark a fact
+    /// finished. The author is a door because closing withdraws an
+    /// assertion, and withdrawing your own assertion is not editing somebody
+    /// else's record; the audience is a door because a claim handed to a
+    /// household is the household's to retire.
     #[test]
-    fn validate_closure_admits_the_subject_and_the_author_only() {
+    fn validate_closure_admits_the_subject_the_author_and_the_audience() {
         let id = "018f1234-5678-7abc-9def-0123456789ab";
         let closure = LlmClosure {
             target: Some(id.to_owned()),
@@ -10086,14 +10092,14 @@ mod tests {
         let err = validate_closure(&closure, &hits, "morgana", &[])
             .expect_err("cross-subject closure must fail");
         match err {
-            ClosurePlanError::NotSubjectOrAuthor {
+            ClosurePlanError::NotEntitledToRetract {
                 id: got_id,
                 subject,
             } => {
                 assert_eq!(got_id, id);
                 assert_eq!(subject, "user:alice");
             },
-            other => panic!("expected NotSubjectOrAuthor, got {other:?}"),
+            other => panic!("expected NotEntitledToRetract, got {other:?}"),
         }
         // The subject herself can close it.
         assert!(validate_closure(&closure, &hits, "alice", &[]).is_ok());
@@ -10107,8 +10113,65 @@ mod tests {
             validate_closure(&closure, &hits, "carol", &[]).is_ok(),
             "the author may withdraw what they said, whoever it was about"
         );
-        // A third party is still neither.
+        // A third party is still none of the three.
         assert!(validate_closure(&closure, &hits, "morgana", &[]).is_err());
+
+        // The audience opens the third door: the same hit, about alice and
+        // said by carol, now carries `group:famiglia` in its allow list, and
+        // dora is a member of that household.
+        let mut shared = sample_recall_hit(id);
+        shared.sender_id = Some(Principal::User("carol".into()));
+        shared.allow_ids = vec![Principal::Group("famiglia".into())];
+        let hits = vec![shared];
+        assert!(
+            validate_closure(&closure, &hits, "dora", &["famiglia".to_owned()]).is_ok(),
+            "a member of the audience the fact was shared with may retire it"
+        );
+        // Reading it some other way is not being in the audience: morgana is
+        // in no group of the allow list and is still refused.
+        assert!(validate_closure(&closure, &hits, "morgana", &[]).is_err());
+    }
+
+    /// A validity edit rides the same three doors as a closure, and the
+    /// audience is the one that is easy to lose.
+    ///
+    /// `valid_from` / `valid_to` moves the window of an assertion, which is
+    /// the closure's verb by another name, so the gate is
+    /// [`crate::acl::sender_may_retract`] and not the narrower subject test
+    /// that guards a rewrite or an ACL change. This test pins the wide door:
+    /// somebody who is neither the subject nor the author, but who the fact
+    /// was shared with, may correct its dates — and the stranger who was
+    /// handed nothing may not.
+    #[test]
+    fn validate_validity_edit_admits_the_audience_and_refuses_a_stranger() {
+        let id = "018f1234-5678-7abc-9def-0123456789ab";
+        let edit = LlmValidityEdit {
+            target: Some(id.to_owned()),
+            valid_from: None,
+            valid_to: Some("2026-09-06".to_owned()),
+        };
+        // About alice, said by carol, shared with the household.
+        let mut hit = sample_recall_hit(id);
+        hit.sender_id = Some(Principal::User("carol".into()));
+        hit.allow_ids = vec![Principal::Group("famiglia".into())];
+        let hits = vec![hit];
+
+        let (_, _, valid_to) =
+            validate_validity_edit(&edit, &hits, "dora", &["famiglia".to_owned()])
+                .expect("a member of the audience may correct the window");
+        assert_eq!(valid_to.as_deref(), Some("2026-09-06T23:59:59Z"));
+
+        // The subject and the author keep their own doors.
+        assert!(validate_validity_edit(&edit, &hits, "alice", &[]).is_ok());
+        assert!(validate_validity_edit(&edit, &hits, "carol", &[]).is_ok());
+
+        // A stranger has none of the three.
+        let err = validate_validity_edit(&edit, &hits, "morgana", &[])
+            .expect_err("a stranger must not move somebody else's window");
+        assert!(
+            matches!(err, ValidityEditPlanError::NotEntitledToRetract),
+            "expected NotEntitledToRetract, got {err:?}"
+        );
     }
 
     #[test]

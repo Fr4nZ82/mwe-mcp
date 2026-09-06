@@ -18,9 +18,10 @@
 //!    custodian of writes only for wikis its own user owns. Cross-user
 //!    write attempts yield [`AdminError::WikiOwnedByOtherUser`].
 //! 3. The target wiki's `_meta` smart flag is `true` — the per-wiki bool,
-//!    derived on `create` from the `wiki-companion` type-string prefix. Standard
-//!    wikis continue to accept writes via `wiki_ingest_message` only;
-//!    [`AdminError::WikiTypeNotAdminWritable`] is the rejection here.
+//!    stamped on `create` from the request's own `smart` flag, never inferred
+//!    from the `wiki_type` string. Standard wikis accept writes via
+//!    `wiki_ingest_message` only; [`AdminError::WikiTypeNotAdminWritable`] is
+//!    the rejection here.
 //!
 //! ## Op log
 //!
@@ -1112,12 +1113,12 @@ pub async fn pull(
     let policy = crate::document::DocumentPolicy::for_sections();
     let mut pages: Vec<PullPage> = Vec::new();
     // The consumer's own inbox rides the pull, and it has to be named
-    // explicitly: since 2026-08-18 `list_pages` excludes every `_`-prefixed
-    // file (the engine's, not the wiki's), and `_briefing.md` is the one such
-    // file the smart consumer both reads and writes — others notify it there
-    // and it administers it with an ordinary push. That is the **admin**
-    // surface reading its own wiki, not a reader opening a page of the
-    // memory, so it is an exception here and nowhere else.
+    // explicitly: `list_pages` excludes every `_`-prefixed file (the
+    // engine's own, not the wiki's), and `_briefing.md` is the one such file
+    // the smart consumer both reads and writes — others notify it there and
+    // it administers it with an ordinary push. That is the **admin** surface
+    // reading its own wiki, not a reader opening a page of the memory, so it
+    // is an exception here and nowhere else.
     let mut enumerated: Vec<crate::wiki::PageInfo> = handle.list_pages()?;
     let briefing_abs = handle.abs_dir().join(crate::briefing::BRIEFING_FILENAME);
     if briefing_abs.is_file() {

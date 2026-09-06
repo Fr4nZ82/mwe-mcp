@@ -238,6 +238,23 @@ and in the dashboard's session check. Eight migrations, `0068` through `0075`.
 
 ### Fixed
 
+- **Every dashboard address an assistant offers opens a page.** Five of
+  `dashboard_link`'s eight intents minted an address the dashboard has never
+  mounted, and the cost fell on the person holding the link: redemption burns
+  the token before it redirects, so a single-use link was spent to arrive at a
+  `404` — which reads as the memory being broken, with nothing to say that
+  only the address was wrong. `answer_proposal` lands in the chat with the
+  proposal already summarised, `audit` on the recall traces, `costs` on model
+  usage and spend, `settings` on the caller's own settings page, and
+  `archive_view` on the fact browser, which is where archived rows live —
+  there is no separate archive page. No intent was removed and the enum is
+  unchanged; the schema now says which page each one opens and which are
+  admin-only. The sixth dead address was not a link at all: the `pending_votes`
+  block sent a member owing a vote to a proposal tray that does not exist,
+  when a vote is cast by talking to the dashboard's chat. Two tests now take
+  the roster from the tool's own schema and the verdict from the real router,
+  so a ninth intent cannot arrive without a page.
+
 - **The ready-made assistant answers, and the memory is in the turn.** The
   NanoClaw bridge went out with three faults that only a real install shows.
   Its patched poll loop asked "is the memory on?" where it should have asked

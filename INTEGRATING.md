@@ -334,10 +334,10 @@ below directly.
    - **`pending_votes`** — the speaker owes a vote on a request to forget a
      fact they are part of. `count` (how many are waiting), `requests` (each
      with `proposal_id`, `fact_id`, `requester`, an RFC-3339 `deadline` and its
-     own `dashboard_path`), a top-level `dashboard_path` (`/dashboard/proposals`)
-     and `note: "vote_no_to_block_silence_is_consent"`. The vote is cast on the
-     dashboard and nowhere else, so prefix the path with the operator's base URL
-     and hand the human a link. The block carries **no fact text** — do not let
+     own `dashboard_path`), a top-level `dashboard_path` (`/dashboard/chat`)
+     and `note: "vote_no_to_block_silence_is_consent"`. The vote is cast by
+     talking to the dashboard's chat and nowhere else, so prefix the path with
+     the operator's base URL and hand the human a link. The block carries **no fact text** — do not let
      an agent invent it. It is pull-only and reappears every turn until the
      member votes; silence past the deadline is consent and the fact is
      forgotten. A guest turn never carries it.

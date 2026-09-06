@@ -550,17 +550,21 @@ pub struct NotifyResponse {
 #[serde(rename_all = "lowercase")]
 pub enum BriefingKind {
     /// A fact observed by REM or another agent during a session —
-    /// "this is what happened / this is what the data says". The
-    /// implicit default when the caller omits `kind`.
+    /// "this is what happened / this is what the data says". This is
+    /// also where a standard consumer's relay lands: a person tells the
+    /// assistant something and it forwards that into the smart consumer's
+    /// inbox with `wiki_admin_notify` — "frodo said on Telegram: fix MFA
+    /// recovery codes" is an observation somebody made, whoever carried
+    /// it in. The implicit default when the caller omits `kind`.
     Observation,
     /// A decision the briefing item is asking the smart consumer to
     /// make, with the relevant context attached — "we should decide
     /// whether to X".
     Reasoning,
-    /// An appointment left by the end user or by a non-owner consumer
-    /// reading the wiki via `shared_with` — "frodo said on Telegram:
-    /// fix MFA recovery codes". Includes manual references the user
-    /// dropped in passing (commit ids, URLs, tickets).
+    /// A reference from outside the wiki that the user wants tied into
+    /// it — a citation from the dashboard chat, a link, a commit id, a
+    /// ticket. What makes it `External` is that the item points
+    /// somewhere else, not who carried it in.
     External,
 }
 

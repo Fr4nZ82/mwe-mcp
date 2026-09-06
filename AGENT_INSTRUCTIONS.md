@@ -264,9 +264,9 @@ bootstrap is which family covers which job:
 | **G — Dashboard** | Mint a one-shot signed link into the built-in PWA. | any |
 | **H — Smart-wiki admin** | Authoritative smart-wiki management: push / pull, briefing notify, cooperative lease. | smart |
 | **I — Skills** | Enumerate + fetch skill bodies (bundled). | any |
-| **J** *(unused)* | `J` is a hole in the MCP family scheme; a wiki's shape is decided per fact, not by a registered type. | — |
 | **K — Smart-consumer bootstrap** | Session-start smart-wiki landscape + transversal contextual recall (hook-driven). | smart |
 | **L — Forget** | `wiki_forget` / `wiki_forget_bulk`: a person forgets their own facts outright; for somebody else's fact the answer is `outcome: "request_from_dashboard"` — opening the vote among its readers, and casting one, are dashboard-only. | any |
+| **C, J** *(unassigned)* | Two holes in the lettering: no tool carries either letter, and nothing is hidden behind them. The roster `tools/list` returns is the whole surface. | — |
 
 The server also composes a larger set of internal operations (atomic
 capture / recall / supersede / forget / navigate) when handling
