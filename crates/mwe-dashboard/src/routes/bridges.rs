@@ -80,6 +80,19 @@ const BRIDGES: &[(&str, &str)] = &[
 /// a bridge ships; asserted by a test over every embedded tree.
 const SH_DELIM: &str = "MWE_BRIDGE_EOF";
 
+/// nanoclaw's registry branches. Its channel and provider skills carry
+/// no payload of their own: each copies its files with `git show
+/// origin/<branch>:<path>` (the `nc:copy from-branch:` directive). A
+/// shallow clone of one ref tracks only that ref, so the installer names
+/// these branches itself and the fork can install a channel.
+const NANOCLAW_REGISTRY_BRANCHES: &[&str] = &["channels", "providers"];
+
+/// The template pick the setup wizard reads out of the fork's `.env`
+/// (`setup/auto.ts` bridges this one key, and only this one, into the
+/// run). Written when absent so the wizard offers `mwe` instead of
+/// making the operator find it in the picker.
+const NANOCLAW_TEMPLATE_ENV_LINE: &str = "NANOCLAW_TEMPLATE_PATH=mwe";
+
 fn bridge_label(consumer: &str) -> Option<&'static str> {
     BRIDGES
         .iter()
@@ -292,7 +305,12 @@ fn nanoclaw_guide_body(origin: &str) -> Markup {
             code { "git" } " — NanoClaw's own "
             code { "nanoclaw.sh" } " installs Node, pnpm and Docker if they are "
             "missing. Claude Code is what drives the skill conversationally in "
-            "step 2."
+            "step 2. The installer also fetches NanoClaw's "
+            code { "channels" } " and " code { "providers" } " branches — its "
+            "channel adapters are copied out of them, so without those a "
+            "channel cannot be installed at all — and names " code { "mwe" }
+            " as the template in the checkout's " code { ".env" } ", so setup "
+            "offers it instead of asking you to find it."
         }
         p.muted {
             strong { "Windows:" } " NanoClaw runs under WSL2, so there is no "
@@ -314,17 +332,21 @@ fn nanoclaw_guide_body(origin: &str) -> Markup {
         ol {
             li {
                 "Stamp the agent. On a fresh install run " code { "bash nanoclaw.sh" }
-                " and answer the first-agent question with "
-                strong { "From local templates" } ", then " code { "mwe" }
-                ". On an install that already has agents: "
+                " and confirm the " code { "mwe" } " template it offers (decline, "
+                "and you pick it by hand: " strong { "Local templates" } ", then "
+                code { "mwe" } "). On an install that already has agents: "
                 code { "ncl groups create --template mwe --name mwe --new" }
-                " — " code { "--name" } " is yours, it becomes the agent's name "
-                "and its group folder."
+                " — " code { "--name" } " is yours, it becomes the group folder. "
+                "It is not what the agent answers to: its name is a fact of this "
+                "memory, and anybody it serves can tell it in chat."
             }
             li {
                 "Apply the skill: " code { "/add-mwe-memory" } " from Claude Code. "
                 "Without Claude Code, the same steps are ordinary shell commands "
-                "in " code { ".claude/skills/add-mwe-memory/SKILL.md" } "."
+                "in " code { ".claude/skills/add-mwe-memory/SKILL.md" }
+                ". Its last step restarts the agent containers as well as the "
+                "service — a container that keeps running answers with the code "
+                "as it was before, and says nothing about it."
             }
             li {
                 "Issue a " strong { "standard" } " consumer token from the "
@@ -714,6 +736,13 @@ fn render_install_sh_hermes() -> String {
 /// else, because writing a template into a stranger's directory is
 /// worse than stopping.
 ///
+/// It then leaves the fork ready for nanoclaw's own setup wizard: the
+/// registry branches fetched into remote-tracking refs
+/// ([`NANOCLAW_REGISTRY_BRANCHES`]) so a channel can be installed, and
+/// the template pick in `.env` ([`NANOCLAW_TEMPLATE_ENV_LINE`]) so the
+/// wizard offers this agent. Neither is fatal to the file placement and
+/// neither goes near the token.
+///
 /// `None` when the manifest carries no upstream repo or pin: an
 /// installer that cloned an unpinned `main` would place a bridge beside
 /// a nanoclaw it was never tested against.
@@ -768,7 +797,44 @@ fn render_install_sh_nanoclaw() -> Option<String> {
     );
     s.push_str("fi\n\n");
 
+    // nanoclaw's channel and provider skills read their payloads with
+    // `git show origin/<branch>:<path>`. A clone of a single ref tracks
+    // only that ref, so `origin/channels` does not resolve and the setup
+    // wizard dies at the channel step; name the branches in the refspec
+    // and the refs exist. A fork that cannot reach them still gets the
+    // bridge — the warning says what to run later.
+    s.push_str("# nanoclaw copies a channel adapter out of its registry branches with\n");
+    s.push_str("# `git show origin/<branch>:<path>`, so those refs have to exist here.\n");
+    s.push_str("for branch in ");
+    s.push_str(&NANOCLAW_REGISTRY_BRANCHES.join(" "));
+    s.push_str("; do\n");
+    s.push_str(
+        "  git -C \"$NANOCLAW_DIR\" rev-parse --verify --quiet \"refs/remotes/origin/$branch\" >/dev/null 2>&1 && continue\n",
+    );
+    s.push_str("  echo \"fetching origin/$branch\"\n");
+    s.push_str(
+        "  git -C \"$NANOCLAW_DIR\" fetch --depth 1 --quiet origin \"$branch:refs/remotes/origin/$branch\" ||\n",
+    );
+    s.push_str(
+        "    echo \"warning: could not fetch origin/$branch — installing a channel will fail until 'git -C $NANOCLAW_DIR fetch --depth 1 origin $branch:refs/remotes/origin/$branch' succeeds\" >&2\n",
+    );
+    s.push_str("done\n\n");
+
     push_heredoc_writes(&mut s, "nanoclaw");
+
+    // The wizard reads this one key out of the fork's `.env` and offers
+    // that template. Written only when absent, appended on its own line,
+    // and every other line — the token included — is left alone.
+    s.push_str("\n# nanoclaw's setup wizard reads this key from .env and offers that template.\n");
+    s.push_str("NANOCLAW_ENV=\"$NANOCLAW_DIR/.env\"\n");
+    s.push_str("if ! grep -q '^NANOCLAW_TEMPLATE_PATH=' \"$NANOCLAW_ENV\" 2>/dev/null; then\n");
+    s.push_str("  printf '\\n%s\\n' \"");
+    s.push_str(NANOCLAW_TEMPLATE_ENV_LINE);
+    s.push_str("\" >> \"$NANOCLAW_ENV\"\n");
+    s.push_str("  echo \"set ");
+    s.push_str(NANOCLAW_TEMPLATE_ENV_LINE);
+    s.push_str(" in $NANOCLAW_ENV\"\n");
+    s.push_str("fi\n");
 
     s.push_str(
         "\nprintf '%s\\n' \"\" \\\n  \
@@ -777,7 +843,7 @@ fn render_install_sh_nanoclaw() -> Option<String> {
          \"  add-mwe-memory skill -> $NANOCLAW_DIR/.claude/skills/add-mwe-memory/\" \\\n  \
          \"\" \\\n  \
          \"Five steps remain — they are yours; the installer never handles your token:\" \\\n  \
-         \"  1. Stamp the agent. Fresh install: run 'bash nanoclaw.sh' from $NANOCLAW_DIR and answer the first-agent question with 'From local templates', then mwe. Existing install: ncl groups create --template mwe --name mwe --new (--name is yours).\" \\\n  \
+         \"  1. Stamp the agent. Fresh install: run 'bash nanoclaw.sh' from $NANOCLAW_DIR and confirm the mwe template it offers. Existing install: ncl groups create --template mwe --name mwe --new (--name is yours).\" \\\n  \
          \"  2. Apply the skill: /add-mwe-memory from Claude Code, or the shell commands listed in .claude/skills/add-mwe-memory/SKILL.md.\" \\\n  \
          \"  3. Issue a STANDARD consumer token from your mwe-mcp dashboard, set MWE_TOKEN in $NANOCLAW_DIR/.env, and tick every person it speaks for plus guest in its delegations.\" \\\n  \
          \"  4. Fill in senderMap in $NANOCLAW_DIR/mwe.json — one line per person — and restart nanoclaw.\" \\\n  \
@@ -898,7 +964,10 @@ fn render_install_md_nanoclaw(origin: &str) -> String {
          The installer needs only `git`; NanoClaw's own `nanoclaw.sh` installs\n\
          Node, pnpm and Docker if they are missing. It places two directories —\n\
          the `mwe` agent template in `templates/mwe/` and the `add-mwe-memory`\n\
-         fork skill in `.claude/skills/add-mwe-memory/` — and **does not touch\n\
+         fork skill in `.claude/skills/add-mwe-memory/` — fetches NanoClaw's\n\
+         `channels` and `providers` branches (its channel adapters are copied\n\
+         out of them, so a channel cannot be installed without them), names\n\
+         `mwe` as the template in the checkout's `.env`, and **does not touch\n\
          the token**.\n\
          \n\
          Once the files are in place, **tell your operator** to do these five\n\
@@ -906,16 +975,22 @@ fn render_install_md_nanoclaw(origin: &str) -> String {
          yourself:\n\
          \n\
          1. Stamp the agent. On a fresh install, run `bash nanoclaw.sh` from the\n\
-            checkout and answer the first-agent question with **From local\n\
-            templates**, then `mwe`. On an install that already has agents:\n\
-            `ncl groups create --template mwe --name mwe --new` — `--name` is\n\
-            theirs to choose, it becomes the agent's name and its group folder.\n\
+            checkout and confirm the `mwe` template setup offers (the installer\n\
+            named it in `.env`); declining drops back to picking **Local\n\
+            templates**, then `mwe`, by hand. On an install that already has\n\
+            agents: `ncl groups create --template mwe --name mwe --new` —\n\
+            `--name` is theirs to choose and becomes the group folder. It is\n\
+            **not** what the agent answers to: its name is a fact of this\n\
+            memory, and anybody it serves can tell it in chat.\n\
          2. Apply the skill: `/add-mwe-memory` from Claude Code. Without Claude\n\
             Code, the same steps are ordinary shell commands in\n\
             `.claude/skills/add-mwe-memory/SKILL.md`. It asks three questions —\n\
             the endpoint, their chat id, their mwe user id — then copies the\n\
             modules in, splices the reach-ins into NanoClaw's own files, writes\n\
-            `mwe.json`, builds and tests.\n\
+            `mwe.json`, builds and tests, and restarts both the service **and**\n\
+            the agent containers. Do not skip the second restart: a container\n\
+            that keeps running answers with the code as it was before the\n\
+            skill, with nothing in any log to say so.\n\
          3. Issue a **standard** consumer token from the mwe-mcp dashboard and\n\
             set it as `MWE_TOKEN` in the checkout's `.env`, then tick every\n\
             person the agent will speak for — plus `guest` — in that consumer's\n\
@@ -1361,7 +1436,7 @@ mod tests {
         // The residual steps, and no token anywhere near them.
         assert!(sh.contains("Five steps remain — they are yours"));
         assert!(sh.contains("ncl groups create --template mwe --name mwe --new"));
-        assert!(sh.contains("From local templates"));
+        assert!(sh.contains("confirm the mwe template it offers"));
         assert!(sh.contains("/add-mwe-memory"));
         assert!(sh.contains("STANDARD consumer token"));
         assert!(sh.contains("senderMap"));
@@ -1395,6 +1470,83 @@ mod tests {
             "the installer does not carry the manifest pin {pin}"
         );
         assert!(sh.contains(&format!("NANOCLAW_REPO=\"{repo}\"")));
+    }
+
+    /// A clone of one ref tracks one ref, and nanoclaw's channel and
+    /// provider skills read their payloads out of two branches with `git
+    /// show origin/<branch>:<path>`. Without those remote-tracking refs
+    /// the setup wizard dies at the channel step on `fatal: invalid
+    /// object name 'origin/channels'`, so the installer fetches them —
+    /// for a fork it just cloned and for one it was pointed at.
+    #[test]
+    fn nanoclaw_install_sh_brings_the_branches_the_channel_skills_read() {
+        let sh = render_install_sh("nanoclaw").expect("nanoclaw sh");
+        assert_eq!(
+            NANOCLAW_REGISTRY_BRANCHES,
+            ["channels", "providers"],
+            "the branches nanoclaw's skills name"
+        );
+        assert!(
+            sh.contains("for branch in channels providers; do"),
+            "both branches must be fetched, not just the one a channel needs"
+        );
+        // An explicit refspec: a bare `git fetch origin channels` in a
+        // single-ref clone writes FETCH_HEAD and no `origin/channels`,
+        // which is exactly the failure this fixes.
+        assert!(sh.contains(
+            "git -C \"$NANOCLAW_DIR\" fetch --depth 1 --quiet origin \"$branch:refs/remotes/origin/$branch\""
+        ));
+        // Already there → left alone; unreachable → a warning, never a
+        // dead install: the two directories are the job, the branches are
+        // the wizard's.
+        assert!(sh.contains("rev-parse --verify --quiet \"refs/remotes/origin/$branch\""));
+        assert!(sh.contains("warning: could not fetch origin/$branch"));
+        // It runs after the fork is resolved, so a reused checkout gets
+        // them too — not only a fresh clone.
+        let fetch = sh.find("for branch in channels").expect("the fetch loop");
+        let resolved = sh
+            .find("using the nanoclaw checkout at")
+            .expect("fork resolution");
+        assert!(
+            fetch > resolved,
+            "the fetch must cover a reused checkout as well"
+        );
+    }
+
+    /// The one setup key nanoclaw reads out of a fork's `.env`
+    /// (`setup/auto.ts` bridges `NANOCLAW_TEMPLATE_PATH` into the run;
+    /// nothing loads the rest of the file into the environment). Written
+    /// only when absent, on its own line, and never near the token.
+    #[test]
+    fn nanoclaw_install_sh_names_the_template_and_touches_nothing_else_in_env() {
+        let sh = render_install_sh("nanoclaw").expect("nanoclaw sh");
+        assert_eq!(NANOCLAW_TEMPLATE_ENV_LINE, "NANOCLAW_TEMPLATE_PATH=mwe");
+        assert!(sh.contains("NANOCLAW_ENV=\"$NANOCLAW_DIR/.env\""));
+        assert!(
+            sh.contains(
+                "if ! grep -q '^NANOCLAW_TEMPLATE_PATH=' \"$NANOCLAW_ENV\" 2>/dev/null; then"
+            ),
+            "an operator's own pick must survive"
+        );
+        assert!(
+            sh.contains("printf '\\n%s\\n' \"NANOCLAW_TEMPLATE_PATH=mwe\" >> \"$NANOCLAW_ENV\"")
+        );
+        // Only that key. The other setup env vars are read from the
+        // process environment, never from `.env`, so writing them here
+        // would be a line that looks like configuration and does nothing.
+        assert!(!sh.contains("NANOCLAW_AGENT_NAME"));
+        assert!(!sh.contains("NANOCLAW_AGENT_PROVIDER"));
+        assert!(!sh.contains("NANOCLAW_DISPLAY_NAME"));
+        // Exactly one line of the script writes to that file, and it is
+        // the template pick. The token appears in the installer only
+        // inside the skill's own operator instructions, never as
+        // something this script writes.
+        assert_eq!(
+            sh.matches(">> \"$NANOCLAW_ENV\"").count(),
+            1,
+            "the installer must append exactly one line to the fork's .env"
+        );
+        assert!(!sh.contains("MWE_TOKEN=$"));
     }
 
     /// nanoclaw runs on Windows only inside WSL2, so the honest Windows
@@ -1450,7 +1602,8 @@ mod tests {
             guide.contains("https://memory.anna.dev/bridges/nanoclaw/install.sh | sh"),
             "the guide must show the served install command"
         );
-        assert!(guide.contains("From local templates"));
+        assert!(guide.contains("confirm the "));
+        assert!(guide.contains("channels"));
         assert!(guide.contains("MWE_TOKEN"));
         // The token is issued from the Tokens page, never minted here.
         assert!(guide.contains("href=\"/dashboard/tokens\""));

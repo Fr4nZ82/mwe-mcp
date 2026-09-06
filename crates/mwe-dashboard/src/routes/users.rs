@@ -443,6 +443,20 @@ fn render_new_form(
             p.help.muted { "Lowercase letters, digits, underscore, and `°` only. Must start with a letter." }
             (components::text_field_ac("email", "Email", "email", &form.email, true, "off"))
             p.help.muted { "The user signs in with this email. Required, and only you (the admin) can change it later." }
+            // The email is mandatory because this form makes a person who
+            // signs in. A bot has no inbox and no login, so its identity is
+            // minted by the token that binds it — the standard-consumer flow
+            // on the Tokens page. Said here because the founder came looking
+            // for a bot on this page and was stopped by the email field, with
+            // nothing to say where else to go.
+            p.help.muted {
+                "This form is for " strong { "people" } " — someone who signs in and reads "
+                "their own memory. To create an " strong { "agent" } " (a bot, an assistant), "
+                "issue a " strong { "standard" } " consumer token on the "
+                a href="/dashboard/tokens" { "Tokens" } " page instead: its "
+                code { "Bot id" } " field creates the agent's identity and its wiki, with "
+                "no email and no login."
+            }
             (components::text_field("aliases", "Aliases (comma-separated)", "text", &form.aliases, false))
             (components::text_field("timezone", "Timezone (IANA, optional)", "text", &form.timezone, false))
             (components::text_field("locale", "Language (BCP-47, e.g. en-GB or it)", "text", &form.locale, false))
@@ -1011,5 +1025,46 @@ mod locale_field_tests {
         assert!(parse_locale_field(&"x".repeat(33)).is_err());
         // Just under the cap still passes — the gate is shape, not taste.
         assert!(parse_locale_field(&"x".repeat(32)).is_ok());
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn admin_session() -> crate::auth::SessionUser {
+        crate::auth::SessionUser {
+            sender_id: "alice".into(),
+            is_admin: true,
+            session_jti: "test-jti".into(),
+        }
+    }
+
+    /// This form makes a **person**: someone who signs in, which is why
+    /// the email is mandatory. An **agent** has no inbox and no login —
+    /// its identity is minted by the standard consumer token that binds
+    /// it. Somebody who arrives here wanting a bot must be sent there
+    /// rather than stopped by a required field with no explanation.
+    #[test]
+    fn the_new_user_form_says_where_an_agent_is_created_instead() {
+        let html = render_new_form(
+            layout::Chrome::default(),
+            &admin_session(),
+            &NewUserSubmission::default(),
+            None,
+        );
+        // The email stays required — this is not a new flag, it is a signpost.
+        assert!(html.contains("name=\"email\""), "{html}");
+        assert!(html.contains("The user signs in with this email. Required"));
+        // And the signpost itself: what this form is for, and where the
+        // other thing lives, as a link the admin can follow.
+        assert!(html.contains("This form is for "), "{html}");
+        assert!(html.contains("href=\"/dashboard/tokens\""), "{html}");
+        assert!(html.contains("Bot id"), "{html}");
+        // No second way to make an agent is offered here.
+        assert!(
+            !html.contains("is_agent") && !html.contains("name=\"agent\""),
+            "the agent is created by the token flow, not by a field on this form"
+        );
     }
 }

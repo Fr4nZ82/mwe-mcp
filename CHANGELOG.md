@@ -227,6 +227,61 @@ and in the dashboard's session check. Eight migrations, `0068` through `0075`.
 
 ### Fixed
 
+- **The ready-made assistant answers, and the memory is in the turn.** The
+  NanoClaw bridge went out with three faults that only a real install shows.
+  Its patched poll loop asked "is the memory on?" where it should have asked
+  "did a follow-up arrive?", so the agent aborted its own stream half a second
+  into **every** turn and replied to nobody; the reverse channel looked for a
+  paired chat under the bare platform id when NanoClaw stores
+  `telegram:<chat id>`, so every notice waited for a chat that was right
+  there; and a `senderMap` key with no channel in it — the shape hermes
+  accepts — was kept, then failed to route once per key per tick. Beside them:
+  a session already on disk is dropped at startup rather than resumed, so
+  "no session between turns" holds for the first turn of a replaced container
+  too. The offline smoke now runs two turns **on the clock**, with the host
+  answering slowly, because a mock that replies in the same microtask never
+  lets the follow-up poller fire — which is how a loop that aborted every turn
+  stayed green.
+
+- **Installing that assistant no longer has three dead ends.** The served
+  installer cloned NanoClaw at one ref, so the setup wizard died at the
+  channel step (`fatal: invalid object name 'origin/channels'`) — the channel
+  adapters are copied out of a branch that clone does not track; both registry
+  branches are fetched now, for a fresh clone and for a checkout it was
+  pointed at. It also names `mwe` as the template in the fork's `.env`, the
+  one setup key NanoClaw reads from there, so the wizard offers the agent
+  instead of making the operator find it. Applying the skill removes the
+  memory tree an earlier boot left behind — only when it is still NanoClaw's
+  untouched templates, byte for byte — restarts the agent containers as well
+  as the service, and hands a memory group NanoClaw's shared `CLAUDE.md`
+  without the two sections that send an agent to read `memory/` and
+  `conversations/`. **The agent's name is now the memory's**: NanoClaw's
+  configured name is not injected, so anybody it serves can tell it what to be
+  called, in chat, and it holds.
+
+- **The Users page says where an agent is created.** The "new user" form needs
+  an email because it makes a person who signs in; a bot has neither. It now
+  points at the Tokens page, where a standard consumer's `Bot id` mints the
+  agent's identity and its wiki with no login.
+
+- **The skills a model is handed at runtime say what the engine does.**
+  Twenty-two claims across the six bundled skills and `AGENT_INSTRUCTIONS.md`
+  described an engine that had moved under them, and three carried a visible
+  cost: `wiki_admin_notify` was documented as smart-only, so the one path by
+  which a standard consumer reaches a smart consumer's inbox read as closed;
+  an on-the-fly date correction was documented as the subject's alone when
+  the gate is the subject, the author, or anyone the fact was shared with;
+  and the briefing inbox was documented as a `## Unread` section to parse out
+  of `_briefing.md` when `smart_bootstrap` hands the pending items back
+  already filtered — with no mention of the `mark_processed` that clears
+  them, so the same item came back every session. The rest: ingest emits no
+  structural proposal, `llm_used` is a bool, `_meta.md` carries no
+  `owner_user`, a push replaces the touched page's section rows rather than
+  the wiki's, REM never dedups a smart wiki, a briefing `kind` is the
+  notifier's field, the op-log revert has no time window, there is no bundled
+  `wiki-companion` type behind the folder layout, the `/cite/` resolver is
+  mounted, and the `initialize` handshake already sends `instructions`.
+
 - **A turn that stored nothing said it had noted it.** Every fallback of
   `wiki_ingest_message` — model unreachable, unparseable reply, plan that
   could not be applied — returned the `suggested_seed` "I've noted that." on a
