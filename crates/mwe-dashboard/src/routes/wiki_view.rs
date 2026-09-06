@@ -46,9 +46,9 @@
 //!   a `403`). The owner check still applies on top
 //!   ([`mwe_core::wiki_admin`]'s gate; non-owners get a `404`). There
 //!   is no discoverable link to this route from the normal page view —
-//!   the blessed write channels are the inline **comments**, the
-//!   **operative chat**, and the **structured fact actions**
-//!   (ACL / validity / supersede on `/dashboard/facts`).
+//!   the write channels a reader is offered are the inline **comments**,
+//!   the **chat**, and the **fact actions** (who may read a fact, and
+//!   when it holds, on `/dashboard/facts`).
 //! - POST `/dashboard/wiki/:id/edit/*path`     — save the textual
 //!   submission, under the same smart-forbidden / admin-only gate as
 //!   the GET form. Funnels through
@@ -646,11 +646,12 @@ fn render_wikis_index(
             " A fact captured from a conversation is stored and recallable "
             "immediately, but its "
             em { "prose" }
-            " is written when the light dream next runs, together with the rest "
-            "of that page — so a page opened right after a conversation may not "
-            "show what was just said. Nothing is lost, and the cadence is set on "
-            a href="/dashboard/admin/rem-settings" { "REM settings" }
-            ". Lists and notes the user asked to keep are written straight away."
+            " is written by the next " strong { "Light" } " run, together with "
+            "the rest of that page — so a page opened right after a conversation "
+            "may not show what was just said. Nothing is lost, and how often that "
+            "run fires is the dream cadence on the "
+            a href="/dashboard/settings/me" { "Settings" }
+            " page. Lists and notes the user asked to keep are written straight away."
         }
 
         @if rows.is_empty() {
@@ -1697,22 +1698,24 @@ fn render_view_page_body(
             (render_describe_affordance(wiki_id, page_path))
         }
 
-        (blessed_channels_footer(&comment_mode_url, can_comment, frozen))
+        (how_to_change_footer(&comment_mode_url, can_comment, frozen))
     }
 }
 
-/// The "blessed channels" footer: the ways a page is changed. There is no
-/// raw editor, so this list is the whole surface. The inline-comments link
+/// The footer that says how this page gets changed. The raw editor is not
+/// among the routes it offers — it is admin-only on a standard wiki,
+/// refused on a smart one, and deliberately undiscoverable — so the list
+/// is the three channels an ordinary reader has. The inline-comments link
 /// is offered only when the viewer can actually comment, so it is never a
 /// dead link.
 ///
 /// On a frozen deployment there are no channels at all — the footer would
 /// otherwise be a list of three links to things that refuse — so it says
 /// that instead.
-fn blessed_channels_footer(comment_mode_url: &str, can_comment: bool, frozen: bool) -> Markup {
+fn how_to_change_footer(comment_mode_url: &str, can_comment: bool, frozen: bool) -> Markup {
     if frozen {
         return html! {
-            p class="blessed-channels-footer muted" {
+            p class="how-to-change-footer muted" {
                 "This instance is read-only, so this page cannot be changed from here "
                 "by anybody — not through comments, not through the chat, not through "
                 "the fact actions."
@@ -1720,29 +1723,27 @@ fn blessed_channels_footer(comment_mode_url: &str, can_comment: bool, frozen: bo
         };
     }
     html! {
-        // Manual free-text editing from the dashboard is forbidden
-        // (smart) / admin-only-discouraged (standard) —
-        // there is NO discoverable "open the raw editor" link here. The
-        // blessed write channels are the inline comments above, the
-        // operative chat, and the structured ACL / validity / supersede
-        // fact actions.
-        p class="blessed-channels-footer muted" {
+        // No discoverable "open the raw editor" link here: rewriting a
+        // page by hand is the escape hatch, not a channel. This footer
+        // serves both wiki families, so it says nothing that holds for
+        // only one of them.
+        p class="how-to-change-footer muted" {
             @if can_comment {
-                "To change this page, use the blessed channels: leave inline "
+                "To change this page: leave inline "
                 a href=(comment_mode_url) { "comments" }
                 ", talk to the "
-                a href="/dashboard/chat" { "operative chat" }
-                ", or use the structured "
-                a href="/dashboard/facts" { "fact actions" }
-                " (ACL / validity / supersede)."
+                a href="/dashboard/chat" { "chat" }
+                ", or change the facts themselves on the "
+                a href="/dashboard/facts" { "Facts" }
+                " page — who may read one, and when it holds."
             } @else {
-                "To change this page, use the blessed channels: talk to the "
-                a href="/dashboard/chat" { "operative chat" }
-                ", or use the structured "
-                a href="/dashboard/facts" { "fact actions" }
-                " (ACL / validity / supersede)."
+                "To change this page: talk to the "
+                a href="/dashboard/chat" { "chat" }
+                ", or change the facts themselves on the "
+                a href="/dashboard/facts" { "Facts" }
+                " page — who may read one, and when it holds."
             }
-            " The dashboard does not offer manual free-text rewriting of wiki pages."
+            " Nothing here rewrites the text of the page directly."
         }
     }
 }
@@ -2426,20 +2427,17 @@ fn render_edit_form(
 
         (components::flash(
             "warning",
-            "Raw free-text editing is a discouraged admin-only escape hatch. \
-             Prefer the blessed channels: inline comments, the operative chat, \
-             and the structured fact actions (ACL / validity / supersede). \
-             Smart-wiki pages cannot be edited here at all.",
+            "Rewriting a standard-wiki page by hand is a discouraged \
+             admin-only escape hatch: its prose is composed from the facts on \
+             it, so what you write here is undone the next time that page is \
+             written. Prefer inline comments, the chat, or changing the facts \
+             themselves. A smart-wiki page cannot be edited here at all — its \
+             consumer is the sole writer.",
         ))
 
         p.muted {
-            "The save goes through "
-            code { "mwe_core::wiki_admin::push" }
-            " with "
-            code { "actor_kind = Dashboard" }
-            ", so it lands in "
-            code { "wiki_admin_op_log" }
-            " alongside smart-consumer pushes and can be reverted from the op-log view."
+            "The save is recorded in this wiki's operation log alongside the "
+            "pushes a smart consumer makes, and can be reverted from there."
         }
 
         form action=(format!("/dashboard/wiki/{wiki_id}/edit/{page_path}")) method="post" {
@@ -2656,13 +2654,13 @@ fn render_describe_form(
             }
         }
         p.muted {
-            "The page description is the page's "
-            strong { "testata description" }
-            " — a short note on what this page is for. It guides where new "
-            "facts get placed (the planner shows it to other pages) and labels "
-            "the page in recall navigation. It is "
-            strong { "preserved across recompiles" }
-            " — REM never overwrites it. Leave blank to clear."
+            "A short note on what this page is for. It is the one line other "
+            "parts of the engine read about this page: it guides where a new "
+            "fact gets filed, and it is what recall navigation reads to decide "
+            "whether to open the page at all. It holds "
+            strong { "until this page's prose is next written" }
+            " — the writer composes a fresh description along with the body. "
+            "Leave blank to clear."
         }
         form action=(format!("/dashboard/wiki/{id}/describe/{page_path}")) method="post" {
             p {
@@ -2682,10 +2680,10 @@ fn render_describe_form(
     layout::authenticated_reading_page(chrome, &title, user, &body)
 }
 
-/// Gate the raw free-text page editor (manual wiki editing
-/// from the dashboard is forbidden / discouraged; the blessed channels
-/// are inline comments, the operative chat, and the structured fact
-/// actions).
+/// Gate the raw free-text page editor. Rewriting a page by hand from the
+/// dashboard is forbidden on a smart wiki and discouraged on a standard
+/// one; the channels a reader is offered instead are inline comments, the
+/// chat, and the fact actions.
 ///
 /// - **Smart wikis: hard-forbidden.** The smart consumer is the sole
 ///   writer — a raw page rewrite would collide with its pushes. Returns a
@@ -2708,8 +2706,8 @@ fn enforce_raw_editor_allowed(
     };
     if handle.meta().smart {
         // Hard-forbidden — surface as NotFound so the smart raw editor is
-        // not even discoverable. The message points at the blessed
-        // channel (the smart consumer / comments).
+        // not even discoverable. The reader's channel on a smart wiki is a
+        // comment to the consumer that owns it.
         return Err(DashboardError::NotFound);
     }
     if !user.is_admin {

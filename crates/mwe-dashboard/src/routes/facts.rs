@@ -332,7 +332,7 @@ impl FactRow {
         Self {
             fact_id: c.capture_id.as_str().to_owned(),
             // Empty on purpose: a capture waiting in the buffer is in no wiki
-            // yet — the light dream decides where it goes when it sorts the
+            // yet — the next Light run decides where it goes when it sorts the
             // queue. The table renders the blank as a dash.
             wiki_id: String::new(),
             fact_type: c.fact_type,
@@ -400,7 +400,7 @@ async fn index(
     let reveal = crate::reveal::active(&state, &user, &jar);
 
     // The facts table reads `fact_index` (promoted facts). A freshly-ingested
-    // claim sits un-promoted in `capture_buffer` until the light dream
+    // claim sits un-promoted in `capture_buffer` until the next Light run
     // consolidates it — invisible here, yet already recalled by the agent via
     // the "fresh" slot. Surface those captures at the top, badged, so the
     // operator view does not silently lag the agent's knowledge. Both calls
@@ -707,12 +707,12 @@ async fn acl_submit(
         .subject
         .trim()
         .parse::<Principal>()
-        .map_err(|e| DashboardError::Validation(format!("subject non valido: {e}")))?;
+        .map_err(|e| DashboardError::Validation(format!("invalid subject: {e}")))?;
     let new_allow = split_csv(&form.allow)
         .iter()
         .map(|s| s.parse::<Principal>())
         .collect::<std::result::Result<Vec<_>, _>>()
-        .map_err(|e| DashboardError::Validation(format!("allow non valido: {e}")))?;
+        .map_err(|e| DashboardError::Validation(format!("invalid allow entry: {e}")))?;
 
     // Preserve the fact's cross-user attribution (who captured it) — a
     // re-share never rewrites it, exactly like the chat verb.
@@ -783,7 +783,7 @@ async fn validity_submit(
     let valid_to = normalize_date_bound(&form.valid_to)?;
     if valid_from.is_none() && valid_to.is_none() {
         return Err(DashboardError::Validation(
-            "Specifica almeno una delle due date (valid_from / valid_to).".to_owned(),
+            "Fill in at least one of the two dates (valid from / valid to).".to_owned(),
         ));
     }
 
@@ -885,9 +885,10 @@ fn enforce_subject_or_admin(user: &SessionUser, row: &FactIndexRow) -> Result<()
     }
 }
 
-/// Enforce the **sender-OR-admin** gate on a direct fact act (`delete` /
-/// `validity_edit`): the session must be the fact's author
-/// (`sender_id == user:<sender_id>`) or be admin. 403 otherwise.
+/// Enforce the **sender-OR-admin** gate on the direct `delete`: the
+/// session must be the fact's author (`sender_id == user:<sender_id>`)
+/// or be admin. 403 otherwise. The *updates* — the ACL and the validity
+/// window — are the subject's, gated by [`enforce_subject_or_admin`].
 fn enforce_sender_or_admin(user: &SessionUser, row: &FactIndexRow) -> Result<()> {
     if sender_or_admin(user, row) {
         Ok(())
@@ -984,7 +985,7 @@ fn normalize_date_bound(raw: &str) -> Result<Option<String>> {
         return Ok(Some(dt.to_rfc3339()));
     }
     Err(DashboardError::Validation(format!(
-        "Data non valida: {t:?} (usa YYYY-MM-DD oppure un timestamp ISO 8601)."
+        "Not a date: {t:?} — use YYYY-MM-DD, or a full ISO 8601 timestamp."
     )))
 }
 
@@ -1291,7 +1292,7 @@ fn list_cell(items: &[String]) -> Markup {
 fn id_cell(id: &str) -> Markup {
     let short = id.get(..8).unwrap_or(id);
     html! {
-        code.copy-id data-fact-id=(id) title=(format!("{id} · clicca per copiare l'id intero")) {
+        code.copy-id data-fact-id=(id) title=(format!("{id} · click to copy the whole id")) {
             (short) "…"
         }
     }
@@ -1302,7 +1303,7 @@ fn status_cell(row: &FactRow) -> Markup {
     html! {
         @if row.fresh {
             span.badge.badge-fresh
-                title="Capture not yet promoted to a fact: the light dream will consolidate it shortly."
+                title="Captured, not yet placed on a page: the next Light run files it."
                 { "consolidating" }
         } @else if row.deleted_at.is_some() {
             span.badge.badge-deleted title="Deleted fact (tombstone)" { "deleted" }
@@ -1465,9 +1466,8 @@ fn index_intro(reveal: bool) -> Markup {
                 "Filtered list of every fact you can read — the governed memory of "
                 "your standard wikis. Smart-wiki documentation is indexed as "
                 a href="/dashboard/facts/sections" { "sections" }
-                " instead. Filters compose in AND, "
-                "and " code { "topic" } " takes a single term (multi-topic upcoming). "
-                "Arrowed headers sort; click a " code { "fact_id" } " to copy it."
+                " instead. Filters compose in AND, and " code { "topic" }
+                " takes one term. Arrowed headers sort; click a fact id to copy it."
             }
         }
     }
@@ -1896,10 +1896,9 @@ fn structured_actions_section(
                 }
             } @else if !can_acl && !can_validity {
                 p.muted {
-                    "Only the fact's subject (or an admin) may change its "
-                    "visibility (ACL), and only its author (the "
-                    code { "sender" }
-                    ") or an admin may correct its validity."
+                    "Both are the subject's to change — the person or group the "
+                    "fact is about — or an admin's: its visibility (ACL) and the "
+                    "dates it holds between. You are neither, for this fact."
                 }
             } @else {
                 p.muted {
@@ -1929,8 +1928,8 @@ fn structured_actions_section(
                     }
                 } @else {
                     p.muted {
-                        "Only the fact's subject (or an admin) may change its "
-                        "visibility (ACL)."
+                        "Only the fact's subject — the person or group it is "
+                        "about — or an admin may change its visibility (ACL)."
                     }
                 }
                 @if can_validity {
@@ -1952,9 +1951,8 @@ fn structured_actions_section(
                     }
                 } @else {
                     p.muted {
-                        "Only the fact's author (the "
-                        code { "sender" }
-                        ") or an admin may correct its validity."
+                        "Only the fact's subject — the person or group it is "
+                        "about — or an admin may correct its validity."
                     }
                 }
             }
@@ -2363,6 +2361,37 @@ mod tests {
             is_admin,
             session_jti: "jti".to_owned(),
         }
+    }
+
+    /// The refusal notes on the structured-actions block must name the gate
+    /// the handler actually enforces. Both the ACL form and the validity
+    /// form run through [`enforce_subject_or_admin`], so both refusals name
+    /// the **subject** — never the author, which is the `delete` gate that
+    /// sits on the same page and admits a different person. A refusal that
+    /// names the wrong axis sends the one person who can make the change
+    /// away to find somebody who cannot.
+    #[test]
+    fn the_refusal_notes_name_the_subject_gate_not_the_author() {
+        let fact_id = FactId::parse("018f1234-5678-7abc-9def-0123456789ab").expect("parse");
+        let row = make_row("018f1234-5678-7abc-9def-0123456789ab");
+
+        // Nobody may act: the combined note.
+        let refused = structured_actions_section(&fact_id, &row, false, false, false).into_string();
+        assert!(refused.contains("the subject's to change"), "{refused}");
+        assert!(
+            !refused.contains("its author"),
+            "the validity gate is the subject, not the author: {refused}"
+        );
+
+        // Both forms render for somebody who may act, and neither refusal
+        // note comes along with them.
+        let allowed = structured_actions_section(&fact_id, &row, true, true, false).into_string();
+        assert!(allowed.contains("Apply ACL"), "{allowed}");
+        assert!(allowed.contains("Apply validity"), "{allowed}");
+        assert!(
+            !allowed.contains("or an admin may correct its validity"),
+            "{allowed}"
+        );
     }
 
     /// `subject_or_admin` is the **`acl_change`** (visibility) gate — subject of

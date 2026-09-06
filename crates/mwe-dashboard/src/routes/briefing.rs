@@ -2,7 +2,7 @@
 //! Briefing-item synchronous Submit endpoint.
 //!
 //! Single POST route — `POST /dashboard/wiki/:id/briefing-items/:bi_id/process`.
-//! For a **structured** non-smart wiki the handler calls the shared
+//! On a **smart** wiki the handler calls the shared
 //! [`mwe_core::rem::briefing_processor::process_briefing_item`] core
 //! function (the same one REM's mark-passive path calls) and
 //! redirects back to the wiki view so the operator immediately sees
@@ -10,36 +10,23 @@
 //!
 //! ## Standard wikis are refused
 //!
-//! A comment on a **standard** page is applied by the REM dream as a fact op
-//! (`correct` / `remove` / `add`), not mark-passive drained — so this endpoint
-//! **refuses** a standard-wiki row with `400`. Draining it synchronously would
-//! stamp `processed_at` and the dream would then never action-take it; and a
-//! memory edit must never be a user-triggered token-burning click. The comment
-//! stays parked until the next consolidation.
-//!
-//! ## Why a separate route file
-//!
-//! This endpoint is being shipped in parallel with the `wiki_admin_notify`
-//! gate matrix on the tool-side and the form-to-chat bridge on the
-//! Facts edit form. Each worktree keeps its surface
-//! disjoint so the merges don't collide. The Submit endpoint touches
-//! nothing in `wiki_view.rs` (the comment **read** view) — it lives
-//! alongside it as a sibling router that the dashboard `build()`
-//! mounts at the same level.
+//! A comment on a **standard** page is applied by the nightly cycle as a
+//! fact op (`correct` / `remove` / `add`), not mark-passive drained — so
+//! this endpoint **refuses** a standard-wiki row with `400`. Draining it
+//! synchronously would stamp `processed_at` and the cycle would then never
+//! action-take it; and a memory edit must never be a user-triggered
+//! token-burning click. The comment stays parked until the next cycle.
 //!
 //! ## Auth posture
 //!
-//! [`SessionUser`] gate only. The
-//! Submit button "lives on the non-smart wiki view" and any
-//! logged-in dashboard operator can legitimately drain a row from any
-//! wiki they can see — there is no sender-specific authorship gate
-//! (the comment author is recorded on the row via
+//! [`SessionUser`] gate only: any logged-in dashboard operator can drain
+//! a row from a wiki they can see — there is no sender-specific
+//! authorship gate (the comment author is recorded on the row via
 //! `author_sender_id` regardless). The destination wiki view's own
 //! read-access check (`enforce_read_access_or_not_found` in
-//! `wiki_view.rs`) fires when the redirect lands the user on the
-//! detail page; we don't duplicate the check on the way in, because a
-//! user who cannot read the wiki cannot navigate to a page that has
-//! a Submit button on it in the first place.
+//! `wiki_view.rs`) fires when the redirect lands the user on the detail
+//! page; the check is not duplicated on the way in, because a user who
+//! cannot read the wiki cannot see the row to address.
 //!
 //! ## Mark-passive policy
 //!
@@ -98,12 +85,13 @@ async fn submit_process(
         ))
     })?;
 
-    // A comment on a NARRATIVE page is applied by the REM dream as a fact
-    // op (correct / remove / add), not mark-passive drained. Refuse the
+    // A comment on a standard page is applied by the nightly cycle as a
+    // fact op (correct / remove / add), not mark-passive drained. Refuse the
     // synchronous Submit for standard wikis — draining it here would stamp
-    // `processed_at` and the dream would then never action-take it. A memory
-    // edit must never be a user-triggered token-burning click; it waits for the
-    // next consolidation. Structured non-smart wikis keep the Submit.
+    // `processed_at` and the cycle would then never action-take it. A memory
+    // edit must never be a user-triggered token-burning click; it waits for
+    // the next cycle. A smart wiki keeps the Submit: its comments are the
+    // consumer's inbox, and draining one is the whole act.
     let row_wiki: Option<String> =
         sqlx::query_scalar("SELECT wiki_id FROM wiki_briefing_items WHERE id = ?")
             .bind(bi_id)
@@ -115,8 +103,8 @@ async fn submit_process(
     };
     if is_standard_wiki(&memory.tree, &row_wiki)? {
         return Err(DashboardError::BadRequest(
-            "comments on standard wikis are applied automatically by the next memory \
-             consolidation (REM); they cannot be submitted manually"
+            "a comment on a standard wiki is applied by the nightly cycle, which \
+             reads it and changes the facts; it cannot be submitted by hand"
                 .to_owned(),
         ));
     }
@@ -143,7 +131,7 @@ async fn submit_process(
 
 /// Whether the wiki named `wiki_id` is **standard** — every wiki that is
 /// not smart (read from the per-wiki `_meta.md` smart flag). Their
-/// comments the REM dream applies as fact ops, so the synchronous
+/// comments the nightly cycle applies as fact ops, so the synchronous
 /// Submit is refused for them. A wiki that no longer resolves (deleted)
 /// reads as not-standard — the row's own processor handles the
 /// `WikiNotFound` case downstream.
