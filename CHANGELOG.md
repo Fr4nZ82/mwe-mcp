@@ -355,8 +355,10 @@ and in the dashboard's session check. Eight migrations, `0068` through `0075`.
   usage and spend, `settings` on the caller's own settings page, and
   `archive_view` on the fact browser, which is where archived rows live —
   there is no separate archive page. No intent was removed and the enum is
-  unchanged; the schema now says which page each one opens and which are
-  admin-only. The sixth dead address was not a link at all: the `pending_votes`
+  unchanged; the schema now says which page each one opens, and the admin
+  gate covers the two that show the **whole deployment** — the recall traces
+  and the spend. A link to one's **own** settings page is open to every
+  enrolled sender, the same rule the dashboard itself applies to that page. The sixth dead address was not a link at all: the `pending_votes`
   block sent a member owing a vote to a proposal tray that does not exist,
   when a vote is cast by talking to the dashboard's chat. Two tests now take
   the roster from the tool's own schema and the verdict from the real router,

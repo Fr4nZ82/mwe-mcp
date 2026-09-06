@@ -2349,7 +2349,11 @@ pub(super) async fn call_dashboard_link(
     if !allowed {
         return Err(invalid_input(format!("unknown intent: {}", args.intent)));
     }
-    if matches!(args.intent.as_str(), "settings" | "audit" | "costs") && !identity.is_admin {
+    // `settings` is the caller's own settings page and the dashboard mounts
+    // it for every signed-in user, so the tool gates it for nobody. The two
+    // that stay behind the admin gate are the ones that show the whole
+    // deployment rather than the caller: the recall traces and the spend.
+    if matches!(args.intent.as_str(), "audit" | "costs") && !identity.is_admin {
         return Err(ToolError::new(
             ToolErrorClass::SenderUnauthorized,
             format!("intent `{}` is admin-only", args.intent),

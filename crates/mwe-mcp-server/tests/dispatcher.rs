@@ -1083,19 +1083,31 @@ async fn dashboard_link_is_absolute_when_the_server_knows_its_own_address() {
     );
 }
 
+/// The admin gate covers what shows the whole deployment, and nothing else.
+///
+/// `audit` (the recall traces) and `costs` (model usage and spend) are the
+/// operator's view of everybody; `settings` is the caller's own page, which
+/// the dashboard mounts for every signed-in user, so asking an assistant for
+/// a link to it must work for an ordinary member and not answer
+/// `sender_unauthorized`.
 #[tokio::test]
-async fn dashboard_link_admin_only_intents_gated() {
+async fn only_the_deployment_wide_intents_are_admin_only() {
     let (state, identity, _dir) = fixture(false, None).await;
-    let err = call(
-        &state,
-        &identity,
-        "dashboard_link",
-        json!({"intent": "settings"}),
-    )
-    .await
-    .expect_err("must reject");
-    assert!(err.contains("sender_unauthorized"), "{err}");
-    let (state, identity, _dir) = fixture(true, None).await;
+
+    for intent in ["audit", "costs"] {
+        let Err(err) = call(
+            &state,
+            &identity,
+            "dashboard_link",
+            json!({ "intent": intent }),
+        )
+        .await
+        else {
+            panic!("intent `{intent}` must be refused to a non-admin");
+        };
+        assert!(err.contains("sender_unauthorized"), "`{intent}`: {err}");
+    }
+
     let out = call(
         &state,
         &identity,
@@ -1103,7 +1115,7 @@ async fn dashboard_link_admin_only_intents_gated() {
         json!({"intent": "settings"}),
     )
     .await
-    .expect("ok");
+    .expect("a member may ask for a link to their own settings page");
     let url = out["url"].as_str().unwrap();
     assert!(url.starts_with("/dashboard/auth/link?token="), "{url}");
     assert!(url.contains("&next=%2Fdashboard%2Fsettings%2Fme"), "{url}");
@@ -1127,8 +1139,8 @@ async fn dashboard_link_admin_only_intents_gated() {
 /// to this request and proof the route exists.
 #[tokio::test]
 async fn every_dashboard_link_intent_lands_on_a_mounted_route() {
-    // Admin: `audit`, `costs` and `settings` are refused to anybody else,
-    // and a refusal would mint no path to check.
+    // Admin: `audit` and `costs` are refused to anybody else, and a refusal
+    // would mint no path to check.
     let (state, identity, _dir) = fixture(true, None).await;
 
     let tool = mcp::schemas::all_tools()
