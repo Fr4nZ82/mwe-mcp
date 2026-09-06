@@ -5,7 +5,7 @@
 //! shows a checkbox for each existing user so the admin builds the
 //! membership list without typing free-form ids.
 //!
-//! Five handlers: list, new (GET+POST), edit (GET+POST), delete.
+//! Four routes: list, new (GET+POST), edit (GET+POST), delete.
 
 use axum::Router;
 use axum::extract::{Path, State};
@@ -451,7 +451,7 @@ fn render_form(
             @match *mode {
                 FormMode::New => {
                     (components::text_field("group_id", "Group id", "text", &form.group_id, true))
-                    p.help.muted { "Lowercase letters, digits, underscore only — no `°`. Must start with a letter." }
+                    p.help.muted { "Lowercase letters and digits only, starting with a letter — no underscore, no hyphen. The id becomes the name of this group's memory wiki." }
                 }
                 FormMode::Edit(id) => {
                     p { label { "Group id" } p { code { (id) } } }

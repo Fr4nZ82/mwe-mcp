@@ -415,7 +415,7 @@ fn render_challenge(error: Option<&str>) -> String {
             }
             (components::submit("Verify"))
         }
-        p.muted { "Lost your device? Enter one of your recovery codes above instead." }
+        p.muted { "Lost your device? Type one of your recovery codes in the field above instead." }
         p.muted { a href="/dashboard/login" { "← Back to sign in" } }
     };
     layout::anonymous_page("Two-factor authentication", &body)

@@ -20,7 +20,7 @@ pub enum DashboardError {
     #[error("bad request: {0}")]
     BadRequest(String),
 
-    /// User-facing validation message (e.g. "password troppo corta").
+    /// User-facing validation message (e.g. "Password is too short").
     /// Renders as 422 to distinguish from "broken request" 400s.
     #[error("{0}")]
     Validation(String),

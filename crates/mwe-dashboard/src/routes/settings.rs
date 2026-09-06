@@ -285,8 +285,8 @@ fn render(
         p.muted {
             "You are signed in as " strong { (user.sender_id) } "."
             @if !chrome.read_only {
-                " Changing your password keeps you signed in on this session — "
-                "other sessions remain valid until they expire or you revoke them."
+                " Changing your password keeps you signed in here, and leaves "
+                "your other sessions signed in too until they expire on their own."
             }
         }
         // A frozen deployment shows this page whole and lets none of it

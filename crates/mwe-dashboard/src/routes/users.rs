@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 //! Admin-gated user management.
 //!
-//! Five handlers:
+//! The handlers:
 //!
 //! - GET  `/users`            — list of users with status (active /
 //!   pending invitation) and per-row edit / delete / regenerate-invite
@@ -20,6 +20,8 @@
 //! - POST `/users/:id/reinvite` — replace any open invitation for this
 //!   user with a fresh one, email the new link when SMTP is configured,
 //!   and re-render the list with it as a backup.
+//! - POST `/users/:id/reset-2fa` — clear this user's two-factor
+//!   enrolment so a lost authenticator does not lock them out.
 
 use axum::Router;
 use axum::extract::{Path, State};
@@ -63,7 +65,7 @@ type UserListRow = (
 );
 
 /// Raw tuple from the edit-form load query (`email`, `aliases` JSON,
-/// `is_admin`, `require_2fa`, `timezone`).
+/// `is_admin`, `require_2fa`, `timezone`, `locale`).
 type EditUserRow = (
     Option<String>,
     Option<String>,
@@ -440,7 +442,7 @@ fn render_new_form(
 
         form action="/dashboard/users/new" method="post" {
             (components::text_field("user_id", "User id", "text", &form.user_id, true))
-            p.help.muted { "Lowercase letters, digits, underscore, and `°` only. Must start with a letter." }
+            p.help.muted { "Lowercase letters and digits only, starting with a letter — no underscore, no hyphen. The id becomes the name of this person's memory wiki." }
             (components::text_field_ac("email", "Email", "email", &form.email, true, "off"))
             p.help.muted { "The user signs in with this email. Required, and only you (the admin) can change it later." }
             // The email is mandatory because this form makes a person who

@@ -232,8 +232,8 @@ fn render_form(
 ) -> Html<String> {
     // Pre-fill admin_id from the email's local part when the operator
     // has typed an email but not yet a slug. Quality-of-life touch:
-    // most operators want the two to match (e.g. franz@example.com →
-    // franz) and only edit the slug if the local part is unsuitable.
+    // most operators want the two to match (e.g. alice@example.com →
+    // alice) and only edit the slug if the local part is unsuitable.
     let admin_id_suggestion = if admin_id.is_empty() && !email.is_empty() {
         email.split('@').next().unwrap_or("").to_owned()
     } else {
@@ -248,9 +248,9 @@ fn render_form(
 
         form action="/dashboard/setup" method="post" {
             (components::text_field_ac("email", "Email (e.g. you@example.com)", "email", email, true, "username"))
-            p.help.muted { "Used to sign in. Recovery via email arrives in a later milestone." }
-            (components::text_field_ac("admin_id", "Admin id (slug, e.g. franz)", "text", &admin_id_suggestion, true, "off"))
-            p.help.muted { "Lowercase letters, digits, underscore, and `°` only. Must start with a letter. Becomes your principal in markers and the name of your personal memory wiki." }
+            p.help.muted { "Used to sign in, and to send you a recovery link if you forget your password (once you have set an outgoing mail server up in the email settings)." }
+            (components::text_field_ac("admin_id", "Admin id (slug, e.g. alice)", "text", &admin_id_suggestion, true, "off"))
+            p.help.muted { "Lowercase letters and digits only, starting with a letter — no underscore, no hyphen. This is the name the memory calls you by, and the name of your personal memory wiki." }
             (components::password_field("password", "Password", "new-password"))
             (components::password_field("password_confirm", "Confirm password", "new-password"))
             p.help.muted { "Minimum " (state.config.min_password_len) " characters." }
