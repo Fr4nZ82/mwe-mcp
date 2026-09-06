@@ -1285,15 +1285,18 @@ enum CapturePlanError {
         target_subject: String,
         new_subject: String,
     },
-    /// `supersede_target` named a fact whose subject the sender is not
-    /// — neither the named user nor a member of the named group. The
-    /// same-subject guard above compares the target with the **new**
-    /// fact's subject, and that subject is the model's choice: a slip
-    /// that copies the target's subject onto the new fact would pass it.
-    /// This one asks the question the reconciliation stage asks of every
-    /// supersede (`acl::sender_is_subject`): a supersede replaces what
-    /// somebody's fact says, and only that somebody may replace it.
-    #[error("supersede_target `{id}` is about {target_subject}, which the sender {sender} is not")]
+    /// `supersede_target` named a fact that is neither about the sender nor
+    /// theirs to correct. The same-subject guard above compares the target
+    /// with the **new** fact's subject, and that subject is the model's
+    /// choice: a slip that copies the target's subject onto the new fact
+    /// would pass it. This one asks the question the reconciliation stage
+    /// asks of every supersede (`acl::sender_may_rewrite`): a supersede
+    /// replaces what a fact says, so it is the subject's — and the author's,
+    /// who may say better what they said.
+    #[error(
+        "supersede_target `{id}` is about {target_subject}, which the sender {sender} is not, \
+         and was said by somebody else"
+    )]
     SupersedeNotOwned {
         id: String,
         target_subject: String,
@@ -1785,7 +1788,12 @@ fn validate_supersede_target(
             new_subject: new_subject.to_string(),
         });
     }
-    if !crate::acl::sender_is_subject(&hit.subject_id, &request.sender_id, sender_groups) {
+    if !crate::acl::sender_may_rewrite(
+        &hit.subject_id,
+        hit.sender_id.as_ref(),
+        &request.sender_id,
+        sender_groups,
+    ) {
         return Err(CapturePlanError::SupersedeNotOwned {
             id: raw.to_owned(),
             target_subject: hit.subject_id.to_string(),
@@ -2365,11 +2373,16 @@ fn vet_supersede<'a>(
         );
         return None;
     }
-    if !crate::acl::sender_is_subject(&prev.subject_id, sender_id, sender_groups) {
+    if !crate::acl::sender_may_rewrite(
+        &prev.subject_id,
+        prev.sender_id.as_ref(),
+        sender_id,
+        sender_groups,
+    ) {
         tracing::warn!(
             target = target_raw,
             subject = %prev.subject_id,
-            "ingest: reconcile supersede refused — the sender does not own the target"
+            "ingest: reconcile supersede refused — the target is neither about the sender nor theirs to correct"
         );
         return None;
     }

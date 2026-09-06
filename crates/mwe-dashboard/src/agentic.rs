@@ -1445,13 +1445,13 @@ async fn dispatch_wiki_supersede(
     // the consumer's plain-markdown page — refuse before the subject gate (a
     // smart row's owner is the scope principal, which the operator may match).
     ensure_standard_wiki(ctx, AgenticTool::WikiSupersede.name(), &old_row.wiki_id)?;
-    // Editing the CONTENT of a fact is an *update* — the subject's act: the
-    // **subject** (subject, or a member of an owning group) or an admin may
-    // supersede it directly, the same subject axis the ingest supersede guards
-    // (`SupersedeCrossSubject`) and the validity closure use. Only *destroying*
-    // a fact keys on `sender` / a vote, not updating it.
-    if !(mwe_core::acl::sender_is_subject(
+    // Editing the CONTENT of a fact is a rewrite: the **subject**, whoever
+    // **said** it, or an admin — the same axis `acl::sender_may_rewrite`
+    // holds for the ingest supersede. Being told a fact does not come into
+    // it: a reader who thinks it stopped being true closes it instead.
+    if !(mwe_core::acl::sender_may_rewrite(
         &old_row.subject_id,
+        old_row.sender_id.as_ref(),
         &ctx.sender_ctx.sender_id,
         &ctx.sender_ctx.sender_groups,
     ) || ctx.is_admin)
@@ -1459,7 +1459,7 @@ async fn dispatch_wiki_supersede(
         return Err(AgenticToolError::InvalidArguments {
             tool: AgenticTool::WikiSupersede.name(),
             detail: "only the fact's subject (the person it is about, or a member of the group \
-                     it is about) or an admin can edit it; this fact is not about you"
+                     it is about), whoever said it, or an admin can edit it"
                 .to_owned(),
         });
     }

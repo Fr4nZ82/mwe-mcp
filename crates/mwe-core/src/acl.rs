@@ -254,6 +254,33 @@ pub fn sender_is_subject(subject: &Principal, sender_id: &str, sender_groups: &[
     }
 }
 
+/// Whether `sender` may REWRITE a fact — replace its text, so the memory
+/// holds a different claim about the same subject.
+///
+/// Two ways in, and deliberately not the third:
+///
+/// - **The subject.** The claim is about them, and a new claim about them is
+///   theirs to allow.
+/// - **Whoever said it.** Correcting your own sentence is the most ordinary
+///   thing there is, and the argument is the one [`sender_may_retract`] makes
+///   for withdrawing it: they said it, so they may say it better. Refusing
+///   this left a father unable to fix the hour he had himself recorded his
+///   daughter being born at, because the sentence was filed under her mother
+///   (2026-09-06, live).
+/// - **NOT the audience.** Being told something does not make it yours to
+///   restate. A reader who thinks a claim has stopped being true retires it,
+///   which is the milder verb and the one their standing earns them.
+#[must_use]
+pub fn sender_may_rewrite(
+    subject: &Principal,
+    fact_sender: Option<&Principal>,
+    sender_id: &str,
+    sender_groups: &[String],
+) -> bool {
+    sender_is_subject(subject, sender_id, sender_groups)
+        || fact_sender.is_some_and(|s| sender_is_subject(s, sender_id, sender_groups))
+}
+
 /// Whether `sender` may RETRACT a fact from chat — close its validity, so the
 /// memory stops holding it as current.
 ///
@@ -284,9 +311,10 @@ pub fn sender_is_subject(subject: &Principal, sender_id: &str, sender_groups: &[
 /// become "anyone may retire it". A fact shared with nobody stays with its
 /// subject and its author, exactly as before.
 ///
-/// Rewriting is the other half and stays with the subject: replacing a fact
-/// asserts something NEW about its subject, and that needs the subject's
-/// authority, not the reader's. The ACL stays with the subject for the
+/// Rewriting is the other half and does not go this wide: replacing a fact
+/// asserts something NEW about its subject, which is the subject's to allow
+/// and not a reader's. It does reach the author — see
+/// [`sender_may_rewrite`]. The ACL stays with the subject alone, for the
 /// stronger reason that changing it discloses the subject's data.
 ///
 /// Every test is matched the way a subject is matched, so a group — named as
@@ -687,6 +715,41 @@ mod tests {
         // A world fact nobody claims stays closable by no one from chat.
         let world: Principal = "global".parse().unwrap();
         assert!(!sender_may_retract(&world, None, &[], "alice", &[]));
+    }
+
+    /// You may say better what you said, wherever it was filed.
+    ///
+    /// The rewrite gate asked only the subject, so a father could not correct
+    /// the hour he had himself recorded his daughter being born at: the
+    /// sentence was filed under her mother (2026-09-06, live). The people are
+    /// renamed here.
+    #[test]
+    fn whoever_said_it_may_say_it_better() {
+        let carol: Principal = "user:carol".parse().unwrap();
+        let frodo: Principal = "user:frodo".parse().unwrap();
+        let family: Principal = "group:famiglia".parse().unwrap();
+
+        // Frodo's sentence, filed under Carol.
+        assert!(
+            sender_may_rewrite(&carol, Some(&frodo), "frodo", &[]),
+            "the author may correct their own claim"
+        );
+        // Carol may too — it is about her.
+        assert!(sender_may_rewrite(&carol, Some(&frodo), "carol", &[]));
+        // The household it was shared with may NOT: retiring is theirs,
+        // restating is not.
+        assert!(
+            !sender_may_rewrite(&carol, Some(&frodo), "bilbo", &["famiglia".to_owned()]),
+            "being told a claim does not make it yours to restate"
+        );
+        // …while the same person may close it, which is the milder verb.
+        assert!(sender_may_retract(
+            &carol,
+            Some(&frodo),
+            &[family],
+            "bilbo",
+            &["famiglia".to_owned()]
+        ));
     }
 
     /// A claim handed to a household is the household's to close.
