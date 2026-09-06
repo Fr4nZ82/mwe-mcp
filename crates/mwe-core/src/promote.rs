@@ -350,11 +350,18 @@ async fn apply_paragraph_to_file(
         });
     }
 
-    // Read existing target content (may be empty / not exist).
-    let existing_target = if target_abs.exists() {
+    // Append to the target when it is already there under this exact
+    // spelling, otherwise coin it — and a coined name is refused when a
+    // case-insensitive mirror would collapse it onto a page that exists.
+    let existing_target = if wiki::page_exists_byte_exact(handle.abs_dir(), &target_page_path) {
         std::fs::read_to_string(&target_abs)
             .map_err(|e| ApplyError::HandlerIo(format!("read {target_rel}: {e}")))?
     } else {
+        if let Some(reason) = wiki::page_creation_refusal(handle.abs_dir(), &target_page_path) {
+            return Err(ApplyError::HandlerData(format!(
+                "answers.target_page {target_rel}: {reason}",
+            )));
+        }
         String::new()
     };
 
@@ -604,11 +611,17 @@ async fn apply_fact_refile(
         bytes: region.bytes,
     }];
 
-    // Read existing destination content (may be empty / not exist).
-    let existing_target = if dest_abs.exists() {
+    // As above: append under the exact spelling, or coin a name a mirror
+    // will not collapse onto an existing page.
+    let existing_target = if wiki::page_exists_byte_exact(dest_handle.abs_dir(), &dest_page_path) {
         std::fs::read_to_string(&dest_abs)
             .map_err(|e| ApplyError::HandlerIo(format!("read {dest_rel}: {e}")))?
     } else {
+        if let Some(reason) = wiki::page_creation_refusal(dest_handle.abs_dir(), &dest_page_path) {
+            return Err(ApplyError::HandlerData(format!(
+                "answers.dest_page {dest_rel}: {reason}",
+            )));
+        }
         String::new()
     };
     let (new_target, target_offsets) = compose_target(&existing_target, &moved);
@@ -1160,12 +1173,20 @@ async fn apply_page_merge(
         });
     }
 
-    let existing_target = if target_abs.exists() {
-        std::fs::read_to_string(&target_abs)
-            .map_err(|e| ApplyError::HandlerIo(format!("read {target_rel}: {e}")))?
-    } else {
-        String::new()
-    };
+    let existing_target =
+        if wiki::page_exists_byte_exact(target_handle.abs_dir(), &target_page_path) {
+            std::fs::read_to_string(&target_abs)
+                .map_err(|e| ApplyError::HandlerIo(format!("read {target_rel}: {e}")))?
+        } else {
+            if let Some(reason) =
+                wiki::page_creation_refusal(target_handle.abs_dir(), &target_page_path)
+            {
+                return Err(ApplyError::HandlerData(format!(
+                    "answers.target_page {target_rel}: {reason}",
+                )));
+            }
+            String::new()
+        };
     let (new_target, target_offsets) = compose_target(&existing_target, &moved);
     // The husk minus its regions —
     // recreate the deleted file (frontmatter + connective prose preserved).
@@ -1523,10 +1544,18 @@ async fn relocate_page(
 ) -> Result<String, ApplyError> {
     let dest_abs = dest_dir.join(&page.rel_in_wiki);
     let dest_rel = wiki::workdir_relative_source_path(tree.workdir(), &dest_abs);
-    if dest_abs.exists() {
+    if wiki::page_exists_byte_exact(dest_dir, &page.rel_in_wiki) {
         return Err(ApplyError::HandlerData(format!(
             "{dest_rel} already exists — refusing to clobber",
         )));
+    }
+    // A move carries the page's own name rather than coining one, so the
+    // shape of the name is not this path's business — but landing beside a
+    // sibling that differs only by case is: on a smart consumer's mirror
+    // the two become one file, and the pull clobbers whichever arrives
+    // second.
+    if let Some(reason) = wiki::page_case_conflict(dest_dir, &page.rel_in_wiki) {
+        return Err(ApplyError::HandlerData(format!("{dest_rel}: {reason}")));
     }
     atomic_write(&dest_abs, page.bytes.as_bytes())
         .map_err(|e| ApplyError::HandlerIo(format!("atomic_write {dest_rel}: {e}")))?;
@@ -3524,6 +3553,40 @@ mod tests {
         assert!(format!("{err}").contains("smart wiki"), "unexpected: {err}");
     }
 
+    /// A re-home carries the page's own name into another wiki, so the
+    /// name is not this path's to judge — but the destination is. Landing
+    /// `orto.md` beside an existing `Orto.md` makes two pages that a smart
+    /// consumer's mirror stores as one file, so the move is refused and the
+    /// page stays where it is.
+    #[tokio::test]
+    async fn a_rehome_refuses_a_destination_that_only_differs_by_case() {
+        let (_dir, tree, pool) = setup().await;
+        seed_wiki(&tree, "bob");
+        capture_one(&tree, &pool, embedder(), "orto.md", "note sull'orto").await;
+        let taken = tree.wikis_dir().join("bob").join("Orto.md");
+        atomic_write(&taken, b"gia' occupato\n").unwrap();
+
+        let ctx = json!({
+            "variant": VARIANT_PAGES_REHOME,
+            "source_wiki_id": "alice",
+            "target_wiki_id": "bob",
+            "pages": ["orto.md"],
+        });
+        let err = apply_pages_rehome(&pool, &tree, &ctx, &json!({}))
+            .await
+            .expect_err("a case variant of an existing page is refused");
+        let msg = format!("{err}");
+        assert!(
+            msg.contains("Orto.md"),
+            "the refusal names the existing spelling: {msg}"
+        );
+
+        // The page did not move and the one already there was not touched.
+        assert!(tree.wikis_dir().join("alice").join("orto.md").exists());
+        assert!(!tree.wikis_dir().join("bob").join("orto.md").exists());
+        assert_eq!(std::fs::read_to_string(&taken).unwrap(), "gia' occupato\n");
+    }
+
     #[tokio::test]
     async fn apply_moves_single_fact_paragraph_to_file() {
         let (_dir, tree, pool) = setup().await;
@@ -3561,6 +3624,58 @@ mod tests {
         // fact_index row repointed.
         let row = fact_index::find_by_id(&pool, &f1).await.unwrap().unwrap();
         assert_eq!(row.source_path, "wikis/alice/giardinaggio.md");
+    }
+
+    /// A move's destination is a name the caller proposes, and a name that
+    /// differs from an existing page only by case is TWO pages here and ONE
+    /// file on a smart consumer's Windows or macOS mirror — where the next
+    /// pull silently clobbers one with the other. The handler refuses and
+    /// echoes the spelling already on disk; nothing is written and nothing
+    /// moves.
+    #[tokio::test]
+    async fn paragraph_to_file_refuses_a_target_that_only_differs_by_case() {
+        let (_dir, tree, pool) = setup().await;
+        let emb = embedder();
+        let f1 = capture_one(&tree, &pool, emb.clone(), "appunti.md", "First fact").await;
+        // The page the target would collide with, already on disk.
+        let _existing = capture_one(&tree, &pool, emb, "ricette.md", "Pasta al pomodoro").await;
+
+        let ctx = json!({
+            "source_wiki_id": "alice",
+            "source_page": "appunti.md",
+            "fact_ids": [f1.as_str()],
+        });
+        let err =
+            apply_paragraph_to_file(&pool, &tree, &ctx, &json!({ "target_page": "Ricette.md" }))
+                .await
+                .expect_err("a case variant of an existing page is refused");
+        let msg = format!("{err}");
+        assert!(
+            msg.contains("ricette.md"),
+            "the refusal names the existing spelling: {msg}"
+        );
+
+        // Refused means untouched: no second file, the fact still on its
+        // page, and the row still pointing at it.
+        assert!(
+            !tree.wikis_dir().join("alice").join("Ricette.md").exists(),
+            "the colliding page must not have been created"
+        );
+        let source =
+            std::fs::read_to_string(tree.wikis_dir().join("alice").join("appunti.md")).unwrap();
+        assert!(source.contains(&format!("f={f1}")));
+        let row = fact_index::find_by_id(&pool, &f1).await.unwrap().unwrap();
+        assert_eq!(row.source_path, "wikis/alice/appunti.md");
+
+        // The byte-exact spelling is an append, not a creation, and goes
+        // through — the guard refuses a collision, not a lowercase name.
+        apply_paragraph_to_file(&pool, &tree, &ctx, &json!({ "target_page": "ricette.md" }))
+            .await
+            .expect("appending to the existing page is not a creation");
+        let target =
+            std::fs::read_to_string(tree.wikis_dir().join("alice").join("ricette.md")).unwrap();
+        assert!(target.contains("Pasta al pomodoro"));
+        assert!(target.contains("First fact"));
     }
 
     #[tokio::test]

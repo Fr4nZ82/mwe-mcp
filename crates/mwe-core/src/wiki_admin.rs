@@ -1003,7 +1003,10 @@ async fn push_upsert(
             )));
         }
         let abs = dir.join(&pb);
-        if !abs.exists() {
+        // Byte-exact: on a case-folding filesystem `exists()` says
+        // `Setup.md` is there when the file is `setup.md`, and the delete
+        // then removes a page the caller did not name.
+        if !crate::wiki::page_exists_byte_exact(&dir, &pb) {
             return Err(AdminError::InvalidInput(format!(
                 "delete target {rel_path} does not exist"
             )));
@@ -1467,7 +1470,10 @@ pub async fn op_revert(
                     .map_err(|e| RevertError::Internal(format!("restore {}: {e}", page.path)))?;
             },
             None => {
-                if abs.exists() {
+                // Byte-exact: the pre-image names the spelling that was
+                // there, and a case-folding filesystem would otherwise
+                // answer for a sibling and delete that one instead.
+                if crate::wiki::page_exists_byte_exact(&dir, &pb) {
                     std::fs::remove_file(&abs)?;
                 }
             },

@@ -453,14 +453,8 @@ pub async fn wiki_capture_with_source(
     }
     normalize_sender_attribution(&mut req)?;
     let handle = tree.locate(&req.wiki_id)?;
-    // When the capture would CREATE the page file, refuse names that a
-    // case-insensitive mirror would collapse onto an existing entry or
-    // a reserved file, and `.md` spelled in a case the index ignores.
-    // Appends to an existing byte-exact page carry no such risk.
-    if !crate::wiki::page_exists_byte_exact(handle.abs_dir(), &page)
-        && let Some(reason) = crate::wiki::page_path_case_hazard(&page)
-            .or_else(|| crate::wiki::page_case_conflict(handle.abs_dir(), &page))
-    {
+    // A capture that coins the page name asks before it writes.
+    if let Some(reason) = crate::wiki::page_creation_refusal(handle.abs_dir(), &page) {
         return Err(CaptureError::PageCaseConflict {
             path: page.clone(),
             reason,
@@ -928,11 +922,6 @@ pub fn render_full_marker(
     format!("{{{{{}}}}}{}{{{{/}}}}", attrs.join(" "), body)
 }
 
-/// Append `region` at the end of the page body, returning the new
-/// contents + the byte offsets of the appended slice.
-///
-/// Reads the page from disk if it exists; treats a missing page as an
-/// empty body. The page's frontmatter (if any) is preserved verbatim.
 /// Write a freshly-born page's testata — its **card** and its writing style —
 /// from what the turn that created it proposed.
 ///
@@ -948,7 +937,7 @@ fn seed_page_card(
     description: Option<&str>,
     style: Option<crate::wiki::PageStyle>,
 ) {
-    if abs_page.exists() {
+    if crate::wiki::abs_page_exists_byte_exact(abs_page) {
         return;
     }
     let description = description.map(str::trim).filter(|d| !d.is_empty());
@@ -980,6 +969,11 @@ fn seed_page_card(
     }
 }
 
+/// Append `region` at the end of the page body, returning the new
+/// contents + the byte offsets of the appended slice.
+///
+/// Reads the page from disk if it exists; treats a missing page as an
+/// empty body. The page's frontmatter (if any) is preserved verbatim.
 fn append_region(abs_page: &Path, region: &str) -> Result<(String, usize, usize)> {
     let raw = read_page_or_empty(abs_page)?;
     let needs_newline = !raw.is_empty() && !raw.ends_with('\n');

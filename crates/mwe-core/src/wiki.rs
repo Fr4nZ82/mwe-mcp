@@ -1877,6 +1877,43 @@ pub fn resolve_page_case_insensitive(abs_dir: &Path, rel: &Path) -> Option<PathB
     cur.is_file().then_some(resolved)
 }
 
+/// [`page_exists_byte_exact`] for a caller holding the page's absolute path
+/// rather than its wiki directory plus the path inside it.
+#[must_use]
+pub fn abs_page_exists_byte_exact(abs_page: &Path) -> bool {
+    let (Some(dir), Some(name)) = (abs_page.parent(), abs_page.file_name()) else {
+        return false;
+    };
+    page_exists_byte_exact(dir, Path::new(name))
+}
+
+/// The reason a write must refuse to **create** the page `rel` under
+/// `abs_dir`, or `None` when it may go ahead.
+///
+/// The one question every page-writing path asks before it coins a name,
+/// in one place because the answer has three parts and getting any of them
+/// wrong costs a page:
+///
+/// - a name already taken **byte-exactly** is not a creation at all, it is
+///   an append, and an append carries none of these risks;
+/// - a name a case-insensitive mirror would collapse onto an existing
+///   sibling ([`page_case_conflict`]) makes two server-side pages into one
+///   file the next time a smart consumer pulls;
+/// - a name whose shape is itself a hazard ([`page_path_case_hazard`]) —
+///   a case variant of a reserved filename, or `.MD` where the link
+///   grammar only ever writes `.md`.
+///
+/// A path that only *moves* an existing page does not coin its name, so it
+/// asks [`page_case_conflict`] about the destination directory and leaves
+/// the shape check alone.
+#[must_use]
+pub fn page_creation_refusal(abs_dir: &Path, rel: &Path) -> Option<String> {
+    if page_exists_byte_exact(abs_dir, rel) {
+        return None;
+    }
+    page_path_case_hazard(rel).or_else(|| page_case_conflict(abs_dir, rel))
+}
+
 // ---------- `_internal.*` thin wrappers ----------
 //
 // These carry the `_internal.wiki_*` API names. They
@@ -3393,6 +3430,33 @@ mod tests {
         assert!(page_case_conflict(dir, Path::new("brand-new.md")).is_none());
         // Nested path under a missing directory → nothing to collide with.
         assert!(page_case_conflict(dir, Path::new("new-dir/page.md")).is_none());
+    }
+
+    /// The one question every page-writing path asks before it coins a
+    /// name. Two pages whose names differ only by case are TWO pages here
+    /// and ONE file on a smart consumer's mirror, so the second is refused
+    /// — while an append to the first, byte-exact, is not a creation and
+    /// passes.
+    #[test]
+    fn page_creation_refusal_covers_existence_collision_and_shape() {
+        let tmp = tempfile::tempdir().unwrap();
+        let dir = tmp.path();
+        std::fs::write(dir.join("ricette.md"), "x").unwrap();
+
+        // Byte-exact: an append, not a creation. Nothing to refuse.
+        assert!(page_creation_refusal(dir, Path::new("ricette.md")).is_none());
+        // A name a case-folding mirror would collapse onto it: refused,
+        // and the refusal names the spelling already on disk so the
+        // caller can reuse it.
+        let refusal = page_creation_refusal(dir, Path::new("Ricette.md"))
+            .expect("a case variant of an existing page is refused");
+        assert!(refusal.contains("ricette.md"), "{refusal}");
+        // A hazardous shape is refused on its own, with nothing to collide
+        // with: a case variant of a reserved name, and `.MD`.
+        assert!(page_creation_refusal(dir, Path::new("_Meta.md")).is_some());
+        assert!(page_creation_refusal(dir, Path::new("nuove.MD")).is_some());
+        // A free, well-formed name goes ahead.
+        assert!(page_creation_refusal(dir, Path::new("dolci.md")).is_none());
     }
 
     #[test]
