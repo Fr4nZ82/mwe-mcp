@@ -216,6 +216,16 @@ and in the dashboard's session check. Ten migrations, `0068` through `0077`.
   a deadline the bridge cannot parse counts as due: raising a vote early costs
   a sentence, missing it costs the fact, because silence is consent.
 
+- **BREAKING — the error code for "this wiki is not smart" says so.** A
+  `wiki_admin_push` or `wiki_admin_pull` at a wiki that is not smart came back
+  `400 wiki_type_not_admin_writable`, and a consumer reading that went looking
+  at the wiki's **type** — which is a free-form tone label and decides nothing
+  here. The gate reads the wiki's `_meta` smart flag, so the code is now
+  `wiki_not_smart` and the message says the flag rather than the label, with
+  the label carried along as context. Nothing about which wikis are writable
+  has changed; a consumer matching on the old string has to match on the new
+  one.
+
 - **BREAKING — the per-fragment ACL axis is named `subject`, after what it
   actually holds.** The field saying *who or what a fact is about* had been
   called `owner` since the first commit — one of the three that decide who may

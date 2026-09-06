@@ -44,10 +44,11 @@ pub enum ToolErrorClass {
     /// match `token.owner_user`. Invariant: a smart consumer is
     /// custodian of writes only for wikis its owner owns.
     WikiOwnedByOtherUser,
-    /// `400 wiki_type_not_admin_writable` — `wiki_admin_push` /
-    /// `_pull` targeted a wiki whose smart flag is `false`.
-    /// Standard wikis are written via `wiki_ingest_message`.
-    WikiTypeNotAdminWritable,
+    /// `400 wiki_not_smart` — `wiki_admin_push` / `_pull` targeted a wiki
+    /// whose `_meta` smart flag is `false`. That flag is what the gate
+    /// reads: a wiki's `wiki_type` is a free-form tone label and decides
+    /// nothing here. Standard wikis are written via `wiki_ingest_message`.
+    WikiNotSmart,
     /// `400 wiki_type_not_briefing_capable` — `wiki_admin_notify`
     /// targeted a wiki whose smart flag is `false`.
     /// `_briefing.md` only exists in smart-wikis.
@@ -124,7 +125,7 @@ impl ToolErrorClass {
             Self::NotImplementedPhaseC => "not_implemented_phase_c",
             Self::RequiresConsumerClassSmart => "requires_consumer_class_smart",
             Self::WikiOwnedByOtherUser => "wiki_owned_by_other_user",
-            Self::WikiTypeNotAdminWritable => "wiki_type_not_admin_writable",
+            Self::WikiNotSmart => "wiki_not_smart",
             Self::WikiTypeNotBriefingCapable => "wiki_type_not_briefing_capable",
             Self::SmartDoesNotNotifyOwnWiki => "smart_does_not_notify_own_wiki",
             Self::StandardUsesIngestForMemory => "standard_uses_ingest_for_memory",

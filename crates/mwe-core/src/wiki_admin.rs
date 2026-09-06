@@ -20,8 +20,8 @@
 //! 3. The target wiki's `_meta` smart flag is `true` — the per-wiki bool,
 //!    stamped on `create` from the request's own `smart` flag, never inferred
 //!    from the `wiki_type` string. Standard wikis accept writes via
-//!    `wiki_ingest_message` only; [`AdminError::WikiTypeNotAdminWritable`] is
-//!    the rejection here.
+//!    `wiki_ingest_message` only; [`AdminError::WikiNotSmart`] is the
+//!    rejection here, and it is named after the flag it reads.
 //!
 //! ## Op log
 //!
@@ -72,7 +72,7 @@ use crate::wiki::{META_FILENAME, WikiError, WikiHandle, WikiMeta, WikiTree, atom
 ///
 /// | `actor_kind`      | `consumer_class=smart` required? | smart-family wiki required? | owner-match required? |
 /// |-------------------|----------------------------------|----------------------------------------|-----------------------|
-/// | `SmartConsumer`   | yes (`AdminError::RequiresSmart`) | yes (`AdminError::WikiTypeNotAdminWritable`) | yes                   |
+/// | `SmartConsumer`   | yes (`AdminError::RequiresSmart`) | yes (`AdminError::WikiNotSmart`) | yes |
 /// | `Dashboard`       | no                               | **relaxed** — any wiki     | yes                   |
 /// | `System`          | no                               | no — reserved for the revert handler | n/a (handler-driven)  |
 ///
@@ -128,12 +128,17 @@ pub enum AdminError {
         /// User id derived from `token.sender_id`.
         caller_owner: String,
     },
-    /// Target wiki's `wiki_type` is not in the smart family.
+    /// The target wiki's `_meta` smart flag is `false`.
+    ///
+    /// Named after the flag the gate reads. `wiki_type` rides along as
+    /// context in the message — it is a free-form tone label and decides
+    /// nothing.
     #[error(
-        "wiki_type {wiki_type:?} is not in the smart family (use wiki_ingest_message for standard wikis)"
+        "wiki is not smart (its type label is {wiki_type:?}); \
+         use wiki_ingest_message for standard wikis"
     )]
-    WikiTypeNotAdminWritable {
-        /// The non-smart `wiki_type` that was targeted.
+    WikiNotSmart {
+        /// The targeted wiki's type label, for the message.
         wiki_type: String,
     },
     /// A consumer claimed the reserved `agent` label on a wiki that is not
@@ -675,7 +680,7 @@ async fn push_create(
     // templates.
     let is_smart_family = req.smart;
     if actor_kind == ActorKind::SmartConsumer && !is_smart_family {
-        return Err(AdminError::WikiTypeNotAdminWritable {
+        return Err(AdminError::WikiNotSmart {
             wiki_type: wiki_type.to_owned(),
         });
     }
@@ -1634,7 +1639,7 @@ async fn enforce_admin_auth(
     // a human at the editor is the intended escape hatch. Read
     // per-wiki from `_meta.smart`, stamped at create time.
     if actor_kind == ActorKind::SmartConsumer && !handle.meta().smart {
-        return Err(AdminError::WikiTypeNotAdminWritable {
+        return Err(AdminError::WikiNotSmart {
             wiki_type: handle.meta().wiki_type.clone(),
         });
     }
@@ -2499,7 +2504,7 @@ mod tests {
         let err = push(&pool, &tree, &alice_smart(), ActorKind::SmartConsumer, req)
             .await
             .expect_err("must reject non-smart create");
-        assert!(matches!(err, AdminError::WikiTypeNotAdminWritable { .. }));
+        assert!(matches!(err, AdminError::WikiNotSmart { .. }));
     }
 
     /// The `agent` label names "the working memory of the agent connected as
@@ -3622,10 +3627,11 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn smart_consumer_actor_kind_still_enforces_smart_family_gate() {
-        // Backward-compat: the same upsert request under
-        // `SmartConsumer` must still trip `WikiTypeNotAdminWritable`
-        // because `wiki-user` is not in the smart family.
+    async fn smart_consumer_actor_kind_still_enforces_the_smart_flag_gate() {
+        // The same upsert request the dashboard is allowed to make trips
+        // `WikiNotSmart` under `SmartConsumer`, because alice's wiki has
+        // `_meta.smart = false`. The `wiki-user` label rides along in the
+        // message and decides nothing.
         let (_dir, tree, pool) = seeded_tree().await;
         let alice_id = WikiId::parse("alice").unwrap();
         let err = push(
@@ -3652,8 +3658,8 @@ mod tests {
         .await
         .expect_err("smart consumer must NOT be able to upsert into a non-smart wiki");
         assert!(
-            matches!(err, AdminError::WikiTypeNotAdminWritable { ref wiki_type } if wiki_type == "wiki-user"),
-            "expected WikiTypeNotAdminWritable on wiki-user, got {err:?}"
+            matches!(err, AdminError::WikiNotSmart { ref wiki_type } if wiki_type == "wiki-user"),
+            "expected WikiNotSmart on wiki-user, got {err:?}"
         );
     }
 

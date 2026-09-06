@@ -2972,7 +2972,7 @@ fn signpost_error_to_tool_error(err: &mwe_core::signposts::SignpostError) -> Too
         E::NotOwner { .. } | E::GroupOwned { .. } => {
             (ToolErrorClass::WikiOwnedByOtherUser, err.to_string())
         },
-        E::NotSmart { .. } => (ToolErrorClass::WikiTypeNotAdminWritable, err.to_string()),
+        E::NotSmart { .. } => (ToolErrorClass::WikiNotSmart, err.to_string()),
         // The caps are the point of the tool: a refusal has to say what
         // was measured, so the agent can rewrite shorter instead of
         // guessing.
@@ -3105,9 +3105,7 @@ fn admin_error_to_tool_error(err: &mwe_core::wiki_admin::AdminError) -> ToolErro
         E::WikiOwnedByOtherUser { .. } | E::AmbiguousOwner { .. } => {
             (ToolErrorClass::WikiOwnedByOtherUser, err.to_string())
         },
-        E::WikiTypeNotAdminWritable { .. } => {
-            (ToolErrorClass::WikiTypeNotAdminWritable, err.to_string())
-        },
+        E::WikiNotSmart { .. } => (ToolErrorClass::WikiNotSmart, err.to_string()),
         // The reserved `agent` label is a caller mistake about its own
         // identity, not a wiki-type capability question: plain invalid input.
         E::AgentLabelReserved { .. } => (ToolErrorClass::InvalidInput, err.to_string()),
