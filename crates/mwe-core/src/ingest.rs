@@ -8714,6 +8714,20 @@ mod tests {
         ))
     }
 
+    /// Every fact filed in one wiki, whatever its subject — a scope assertion
+    /// needs both halves, what landed here and what did NOT land there.
+    async fn facts_in_wiki(pool: &SqlitePool, wiki_id: &str) -> Vec<fact_index::FactIndexRow> {
+        fact_index::find_by_filters(
+            pool,
+            &fact_index::FactFilters {
+                wiki_id: Some(wiki_id.to_owned()),
+                ..Default::default()
+            },
+        )
+        .await
+        .expect("fact_index query")
+    }
+
     /// Drain the capture buffer the way the light dream does, so a test can go
     /// on asserting about `fact_index`.
     ///
@@ -13286,6 +13300,100 @@ mod tests {
         assert!(
             bilbo.is_empty(),
             "another user's channel never carries alice's user-global rule"
+        );
+        drop(dir);
+    }
+
+    /// The two ways a naming rule can reach past the speaker are OPPOSITE, and
+    /// the scope alone tells them apart. `agent-wide` names the AGENT for
+    /// everyone it serves: the rule is the agent's, filed in the agent's wiki
+    /// with `subject = the agent`, and NOTHING of it lands in the speaker's own
+    /// wiki. `user-global` names the SPEAKER for every assistant they talk to:
+    /// the rule is the user's, filed in their identity wiki with
+    /// `subject = the user`, and nothing is added to the agent's.
+    #[tokio::test]
+    async fn naming_rule_scope_decides_the_home_wiki_and_the_subject() {
+        let (dir, tree, pool) = setup_agent_workdir().await;
+        // alice is the operator/admin, so her agent-wide rule is not refused.
+        sqlx::query("INSERT INTO enrollment_users (user_id, is_admin) VALUES ('alice', 1)")
+            .execute(&pool)
+            .await
+            .unwrap();
+        let policy = IngestPolicy::default();
+
+        // "you are called Gandalf for everyone" — the AGENT is named, for the
+        // whole audience this agent serves.
+        let llm = FakeLlmBackend::new(
+            "fake",
+            "{\"intent\":\"capture\",\"extractions\":[{\"behaviour_rule\":true,\
+             \"behaviour_scope\":\"agent-wide\",\
+             \"body\":\"Your name is Gandalf.\"}]}",
+        );
+        wiki_ingest_message(
+            &pool,
+            &tree,
+            fake_embedder(),
+            &llm,
+            None,
+            req_consumer("you are called Gandalf for everyone", "alice", "botdeploy"),
+            &policy,
+        )
+        .await
+        .expect("ingest agent-wide naming");
+
+        let in_agent = facts_in_wiki(&pool, "samvisebot").await;
+        assert_eq!(
+            in_agent.len(),
+            1,
+            "the agent's own name is filed in the agent's wiki"
+        );
+        assert_eq!(in_agent[0].text, "Your name is Gandalf.");
+        assert_eq!(
+            in_agent[0].subject_id,
+            Principal::User("samvisebot".into()),
+            "naming the agent for everyone is OWNED by the agent, never by the admin who said it"
+        );
+        assert!(
+            facts_in_wiki(&pool, "alice").await.is_empty(),
+            "naming the AGENT writes nothing in the speaker's wiki — that would rename the speaker"
+        );
+
+        // "call me Gandalf with every assistant" — the SPEAKER is named, for
+        // every assistant serving them.
+        let llm = FakeLlmBackend::new(
+            "fake",
+            "{\"intent\":\"capture\",\"extractions\":[{\"behaviour_rule\":true,\
+             \"behaviour_scope\":\"user-global\",\
+             \"body\":\"Call the user Gandalf.\"}]}",
+        );
+        wiki_ingest_message(
+            &pool,
+            &tree,
+            fake_embedder(),
+            &llm,
+            None,
+            req_consumer("call me Gandalf with every assistant", "alice", "botdeploy"),
+            &policy,
+        )
+        .await
+        .expect("ingest user-global naming");
+
+        let in_user = facts_in_wiki(&pool, "alice").await;
+        assert_eq!(
+            in_user.len(),
+            1,
+            "the user's own name is filed in the user's identity wiki"
+        );
+        assert_eq!(in_user[0].text, "Call the user Gandalf.");
+        assert_eq!(
+            in_user[0].subject_id,
+            Principal::User("alice".into()),
+            "naming the speaker everywhere is OWNED by the speaker"
+        );
+        assert_eq!(
+            facts_in_wiki(&pool, "samvisebot").await.len(),
+            1,
+            "naming the SPEAKER adds nothing to the agent's wiki — the agent keeps its own name"
         );
         drop(dir);
     }
