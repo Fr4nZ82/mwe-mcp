@@ -332,6 +332,19 @@ and in the dashboard's session check. Eight migrations, `0068` through `0075`.
 
 ### Fixed
 
+- **A plan a later message closed no longer rings as a commitment coming
+  due.** The due sweep fires on a `plan` carrying a concrete end date, and a
+  `valid_to` has two authors: the classifier writes one at capture, from a
+  date the speaker stated, and every closure writes one too — the instant the
+  fact stopped holding, which for a plan refined in conversation ("a bar of
+  soap" → a chosen brand) is the instant of the message that refined it. The
+  sweep read them as the same thing, so refining a plan announced it to the
+  subject and to everybody it had been shared with, minutes after it was
+  dropped. A closure always leaves a `decay_reason` on the row and a date
+  correction never does, so that stamp is now the whole rule: a stated
+  deadline still rings, on the same schedule as before, and a closed plan is
+  silent.
+
 - **Every dashboard address an assistant offers opens a page.** Five of
   `dashboard_link`'s eight intents minted an address the dashboard has never
   mounted, and the cost fell on the person holding the link: redemption burns

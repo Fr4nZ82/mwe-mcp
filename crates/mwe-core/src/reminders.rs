@@ -22,13 +22,28 @@
 //!
 //! ## What fires, and when
 //!
-//! `fact_type = "plan"` **with a concrete `valid_to`**. That pair is
-//! already precise, and not by luck: the ingest prompt forbids the one
-//! `plan` that must never ring — *"a shopping item is NOT a TTL, it is
-//! closed later by a completing message, not by a timer"* — so a
-//! consumable intention is stored with `valid_to: null` by construction. A
-//! `state` ("in Berlin this week") expires rather than falls due, and a
-//! `rule` never rings.
+//! `fact_type = "plan"` **with a concrete `valid_to` and no
+//! `decay_reason`**. The type is already precise, and not by luck: the
+//! ingest prompt forbids the one `plan` that must never ring — *"a shopping
+//! item is NOT a TTL, it is closed later by a completing message, not by a
+//! timer"* — so a consumable intention is stored with `valid_to: null` by
+//! construction. A `state` ("in Berlin this week") expires rather than falls
+//! due, and a `rule` never rings.
+//!
+//! **A `valid_to` has two authors and only one of them set a deadline.** The
+//! classifier writes it at capture, from a date the speaker stated, and
+//! leaves `decay_reason` NULL: that is a commitment, and it rings. Every
+//! closure path writes it too — [`crate::fact_index::close_validity`] and
+//! [`crate::fact_index::mark_superseded`] stamp `valid_to` together with a
+//! `decay_reason` (completed, retracted, contradicted) — and there the value
+//! is the instant the fact *stopped* holding, usually the instant of the
+//! message that replaced it. Firing on that would ring a commitment minutes
+//! after it was dropped, and did: four plans refined in conversation on
+//! 2026-09-06 ("a bar of soap" → a chosen brand) reached a whole household
+//! twelve minutes after being closed. So a stamped `decay_reason` is the
+//! trace of a closure, and a closure never rings. A pure date correction
+//! ([`crate::fact_index::set_validity`]) leaves the stamp alone precisely
+//! because moving an appointment is not closing it.
 //!
 //! The firing instant is **derived**, not stored (decided on
 //! the data): of the future-dated facts on the first production
@@ -129,12 +144,12 @@ pub struct DueReminder {
     ///
     /// A commitment reaches whoever it concerns, and who it concerns is the
     /// same question the retraction gate answers — the fact's own audience,
-    /// not an inference from its subject (founder, 2026-09-06). Before that,
-    /// a commitment addressed to a group rang for **nobody** ("a group has no
-    /// single inbox") and one shared with a household rang for one person:
-    /// measured on the live memory that day, 16 of 135 due commitments were
-    /// silent and 112 more reached a single member of the family they had
-    /// been told to.
+    /// not an inference from its subject (founder, 2026-09-06). Reading the
+    /// subject alone is not a near-enough approximation of that: measured on
+    /// the live memory that day, of 135 due commitments it would leave 16
+    /// silent (the ones a group owns, and a group has no single inbox) and
+    /// put 112 more in front of one member of the household they had been
+    /// told to.
     pub recipients: Vec<String>,
     /// The fact's own prose. The notice carries it so the delivering
     /// agent can say the thing without a recall round-trip — the same
@@ -231,8 +246,9 @@ async fn people_to_ring(pool: &SqlitePool, row: &fact_index::FactIndexRow) -> Ve
 
 /// The commitments whose firing instant has just passed.
 ///
-/// Selection: an active `plan` with a `valid_to` whose [`firing_instant`]
-/// sits in `(now - grace, now]` and which has not already rung.
+/// Selection: an active, unclosed `plan` with a `valid_to` whose
+/// [`firing_instant`] sits in `(now - grace, now]` and which has not already
+/// rung.
 ///
 /// Who it rings for is [`DueReminder::recipients`]: the subject and the
 /// audience, groups opened into their members, agents dropped (they have no
@@ -263,6 +279,12 @@ pub async fn due_now(
             break;
         }
         if row.fact_type.as_deref() != Some(PLAN) {
+            continue;
+        }
+        // A closure wrote this `valid_to`, so it is the instant the plan
+        // stopped holding and not a deadline anybody stated. Only the
+        // classifier's own bound rings; see the module header.
+        if row.decay_reason.is_some() {
             continue;
         }
         let Some(valid_to) = row.valid_to.as_deref() else {
@@ -568,6 +590,52 @@ mod tests {
             again.emitted
         );
         assert_eq!(again.already_rung, 6);
+    }
+
+    /// A plan a later plan closed is not a deadline arriving.
+    ///
+    /// The production shape (2026-09-06): "I want a bar of soap" is captured
+    /// at 18:36 with an open horizon; twelve minutes later "I have picked a
+    /// brand" closes it, and the closure stamps `valid_to = 18:48` with a
+    /// `decay_reason`. That stamp is the whole difference between the two
+    /// authors of a `valid_to`, so the sweep keys on it.
+    #[tokio::test]
+    async fn a_plan_closed_by_a_later_plan_is_silent_and_a_real_deadline_rings() {
+        use crate::types::FactId;
+
+        let (_workdir, pool) = fresh_pool().await;
+        // Captured with no horizon, then closed by the refined plan.
+        plan_fact(&pool, id(11).as_str(), "user:alice", "plan", None).await;
+        let closed = FactId::parse(id(11).as_str()).expect("fact id");
+        fact_index::close_validity(
+            &pool,
+            &closed,
+            "2026-08-11T18:48:00Z",
+            fact_index::decay::CONTRADICTED,
+            None,
+        )
+        .await
+        .expect("close")
+        .expect("an active row to close");
+        // And a deadline the speaker actually stated, at the same hour.
+        plan_fact(
+            &pool,
+            id(12).as_str(),
+            "user:alice",
+            "plan",
+            Some("2026-08-11T18:48:00Z"),
+        )
+        .await;
+
+        let due = due_now(&pool, t("2026-08-11T18:50:00Z"), &ReminderPolicy::default())
+            .await
+            .expect("due");
+        let ids: Vec<&str> = due.iter().map(|d| d.fact_id.as_str()).collect();
+        assert_eq!(
+            ids,
+            vec![id(12).as_str()],
+            "the stated deadline rings; the plan a closure stamped does not"
+        );
     }
 
     #[tokio::test]

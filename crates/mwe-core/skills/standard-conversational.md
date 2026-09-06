@@ -227,7 +227,7 @@ events_poll({ consumer_id, since?, kinds?, top_k? })
 | `structure_applied` | Somebody changed a fact that belongs to **another** user — a validity closure, a sharing change, a move | Payload names the affected user (`recipient_id`) and carries `variant` and source → target. Forward it to **that** user: it is their fact somebody touched |
 | `archive_proposed` | An archive proposal exists for a stale page | Surface with dashboard URL |
 | `fact_minted_for_you` | Somebody stated a fact **about** the user, and they can read it | Tell that user what was said and who said it |
-| `reminder_due` | A reminder the user asked for has come due | Tell them |
+| `reminder_due` | A dated commitment the memory already holds has come round. It is never an alarm the user set, and never a plan a later message closed | Tell them what is due |
 | `document_ingested` | A document-ingest job the user started has finished | Tell them what the memory now holds |
 | `compile_failure_streak` | The narrative compiler failed or degraded the **same page** in consecutive passes and hit a notice threshold | Operator notice, addressed to nobody in particular. Payload carries `slug`, `source_path`, `consecutive`, `last_error` and a `dashboard_path` — surface it to whoever runs the server |
 | `recall_tuning_proposed` | The same fact kept missing recall and no local repair could be proved, so the fix needs a human | Operator notice. Payload carries the fact, its home, the miss count, a sample query and the gate outcome. Never auto-applied — surface the evidence and let the operator decide |
