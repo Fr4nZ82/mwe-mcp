@@ -53,8 +53,12 @@ use crate::{compile_failures, meta_annotate, planner, reindex, reviewer};
 /// something worth recompiling and a `cronista` was wired. `compile` is `None`
 /// when nothing was promoted/superseded or when the compile step was skipped
 /// (no LLM bag / no `cronista`).
-#[derive(Debug)]
+#[derive(Debug, Default)]
 pub struct LightOutcome {
+    /// Set when the deployment's daily budget stopped this round
+    /// before it began. Every other field is then empty, and the
+    /// summary says this instead of reading as a quiet tick.
+    pub budget_stop: Option<String>,
     /// Captures → `fact_index` promotion report.
     pub light: LightCycleReport,
     /// Narrative recompile of the pages the promotion dirtied, if it ran.
@@ -62,8 +66,12 @@ pub struct LightOutcome {
 }
 
 /// Outcome of a full dream: the reorg cycle report, plus the compile report.
-#[derive(Debug)]
+#[derive(Debug, Default)]
 pub struct FullOutcome {
+    /// Set when the deployment's daily budget stopped this round
+    /// before it began. Every other field is then empty, and the
+    /// summary says this instead of reading as a clean night.
+    pub budget_stop: Option<String>,
     /// The reorg sub-jobs + parked-comment application.
     pub cycle: RemCycleReport,
     /// Narrative recompile of every page the reorg left dirty.
@@ -172,6 +180,13 @@ fn placement_for<'a>(
 /// ([`NewFactPlacement::NamedThenCartografo`], which reaches only the facts the
 /// user did not name a page for); the strong tier is REM-only.
 ///
+/// Nothing runs at all while the deployment's daily budget is reached:
+/// the report comes back with [`CompileReport::budget_stop`] set and every
+/// count zero. Without that check the Cronista would be asked once per
+/// page, be refused once per page, and climb the per-page failure ledger
+/// into `compile_failure_streak` notices about a compiler that is working
+/// perfectly well.
+///
 /// # Errors
 ///
 /// Surfaces planner / compiler infrastructure failures. The reviewer is
@@ -184,6 +199,12 @@ pub async fn run_compile(
     cadence: Cadence,
     now: &str,
 ) -> Result<CompileReport> {
+    if let Some(budget_stop) = budget_stop().await {
+        return Ok(CompileReport {
+            budget_stop: Some(budget_stop),
+            ..CompileReport::default()
+        });
+    }
     let placement = placement_for(cadence, llms.apply, llms.auto_promote);
     compile_with(pool, tree, embedder, llms, cadence, placement, now).await
 }
@@ -581,6 +602,10 @@ async fn review_before_placing(pool: &SqlitePool, tree: &WikiTree, now: &str) {
 /// the promotion runs, so a half-wired install surfaces as pages that never
 /// compile rather than as a panic.
 ///
+/// Nothing runs at all while the deployment's daily budget is reached:
+/// the outcome comes back with [`LightOutcome::budget_stop`] set and every
+/// report empty, and the summary says that instead of a quiet tick.
+///
 /// # Errors
 ///
 /// Surfaces promotion or compile infrastructure failures.
@@ -591,6 +616,12 @@ pub async fn run_light(
     llms: Option<&RemLlms<'_>>,
     policy: &LightPolicy,
 ) -> Result<LightOutcome> {
+    if let Some(budget_stop) = budget_stop().await {
+        return Ok(LightOutcome {
+            budget_stop: Some(budget_stop),
+            ..LightOutcome::default()
+        });
+    }
     // Skip the (expensive) compile when the queue is empty: a plan with no new
     // claims is a no-op, and checking here keeps the strong model untouched.
     // The count is the whole gate now — the promotion itself lives inside the
@@ -650,7 +681,43 @@ pub async fn run_light(
             tracing::warn!(error = %e, "light dream: retired-region hygiene sweep failed (non-fatal)");
         },
     }
-    Ok(LightOutcome { light, compile })
+    Ok(LightOutcome {
+        budget_stop: None,
+        light,
+        compile,
+    })
+}
+
+/// The sentence a round says when it does not run, or `None` when the
+/// deployment may spend.
+///
+/// Checked once, before the first sub-job, because the alternative is
+/// ugly and misleading: every LLM stage would take the refusal
+/// separately, log itself as "unavailable — skipped", and the run of
+/// failures would end the cycle as an infrastructure fault. A night that
+/// is not run because the operator set a daily budget is not a night
+/// that failed, and it must not read as one anywhere.
+///
+/// **The whole round, not the paid half of it.** A deployment whose
+/// slots are split between a metered provider and a local model could in
+/// principle run the free stages, and it deliberately does not: the
+/// stages settle the fact set for the ones behind them, which is why
+/// `run_full` already refuses to compile from a reorg that failed. Half
+/// a round leaves the memory mid-reorganisation for a whole day to save
+/// work the operator asked to pause.
+async fn budget_stop() -> Option<String> {
+    let guard = crate::budget::global()?;
+    let state = guard.state().await.ok()?;
+    if !state.stopped() {
+        return None;
+    }
+    let message = format!("skipped: {}", state.stop_message());
+    tracing::info!(
+        day = %state.day,
+        spent = state.spent,
+        "dream: the daily budget is spent — this round is skipped"
+    );
+    Some(message)
 }
 
 /// Run one full dream: settle the facts, read what is written, then write once.
@@ -661,6 +728,10 @@ pub async fn run_light(
 /// so the single compile that follows is handed the whole night's work at
 /// once: place what is waiting, and re-home what the review says sits wrong.
 /// The compile rewrites every page either of them left dirty.
+///
+/// Nothing runs at all while the deployment's daily budget is reached:
+/// the outcome comes back with [`FullOutcome::budget_stop`] set and every
+/// report empty, and the summary says that instead of a clean night.
 ///
 /// # Errors
 ///
@@ -674,6 +745,12 @@ pub async fn run_full(
     llms: &RemLlms<'_>,
     policy: &RemPolicy,
 ) -> Result<FullOutcome> {
+    if let Some(budget_stop) = budget_stop().await {
+        return Ok(FullOutcome {
+            budget_stop: Some(budget_stop),
+            ..FullOutcome::default()
+        });
+    }
     let cycle = rem::run_cycle(pool, tree, Arc::clone(&embedder), llms, policy)
         .await
         .context("rem cycle")?;
@@ -690,6 +767,7 @@ pub async fn run_full(
     // others left, so nothing may run behind it and put something back.
     let closing = run_closing_pass(pool, tree, embedder, llms, &now).await?;
     Ok(FullOutcome {
+        budget_stop: None,
         cycle,
         compile,
         closing,
@@ -731,6 +809,9 @@ pub fn journal_counts(compile: Option<&CompileReport>) -> (i64, i64) {
 /// when the promotion dirtied pages and a `cronista` was wired.
 #[must_use]
 pub fn summarize_light(out: &LightOutcome) -> String {
+    if let Some(stop) = &out.budget_stop {
+        return stop.clone();
+    }
     out.compile.as_ref().map_or_else(
         || {
             format!(
@@ -757,6 +838,9 @@ pub fn summarize_light(out: &LightOutcome) -> String {
 /// One-line summary of a narrative compile pass.
 #[must_use]
 pub fn summarize_compile(report: &CompileReport) -> String {
+    if let Some(stop) = &report.budget_stop {
+        return stop.clone();
+    }
     format!(
         "compiled {} pages · {} lists · {} unchanged{}",
         report.leaves,
@@ -770,6 +854,9 @@ pub fn summarize_compile(report: &CompileReport) -> String {
 /// counts.
 #[must_use]
 pub fn summarize_full(out: &FullOutcome) -> String {
+    if let Some(stop) = &out.budget_stop {
+        return stop.clone();
+    }
     let husks = if out.cycle.husk_gc.removed.is_empty() {
         String::new()
     } else {

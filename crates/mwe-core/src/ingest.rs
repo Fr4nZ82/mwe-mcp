@@ -17743,6 +17743,57 @@ mod tests {
         drop(dir);
     }
 
+    // A backend refusing the way the daily budget refuses.
+    struct BudgetStoppedLlm;
+    #[async_trait]
+    impl LlmBackend for BudgetStoppedLlm {
+        fn model_id(&self) -> &'static str {
+            "stopped"
+        }
+        async fn complete(
+            &self,
+            _req: CompletionRequest,
+        ) -> std::result::Result<crate::llm::CompletionResponse, LlmError> {
+            Err(LlmError::Budget("the daily budget is spent".into()))
+        }
+    }
+
+    /// A daily budget the operator set must not take the user's turn with
+    /// it. The turn degrades exactly as it does for an unreachable
+    /// model — obligation 6 — and the alternative this denies is the
+    /// tempting one: letting the refusal out of the orchestrator as an
+    /// error, which would put "the memory is broken" in front of a
+    /// person whose only problem is that somebody's card is at its limit.
+    #[tokio::test]
+    async fn ingest_under_a_budget_stop_degrades_and_does_not_kill_the_turn() {
+        let (dir, tree, pool) = setup_workdir().await;
+        let llm = BudgetStoppedLlm;
+        let policy = IngestPolicy::default();
+        let resp = wiki_ingest_message(
+            &pool,
+            &tree,
+            fake_embedder(),
+            &llm,
+            None,
+            req("remember the meeting is at six", "alice"),
+            &policy,
+        )
+        .await
+        .expect("a daily budget must not bubble out of the turn");
+        assert_eq!(resp.intent, IntentKind::Skip);
+        assert!(!resp.llm_used, "nothing was asked of the model");
+        assert_eq!(
+            resp.suggested_seed.as_deref(),
+            Some(IngestPolicy::default().degraded_suggested_seed.as_str()),
+            "the canonical degraded seed, not a second wording for the same event"
+        );
+        assert!(
+            resp.capture_id.is_none(),
+            "nothing was stored, and the seed must not claim otherwise"
+        );
+        drop(dir);
+    }
+
     #[tokio::test]
     async fn ingest_dashboard_command_uses_structural_seed_on_fallback() {
         let (dir, tree, pool) = setup_workdir().await;

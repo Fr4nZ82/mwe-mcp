@@ -354,7 +354,11 @@ impl Default for RemPolicy {
 // ---------- Reports ----------
 
 /// Aggregated outcome of one [`run_cycle`].
-#[derive(Debug, Clone)]
+///
+/// `Default` is the report of a cycle that **did not run** — the same
+/// idiom as [`crate::compiler::CompileReport`], which a skipped compile
+/// returns empty rather than inventing a shape for "absent".
+#[derive(Debug, Clone, Default)]
 pub struct RemCycleReport {
     /// Identifier used as `cycle_id` in `rem_ops_log` rows.
     pub cycle_id: String,

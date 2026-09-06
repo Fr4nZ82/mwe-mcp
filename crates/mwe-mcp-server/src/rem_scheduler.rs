@@ -288,14 +288,18 @@ async fn fire_once(
     // bolted on here but skipped by the CLI and the dashboard button.
     match run_once(pool, tree, Arc::clone(embedder), llms, policy).await {
         Ok(outcome) => {
-            info!(
-                cycle_id = outcome.cycle.cycle_id,
-                duration_ms =
-                    (outcome.cycle.ended_at - outcome.cycle.started_at).num_milliseconds(),
-                compiled_leaves = outcome.compile.leaves,
-                compiled_lists = outcome.compile.lists,
-                "rem scheduler: full dream complete (cycle + compile)"
-            );
+            if let Some(stop) = &outcome.budget_stop {
+                info!(reason = %stop, "rem scheduler: full dream skipped");
+            } else {
+                info!(
+                    cycle_id = outcome.cycle.cycle_id,
+                    duration_ms =
+                        (outcome.cycle.ended_at - outcome.cycle.started_at).num_milliseconds(),
+                    compiled_leaves = outcome.compile.leaves,
+                    compiled_lists = outcome.compile.lists,
+                    "rem scheduler: full dream complete (cycle + compile)"
+                );
+            }
             // Nightly / interval full runs always make the journal — they are
             // meaningful and infrequent, and the admin Dream console has no
             // other window onto them.

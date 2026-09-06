@@ -399,7 +399,13 @@ below directly.
 6. **The response is always renderable.** Soft failures (internal LLM
    down, malformed plan) degrade to `intent=skip` with a canned seed —
    your turn never dies on a memory hiccup. `llm_used` tells audit-grade
-   truth about which branch fired.
+   truth about which branch fired. The **daily budget** arrives here too:
+   an operator who set one and reached it gets `intent=skip` with the same
+   canned seed and `llm_used: false`, for every turn until they lift it or
+   the UTC day turns over. Nothing on the wire distinguishes it — you
+   relay the seed and carry on, and the operator hears about it on
+   `events_poll` (`budget_threshold_reached`, below) and on their
+   dashboard.
 7. **Media travels out of band.** When the user sends a photo (or
    video, voice note, document), upload the bytes first with
    `POST /media` (multipart on the same origin as `/mcp`, same bearer
@@ -429,9 +435,18 @@ below directly.
    whose subject is another enrolled user (`fact_minted_for_you`: the
    payload carries the fact bodies, so your agent delivers the content
    itself — "Alice worked out with the assistant what you should check at
-   the viewing: …" — not a bare pointer). Three more kinds are addressed
+   the viewing: …" — not a bare pointer). Four more kinds are addressed
    to the operator rather than a user: `archive_proposed`,
-   `compile_failure_streak`, `recall_tuning_proposed`.
+   `compile_failure_streak`, `recall_tuning_proposed`, and
+   `budget_threshold_reached` — today's metered spend crossed the
+   deployment's daily budget, at the warning line and then at the budget
+   itself, at most once per threshold per UTC day. Its payload carries
+   `threshold` (`warn` | `stop`), the `day`, `spent`, `limit`, `percent`,
+   `currency`, the count of `unpriced_calls` the estimate leaves out, a
+   `dashboard_path`, and `stopped` — whether paid model calls are
+   actually being refused right now (they are at `stop`, unless the
+   operator had already unlocked the day). While that is true, every turn
+   comes back as obligation 6 describes.
    Poll them with `events_poll`, hand each to your agent, then
    `events_ack` the ids so the server stops re-delivering. A structural
    payload carries `proposal_id`, `variant`, the `closed_facts`,

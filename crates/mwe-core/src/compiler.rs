@@ -141,6 +141,10 @@ pub type Result<T> = std::result::Result<T, CompilerError>;
 /// Outcome of [`compile_dirty_pages`].
 #[derive(Debug, Default, Clone)]
 pub struct CompileReport {
+    /// Set when the deployment's daily budget stopped this pass before
+    /// it began. Every count is then zero, and the summary says this
+    /// instead of reading as a compile that found nothing to do.
+    pub budget_stop: Option<String>,
     /// What the queue did on the way in: claims screened, folded as
     /// duplicates, written, superseded. Filled by
     /// [`crate::dream::run_compile`], which screens the buffer before planning
@@ -1132,8 +1136,9 @@ enum CronistaFailure {
     /// exactly that).
     Retryable(String),
     /// Retrying cannot help — the request itself was rejected
-    /// ([`LlmError::Invalid`]) or the credential is bad
-    /// ([`LlmError::Auth`]). Observed live: with the API answering
+    /// ([`LlmError::Invalid`]), the credential is bad
+    /// ([`LlmError::Auth`]), or the deployment's daily budget stopped
+    /// it ([`LlmError::Budget`]). Observed live: with the API answering
     /// "credit balance too low", a whole compile run spent two calls per
     /// page to be told the same thing twice.
     Permanent(String),
@@ -1372,7 +1377,9 @@ async fn cronista_attempt(
         Err(e) => {
             let msg = format!("Cronista LLM failed: {e}");
             match e {
-                LlmError::Invalid(_) | LlmError::Auth(_) => Err(CronistaFailure::Permanent(msg)),
+                LlmError::Invalid(_) | LlmError::Auth(_) | LlmError::Budget(_) => {
+                    Err(CronistaFailure::Permanent(msg))
+                },
                 _ => Err(CronistaFailure::Retryable(msg)),
             }
         },

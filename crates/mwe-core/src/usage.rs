@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
-//! LLM usage ledger — one row per model call, and the aggregates the
-//! dashboard's **Usage & spend** page reads back.
+//! Usage ledger — one row per model call and per embedding request, and
+//! the aggregates the dashboard's **Usage & spend** page reads back.
 //!
 //! ## Why this exists
 //!
@@ -29,6 +29,22 @@
 //!
 //! Health probes are **not** recorded: `health_check` delegates to the
 //! inner backend untouched, because a liveness ping is not usage.
+//!
+//! ## The embedder is the seventh spender
+//!
+//! The six model slots are not the only thing this deployment consumes,
+//! so [`maybe_wrap_embedder`] decorates the embedder built inside
+//! [`crate::config::EmbeddingConfig::build_embedder`] and records it
+//! under the slot name [`EMBEDDING_SLOT`], with `kind` `embed`.
+//!
+//! Two things about those rows are worth knowing before reading them.
+//! Only an embedder that **crosses the wire** is recorded — the bundled
+//! embedder runs in this process, on this machine, so there is no
+//! request to count and no bill to explain, and the page says that
+//! rather than showing it as a zero. And every token column on an
+//! embedding row is NULL, because an embedding endpoint reports no token
+//! counts: the calls and the latency are real measurements, the tokens
+//! were never reported, and this table keeps that difference.
 //!
 //! ## What a row can answer, and what it deliberately cannot
 //!
@@ -263,6 +279,62 @@ impl UsageLedger {
         self.source
     }
 
+    /// Write one row: the single INSERT every decorator in this module
+    /// goes through.
+    ///
+    /// `slot` is a string rather than an [`LlmFunction`] because the
+    /// ledger records one caller that is not a model slot — the
+    /// embedder, under the slot name `embedding` ([`EMBEDDING_SLOT`]).
+    /// Any of the four token counts may be `None`: that is *not
+    /// reported*, which is a different fact from a measured zero and is
+    /// preserved as such.
+    #[allow(
+        clippy::too_many_arguments,
+        reason = "one row's worth of columns; a struct here would be the same list once removed"
+    )]
+    async fn record(
+        &self,
+        slot: &str,
+        backend_tag: &str,
+        model: &str,
+        kind: &str,
+        billing: Billing,
+        started: Instant,
+        usage: Option<&CompletionUsage>,
+        error: Option<&str>,
+    ) {
+        let latency_ms = i64::try_from(started.elapsed().as_millis()).unwrap_or(i64::MAX);
+        let now = chrono::Utc::now();
+        let res = sqlx::query(
+            "INSERT INTO llm_usage
+               (ts, slot, backend, model, kind, billing, source, tag,
+                prompt_tokens, completion_tokens, cached_prompt_tokens,
+                cache_write_tokens, latency_ms, error)
+             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+        )
+        .bind(now.to_rfc3339())
+        .bind(slot)
+        .bind(backend_tag)
+        .bind(model)
+        .bind(kind)
+        .bind(billing.as_str())
+        .bind(self.source.as_str())
+        .bind(self.tag.as_deref())
+        .bind(usage.and_then(|u| u.prompt_tokens).map(i64::from))
+        .bind(usage.and_then(|u| u.completion_tokens).map(i64::from))
+        .bind(usage.and_then(|u| u.cached_prompt_tokens).map(i64::from))
+        .bind(usage.and_then(|u| u.cache_write_tokens).map(i64::from))
+        .bind(latency_ms)
+        .bind(error)
+        .execute(&self.pool)
+        .await;
+        if let Err(e) = res {
+            tracing::warn!(error = %e, "usage ledger: insert failed — call not recorded");
+            return;
+        }
+        self.maybe_prune(now).await;
+    }
+
     /// Drop rows past the retention window, at most once per UTC day.
     ///
     /// Pruning on every insert would be a full-table `DELETE` scan per
@@ -309,6 +381,7 @@ const fn error_class(e: &LlmError) -> &'static str {
         LlmError::Protocol(_) => "protocol",
         LlmError::RateLimit(_) => "rate_limit",
         LlmError::Auth(_) => "auth",
+        LlmError::Budget(_) => "budget",
     }
 }
 
@@ -328,8 +401,11 @@ struct RecordingBackend {
 }
 
 impl RecordingBackend {
-    /// One `record` call for both outcomes, so the two paths cannot
-    /// drift apart in what they stamp.
+    /// This slot's half of a ledger row — the labels every call through
+    /// this backend carries — handed to [`UsageLedger::record`].
+    ///
+    /// One call for both outcomes, success and failure, so the two paths
+    /// cannot drift apart in what they stamp.
     async fn write(
         &self,
         kind: &str,
@@ -337,36 +413,18 @@ impl RecordingBackend {
         usage: Option<&CompletionUsage>,
         error: Option<&str>,
     ) {
-        let latency_ms = i64::try_from(started.elapsed().as_millis()).unwrap_or(i64::MAX);
-        let now = chrono::Utc::now();
-        let res = sqlx::query(
-            "INSERT INTO llm_usage
-               (ts, slot, backend, model, kind, billing, source, tag,
-                prompt_tokens, completion_tokens, cached_prompt_tokens,
-                cache_write_tokens, latency_ms, error)
-             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
-        )
-        .bind(now.to_rfc3339())
-        .bind(self.function.yaml_key())
-        .bind(&self.backend_tag)
-        .bind(self.inner.model_id())
-        .bind(kind)
-        .bind(self.billing.as_str())
-        .bind(self.ledger.source.as_str())
-        .bind(self.ledger.tag.as_deref())
-        .bind(usage.and_then(|u| u.prompt_tokens).map(i64::from))
-        .bind(usage.and_then(|u| u.completion_tokens).map(i64::from))
-        .bind(usage.and_then(|u| u.cached_prompt_tokens).map(i64::from))
-        .bind(usage.and_then(|u| u.cache_write_tokens).map(i64::from))
-        .bind(latency_ms)
-        .bind(error)
-        .execute(&self.ledger.pool)
-        .await;
-        if let Err(e) = res {
-            tracing::warn!(error = %e, "usage ledger: insert failed — call not recorded");
-            return;
-        }
-        self.ledger.maybe_prune(now).await;
+        self.ledger
+            .record(
+                self.function.yaml_key(),
+                &self.backend_tag,
+                self.inner.model_id(),
+                kind,
+                self.billing,
+                started,
+                usage,
+                error,
+            )
+            .await;
     }
 }
 
@@ -413,6 +471,113 @@ impl LlmBackend for RecordingBackend {
         // row in the ledger for every dashboard page that probes a
         // slot. Delegated untouched, same as the spool does.
         self.inner.health_check(probe).await
+    }
+}
+
+// ---------------------------------------------------------------------
+// The embedder
+// ---------------------------------------------------------------------
+
+/// The `slot` an embedding call is recorded under.
+///
+/// Not an [`LlmFunction`] — the embedder is not one of the six model
+/// slots and never becomes one. It is a seventh spender, and a page that
+/// adds up what this deployment consumes has to be able to see it, so it
+/// gets a slot name of its own and its own row in every rollup.
+pub const EMBEDDING_SLOT: &str = "embedding";
+
+/// The `kind` an embedding call is recorded under, beside `complete` and
+/// `chat`.
+const EMBEDDING_KIND: &str = "embed";
+
+/// Coarse class of a failed embedding call, for the `error` column.
+///
+/// The class, never the message, for the same reason as
+/// [`error_class`]: a backend's error text can quote the text it was
+/// asked to embed, and this table holds no content.
+const fn embedder_error_class(e: &crate::embedder::EmbedderError) -> &'static str {
+    match e {
+        crate::embedder::EmbedderError::Invalid(_) => "invalid",
+        crate::embedder::EmbedderError::Transport(_) => "transport",
+        crate::embedder::EmbedderError::Backend(_) => "backend",
+        crate::embedder::EmbedderError::Protocol(_) => "protocol",
+    }
+}
+
+/// Wrap `inner` so every embedding call it serves lands in the ledger.
+///
+/// **Only backends that cross the wire are wrapped**, and `crosses_wire`
+/// is how the caller says which. The bundled embedder runs in this
+/// process, on this machine: there is no request, no provider and no
+/// bill, and it sits on the per-turn recall path where a row per call
+/// would cost more than the row could ever measure. It is not recorded,
+/// and the Usage & spend page says so rather than showing it as zero.
+///
+/// Passthrough when no ledger is installed (library / embedded / test
+/// use).
+#[must_use]
+pub fn maybe_wrap_embedder(
+    inner: std::sync::Arc<dyn crate::embedder::Embedder>,
+    backend_tag: &str,
+    crosses_wire: bool,
+) -> std::sync::Arc<dyn crate::embedder::Embedder> {
+    if !crosses_wire {
+        return inner;
+    }
+    match global() {
+        Some(ledger) => std::sync::Arc::new(RecordingEmbedder {
+            inner,
+            backend_tag: backend_tag.to_owned(),
+            ledger,
+        }),
+        None => inner,
+    }
+}
+
+/// Decorator that records every embedding call — successful or not.
+///
+/// **A row is one request the backend saw.** `embed_batch` is
+/// deliberately left to the trait default, which loops over this
+/// decorator's own `embed`: every backend reached over the wire here
+/// posts one request per text, so the loop and the truth coincide. A
+/// backend that batches natively needs its own arm here, or its batches
+/// would be counted as one call each.
+struct RecordingEmbedder {
+    inner: std::sync::Arc<dyn crate::embedder::Embedder>,
+    backend_tag: String,
+    ledger: Arc<UsageLedger>,
+}
+
+#[async_trait]
+impl crate::embedder::Embedder for RecordingEmbedder {
+    fn model_id(&self) -> &str {
+        self.inner.model_id()
+    }
+
+    fn dimensions(&self) -> usize {
+        self.inner.dimensions()
+    }
+
+    async fn embed(&self, text: &str) -> crate::embedder::Result<Vec<f32>> {
+        let started = Instant::now();
+        let out = self.inner.embed(text).await;
+        // Every token column stays NULL: an embedding endpoint reached
+        // over the wire reports no token counts, and NULL is this
+        // table's word for "not reported". Counting characters instead
+        // would put a number nobody measured on a spend page.
+        self.ledger
+            .record(
+                EMBEDDING_SLOT,
+                &self.backend_tag,
+                self.inner.model_id(),
+                EMBEDDING_KIND,
+                Billing::Local,
+                started,
+                None,
+                out.as_ref().err().map(embedder_error_class),
+            )
+            .await;
+        out
     }
 }
 
@@ -830,6 +995,111 @@ mod tests {
         // And the source separates them without anybody setting a tag.
         let sources: Vec<&str> = rows.iter().map(|r| r.source.as_str()).collect();
         assert!(sources.contains(&"eval-cli") && sources.contains(&"serve"));
+    }
+
+    /// The embedder is the seventh spender and gets a row of its own —
+    /// with the tokens left NULL, because an embedding endpoint reports
+    /// none and "not reported" is not "measured zero".
+    #[tokio::test]
+    async fn an_embedding_call_over_the_wire_lands_as_its_own_slot_with_no_tokens() {
+        use crate::embedder::{Embedder, FakeEmbedder};
+
+        let (_dir, ledger) = pool_with_ledger(UsageSource::Serve).await;
+        let recorded = RecordingEmbedder {
+            inner: Arc::new(FakeEmbedder::new("bge-m3", 8)),
+            backend_tag: "ollama".to_owned(),
+            ledger: Arc::clone(&ledger),
+        };
+        recorded.embed("remember this").await.expect("embed");
+
+        let row = sqlx::query(
+            "SELECT slot, kind, backend, model, billing, prompt_tokens, completion_tokens
+               FROM llm_usage",
+        )
+        .fetch_one(&ledger.pool)
+        .await
+        .expect("row");
+        assert_eq!(row.get::<String, _>("slot"), EMBEDDING_SLOT);
+        assert_eq!(row.get::<String, _>("kind"), EMBEDDING_KIND);
+        assert_eq!(row.get::<String, _>("backend"), "ollama");
+        assert_eq!(row.get::<String, _>("model"), "bge-m3");
+        assert_eq!(row.get::<String, _>("billing"), "local");
+        assert_eq!(
+            row.get::<Option<i64>, _>("prompt_tokens"),
+            None,
+            "NULL is `not reported`; 0 would claim a measurement nobody made"
+        );
+        assert_eq!(row.get::<Option<i64>, _>("completion_tokens"), None);
+
+        // And it reads back as a slot of its own, so the page can show it
+        // as a row beside the six model slots.
+        let rows = buckets(&ledger.pool, None).await.expect("buckets");
+        assert_eq!(rows.len(), 1);
+        assert_eq!(rows[0].slot, EMBEDDING_SLOT);
+        assert_eq!(rows[0].calls, 1);
+        // Local billing: the money is a real zero, not an unknown.
+        assert_eq!(
+            rows[0].estimated_cost(&LlmPricingConfig::default()),
+            Some(0.0)
+        );
+    }
+
+    /// The bundled embedder runs in this process on a per-turn path.
+    /// Wrapping it would buy a row per recall and measure nothing that
+    /// is not already true by construction.
+    #[test]
+    fn the_in_process_embedder_is_not_wrapped() {
+        use crate::embedder::{Embedder, FakeEmbedder};
+
+        let inner: Arc<dyn Embedder> = Arc::new(FakeEmbedder::new("bge-m3", 8));
+        let out = maybe_wrap_embedder(Arc::clone(&inner), "bundled", false);
+        assert!(
+            Arc::ptr_eq(&inner, &out),
+            "an embedder that never leaves this process is handed back untouched"
+        );
+    }
+
+    /// A refused embedding is still a request the backend saw, and the
+    /// class of the refusal is recorded without its message — the same
+    /// rule as the model side, for the same reason.
+    #[tokio::test]
+    async fn a_failed_embedding_is_recorded_with_its_class_and_not_its_message() {
+        use crate::embedder::{Embedder, EmbedderError};
+
+        struct AlwaysFailsEmbedder;
+
+        #[async_trait]
+        impl Embedder for AlwaysFailsEmbedder {
+            fn model_id(&self) -> &'static str {
+                "bge-m3"
+            }
+            fn dimensions(&self) -> usize {
+                8
+            }
+            async fn embed(&self, _text: &str) -> crate::embedder::Result<Vec<f32>> {
+                Err(EmbedderError::Backend(
+                    "HTTP 500 while embedding \"the secret recipe\"".to_owned(),
+                ))
+            }
+        }
+
+        let (_dir, ledger) = pool_with_ledger(UsageSource::Serve).await;
+        let recorded = RecordingEmbedder {
+            inner: Arc::new(AlwaysFailsEmbedder),
+            backend_tag: "ollama".to_owned(),
+            ledger: Arc::clone(&ledger),
+        };
+        recorded
+            .embed("the secret recipe")
+            .await
+            .expect_err("must propagate");
+
+        let error: String = sqlx::query_scalar("SELECT error FROM llm_usage")
+            .fetch_one(&ledger.pool)
+            .await
+            .expect("row");
+        assert_eq!(error, "backend");
+        assert!(!error.contains("secret recipe"));
     }
 
     fn priced(

@@ -18,6 +18,47 @@ and in the dashboard's session check. Eight migrations, `0068` through `0075`.
 
 ### Added
 
+- **A daily budget that warns you, then stops the spending.** Set
+  `budget.daily_limit` — in the currency of your price list, from **Admin →
+  Usage** or in `mwe-mcp.config.yaml` — and the deployment tells you once, on
+  the dashboard and on the reverse channel, when the day passes
+  `budget.warn_at_percent` of it (80% unless you say otherwise). At the budget
+  itself, **paid model calls stop** until 00:00 UTC, or until you raise the
+  budget or press *Unlock for today*. Omit the key and there is no budget, which
+  is what every existing deployment gets on upgrade.
+
+  A stop is a spending decision, not a way of running without a model: all six
+  model roles stay required. User turns keep answering — they degrade to
+  `intent=skip` with the canned seed and say nothing was saved, exactly as they
+  do for an unreachable model — and the nightly cycle skips its round and says
+  why. The budget covers metered calls only: a role on a flat subscription or on
+  a model running on your own machine never moves it and is never stopped.
+  Health probes are never refused either, so a stopped deployment does not read
+  as a broken one.
+
+  New event kind on `events_poll`: **`budget_threshold_reached`**, an operator
+  notice at most once per threshold per UTC day, carrying `threshold` (`warn` |
+  `stop`), `stopped` (whether paid calls are actually being refused right now),
+  the `day`, `spent`, `limit`, `percent`, `currency`, the count of
+  `unpriced_calls` the estimate leaves out, and a `dashboard_path`.
+
+- **The Usage page is now the spend page, and the price list is edited on it.**
+  **Admin → Usage** opens with today against the budget — the figure, the
+  budget line, the percentage — and then the history it already showed. The
+  price list is a form on that page instead of a block of YAML to copy: rates
+  per 1M tokens, your own currency, `prefix*` wildcards, saved into
+  `mwe-mcp.config.yaml` and in force on the next model call without a restart.
+  Tables are headed in words rather than in field names, and every slot is named
+  as the LLM config editor names it.
+
+- **Embedding calls are counted.** An embedder reached over the wire (the
+  `ollama` backend) now writes one row per request into the usage ledger, under
+  a slot of its own, and the page shows it beside the six model roles. Its token
+  columns read *not reported* rather than zero, because an embedding endpoint
+  reports no token counts and a summed zero would read as "this was free". The
+  bundled embedder runs inside the process on your own machine and is not
+  recorded: there is no request to count and no bill to explain.
+
 - **A person can ask for everything the memory holds about them, and for its
   removal.** Two admin actions on the user's page. **Export** builds a tar
   archive with their wiki (self-describing full markers), a markdown file of

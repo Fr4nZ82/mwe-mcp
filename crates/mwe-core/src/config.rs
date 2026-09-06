@@ -421,6 +421,12 @@ impl LlmFunctionConfig {
     /// dashboard toggle is honoured without a rebuild); without an
     /// installed spool this is a passthrough.
     ///
+    /// A metered backend is then passed through
+    /// [`crate::budget::maybe_gate`], which refuses the call while the
+    /// deployment's daily budget is reached. Without an installed
+    /// guard, and for a backend whose tokens are not money, that too is
+    /// a passthrough.
+    ///
     /// # Errors
     ///
     /// Same as [`Self::build_backend`].
@@ -433,21 +439,27 @@ impl LlmFunctionConfig {
         F: FnMut(&str) -> Option<String>,
     {
         let inner = self.build_backend_raw_with_env(function, env)?;
-        // Four decorators, innermost first. The slot defaults go right
+        // Five decorators, innermost first. The slot defaults go right
         // against the provider so every caller that leaves `temperature`
         // or `max_tokens` unset gets this slot's YAML values, not the
         // provider's. The spool and the usage ledger are pure observers:
         // the ledger sits outside the spool so the latency it records is
         // the one the caller waited, spooling included. The retries go
-        // outermost so each attempt is its own ledger row — a failed
-        // attempt is a real call the provider saw.
+        // next so each attempt is its own ledger row — a failed attempt
+        // is a real call the provider saw. The budget gate goes
+        // outermost of all: a call the budget refuses was never made,
+        // so it must not be retried and must not appear in the ledger.
+        let billing = self.billing();
         let with_defaults: Box<dyn crate::llm::LlmBackend> = Box::new(SlotDefaultsBackend {
             inner,
             defaults: self.clone(),
         });
         let spooled = crate::training_spool::maybe_wrap(with_defaults, function, &self.backend);
-        let recorded = crate::usage::maybe_wrap(spooled, function, &self.backend, self.billing());
-        Ok(crate::llm::with_retries(recorded))
+        let recorded = crate::usage::maybe_wrap(spooled, function, &self.backend, billing);
+        Ok(crate::budget::maybe_gate(
+            crate::llm::with_retries(recorded),
+            billing,
+        ))
     }
 
     /// How this slot's tokens are paid for.
@@ -1799,7 +1811,9 @@ impl RecallConfig {
 ///   only when compiled with the `local-embedder` feature.
 /// - `ollama` — HTTP to a local/remote Ollama (`base_url`): the default on
 ///   a build without the bundled feature, and the opt-in for operators who
-///   already run Ollama and prefer not to keep a second embedder.
+///   already run Ollama and prefer not to keep a second embedder. The one
+///   backend here that leaves this process, so the one whose calls the
+///   usage ledger records ([`crate::usage::maybe_wrap_embedder`]).
 /// - `openai` — reserved; not yet wired (→ `UnsupportedEmbeddingBackend`).
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct EmbeddingConfig {
@@ -1910,7 +1924,13 @@ impl EmbeddingConfig {
                 .map_err(|e| ConfigError::EmbeddingUnavailable {
                     detail: format!("building ollama embedder: {e}"),
                 })?;
-                Ok(Arc::new(e))
+                // The one embedder that leaves this process, so the one
+                // whose calls the usage ledger counts.
+                Ok(crate::usage::maybe_wrap_embedder(
+                    Arc::new(e),
+                    "ollama",
+                    true,
+                ))
             },
             "bundled" => self.build_bundled().await,
             other => Err(ConfigError::UnsupportedEmbeddingBackend {
@@ -2220,6 +2240,91 @@ impl ModelPrice {
     #[must_use]
     pub fn cache_write_rate(&self) -> f64 {
         self.cache_write.unwrap_or(self.input)
+    }
+}
+
+/// `budget:` section — the daily budget (see [`crate::budget`]).
+///
+/// **No budget unless the operator sets one.** A ceiling invented on
+/// somebody's behalf either stops a deployment that was working or is
+/// so high it means nothing, and the currency it would be denominated
+/// in is not ours to assume either — it is [`LlmPricingConfig::currency`],
+/// the one the operator typed.
+///
+/// The budget is read against the same estimate the Usage & spend page
+/// prints: the ledger's tokens priced by [`LlmPricingConfig`]. So a
+/// model nobody priced spends nothing as far as the budget is concerned,
+/// and a slot on a flat subscription or a local model never moves it —
+/// those calls really are outside the metered bill.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct BudgetConfig {
+    /// Most this deployment may spend on metered model calls in one UTC
+    /// day, in [`LlmPricingConfig::currency`]. Absent ⇒ no budget.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub daily_limit: Option<f64>,
+    /// Percentage of [`Self::daily_limit`] at which the operator is
+    /// warned, once per day, before anything stops.
+    ///
+    /// The warning is the half of this feature that changes a decision:
+    /// a stop is news after the fact, a warning is news while there is
+    /// still something to do about it.
+    #[serde(default = "default_warn_at_percent")]
+    pub warn_at_percent: u8,
+    /// Unknown keys, preserved on round-trip like everywhere else.
+    #[serde(flatten)]
+    pub extra: serde_yaml::Mapping,
+}
+
+const fn default_warn_at_percent() -> u8 {
+    crate::budget::DEFAULT_WARN_AT_PERCENT
+}
+
+/// Hand-written rather than derived: a derived `Default` would give
+/// `warn_at_percent: 0`, and a zero warn threshold fires the warning the
+/// instant a budgeted day spends anything. The serde default and this one
+/// must be the same number, so both read it from the same constant.
+impl Default for BudgetConfig {
+    fn default() -> Self {
+        Self {
+            daily_limit: None,
+            warn_at_percent: default_warn_at_percent(),
+            extra: serde_yaml::Mapping::new(),
+        }
+    }
+}
+
+impl BudgetConfig {
+    /// Is this the no-budget default?
+    ///
+    /// The switch on [`Config`]'s `skip_serializing_if`: a deployment
+    /// that never set a budget must not grow a `budget:` section on its
+    /// next save, the same rule `rate_limits:` follows — a key written
+    /// back with nothing in it is a key the operator has to read and
+    /// then ignore.
+    #[must_use]
+    pub fn is_empty(&self) -> bool {
+        self.daily_limit.is_none()
+            && self.warn_at_percent == default_warn_at_percent()
+            && self.extra.is_empty()
+    }
+
+    /// The budget, when the operator set a usable one.
+    ///
+    /// A zero or negative limit is read as *no budget* rather than as *stop
+    /// everything*: the second reading turns a typo into a deployment
+    /// that answers nothing, and `budget:` with the key deleted is how
+    /// an operator turns the budget off.
+    #[must_use]
+    pub fn daily_limit(&self) -> Option<f64> {
+        self.daily_limit.filter(|l| *l > 0.0)
+    }
+
+    /// The warn threshold as a fraction of the budget, clamped into
+    /// `0.0..=1.0` so a hand-edited `warn_at_percent: 250` cannot push
+    /// the warning past the stop it is supposed to precede.
+    #[must_use]
+    pub fn warn_fraction(&self) -> f64 {
+        f64::from(self.warn_at_percent.min(100)) / 100.0
     }
 }
 
@@ -2819,7 +2924,7 @@ pub struct Config {
     /// `logging:` section.
     #[serde(default)]
     pub logging: LoggingConfig,
-    /// `llm:` section — five canonical functions.
+    /// `llm:` section — the six canonical functions.
     #[serde(default)]
     pub llm: LlmConfig,
     /// `embedding:` section — which embedder backend drives recall /
@@ -2852,6 +2957,15 @@ pub struct Config {
     /// declared. See [`LlmPricingConfig`].
     #[serde(default)]
     pub llm_pricing: LlmPricingConfig,
+    /// `budget:` section — the daily budget read against
+    /// [`Self::llm_pricing`]. No budget unless the operator sets one. See
+    /// [`BudgetConfig`].
+    ///
+    /// Not written back when no budget is set, for the same reason
+    /// [`Self::rate_limits`] is not: a section holding only its own
+    /// default is a key the operator reads and then ignores.
+    #[serde(default, skip_serializing_if = "BudgetConfig::is_empty")]
+    pub budget: BudgetConfig,
     /// `backup:` section — automatic workdir snapshots. See
     /// [`BackupConfig`].
     #[serde(default)]
@@ -3368,12 +3482,52 @@ mod tests {
         assert_eq!(cfg.logging.level, LogLevel::Debug);
     }
 
+    /// A default budget warns at the documented share of the budget, not at
+    /// zero.
+    ///
+    /// A derived `Default` gives `0`, which is not "no warning" — it is a
+    /// warning that fires the moment a budgeted day spends anything, and it
+    /// would have been written into every config file the dashboard
+    /// saves.
+    #[test]
+    fn a_default_budget_warns_at_the_documented_share_not_at_zero() {
+        let cfg = BudgetConfig::default();
+        assert_eq!(cfg.warn_at_percent, crate::budget::DEFAULT_WARN_AT_PERCENT);
+        assert!((cfg.warn_fraction() - 0.8).abs() < f64::EPSILON);
+        assert_eq!(cfg.daily_limit(), None, "and no budget by default");
+    }
+
+    /// A deployment that never set a budget must not grow a `budget:`
+    /// section on its next save.
+    #[test]
+    fn no_budget_writes_no_budget_section() {
+        // Anchored to the line start: `recall.char_budget` ends in the
+        // same six characters, and an unanchored search finds it.
+        let has_section = |yaml: &str| yaml.lines().any(|l| l == "budget:");
+
+        let yaml = serde_yaml::to_string(&Config::default()).expect("serialize");
+        assert!(!has_section(&yaml), "{yaml}");
+
+        let mut with_cap = Config::default();
+        with_cap.budget.daily_limit = Some(5.0);
+        let yaml = serde_yaml::to_string(&with_cap).expect("serialize");
+        assert!(
+            has_section(&yaml) && yaml.contains("daily_limit: 5.0"),
+            "{yaml}"
+        );
+        assert!(
+            yaml.contains("warn_at_percent: 80"),
+            "the threshold is written out beside the budget it belongs to: {yaml}"
+        );
+    }
+
     #[test]
     fn load_preserves_unknown_top_level_keys_in_extra() {
         let dir = tempdir().unwrap();
-        // `embedding` is now a typed section; `budget` is still unknown
-        // and must round-trip through `extra` without breaking parse.
-        let body = "logging:\n  level: info\nembedding:\n  backend: ollama\n  model: bge-m3\nbudget:\n  monthly_eur_cap: 20\n";
+        // `embedding` and `budget` are typed sections; `telemetry` is not
+        // a section this build knows, and must round-trip through `extra`
+        // without breaking the parse.
+        let body = "logging:\n  level: info\nembedding:\n  backend: ollama\n  model: bge-m3\nbudget:\n  daily_limit: 5.0\n  spent_so_far: 2\ntelemetry:\n  endpoint: https://example.test\n";
         fs::write(Config::path_in(dir.path()), body).unwrap();
         let cfg = Config::load(dir.path()).expect("load");
         assert_eq!(cfg.logging.level, LogLevel::Info);
@@ -3385,10 +3539,23 @@ mod tests {
                 .contains_key(serde_yaml::Value::String("embedding".into())),
             "typed embedding section must not leak into extra"
         );
-        // `budget` is still unknown → preserved in extra.
+        // So did `budget` — and the key inside it that this build does not
+        // know is kept by the section's own `extra`, one level down.
+        assert_eq!(cfg.budget.daily_limit, Some(5.0));
+        assert!(
+            !cfg.extra
+                .contains_key(serde_yaml::Value::String("budget".into())),
+            "typed budget section must not leak into extra"
+        );
+        assert!(
+            cfg.budget
+                .extra
+                .contains_key(serde_yaml::Value::String("spent_so_far".into()))
+        );
+        // `telemetry` is unknown → preserved whole in extra.
         assert!(
             cfg.extra
-                .contains_key(serde_yaml::Value::String("budget".into()))
+                .contains_key(serde_yaml::Value::String("telemetry".into()))
         );
     }
 

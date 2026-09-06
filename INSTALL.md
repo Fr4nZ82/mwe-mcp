@@ -151,7 +151,9 @@ through everything — no YAML to hand-edit, no credentials to hand to anyone el
 
    **Embeddings always run locally and are free** — independent of this choice.
    Already running Ollama with an embedder? Switch the embedding backend to
-   `ollama` from **Admin → Embedding** to avoid keeping a second model.
+   `ollama` from **Admin → Embedding** to avoid keeping a second model. That is
+   the one embedder that leaves the process, so its calls are counted on the
+   Usage & spend page; the bundled one runs inside the binary and is not.
 
    > **How capable does the internal LLM need to be?** The `ingest` role is a
    > structured router: it must emit valid plans with exact wiki ids, every
@@ -200,6 +202,57 @@ Two more windows live in the sections that own what they bound:
 `usage.retention_days` (the per-call token ledger, 400 days) and
 `recall.trace_retention_days` (the recall-trace journal, 90 days, which holds
 recalled memory verbatim).
+
+---
+
+## What it costs, and a daily budget that stops it
+
+**Admin → Usage** is the page for what this deployment consumes: today's spend
+against your budget, then the history — by day, by month, by slot, by model,
+tokens in and out and how much of the prompt the provider's cache absorbed. The
+embedder gets a row of its own when it runs over the wire.
+
+**Tokens are the measurement; money is your price list.** No rates ship with the
+product: published prices change, your contract may not be the published one,
+and the currency is not ours to assume, so a figure invented on your behalf
+would be confidently wrong about your money. Fill the price list in on that
+page — per 1M tokens, in whatever currency you are billed in — and the cost
+columns appear. A model id may be a `prefix*` wildcard, and the longest match
+wins whatever order you wrote the rows in.
+
+```yaml
+llm_pricing:
+  currency: EUR
+  models:
+    - model: "gemini-3-flash-*"
+      input: 0.30
+      cached_input: 0.075   # cache read; omitted ⇒ same as input
+      cache_write: 0.375    # cache write; omitted ⇒ same as input
+      output: 2.50
+
+budget:
+  daily_limit: 5.00       # in llm_pricing.currency; omit the key for no budget
+  warn_at_percent: 80     # warn once a day at this share of the budget
+```
+
+**What the budget does.** Reach `warn_at_percent` of it and you are told once
+that day, on the dashboard and on the reverse channel (`events_poll`, kind
+`budget_threshold_reached`). Reach the budget itself and **paid model calls
+stop** until 00:00 UTC, or until you raise the budget or press *Unlock for
+today* on that page.
+
+Three things are worth knowing before you set one:
+
+- **It covers metered calls only.** A slot on a flat subscription, or a model
+  running on your own machine, moves tokens without moving money, so it never
+  counts towards the budget and is never stopped.
+- **It is read against your price list.** A model you have not priced spends
+  nothing as far as the budget is concerned — the page says how many of today's
+  calls that is.
+- **A stop is not a way to run without a model.** All six model roles stay
+  required. A stopped deployment answers user turns degraded — the turn says
+  nothing was saved rather than dying — and the nightly cycle skips its round
+  and says why. It is a pause you chose, and it lasts until you take it back.
 
 > **Keep the workdir private.** The Markdown under it is **cleartext on disk** —
 > per-reader redaction happens when the server renders a response, not on disk.

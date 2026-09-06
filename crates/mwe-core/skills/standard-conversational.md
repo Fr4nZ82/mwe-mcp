@@ -231,6 +231,7 @@ events_poll({ consumer_id, since?, kinds?, top_k? })
 | `document_ingested` | A document-ingest job the user started has finished | Tell them what the memory now holds |
 | `compile_failure_streak` | The narrative compiler failed or degraded the **same page** in consecutive passes and hit a notice threshold | Operator notice, addressed to nobody in particular. Payload carries `slug`, `source_path`, `consecutive`, `last_error` and a `dashboard_path` — surface it to whoever runs the server |
 | `recall_tuning_proposed` | The same fact kept missing recall and no local repair could be proved, so the fix needs a human | Operator notice. Payload carries the fact, its home, the miss count, a sample query and the gate outcome. Never auto-applied — surface the evidence and let the operator decide |
+| `budget_threshold_reached` | Today's metered spend crossed the deployment's daily budget — the warning line first, then the budget itself | Operator notice, addressed to nobody in particular, at most once per threshold per day. Payload carries `threshold` (`warn` or `stop`), the `day`, `spent`, `limit`, `percent`, `currency`, a `dashboard_path`, and `stopped` — whether paid model calls are actually being refused right now. While `stopped` is true, turns still answer but come back degraded and say nothing was saved; it clears when the operator raises the budget, unlocks the day, or the day turns over |
 
 ### The nightly cycle is silent
 

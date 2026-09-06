@@ -618,6 +618,16 @@ pub enum LlmError {
     /// so the operator can find it without digging into config.
     #[error("llm auth error: {0}")]
     Auth(String),
+    /// The deployment's daily budget ([`crate::budget`]) stopped this
+    /// call before it left the machine. Not a provider answer and not a
+    /// fault: the operator set a ceiling and today's spend reached it.
+    ///
+    /// Non-retriable — it clears at 00:00 UTC, or when the operator
+    /// raises the budget or unlocks the day from the dashboard. Callers
+    /// need no arm of their own: it degrades wherever an unreachable
+    /// model already degrades.
+    #[error("llm budget stop: {0}")]
+    Budget(String),
 }
 
 /// Result alias for LLM operations.

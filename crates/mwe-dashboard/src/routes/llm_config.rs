@@ -451,6 +451,19 @@ const FIELD_LABEL_STYLE: &str = "font-size:.72rem;text-transform:uppercase;lette
 const INPUT_STYLE: &str = "width:100%;background:var(--bg);border:1px solid var(--border);border-radius:.3rem;padding:.35rem .5rem;color:var(--text);font-family:var(--font-mono);font-size:.85rem";
 
 /// The slots with no model, by their YAML key, in the roster's order.
+/// The human title of a model slot, by its `yaml_key`.
+///
+/// Read from [`SLOT_GUIDES`] rather than restated, so the Usage & spend
+/// page names a slot with the same words as the page where it is
+/// configured. `None` for a `slot` string that is not one of the six —
+/// the ledger records the embedder under a name of its own.
+pub(super) fn slot_title(yaml_key: &str) -> Option<&'static str> {
+    SLOT_GUIDES
+        .iter()
+        .find(|g| g.slot.yaml_key() == yaml_key)
+        .map(|g| g.title)
+}
+
 pub(super) fn unconfigured_slots(llm: &LlmConfig) -> Vec<&'static str> {
     LlmFunction::ALL
         .iter()

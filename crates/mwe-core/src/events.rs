@@ -121,6 +121,23 @@ pub enum EventKind {
     /// `fires_at`), so a consumer that delivers one delivers the other
     /// with the same parsing.
     ReminderDue,
+    /// Today's metered spend crossed one of the two lines the daily
+    /// budget draws ([`crate::budget`]) — the warn threshold, and then
+    /// the budget itself. Operator notice, addressed to nobody in
+    /// particular, emitted **once per threshold per UTC day** so a
+    /// deployment that spends all afternoon against a reached budget sends
+    /// two notices and not two thousand.
+    ///
+    /// The payload carries `threshold` (`warn` | `stop`), the `day`,
+    /// `spent`, `limit`, `percent` and `currency`, the count of
+    /// `unpriced_calls` the estimate leaves out, and a `dashboard_path`
+    /// to the Usage & spend page, which is where the budget is raised and
+    /// the day unlocked. `stopped` says whether paid model calls are
+    /// actually being refused: at `stop` they are, unless the operator
+    /// had already unlocked the day — crossing the line and being held
+    /// by it are two facts, and only the second one changes what a turn
+    /// gets back.
+    BudgetThresholdReached,
 }
 
 impl EventKind {
@@ -135,6 +152,7 @@ impl EventKind {
             Self::RecallTuningProposed => "recall_tuning_proposed",
             Self::FactMintedForYou => "fact_minted_for_you",
             Self::ReminderDue => "reminder_due",
+            Self::BudgetThresholdReached => "budget_threshold_reached",
         }
     }
 }
