@@ -5,7 +5,8 @@
  * memory crosses the host boundary as one `mwe_request` action on the
  * session's outbound mailbox. This module answers those requests: it resolves
  * the chat sender to an act-as identity through `senderMap`, calls the memory,
- * and hands the payload back.
+ * completes the dashboard paths the payload carries with the origin only the
+ * host knows, and hands it back.
  *
  * Identity is resolved **here**, never taken from the container: the request
  * names a `<channel>:<platform id>` chat sender and this module maps it, so a
@@ -17,7 +18,7 @@
  * turn its memory, never the turn itself.
  */
 import { MweClient, MweError } from './client.js';
-import { actAsFor, GUEST, type MweConfig } from './config.js';
+import { actAsFor, dashboardOrigin, GUEST, type MweConfig } from './config.js';
 
 /** A message of the consumer-owned recent window, as the ingest tool takes it. */
 export interface RecentMessage {
@@ -99,6 +100,41 @@ function errorOf(err: unknown, actAs: string): MweResponse {
   return { ok: false, error: err instanceof Error ? err.message : String(err), actAs };
 }
 
+/**
+ * A dashboard address a person can open, from what the server sends.
+ *
+ * The server mints its dashboard links as **paths** (`/dashboard/auth/link?…`)
+ * because it does not know the origin it is reached at. The host does — the
+ * same origin the reverse channel hangs its notices on — so the host completes
+ * them, and the container never has to hold one. An address that already names
+ * its origin comes back as it stands, and so does anything at all when there
+ * is no origin to hang it on.
+ */
+function absoluteDashboard(value: string, origin: string): string {
+  const raw = value.trim();
+  if (!raw || !origin || raw.includes('://')) return raw;
+  return `${origin.replace(/\/$/, '')}${raw.startsWith('/') ? raw : `/${raw}`}`;
+}
+
+/**
+ * Complete the dashboard address an ingest response carries.
+ *
+ * The vote block names the page where a forget request is answered, and the
+ * recall block puts that page in front of a person: it has to be openable. The
+ * per-request paths beside it stay as the server sent them — nothing renders
+ * them, so nothing offers them.
+ */
+function completeIngestLinks(data: Record<string, unknown>, origin: string): Record<string, unknown> {
+  const votes = data.pending_votes;
+  if (typeof votes !== 'object' || votes === null) return data;
+  const block = votes as Record<string, unknown>;
+  if (typeof block.dashboard_path !== 'string') return data;
+  return {
+    ...data,
+    pending_votes: { ...block, dashboard_path: absoluteDashboard(block.dashboard_path, origin) },
+  };
+}
+
 /** `metadata` every ingest variant carries. */
 function turnMetadata(config: MweConfig, args: MweRequestArgs): Record<string, unknown> {
   const metadata: Record<string, unknown> = {};
@@ -122,7 +158,8 @@ async function ingest(deps: TurnDeps, args: MweRequestArgs, actAs: string): Prom
   if (args.attachments?.length) call.attachments = args.attachments;
   const metadata = turnMetadata(deps.config, args);
   if (Object.keys(metadata).length > 0) call.metadata = metadata;
-  return clientFor(deps, actAs).callTool('wiki_ingest_message', call);
+  const data = await clientFor(deps, actAs).callTool('wiki_ingest_message', call);
+  return completeIngestLinks(data, dashboardOrigin(deps.config));
 }
 
 /**
@@ -154,7 +191,9 @@ export async function handleMweRequest(request: MweRequest, deps: TurnDeps): Pro
         const data = await clientFor(deps, actAs).callTool('dashboard_link', {
           intent: args.intent || 'home',
         });
-        return { ok: true, data, actAs, maxWindow };
+        // The server hands back a path; the person is given an address.
+        const url = typeof data.url === 'string' ? absoluteDashboard(data.url, dashboardOrigin(deps.config)) : '';
+        return { ok: true, data: url ? { ...data, url } : data, actAs, maxWindow };
       }
       case 'media': {
         // Guest turns store nothing, and the upload endpoint answers 403.

@@ -48,6 +48,10 @@ const { runPollLoop } = await import(path.join(RUNNER, 'poll-loop.js'));
 const { handleMweRequest } = await import(path.join(HOST_MODULE, 'turn.js'));
 const { newEventsState, personalTick } = await import(path.join(HOST_MODULE, 'events.js'));
 const { MweClient } = await import(path.join(HOST_MODULE, 'client.js'));
+// The three tools as the agent's MCP process registers them. Importing the
+// module registers them with nanoclaw's tool server too, which starts nothing:
+// only the barrel's `startMcpServer()` does that.
+const { MWE_TOOLS } = await import(path.join(RUNNER, 'mcp-tools/mwe.js'));
 
 // ---------------------------------------------------------------------------
 // assertions
@@ -182,6 +186,27 @@ async function waitFor(predicate: () => boolean, timeoutMs = 15_000, label = 'co
   }
   console.error(`FAIL: timed out waiting for ${label}`);
   process.exit(1);
+}
+
+interface ToolResult {
+  content?: Array<{ text?: string }>;
+  isError?: boolean;
+}
+
+/**
+ * Call one of the bridge's tools the way the agent does: the real handler, the
+ * turn state it reads off the session mount, and the host round trip through
+ * the mailbox.
+ */
+async function callMweTool(name: string, args: Record<string, unknown>): Promise<{ text: string; isError: boolean }> {
+  const definition = (MWE_TOOLS as Array<{ tool: { name: string }; handler: (a: Record<string, unknown>) => Promise<ToolResult> }>)
+    .find((t) => t.tool.name === name);
+  if (!definition) {
+    console.error(`FAIL: the bridge registers no tool called ${name}`);
+    process.exit(1);
+  }
+  const result = await definition.handler(args);
+  return { text: String(result.content?.[0]?.text ?? ''), isError: result.isError === true };
 }
 
 /** A mock provider that answers `reply` and keeps every prompt it was given. */
@@ -334,6 +359,27 @@ async function main(): Promise<void> {
   ok('the window never exceeds maxWindow', lastWindow.length <= config.maxWindow, `got ${lastWindow.length}`);
   ok('the window keeps the newest, not the oldest', !lastWindow.some((m) => m.text === 'ciao, sono tornata'));
 
+  // -- the dashboard link the agent offers is an address, not a path --------
+  // The memory mints it as a path: it does not know the origin it is reached
+  // at. What the agent puts in front of a person has to open from a phone.
+  const link = await callMweTool('mwe_dashboard_link', {});
+  ok('the link tool answers', !link.isError, link.text.slice(0, 160));
+  const minted = JSON.parse(link.text) as { url: string };
+  ok(
+    'the minted link carries the dashboard origin',
+    minted.url === `${config.dashboardUrl}/dashboard/auth/link?token=stub-jwt&next=%2Fdashboard%2Fhome`,
+    minted.url,
+  );
+  await waitFor(
+    () => stubState().calls.some((c) => c.tool === 'dashboard_link'),
+    5_000,
+    'the link call to reach the stub',
+  );
+  ok(
+    'it acts as the person speaking this turn',
+    stubState().calls.filter((c) => c.tool === 'dashboard_link').pop()?.headers['x-mwe-act-as'] === 'alice',
+  );
+
   // -- disambiguation: the candidates are surfaced, the next call commits ----
   scriptStub({
     wiki_ingest_message: {
@@ -360,20 +406,8 @@ async function main(): Promise<void> {
   ok('the tool will act as the right person', turnState.senderKey === 'telegram:1');
 
   const commitBefore = ingests().length;
-  const commit = await handleMweRequest(
-    {
-      op: 'ingest',
-      args: {
-        sender: turnState.senderKey,
-        text: turnState.disambig.text,
-        recentMessages: turnState.disambig.window,
-        channel: turnState.disambig.channel,
-        disambigChoice: 'c1',
-      },
-    },
-    { config, token: 'test-jwt' },
-  );
-  ok('the commit is accepted', commit.ok === true);
+  const commit = await callMweTool('mwe_disambig_commit', { candidate_id: 'c1' });
+  ok('the commit is accepted', !commit.isError, commit.text.slice(0, 160));
   await waitFor(() => ingests().length > commitBefore, 5_000, 'the commit to reach the stub');
   const committed = ingests()[commitBefore];
   ok(
@@ -381,6 +415,25 @@ async function main(): Promise<void> {
     (committed.arguments.metadata as Record<string, unknown>).disambig_choice === 'c1',
   );
   ok('the commit replays the same message', committed.arguments.text === 'ho visto Alice');
+  // The commit is an ingest, so the agent is handed the memory for the message
+  // it just stored, in the fence a turn arrives in — not the server's JSON.
+  ok(
+    'the agent gets the framed block back, not the raw response',
+    !commit.text.trimStart().startsWith('{') &&
+      commit.text.includes('Stored:') &&
+      commit.text.includes('<memory-context>'),
+    commit.text.slice(0, 160),
+  );
+  ok('the memory for the stored message rides the answer', commit.text.includes('(stub) nothing relevant on file'));
+  ok(
+    "the response's operational fields stay away from the agent",
+    !commit.text.includes('llm_used') && !commit.text.includes('intent_classified'),
+  );
+  ok('the memory does not ask twice: naming the choice settles it', !commit.text.includes('mwe_disambig_commit'));
+  ok(
+    'the pending disambiguation is gone once committed',
+    JSON.parse(fs.readFileSync(path.join(SESSION_DIR, 'mwe-turn.json'), 'utf-8')).disambig === undefined,
+  );
   scriptStub({});
 
   // -- the two governance blocks reach the agent ----------------------------
@@ -428,9 +481,10 @@ async function main(): Promise<void> {
     governancePrompt.includes('asked by bob, open until 2026-06-19T09:00:00Z'),
   );
   ok(
+    // The page is named as an address, for the same reason the minted link is.
     'it sends the person to the dashboard, the only place a vote is cast',
     governancePrompt.includes('mwe_dashboard_link') &&
-      governancePrompt.includes('/dashboard/proposals') &&
+      governancePrompt.includes(`${config.dashboardUrl}/dashboard/proposals`) &&
       governancePrompt.includes('nowhere else'),
   );
   ok(

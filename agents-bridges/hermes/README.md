@@ -31,6 +31,13 @@ and no upstream patch:
   - Tools: `mwe_search` (explicit lookups), `mwe_dashboard_link`, and
     `mwe_disambig_commit` (the contract's disambiguation follow-up),
     proxied with per-sender act-as through the provider's own client pool.
+    The server mints a dashboard link as a *path* — it does not know the
+    origin it is reached at — so the provider hangs it on the dashboard
+    origin and the agent is handed an address a person can open, the vote
+    block's page included. The commit is an ingest like any other, so it
+    answers with the recall block for the message it stored, framed the
+    way a turn's is; the response's operational fields never reach the
+    agent.
   - `on_memory_write()` **one-way-mirrors** the built-in
     `MEMORY.md`/`USER.md` writes: `target='user'` is ingested act-as the
     human (their memory wiki), `target='memory'` as the bot itself. The
@@ -164,6 +171,7 @@ The manual equivalent, if you'd rather edit the files directly:
      "url": "http://127.0.0.1:8742/mcp",
      "primaryUser": "anna",
      "senderMap": { "telegram:123456": "anna" },
+     "dashboardUrl": "https://memory.example",
      "locale": "it-IT",
      "maxWindow": 16
    }
@@ -172,7 +180,11 @@ The manual equivalent, if you'd rather edit the files directly:
    `primaryUser` is the mwe user id this deployment's human maps to (the
    act-as identity); `senderMap` optionally routes gateway senders
    (`<platform>:<user_id>` or bare `user_id`) to mwe user ids — anyone
-   not mapped falls back to `primaryUser`.
+   not mapped falls back to `primaryUser`. `dashboardUrl` is the public
+   origin every dashboard link hangs on — the one `mwe_dashboard_link`
+   mints, the page a vote block names, the page a notice offers; empty
+   means the `url` without its `/mcp`, which only opens on the machine
+   the server runs on.
 
 2. The token (minted from the mwe-mcp dashboard for the bridge's **bot
    system-user**, e.g. `sam-hermes`, with its delegation list) goes in the

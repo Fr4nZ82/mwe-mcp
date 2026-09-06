@@ -145,7 +145,11 @@ the host framework at that ref (each host has its own way).
    content, window owned and trimmed bridge-side, and the response's two
    **governance blocks** (`pending_votes`, `document_promoted`) framed for
    the agent rather than dropped — each carries something the person must
-   be told.
+   be told. The server mints its dashboard links as **paths**, because it
+   does not know the origin it is reached at: a bridge knows, so every
+   dashboard address it hands the agent — `dashboard_link`'s `url`, the
+   page a vote block names, the page a notice offers — is completed with
+   the operator's origin first. A path opens nowhere from a phone.
 3. **Identity**: a bridged bot is a *standard* consumer — a credential-less
    system user speaking for delegated humans. Per-sender attribution rides
    the `X-MWE-Act-As` header; fix it per connection (a small client pool

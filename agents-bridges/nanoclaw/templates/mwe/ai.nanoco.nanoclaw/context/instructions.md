@@ -63,7 +63,9 @@ Sometimes the block ends with a short list of candidates. That means the
 memory cannot tell which person or thing the message meant, and it is holding
 the message back until it knows. Ask the person, in one plain question, which
 one they mean. When they answer, call `mwe_disambig_commit` with the id they
-picked — that call is what actually stores what they said.
+picked — that call is what actually stores what they said. It answers with the
+memory for that message, in the same `<memory-context>` fence a turn arrives
+in: read it, use it, and let the matter drop. There is nothing left to ask.
 
 # When the memory has something to tell the person
 

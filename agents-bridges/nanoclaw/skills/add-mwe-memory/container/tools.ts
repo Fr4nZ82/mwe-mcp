@@ -13,11 +13,16 @@
  */
 import { registerTools } from './server.js';
 import type { McpToolDefinition } from './types.js';
+import { renderCommitAnswer, type IngestPayload } from '../mwe/block.js';
 import { callHost } from '../mwe/host-call.js';
 import { clearDisambig, readTurnState } from '../mwe/state.js';
 
 function ok(payload: unknown) {
   return { content: [{ type: 'text' as const, text: JSON.stringify(payload) }] };
+}
+
+function prose(body: string) {
+  return { content: [{ type: 'text' as const, text: body }] };
 }
 
 function err(text: string) {
@@ -88,7 +93,8 @@ const DISAMBIG: McpToolDefinition = {
     description:
       'Commit the disambiguation the memory asked for: after the person picked one of the candidates ' +
       'listed in the recall block, call this with the id they chose. The message is stored only once ' +
-      'this is done. Valid only while a disambiguation is pending.',
+      'this is done, and the answer is the memory for it, in the framing a recall block arrives in. ' +
+      'Valid only while a disambiguation is pending.',
     inputSchema: {
       type: 'object',
       properties: { candidate_id: { type: 'string', description: 'The id the person picked.' } },
@@ -111,8 +117,11 @@ const DISAMBIG: McpToolDefinition = {
       disambigChoice: candidateId,
     });
     clearDisambig();
-    return frame.ok ? ok(frame.data) : err(frame.error);
+    return frame.ok ? prose(renderCommitAnswer(frame.data as IngestPayload)) : err(frame.error);
   },
 };
 
-registerTools([SEARCH, DASHBOARD, DISAMBIG]);
+/** The three definitions, exported so the bridge's smoke drives the handlers the agent calls. */
+export const MWE_TOOLS: McpToolDefinition[] = [SEARCH, DASHBOARD, DISAMBIG];
+
+registerTools(MWE_TOOLS);

@@ -156,9 +156,32 @@ def main():
         ok("search proxied", out == {"hits": []})
         search = stub.calls("wiki_search")
         ok("search carries act-as", search[0]["headers"].get("x-mwe-act-as") == "anna")
-        json.loads(provider.handle_tool_call("mwe_dashboard_link", {}))
+        origin = stub.url.rsplit("/mcp", 1)[0]
+        minted = dict(stub.responses["dashboard_link"])
+        link = json.loads(provider.handle_tool_call("mwe_dashboard_link", {}))
         ok("dashboard link proxied",
            stub.calls("dashboard_link")[0]["arguments"]["intent"] == "home")
+        # The server mints the link as a path — it does not know the origin it
+        # is reached at. A path is not something a user can open from a phone,
+        # so the bridge puts the dashboard origin in front of it.
+        ok("the minted link is an address, not a path",
+           link["url"] == f"{origin}{minted['url']}", link["url"])
+        stub.responses["dashboard_link"] = dict(
+            minted, url="https://memory.example/dashboard/home")
+        already = json.loads(provider.handle_tool_call("mwe_dashboard_link", {}))
+        ok("an address that already names its origin is handed over untouched",
+           already["url"] == "https://memory.example/dashboard/home")
+        stub.responses["dashboard_link"] = minted
+
+        # A declared public origin wins over the endpoint the bridge talks to:
+        # the MCP url is usually loopback, and the reverse channel and the
+        # daily digest already hang their links on the declared one.
+        stub_mwe_json(dashboardUrl="https://memory.example")
+        declared = fresh_provider(stub.url)
+        public = json.loads(declared.handle_tool_call("mwe_dashboard_link", {}))
+        ok("a declared dashboardUrl is the origin the link carries",
+           public["url"] == f"https://memory.example{minted['url']}", public["url"])
+        stub_mwe_json()
 
         # --- disambiguation follow-up ----------------------------------------
         stub.responses["wiki_ingest_message"] = dict(
@@ -174,11 +197,25 @@ def main():
             stub.responses["wiki_ingest_message"], needs_disambig=False,
             disambig_candidates=[],
         )
-        json.loads(provider.handle_tool_call("mwe_disambig_commit", {"candidate_id": "c1"}))
+        answer = provider.handle_tool_call("mwe_disambig_commit", {"candidate_id": "c1"})
         commit = stub.calls("wiki_ingest_message")[-1]
         ok("disambig committed with choice + original text",
            commit["arguments"]["metadata"]["disambig_choice"] == "c1"
            and commit["arguments"]["text"] == "buttala")
+        # The commit is an ingest, so the agent is handed the memory for the
+        # message it just stored, framed as a turn's block — not the server's
+        # JSON, whose operational fields it has nothing to do with.
+        ok("the commit answers with the framed block, not raw JSON",
+           not answer.lstrip().startswith("{")
+           and "Stored:" in answer
+           and "(stub) nothing relevant on file" in answer, answer[:120])
+        ok("the commit says the message is stored and not to ask again",
+           "do not ask the user to choose again" in answer)
+        ok("the response's operational fields stay away from the agent",
+           "llm_used" not in answer and "took_ms" not in answer
+           and "capture_id" not in answer and "intent_classified" not in answer)
+        ok("the seed is not smuggled in through the commit either",
+           "stub seed" not in answer)
         out = json.loads(provider.handle_tool_call("mwe_disambig_commit", {"candidate_id": "c1"}))
         ok("stale commit rejected", "error" in out)
 
@@ -203,8 +240,11 @@ def main():
            "waiting on this user's vote" in block and "1 open request" in block)
         ok("the vote line names who asked and by when",
            "asked by bob" in block and "2026-06-19T09:00:00Z" in block)
+        # The page is named as an address, for the same reason the minted link
+        # is: what the agent puts in front of a person has to be openable.
         ok("the vote line sends the user to the dashboard, the only place to vote",
-           "mwe_dashboard_link" in block and "/dashboard/proposals" in block
+           "mwe_dashboard_link" in block
+           and f"{origin}/dashboard/proposals" in block
            and "nowhere else" in block)
         ok("the vote line carries the consent rule and forbids inventing the fact",
            "Saying nothing until the deadline is consent" in block
@@ -392,7 +432,7 @@ def main():
             needs_disambig=False, disambig_candidates=[],
         )
         fire_hook(media_event("42", text="la cassetta rossa"))
-        json.loads(gw.handle_tool_call("mwe_disambig_commit", {"candidate_id": "m1"}))
+        gw.handle_tool_call("mwe_disambig_commit", {"candidate_id": "m1"})
         commit = stub.calls("wiki_ingest_message")[-1]
         ok("disambig commit drains spooled attachments",
            commit["arguments"]["metadata"]["disambig_choice"] == "m1"

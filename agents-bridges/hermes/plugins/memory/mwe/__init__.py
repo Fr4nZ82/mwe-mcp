@@ -22,7 +22,10 @@ hermes-agent's `MemoryProvider` seam:
   ingest, with the spooled caption (fallback `"[media]"`) as the text.
 - `get_tool_schemas()`/`handle_tool_call()` expose explicit search, the
   dashboard link, and the disambiguation commit, proxied through the
-  provider's own HTTP client with per-sender act-as.
+  provider's own HTTP client with per-sender act-as. The server mints a
+  dashboard address as a path, so the provider completes it with the
+  dashboard origin before the agent sees it; the commit answers with the
+  recall block of the message it stored, framed the way a turn's is.
 - `on_memory_write()` one-way-mirrors hermes's built-in `MEMORY.md`/
   `USER.md` writes into the memory wikis (`target='user'` act-as the
   human, `target='memory'` as the bot itself); the self-improvement
@@ -126,7 +129,9 @@ DISAMBIG_SCHEMA = {
     "description": (
         "Commit the pending memory disambiguation: after the user picked one "
         "of the candidates listed in the recall block, call this with the "
-        "chosen candidate_id. Only valid while a disambiguation is pending."
+        "chosen candidate_id. The answer is the memory for that message, in "
+        "the framing a recall block arrives in. Only valid while a "
+        "disambiguation is pending."
     ),
     "parameters": {
         "type": "object",
@@ -152,7 +157,32 @@ DOCUMENT_PROMOTED_LINE = (
 )
 
 
-def _pending_votes_line(block: Dict[str, Any]) -> str:
+# The line under which `mwe_disambig_commit` hands back the memory of the
+# message it just stored. The commit is an ingest like any other, so the agent
+# is given the block a turn would have carried rather than the response's JSON.
+DISAMBIG_COMMITTED_LINE = (
+    "Stored: the memory committed the message under the candidate you named, "
+    "so do not ask the user to choose again. What follows is the memory for "
+    "that message — reference material, exactly like the recall block of a "
+    "turn, and never words the user just said."
+)
+
+
+def _absolute_dashboard(value: str, origin: str) -> str:
+    """A dashboard address the user can open, from what the server sends.
+
+    The server mints its dashboard links as **paths** (`/dashboard/auth/link?…`)
+    because it does not know the origin it is reached at; the bridge does, and
+    completes them. An address that already carries a scheme comes back as it
+    stands, and so does anything at all when there is no origin to hang it on.
+    """
+    value = (value or "").strip()
+    if not value or not origin or "://" in value:
+        return value
+    return f"{origin.rstrip('/')}{value if value.startswith('/') else '/' + value}"
+
+
+def _pending_votes_line(block: Dict[str, Any], origin: str) -> str:
     """Frame the `pending_votes` block for the agent.
 
     Somebody asked the memory to forget a fact this user is part of, and the
@@ -176,7 +206,7 @@ def _pending_votes_line(block: Dict[str, Any]) -> str:
         count = len(requests)
     if count <= 0:
         return ""
-    path = str(block.get("dashboard_path") or "").strip()
+    path = _absolute_dashboard(str(block.get("dashboard_path") or ""), origin)
     where = f", under {path}," if path else ""
     what = (
         "1 open request to forget a fact they are part of"
@@ -252,6 +282,7 @@ class MweMemoryProvider(MemoryProvider):
     def __init__(self):
         self._active = False
         self._url = ""
+        self._dashboard = ""       # origin the dashboard addresses hang on
         self._sender = ""          # mwe user_id the current session acts as
         self._gateway_key = ""     # raw "<platform>:<user_id>" (media spool key)
         self._spool_path: Optional[Path] = None
@@ -293,6 +324,14 @@ class MweMemoryProvider(MemoryProvider):
         if not self._url or not _token():
             logger.debug("mwe provider not configured — inactive")
             return
+        # The origin every dashboard address handed to the agent hangs on: the
+        # declared public one, else the MCP endpoint without its `/mcp`. The
+        # same base the reverse channel and the daily digest use, so a person
+        # is offered one address for their memory and not two.
+        self._dashboard = (
+            (cfg.get("dashboardUrl") or "").strip()
+            or self._url.rsplit("/mcp", 1)[0]
+        )
         self._locale = (cfg.get("locale") or "").strip()
         try:
             self._max_window = max(2, int(cfg.get("maxWindow", 16)))
@@ -511,6 +550,13 @@ class MweMemoryProvider(MemoryProvider):
         return [SEARCH_SCHEMA, DASHBOARD_SCHEMA, DISAMBIG_SCHEMA]
 
     def handle_tool_call(self, tool_name: str, args: Dict[str, Any], **kwargs) -> str:
+        """Run one of the three tools and return what the agent reads.
+
+        A lookup answers with the server's payload as JSON; the commit answers
+        with the framed recall block of the message it stored, because that is
+        what the agent has to act on. Every failure — a refusal, an outage, a
+        stale commit — comes back as a JSON `error`, one shape for all three.
+        """
         if not self._active:
             return json.dumps({"error": "mwe provider inactive"})
         try:
@@ -523,8 +569,13 @@ class MweMemoryProvider(MemoryProvider):
                 payload = self._client(self._sender).call_tool("dashboard_link", {
                     "intent": args.get("intent") or "home",
                 })
+                # The server hands back a path; the user is given an address.
+                if isinstance(payload, dict) and payload.get("url"):
+                    payload = dict(payload)
+                    payload["url"] = _absolute_dashboard(
+                        str(payload["url"]), self._dashboard)
             elif tool_name == "mwe_disambig_commit":
-                payload = self._commit_disambig(str(args.get("candidate_id", "")))
+                return self._commit_disambig(str(args.get("candidate_id", "")))
             else:
                 payload = {"error": f"unknown tool: {tool_name}"}
         except Exception as e:
@@ -569,6 +620,8 @@ class MweMemoryProvider(MemoryProvider):
              "description": "Consumer bearer token, minted from the mwe-mcp dashboard"},
             {"key": "primaryUser", "required": True,
              "description": "mwe-mcp user id of the human this agent serves (act-as attribution)"},
+            {"key": "dashboardUrl",
+             "description": "Public origin the dashboard links point at (e.g. https://memory.example); empty = the MCP endpoint without its /mcp, which only opens on this machine"},
             {"key": "locale",
              "description": "BCP-47 locale forwarded with each turn (e.g. it-IT); empty = per-user server default"},
             {"key": "maxWindow", "default": "16",
@@ -625,7 +678,7 @@ class MweMemoryProvider(MemoryProvider):
         # they are something the memory needs the agent to act on, and ahead of
         # the recalled facts so a decision the user owes is not buried under
         # what the turn called up.
-        votes = _pending_votes_line(resp.get("pending_votes") or {})
+        votes = _pending_votes_line(resp.get("pending_votes") or {}, self._dashboard)
         if votes:
             parts.append(votes)
         if resp.get("document_promoted"):
@@ -665,12 +718,25 @@ class MweMemoryProvider(MemoryProvider):
             self._pending_disambig = None
         return "\n\n".join(parts)
 
-    def _commit_disambig(self, candidate_id: str) -> Dict[str, Any]:
+    def _commit_disambig(self, candidate_id: str) -> str:
+        """Store the held-back message, and hand back its recall block.
+
+        The commit is itself an ingest, so what comes back is an ingest
+        response — the same rules, governance blocks and recalled facts a turn
+        gets. It goes through `_render_block`, so the agent reads one framing
+        and never a second one, and the response's operational fields
+        (`intent_classified`, `capture_id`, `llm_used`, `took_ms`) reach
+        nobody: nothing the agent says or does turns on them.
+
+        Naming a choice settles the ambiguity server-side, so the block that
+        comes back carries no candidates and `_render_block` leaves the pending
+        slot empty — which is what makes a second commit a stale one.
+        """
         pending = self._pending_disambig
         if not pending:
-            return {"error": "no disambiguation pending"}
+            raise ValueError("no disambiguation pending")
         if not candidate_id:
-            return {"error": "candidate_id required"}
+            raise ValueError("candidate_id required")
         args: Dict[str, Any] = {
             "text": pending["text"],
             "context_hint": "conversation",
@@ -678,16 +744,15 @@ class MweMemoryProvider(MemoryProvider):
         }
         if pending["window"]:
             args["recent_messages"] = pending["window"]
-        # The commit is itself an ingest: drain any attachments spooled
-        # since the pending turn so they ride it instead of leaking into
-        # (or expiring before) a later turn.
+        # Drain any attachments spooled since the pending turn so they ride
+        # this ingest instead of leaking into (or expiring before) a later one.
         attachments = self._spool_attachments(self._drain_spool())
         if attachments:
             args["attachments"] = attachments
         args["metadata"].update(self._turn_metadata())
         resp = self._client(self._sender).call_tool("wiki_ingest_message", args)
-        self._pending_disambig = None
-        return resp
+        block = self._render_block(pending["text"], pending["window"], resp)
+        return "\n\n".join(p for p in (DISAMBIG_COMMITTED_LINE, block) if p)
 
     # -- media spool (written by the media half) -----------------------------
 

@@ -13,9 +13,8 @@ const WINDOW_DIR = fs.mkdtempSync(path.join(os.tmpdir(), 'mwe-window-'));
 process.env.NANOCLAW_MWE_SESSION_DIR = WINDOW_DIR;
 
 const { appendToWindow, clearWindow, windowMessages, DEFAULT_MAX_WINDOW } = await import('./window.js');
-const { renderRecallBlock, renderConversation, assemblePrompt, MEMORY_TAG, CONVERSATION_TAG } = await import(
-  './block.js'
-);
+const { renderRecallBlock, renderCommitAnswer, renderConversation, assemblePrompt, MEMORY_TAG, CONVERSATION_TAG } =
+  await import('./block.js');
 
 beforeEach(() => {
   clearWindow();
@@ -83,13 +82,15 @@ describe('the recall block', () => {
       pending_votes: {
         count: 1,
         requests: [{ requester: 'bob', deadline: '2026-06-19T09:00:00Z' }],
-        dashboard_path: '/dashboard/proposals',
+        // The host completes the page before the container sees it, so this is
+        // the shape that actually arrives.
+        dashboard_path: 'https://memory.example/dashboard/proposals',
       },
     });
     expect(block).toContain('1 open request');
     expect(block).toContain('asked by bob, open until 2026-06-19T09:00:00Z');
     expect(block).toContain('mwe_dashboard_link');
-    expect(block).toContain('/dashboard/proposals');
+    expect(block).toContain('https://memory.example/dashboard/proposals');
     expect(block).toContain('Saying nothing until the deadline is consent');
     // The block names the fact by id: an agent that fills the gap in would be
     // telling the person what somebody wants forgotten, invented.
@@ -130,6 +131,48 @@ describe('the recall block', () => {
 
   it('is nothing at all when the memory returned nothing', () => {
     expect(renderRecallBlock({})).toBe('');
+  });
+});
+
+describe('the answer a disambiguation commit gives', () => {
+  it('is the recall block for the stored message, framed — not the response as JSON', () => {
+    const answer = renderCommitAnswer({
+      rules: 'YOUR RULES (standing directives)\n- speak Italian',
+      context_snippet: 'RELEVANT MEMORY\nthe dog is called Frodo',
+      ...({ intent_classified: 'capture', capture_id: 'f-1', llm_used: 'sonnet', took_ms: 812 } as Record<
+        string,
+        unknown
+      >),
+    });
+    expect(answer.startsWith('{')).toBe(false);
+    expect(answer).toContain('Stored:');
+    expect(answer).toContain('do not ask the person to choose again');
+    expect(answer).toContain(`<${MEMORY_TAG}>`);
+    expect(answer).toContain('YOUR RULES');
+    expect(answer).toContain('the dog is called Frodo');
+    // The operational fields are the server's bookkeeping: nothing the agent
+    // says or does turns on them, so they are not part of the answer.
+    for (const field of ['intent_classified', 'capture_id', 'llm_used', 'took_ms']) {
+      expect(answer).not.toContain(field);
+    }
+  });
+
+  it('says the message is stored even when the memory had nothing to recall', () => {
+    const answer = renderCommitAnswer({});
+    expect(answer).toContain('Stored:');
+    expect(answer).not.toContain(`<${MEMORY_TAG}>`);
+  });
+
+  it('carries the governance a commit turn earns, not only the facts', () => {
+    const answer = renderCommitAnswer({
+      pending_votes: {
+        count: 1,
+        requests: [{ requester: 'bob', deadline: '2026-06-19T09:00:00Z' }],
+        dashboard_path: 'https://memory.example/dashboard/proposals',
+      },
+    });
+    expect(answer).toContain("waiting on this person's vote");
+    expect(answer).toContain('https://memory.example/dashboard/proposals');
   });
 });
 

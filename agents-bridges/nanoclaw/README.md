@@ -152,7 +152,7 @@ after the first two lines is yours to edit.
 | `groups` | agent groups the host serves. Empty — the normal case — means all of them, and what makes a group ask is the `mwe` plugin. Fill it to take one group off the memory without restarting its container. |
 | `eventsEnabled` | the reverse channel. `false` stops the poll loop entirely. |
 | `eventsPollSeconds` | how often it polls (default 30, floor 5). |
-| `dashboardUrl` | the public origin for the links a notice offers. Empty = `serverUrl` minus `/mcp`, which is right only when the server is reachable at that address from a phone. |
+| `dashboardUrl` | the public origin every dashboard link hangs on — the one `mwe_dashboard_link` mints, the page a vote block names, the page a notice offers. Empty = `serverUrl` minus `/mcp`, which is right only when the server is reachable at that address from a phone. |
 
 ### The switches that turn nanoclaw's own memory off
 
@@ -301,6 +301,14 @@ and nanoclaw rejects a plugin MCP server whose host reaches the container host
 (`src/templates/mcp.ts`) — which is exactly where a self-hosted memory sits.
 The three explicit tools are registered on the container's own in-process MCP
 server instead, each acting as the person speaking.
+
+**What two of them answer.** The memory mints a dashboard link as a *path* — it
+does not know the origin it is reached at — so the host puts the dashboard
+origin in front of it and `mwe_dashboard_link` hands the agent an address a
+person can open. `mwe_disambig_commit` is an ingest like any other, so it
+answers with the recall block for the message it just stored, in the same
+`<memory-context>` fence a turn arrives in, under one line saying it is stored;
+the response's operational fields never reach the agent.
 
 ## Known limits
 

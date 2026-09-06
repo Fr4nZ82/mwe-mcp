@@ -22,6 +22,10 @@ script a multi-turn flow (e.g. a `needs_disambig` first turn):
 
     stub.responses["wiki_ingest_message"]["needs_disambig"] = True
 
+An ingest that names a `disambig_choice` is the commit, and the stub
+answers it the way the server does — settled, with no candidates — no
+matter what the scripted payload says.
+
 The two governance blocks of an ingest response ride the same knob. They
 are **absent** from the default payload, because the server sends each
 one only on the turn it applies to; a smoke that wants one splices the
@@ -64,7 +68,14 @@ DEFAULT_RESPONSES = {
     "wiki_search": {"hits": []},
     "events_poll": {"events": []},
     "events_ack": {"acked": 0},
-    "dashboard_link": {"dashboard_path": "/dashboard/"},
+    # `call_dashboard_link` mints the link as a **path**: the server does not
+    # know the origin it is reached at, so putting an origin in front of it is
+    # the bridge's job and the fixture is the shape that makes that visible.
+    "dashboard_link": {
+        "url": "/dashboard/auth/link?token=stub-jwt&next=%2Fdashboard%2Fhome",
+        "token_expires_at": "2026-06-12T10:10:00Z",
+        "base_ttl_seconds": 600,
+    },
 }
 
 # The `pending_votes` block of an ingest response: the acting member owes a
@@ -92,6 +103,22 @@ DOCUMENT_PROMOTED = {
     "job_id": "j-2026-06-12-0007",
     "existing": False,
 }
+
+
+def _commit_settles_it(tool, arguments, payload):
+    """The server's second-turn rule, in the fixture that stands in for it.
+
+    An ingest naming a `disambig_choice` commits: the orchestrator answers
+    `needs_disambig: false` with no candidates, whatever the classifier said
+    (`crates/mwe-core/src/ingest.rs`, `resolving_disambig`). A stub that kept
+    asking would let a bridge ship a loop no real server can produce.
+    """
+    if tool != "wiki_ingest_message" or not isinstance(payload, dict):
+        return payload
+    metadata = arguments.get("metadata")
+    if not isinstance(metadata, dict) or not metadata.get("disambig_choice"):
+        return payload
+    return {**payload, "needs_disambig": False, "disambig_candidates": []}
 
 
 class StubMwe:
@@ -143,10 +170,11 @@ class StubMwe:
                 if method == "tools/call":
                     params = msg.get("params", {})
                     tool = params.get("name", "")
+                    arguments = params.get("arguments", {}) or {}
                     with stub._lock:
                         stub.requests.append({
                             "tool": tool,
-                            "arguments": params.get("arguments", {}),
+                            "arguments": arguments,
                             "headers": {k.lower(): v for k, v in self.headers.items()},
                         })
                         payload = stub.responses.get(tool)
@@ -155,6 +183,7 @@ class StubMwe:
                             "content": [{"type": "text", "text": f"unknown tool: {tool}"}],
                             "isError": True,
                         })
+                    payload = _commit_settles_it(tool, arguments, payload)
                     return self._result(rid, {
                         "content": [{"type": "text", "text": json.dumps(payload)}],
                         "isError": False,

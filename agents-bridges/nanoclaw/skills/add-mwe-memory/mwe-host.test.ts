@@ -160,6 +160,62 @@ describe('the per-turn request', () => {
     expect(answer.ok === false && answer.error).toContain('connection refused');
   });
 
+  it('completes the minted link with the dashboard origin — a path opens nowhere', async () => {
+    const client = recordingClient({
+      dashboard_link: [{ url: '/dashboard/auth/link?token=jwt&next=%2Fdashboard%2Fhome', base_ttl_seconds: 600 }],
+    });
+    const answer = await handleMweRequest(
+      { op: 'dashboard_link', args: { sender: 'telegram:1' } },
+      { config: config(), token: 'jwt', clientFor: () => client as never },
+    );
+    expect(answer.ok).toBe(true);
+    expect(answer.ok === true && answer.data.url).toBe(
+      'https://memory.example/dashboard/auth/link?token=jwt&next=%2Fdashboard%2Fhome',
+    );
+    // Everything else the server sent rides along untouched.
+    expect(answer.ok === true && answer.data.base_ttl_seconds).toBe(600);
+  });
+
+  it('leaves an address that already names its origin exactly as it came', async () => {
+    const client = recordingClient({ dashboard_link: [{ url: 'https://elsewhere.example/dashboard/home' }] });
+    const answer = await handleMweRequest(
+      { op: 'dashboard_link', args: { sender: 'telegram:1' } },
+      { config: config(), token: 'jwt', clientFor: () => client as never },
+    );
+    expect(answer.ok === true && answer.data.url).toBe('https://elsewhere.example/dashboard/home');
+  });
+
+  it('falls back to serverUrl minus /mcp when no public origin is declared', async () => {
+    const client = recordingClient({ dashboard_link: [{ url: '/dashboard/home' }] });
+    const answer = await handleMweRequest(
+      { op: 'dashboard_link', args: { sender: 'telegram:1' } },
+      { config: config({ dashboardUrl: '' }), token: 'jwt', clientFor: () => client as never },
+    );
+    expect(answer.ok === true && answer.data.url).toBe('http://127.0.0.1:8742/dashboard/home');
+  });
+
+  it('completes the page the vote block names, so the recall block can offer it', async () => {
+    const client = recordingClient({
+      wiki_ingest_message: [
+        {
+          pending_votes: {
+            count: 1,
+            requests: [{ requester: 'bob', deadline: '2026-06-19T09:00:00Z' }],
+            dashboard_path: '/dashboard/proposals',
+          },
+        },
+      ],
+    });
+    const answer = await handleMweRequest(
+      { op: 'ingest', args: { sender: 'telegram:1', text: 'ciao' } },
+      { config: config(), token: 'jwt', clientFor: () => client as never },
+    );
+    const votes = answer.ok === true ? (answer.data.pending_votes as Record<string, unknown>) : {};
+    expect(votes.dashboard_path).toBe('https://memory.example/dashboard/proposals');
+    // The rest of the block is the server's and stays as it came.
+    expect(votes.count).toBe(1);
+  });
+
   it('refuses a dashboard link and a media upload for a guest, but still ingests their words', async () => {
     const client = recordingClient({ wiki_ingest_message: [{}] });
     const deps = { config: config(), token: 'jwt', clientFor: () => client as never };

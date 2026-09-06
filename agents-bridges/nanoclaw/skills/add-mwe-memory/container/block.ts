@@ -16,6 +16,10 @@
  * The two blocks are fenced and labelled because they are reference material,
  * not something a person said to the agent now — the persona says so, and the
  * fence is what makes that instruction checkable.
+ *
+ * The same fence is what `mwe_disambig_commit` answers with: a commit is an
+ * ingest, so it comes back as a recall block and the agent reads one framing
+ * rather than two.
  */
 import type { WindowMessage } from './window.js';
 
@@ -158,6 +162,34 @@ export function renderRecallBlock(payload: IngestPayload): string {
   }
   if (parts.length === 0) return '';
   return `<${MEMORY_TAG}>\n${parts.join('\n\n')}\n</${MEMORY_TAG}>`;
+}
+
+/**
+ * The line `mwe_disambig_commit` answers under.
+ *
+ * A commit settles the ambiguity server-side, so the agent is told the message
+ * is stored and that there is nothing left to ask about it.
+ */
+const COMMITTED_LINE =
+  'Stored: the memory committed the message under the id you named, so do not ask the person to ' +
+  'choose again. What follows is the memory for that message, in the fence a turn arrives in: ' +
+  'reference material, never words the person just said.';
+
+/**
+ * What `mwe_disambig_commit` hands back to the agent.
+ *
+ * The commit is the same ingest again, so what comes back is an ingest
+ * response — and the agent reads it in the one framing it already knows,
+ * rather than in the response's own JSON. The operational fields beside it
+ * (`intent_classified`, `capture_id`, `llm_used`, `took_ms`) are not part of
+ * the answer: nothing the agent says or does turns on them.
+ *
+ * Naming a choice settles the ambiguity, so the block that comes back never
+ * carries candidates and the turn state is right to be clear of one.
+ */
+export function renderCommitAnswer(payload: IngestPayload): string {
+  const block = renderRecallBlock(payload);
+  return block ? `${COMMITTED_LINE}\n\n${block}` : COMMITTED_LINE;
 }
 
 /**

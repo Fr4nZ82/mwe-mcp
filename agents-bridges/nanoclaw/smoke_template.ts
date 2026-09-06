@@ -72,6 +72,12 @@ ok(
   'the persona says what to do when a message was kept as a document',
   flat.includes('long enough to be a document') && flat.includes('will be quotable'),
 );
+// The commit answers with a recall block, so the persona must not leave the
+// agent expecting a status object it then has to interpret.
+ok(
+  'the persona says what a disambiguation commit answers with',
+  flat.includes('It answers with the memory for that message'),
+);
 ok('the persona forbids a second memory on disk', persona.includes('Never write a memory file'));
 ok('the persona covers guests', persona.toLowerCase().includes('guest'));
 ok(
