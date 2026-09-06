@@ -962,7 +962,9 @@ async fn push_upsert(
     // upsert overwrote. Captures every page that is about to be
     // upserted or deleted; `content: None` distinguishes "page did
     // not exist" from "page existed and was empty" per the migration
-    // 0027 column comment.
+    // 0027 column comment. Housekeeping drops the snapshot once the row
+    // is past `retention.undo_days`, which is what makes that window the
+    // undo window.
     let dir = handle.abs_dir().to_path_buf();
     let pre_image_json = snapshot_pre_image(&dir, &req)?;
 

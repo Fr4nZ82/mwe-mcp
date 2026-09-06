@@ -11,7 +11,9 @@
 //! Writes happen at the dispatcher boundary in
 //! `mwe-mcp-server::mcp::audit`, on every call regardless of success.
 //! Reads back out via [`search`], which backs the `tool_log_search` MCP
-//! tool.
+//! tool. The trail is a window on the recent past, not a permanent
+//! record: housekeeping drops rows past `retention.audit_days` (90 days
+//! out of the box, `0` to keep everything).
 //!
 //! ## Privacy invariants
 //!

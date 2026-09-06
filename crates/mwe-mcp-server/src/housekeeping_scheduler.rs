@@ -12,8 +12,9 @@
 //! sweep removes is urgent — every row is already inert, or past a
 //! window the operator set in days — while each run walks the whole wiki
 //! tree, so a shorter cadence would cost more than it buys. It is armed
-//! on a frozen instance too: the sweep takes residue, never memory,
-//! which is why the boot sweep runs there as well.
+//! on a frozen instance too, and the boot sweep runs there as well: what
+//! it takes is residue and what the operator's own retention windows have
+//! released — never a page a reader can still open.
 //!
 //! The `retention:` windows are read once, at boot, and handed to the
 //! loop: a change to them applies at the next restart, like every other

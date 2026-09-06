@@ -38,7 +38,7 @@
 use std::collections::HashMap;
 use std::time::{Duration, Instant};
 
-use mwe_core::config::{RateLimitProfile, RateLimitsConfig};
+use mwe_core::config::RateLimitsConfig;
 use parking_lot::Mutex;
 
 /// Length of the short window.
@@ -165,12 +165,6 @@ impl RateLimiter {
         }
     }
 
-    /// The ceilings a token carrying `rate_limit_id` is held to.
-    #[must_use]
-    pub fn profile(&self, rate_limit_id: &str) -> RateLimitProfile {
-        self.config.profile(rate_limit_id)
-    }
-
     /// Count one call and say whether it may proceed.
     ///
     /// `token` identifies the bucket — the JWT id, so one token's traffic
@@ -265,7 +259,7 @@ impl RateLimiter {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use mwe_core::config::DASHBOARD_RATE_LIMIT_ID;
+    use mwe_core::config::{DASHBOARD_RATE_LIMIT_ID, RateLimitProfile};
 
     fn limiter() -> RateLimiter {
         RateLimiter::new(RateLimitsConfig::default())
