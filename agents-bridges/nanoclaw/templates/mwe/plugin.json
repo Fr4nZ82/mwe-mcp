@@ -1,0 +1,13 @@
+{
+  "$schema": "https://agent-plugins.org/schemas/1.0.0/plugin.schema.json",
+  "name": "mwe",
+  "version": "1.0.0",
+  "description": "The default assistant of an mwe-mcp memory server: every turn is remembered, every turn is recalled.",
+  "license": "AGPL-3.0-or-later",
+  "keywords": ["memory", "mwe-mcp", "assistant"],
+  "extensions": {
+    "ai.nanoco.nanoclaw": {
+      "agentName": "mwe"
+    }
+  }
+}

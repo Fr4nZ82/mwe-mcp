@@ -1,0 +1,12 @@
+bridge = "nanoclaw"
+description = "nanoclaw fork skill (host memory module + container per-turn hooks + reverse-channel daemon) plus the `mwe` agent template"
+contract = 1
+
+[upstream]
+name = "nanoclaw"
+repo = "https://github.com/nanocoai/nanoclaw"
+pin = "v2.3.0"
+
+[smoke]
+offline = "./smoke.sh"
+live = "./smoke_live.md"

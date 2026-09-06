@@ -30,9 +30,21 @@ jobs:
       - uses: actions/setup-python@v5
         with:
           python-version: "3.12"
-      # The bridge plugins are stdlib-only, but the smoke drives them through
-      # hermes-agent's REAL plugin seams and hermes_cli.config imports yaml.
+      # The bridge plugins are stdlib-only, but the hermes smoke drives them
+      # through hermes-agent's REAL plugin seams and hermes_cli.config imports
+      # yaml.
       - run: pip install pyyaml
+      # The nanoclaw smoke installs into a real fork and drives its poll loop:
+      # pnpm for the host tree, bun for the agent runner.
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 10
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: latest
       - run: python3 agents-bridges/_harness/run_smokes.py --check
       - run: python3 agents-bridges/_harness/run_smokes.py
 
@@ -46,4 +58,15 @@ jobs:
         with:
           python-version: "3.12"
       - run: pip install pyyaml
+      # The nanoclaw smoke installs into a real fork and drives its poll loop:
+      # pnpm for the host tree, bun for the agent runner.
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 10
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: latest
       - run: python3 agents-bridges/_harness/run_smokes.py --upstream-head

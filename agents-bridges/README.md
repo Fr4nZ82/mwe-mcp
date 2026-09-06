@@ -49,6 +49,9 @@ agents-bridges/
     …                ← the bridge code, in the host's native layout
 ```
 
+Two ship today: **`hermes/`** (a plugin quartet, zero fork — Python) and
+**`nanoclaw/`** (a fork skill plus the `mwe` agent template — TypeScript).
+
 Bridges are host-native code (Python, TypeScript, …) and live **outside the
 cargo workspace** — the Rust CI does not build or gate on them; they have
 their own non-blocking workflow (below).
@@ -103,7 +106,10 @@ live = "./smoke_live.sh"           # optional: operator-run, against a real serv
 `_harness/mwe_client.py` is the **reference client implementation**
 (Streamable HTTP, Bearer JWT, `X-MWE-Act-As`, stdlib-only): use it directly
 in Python smokes, and as the model for a bridge's own client in other
-languages.
+languages — `nanoclaw/skills/add-mwe-memory/host/client.ts` is that port in
+TypeScript. A smoke in another language reaches the same stub through
+`nanoclaw/stub_runner.py`, which runs it as a subprocess and mirrors the
+recorded calls to a file.
 
 Run everything locally from this directory:
 
@@ -151,13 +157,15 @@ the host framework at that ref (each host has its own way).
    Rationale and live evidence: the hermes bridge's `README.md`
    §"Design choices". Also mind the **trust boundary**: a host with
    shell/file tools on the same machine can read the workdir raw
-   (`INTEGRATING.md` §"Deployment security").
+   (`INTEGRATING.md` §"Deployment security"), and some hosts refuse to hand
+   an agent a credential at all — the nanoclaw bridge keeps the token
+   host-side for exactly that reason (its `README.md` §"Design choices").
 5. **Create `<bridge>/`** with `bridge.toml` (schema above) and a
    `README.md` that takes an operator from zero to a configured host.
 6. **Write the offline smoke** against `_harness/stub_server.py`, asserting
    the contract mechanics through the host's real plugin seams.
 7. **Run the live smoke** against a local `mwe-mcp serve` before declaring
    the bridge functional.
-8. **Test identity**: one bot system-user per bridge (e.g. `samhermes`),
-   with its own consumer token and delegation list — separate memory wikis,
-   no cross-contamination between hosts under comparison.
+8. **Test identity**: one bot system-user per bridge (e.g. `samhermes`,
+   `samnano`), with its own consumer token and delegation list — separate
+   memory wikis, no cross-contamination between hosts under comparison.
