@@ -178,8 +178,12 @@ and in the dashboard's session check. Eight migrations, `0068` through `0075`.
   trigger advertising "promotion without an LLM" as the cheap option, and two
   slot descriptions explaining what still works without them. All six slots are
   mandatory; the pages say that now, and the empty Health row reads NO MODEL.
-  In the same pass the same thing stopped being called three things: **slot**
-  everywhere, where the LLM page said role, function and slot in one screen.
+  The editor no longer offers it either: the provider menu has lost its
+  *— not set —* entry, and saving with a slot short of a provider or a model
+  is refused whole, naming the slot, rather than quietly writing five slots
+  and dropping the sixth. In the same pass the same thing stopped being called
+  three things: **slot** everywhere, where the LLM page said role, function
+  and slot in one screen.
 
 - **A forget-request vote is raised near its deadline, not every turn.** The
   `pending_votes` block rides every turn of its seven-day window, and both

@@ -450,6 +450,14 @@ const CARD_HEAD_STYLE: &str =
 const FIELD_LABEL_STYLE: &str = "font-size:.72rem;text-transform:uppercase;letter-spacing:.05em";
 const INPUT_STYLE: &str = "width:100%;background:var(--bg);border:1px solid var(--border);border-radius:.3rem;padding:.35rem .5rem;color:var(--text);font-family:var(--font-mono);font-size:.85rem";
 
+/// Why a save is refused when a slot is short of a provider or a model.
+///
+/// One sentence, one place: the banner at the top of the page, the menu
+/// with no empty option, and this refusal are three faces of the same rule,
+/// and an operator who meets two of them should read the same words.
+const SIX_SLOTS_REQUIRED: &str =
+    "all six model slots need a provider and a model — the memory does not run on a subset of them";
+
 /// The slots with no model, by their YAML key, in the roster's order.
 /// The human title of a model slot, by its `yaml_key`.
 ///
@@ -989,8 +997,12 @@ fn slot_row(guide: &SlotGuide, cfg: Option<&LlmFunctionConfig>) -> Markup {
             div style="display:flex;gap:.8rem;flex-wrap:wrap;align-items:flex-end" {
                 label style="flex:1 1 11rem;display:flex;flex-direction:column;gap:.2rem" {
                     span.muted style=(FIELD_LABEL_STYLE) { "Provider" }
+                    // No empty option: "no provider" is not a way to run
+                    // this deployment, so the menu does not offer it. A slot
+                    // nobody has filled in yet is named in the red banner at
+                    // the top of the page, and its Model box is empty, which
+                    // is what the save refuses on.
                     select name=(format!("{key}__backend")) data-role-provider style=(INPUT_STYLE) {
-                        option value="" selected[backend.is_empty()] { "— not set —" }
                         @for p in PROVIDERS {
                             option value=(p.tag) selected[p.tag == backend] { (p.label) }
                         }
@@ -1125,12 +1137,14 @@ async fn save(
     Ok(Html(body).into_response())
 }
 
-/// Decode the flat form into a fresh `LlmConfig`. An empty `backend`
-/// for a slot means "remove the slot from config"; otherwise the
-/// slot is materialised with whatever fields the form carries.
-/// Numeric parses are lenient — empty string → `None`, malformed →
-/// hard 422 with the field name, so a typo never silently sets the
-/// wrong default.
+/// Decode the flat form into a fresh `LlmConfig`.
+///
+/// **All six slots or nothing.** A slot with no provider or no model is a
+/// hard 422 naming the slot, because a deployment missing one does not work
+/// and saving the page is the moment to say so rather than three hours later
+/// on the first nightly cycle. Numeric parses are lenient — empty string →
+/// `None`, malformed → hard 422 with the field name, so a typo never
+/// silently sets the wrong default.
 fn parse_form_into_llm_config(
     form: &HashMap<String, String>,
     prior: &LlmConfig,
@@ -1152,8 +1166,9 @@ fn parse_form_into_llm_config(
         let key = slot.yaml_key();
         let backend = trimmed_field(form, key, "backend");
         if backend.is_empty() {
-            // Role disabled — leave the `Option<...>` as None.
-            continue;
+            return Err(DashboardError::Validation(format!(
+                "slot `{key}`: {SIX_SLOTS_REQUIRED}"
+            )));
         }
         if !ALLOWED_BACKENDS.contains(&backend.as_str()) {
             return Err(DashboardError::Validation(format!(
@@ -1164,7 +1179,7 @@ fn parse_form_into_llm_config(
         let model = trimmed_field(form, key, "model");
         if model.is_empty() {
             return Err(DashboardError::Validation(format!(
-                "slot `{key}`: a model is required when the provider is set"
+                "slot `{key}`: {SIX_SLOTS_REQUIRED}"
             )));
         }
         // Derive the API-key env-var from the chosen provider: the

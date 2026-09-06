@@ -3,7 +3,7 @@
 //!
 //! Exercises the three routes under `/dashboard/admin/`:
 //!
-//! - GET  `/admin/llm-config`         — render 5-slot editor + API key panel
+//! - GET  `/admin/llm-config`         — render the six-slot editor + API key panel
 //! - POST `/admin/llm-config`         — atomic YAML save with `.bak`
 //! - POST `/admin/api-keys/:name`     — upsert env-var via `env_file::write_key`
 
@@ -50,6 +50,36 @@ async fn make_app() -> (Router, SqlitePool, PathBuf, tempfile::TempDir) {
         DashboardState::new(pool.clone(), secret, blacklist, delegations).with_memory(memory);
     let workdir = dir.path().to_path_buf();
     (router(state), pool, workdir, dir)
+}
+
+/// The six model slots, in the order the page lays them out.
+const SLOT_KEYS: [&str; 6] = [
+    "ingest",
+    "operator_chat",
+    "rem_promotions",
+    "rem_dedup_semantic",
+    "cronista",
+    "navigator",
+];
+
+/// The submission a browser really sends: **all six slots**, each with a
+/// provider and a model. The provider menu offers no empty option and the
+/// save refuses a slot short of either, so a form naming one slot and
+/// leaving the rest blank is not a thing the page can produce.
+///
+/// A slot named in `fields` contributes that exact query fragment; every
+/// other slot gets a minimal local wiring so the save has all six.
+fn six_slot_form(fields: &[(&str, &str)]) -> String {
+    SLOT_KEYS
+        .iter()
+        .map(|key| {
+            fields.iter().find(|(k, _)| k == key).map_or_else(
+                || format!("{key}__backend=ollama&{key}__model=qwen3.5:9b-q8_0"),
+                |(_, body)| (*body).to_owned(),
+            )
+        })
+        .collect::<Vec<_>>()
+        .join("&")
 }
 
 async fn login_as_admin(app: &Router) -> String {
@@ -148,10 +178,12 @@ async fn save_writes_yaml_and_backs_up_previous_config() {
     .expect("seed");
 
     // Submit a form that wires ingest to ollama + qwen.
-    let form_body = "operator_chat__backend=&ingest__backend=ollama&ingest__model=qwen3.5:9b-q8_0\
-        &ingest__api_key_env=&ingest__temperature=0.3&ingest__max_tokens=512\
-        &ingest__reasoning_effort=&ingest__base_url=\
-        &rem_promotions__backend=&rem_dedup_semantic__backend=&cronista__backend=";
+    let form_body = six_slot_form(&[(
+        "ingest",
+        "ingest__backend=ollama&ingest__model=qwen3.5:9b-q8_0\
+         &ingest__api_key_env=&ingest__temperature=0.3&ingest__max_tokens=512\
+         &ingest__reasoning_effort=&ingest__base_url=",
+    )]);
     let response = send(
         &app,
         Request::builder()
@@ -177,9 +209,11 @@ async fn save_writes_yaml_and_backs_up_previous_config() {
     assert_eq!(ingest.model, "qwen3.5:9b-q8_0");
     assert_eq!(ingest.temperature, Some(0.3));
     assert_eq!(ingest.max_tokens, Some(512));
-    // Other slots stayed unwired.
-    assert!(parsed.llm.operator_chat.is_none());
-    assert!(parsed.llm.cronista.is_none());
+    // And the save carried the other five with it: the page writes a whole
+    // configuration or none, so no slot is left without a model.
+    assert!(parsed.llm.operator_chat.is_some());
+    assert!(parsed.llm.cronista.is_some());
+    assert!(parsed.llm.navigator.is_some());
 
     // The previous YAML is in the .bak slot.
     let backup = workdir.join(format!("{CONFIG_FILENAME}.bak"));
@@ -197,10 +231,12 @@ async fn save_anthropic_derives_api_key_env_from_provider() {
     // ANTHROPIC_API_KEY on save — no rejection.
     let (app, _pool, workdir, _dir) = make_app().await;
     let cookie = login_as_admin(&app).await;
-    let form_body = "operator_chat__backend=anthropic&operator_chat__model=claude-opus-4-8\
-        &operator_chat__temperature=&operator_chat__max_tokens=\
-        &operator_chat__reasoning_effort=&operator_chat__base_url=\
-        &ingest__backend=&rem_promotions__backend=&rem_dedup_semantic__backend=";
+    let form_body = six_slot_form(&[(
+        "operator_chat",
+        "operator_chat__backend=anthropic&operator_chat__model=claude-opus-4-8\
+         &operator_chat__temperature=&operator_chat__max_tokens=\
+         &operator_chat__reasoning_effort=&operator_chat__base_url=",
+    )]);
     let response = send(
         &app,
         Request::builder()
@@ -327,10 +363,13 @@ async fn save_hot_reloads_llm_config_into_memory_handles() {
     let (app, _pool, workdir, _dir) = make_app().await;
     let cookie = login_as_admin(&app).await;
 
-    let form_body = "operator_chat__backend=ollama&operator_chat__model=qwen3.5:9b-q8_0\
-        &operator_chat__api_key_env=&operator_chat__temperature=0.42&operator_chat__max_tokens=4096\
-        &operator_chat__reasoning_effort=&operator_chat__base_url=\
-        &ingest__backend=&rem_promotions__backend=&rem_dedup_semantic__backend=&cronista__backend=";
+    let form_body = six_slot_form(&[(
+        "operator_chat",
+        "operator_chat__backend=ollama&operator_chat__model=qwen3.5:9b-q8_0\
+         &operator_chat__api_key_env=&operator_chat__temperature=0.42\
+         &operator_chat__max_tokens=4096&operator_chat__reasoning_effort=\
+         &operator_chat__base_url=",
+    )]);
     let response = send(
         &app,
         Request::builder()
@@ -429,10 +468,13 @@ async fn save_then_immediate_backend_for_returns_new_anthropic_slot() {
     .await;
     assert!(set.status().is_redirection());
 
-    let form_body = "operator_chat__backend=anthropic&operator_chat__model=claude-haiku-4-5-20251001\
-        &operator_chat__api_key_env=ANTHROPIC_API_KEY&operator_chat__temperature=&operator_chat__max_tokens=\
-        &operator_chat__reasoning_effort=&operator_chat__base_url=\
-        &ingest__backend=&rem_promotions__backend=&rem_dedup_semantic__backend=&cronista__backend=";
+    let form_body = six_slot_form(&[(
+        "operator_chat",
+        "operator_chat__backend=anthropic&operator_chat__model=claude-haiku-4-5-20251001\
+         &operator_chat__api_key_env=ANTHROPIC_API_KEY&operator_chat__temperature=\
+         &operator_chat__max_tokens=&operator_chat__reasoning_effort=\
+         &operator_chat__base_url=",
+    )]);
     let save = send(
         &app,
         Request::builder()
@@ -658,5 +700,92 @@ async fn ollama_models_degrades_to_empty_when_daemon_unreachable() {
     assert!(
         body.contains("\"models\":[]"),
         "graceful empty list: {body}"
+    );
+}
+
+/// The provider menu offers no way to say "no provider".
+///
+/// Not a cosmetic trim: an empty option in that `<select>` reads as a
+/// supported way to run — one slot switched off — and there is no such way.
+/// The six are all required, so the menu lists providers and nothing else.
+#[tokio::test]
+async fn the_provider_menu_has_no_empty_option() {
+    let (app, _pool, _workdir, _dir) = make_app().await;
+    let cookie = login_as_admin(&app).await;
+    let response = send(
+        &app,
+        Request::builder()
+            .uri("/admin/llm-config")
+            .header(header::COOKIE, cookie)
+            .body(Body::empty())
+            .unwrap(),
+    )
+    .await;
+    assert_eq!(response.status(), StatusCode::OK);
+    let html = body_string(response).await;
+
+    // The provider `<select>`s are the ones carrying `data-role-provider`.
+    // Every one of them must be free of a valueless option; the Advanced
+    // reasoning-effort menu keeps its "— none —", which is a real setting.
+    let selects: Vec<&str> = html.split("data-role-provider").skip(1).collect();
+    assert_eq!(selects.len(), 6, "one provider menu per slot: {html}");
+    for select in selects {
+        let menu = select.split("</select>").next().expect("a closed select");
+        assert!(
+            !menu.contains(r#"option value="""#),
+            "a provider menu still offers an empty provider: {menu}"
+        );
+    }
+    assert!(
+        !html.contains("— not set —"),
+        "no slot may render as provider-less: {html}"
+    );
+    // The providers themselves are still on offer.
+    assert!(html.contains(r#"option value="anthropic""#), "{html}");
+    assert!(html.contains(r#"option value="ollama""#), "{html}");
+}
+
+/// A save that leaves a slot without a model is refused, and says why.
+///
+/// The other half of the same rule: with the empty option gone a browser
+/// always posts six providers, so the way a half-wired config still arrives
+/// is an empty Model box. It is turned away whole — the five good slots are
+/// not written either — because a configuration missing one slot is not a
+/// smaller configuration, it is a memory that does not run.
+#[tokio::test]
+async fn a_save_missing_one_model_is_refused_and_writes_nothing() {
+    let (app, _pool, workdir, _dir) = make_app().await;
+    let cookie = login_as_admin(&app).await;
+
+    let form_body = six_slot_form(&[("cronista", "cronista__backend=ollama&cronista__model=")]);
+    let response = send(
+        &app,
+        Request::builder()
+            .method("POST")
+            .uri("/admin/llm-config")
+            .header(header::CONTENT_TYPE, "application/x-www-form-urlencoded")
+            .header(header::COOKIE, cookie)
+            .body(Body::from(form_body))
+            .unwrap(),
+    )
+    .await;
+    assert_eq!(response.status(), StatusCode::UNPROCESSABLE_ENTITY);
+    let body = body_string(response).await;
+    assert!(
+        body.contains("cronista"),
+        "the refusal names the slot: {body}"
+    );
+    assert!(
+        body.contains("all six model slots"),
+        "the refusal says the six are required: {body}"
+    );
+
+    // Nothing was written: not the offending slot, and not the five sound
+    // ones alongside it.
+    let cfg = Config::load(&workdir).expect("load");
+    assert!(cfg.llm.cronista.is_none(), "the empty slot was not written");
+    assert!(
+        cfg.llm.ingest.is_none(),
+        "a refused save writes no slot at all"
     );
 }
