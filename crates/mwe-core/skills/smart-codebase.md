@@ -224,9 +224,9 @@ rotation meet: the log survives whole, just paged and navigable.
   decays fastest. Write the why and the contracts; trust the source
   for the what.
 - ❌ **Embedding diagrams as binary attachments.** Use mermaid /
-  asciidiagrams in the page body. The smart wiki is markdown +
-  Obsidian — binary attachments don't render in the dashboard and
-  REM can't index them.
+  asciidiagrams in the page body. A smart wiki is markdown and the
+  engine indexes the text in it — a binary attachment renders in no
+  dashboard page and gives REM nothing to read.
 - ❌ **Bumping `last_synced` on cosmetic edits.** The date then says
   the page was reviewed on a day nobody reviewed it.
 - ❌ **Fighting a layout that already works.** The canonical folders are

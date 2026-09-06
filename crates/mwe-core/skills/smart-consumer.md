@@ -605,10 +605,10 @@ wiki_admin_notify(
 )
 ```
 
-The user gets a click-through from `_briefing.md` straight to the
-relevant heading inside Obsidian, and the dashboard resolves the same
-item at `/cite/<briefing_item_id>` (e.g. `/cite/bi_42`), which redirects
-to the page and its anchor.
+`_briefing.md` then carries the item as a link straight to that heading,
+which whatever the user reads their markdown with follows where the files
+are; the dashboard resolves the same item at `/cite/<briefing_item_id>`
+(e.g. `/cite/bi_42`), which redirects to the page and its anchor.
 
 ## Shared-with smart wikis
 
