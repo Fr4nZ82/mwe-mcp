@@ -79,7 +79,7 @@ Three claims decide your wire identity:
 |---|---|---|
 | `sender_id` | yes | The human owner. Captures land in `wikis/<sender_id>/`. |
 | `consumer_id` | optional (required when `smart`) | Your device label (e.g. `cc-laptop`, `samvise-prod`). Distinguishes devices of the same user in the audit log and the cooperative lease. |
-| `consumer_class` | optional, default `standard` | `smart` enables `wiki_admin_*`. |
+| `consumer_class` | optional, default `standard` | `smart` enables the `wiki_admin_*` writes and the K family; `wiki_admin_notify` stays open to any reader. |
 
 You do **not** pass `sender_id` in any tool argument — if you include
 it, the server validates it matches the token claim and rejects on
@@ -143,7 +143,7 @@ For each MCP call the bot picks one of:
   you if I should"). Tools that leave permanent state
   (`wiki_ingest_external`, media upload, `wiki_admin_notify`,
   `consumer_register`) and operator surfaces (`tool_log_search`,
-  `dashboard_link`) answer `sender_unauthorized` on guest turns —
+  `wiki_lint`, `dashboard_link`) answer `sender_unauthorized` on guest turns —
   expected, not an error to retry.
 
 Stable error wire codes:
@@ -227,11 +227,13 @@ How to consume skills (three modes, by preference):
 2. **System-prompt augmentation** (any LLM client): concatenate the
    skill body to the system prompt. High prompt-cache hit ratio on
    stable content.
-3. **`InitializeResult.instructions`** (future): the MCP `initialize`
-   handshake will push the relevant skills. Until shipped, mode 1
-   or 2.
+3. **`InitializeResult.instructions`**: the MCP `initialize` handshake
+   names the skill to load for the way you connected — `core` and its
+   dispatcher for a local CLI agent, `web-smart-consumer` for a
+   bridge-less web client. It carries no skill body, so the content
+   still arrives through mode 1 or 2.
 
-The pagination metadata (`etag`) lets your consumer skip the
+The catalog metadata (`etag`) lets your consumer skip the
 re-download when the skill hasn't changed (HTTP `If-None-Match` →
 304). Cache locally.
 
@@ -264,7 +266,7 @@ bootstrap is which family covers which job:
 | **I — Skills** | Enumerate + fetch skill bodies (bundled). | any |
 | **J** *(unused)* | `J` is a hole in the MCP family scheme; a wiki's shape is decided per fact, not by a registered type. | — |
 | **K — Smart-consumer bootstrap** | Session-start smart-wiki landscape + transversal contextual recall (hook-driven). | smart |
-| **L — Forget** | `wiki_forget` / `wiki_forget_bulk`: a person forgets their own facts outright; a request about somebody else's fact becomes a vote among its readers. | any |
+| **L — Forget** | `wiki_forget` / `wiki_forget_bulk`: a person forgets their own facts outright; for somebody else's fact the answer is `outcome: "request_from_dashboard"` — opening the vote among its readers, and casting one, are dashboard-only. | any |
 
 The server also composes a larger set of internal operations (atomic
 capture / recall / supersede / forget / navigate) when handling
@@ -313,7 +315,8 @@ immediately on any dashboard write.
   requires_consumer_class_smart`. Notify-only (`wiki_admin_notify`) is
   open.
 - ❌ **Mixing `X-MWE-Act-As` with a mono-user token.** Returns `403
-  act_as_requires_consumer`.
+  act_as_requires_standard` — a smart token is Pattern A and may not
+  delegate.
 - ❌ **Truncating chat history mid tool-use cycle.** Orphan `tool_use`
   blocks reject the next LLM API call. See
   `standard-conversational` §"Consumer self-configuration".
@@ -335,5 +338,6 @@ The running server is the reference for what the system is and does:
   bridge and the deployment-security rules.
 - [`CHANGELOG.md`](CHANGELOG.md) — what shipped, release by release.
 
-The smart-consumer contract (what a smart agent may and must do) is
-§6–§8 of this document.
+The smart-consumer contract (what a smart agent may and must do) is the
+`smart-consumer` skill, with `smart-codebase` and `smart-onboarding`
+beside it.

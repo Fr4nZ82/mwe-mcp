@@ -28,7 +28,7 @@ The mechanics differ by consumer class:
 - **Standard consumers** (openclaw, hermes, nanoclaw — anything that
   uses mwe-mcp's own LLM budget for routing) pass every user turn
   through `wiki_ingest_message`. mwe-mcp's server-side `ingest` slot
-  does intent classification, recall, capture, structural proposals.
+  does intent classification, recall and capture.
   The consumer is a thin passthrough. See skill
   `standard-conversational` for the full per-turn loop.
 - **Smart consumers** (Claude Code, Cowork, Codex — agents with their
@@ -76,7 +76,7 @@ The JWT carries three claims that decide your wire identity:
 |---|---|---|
 | `sender_id` | yes | The **human owner**. Captures land in `wikis/<sender_id>/`. Recall is ACL-scoped to this user. |
 | `consumer_id` | optional | Your device / deployment label (e.g. `cc-laptop`, `samvise-prod`). Distinguishes multiple devices of the same user in `wiki_admin_op_log` and the cooperative lease. Required when `consumer_class=smart`. |
-| `consumer_class` | optional, default `standard` | `smart` enables the `wiki_admin_*` tools. Standard consumers get `403 requires_consumer_class_smart` on those tools. |
+| `consumer_class` | optional, default `standard` | `smart` enables the smart-only tools: `wiki_admin_push` / `_pull` / `_signpost` / `_lease_acquire` / `_lease_release`, `smart_bootstrap`, `recall_core_global`. A standard consumer gets `403 requires_consumer_class_smart` on those; `wiki_admin_notify` and the skill catalog are open to any token. |
 
 You do **not** pass `sender_id` in any tool argument — if you include
 it, the server validates it matches the token claim and rejects on
@@ -213,7 +213,7 @@ conclude the skill is wrong.
 | `401 missing_bearer` | No `Authorization: Bearer <jwt>` on the request. You are not wired up — surface it, do not retry. |
 | `401 invalid_token` | The JWT failed its signature, **expiry** or algorithm check — an expired token and a rotated server secret both arrive as this one code, so do not branch on a separate code for either. Hard configuration error: surface immediately, do not queue local writes. |
 | `401 token_revoked` | JTI blacklisted (operator revoked the token). **Smart consumers**: keep the local `.mwe/wiki/` cache intact, queue local edits, prompt the operator for a new token. See `smart-consumer` §"Graceful degradation". **Standard consumers**: stop and surface the failure. |
-| `403 requires_consumer_class_smart` | You called a `wiki_admin_*` tool without the `smart` claim. Don't retry. |
+| `403 requires_consumer_class_smart` | You called a smart-only tool (see the claims table above) without the `smart` claim. Don't retry. |
 | `403 wiki_owned_by_other_user` | You tried `wiki_admin_push/pull` on a wiki whose `owner_user` is not your `sender_id`. Note: read access can still be granted via `shared_with` (see `smart-consumer`). |
 | `423 wiki_locked_by_lease` | Cooperative lease held by another smart consumer of the same user. Wait + retry, or back off. |
 

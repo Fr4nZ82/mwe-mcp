@@ -178,7 +178,7 @@ wiki_admin_push({
 
 The response carries the new `wiki_id` — every later call uses
 `mode=upsert` with it. Omitting `parent_wiki_id` yields
-`400 wiki_type_requires_parent`; the message now names the value to pass,
+`400 wiki_type_requires_parent`; the message names the value to pass,
 but you should not need it.
 
 Always pass `project_id`: it is what makes this wiki findable from

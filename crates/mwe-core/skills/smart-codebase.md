@@ -13,11 +13,10 @@ status: implemented
 # mwe-mcp / smart-codebase skill
 
 This skill concretises `smart-consumer` for the most common case:
-**a software project's smart wiki**. It defines how the bundled
-`wiki-companion` type maps to a real codebase and what belongs on a
-module, decision or change-log page. Bringing an existing `docs/` tree
-or wiki *in* is a one-shot job and lives in
-[`smart-onboarding`](smart-onboarding.md).
+**a software project's smart wiki**. It defines a folder layout for a
+real codebase and what belongs on a module, decision or change-log page.
+Bringing an existing `docs/` tree or wiki *in* is a one-shot job and
+lives in [`smart-onboarding`](smart-onboarding.md).
 
 ## When this skill applies
 
@@ -37,9 +36,9 @@ codebase-specific patterns below won't help.
 
 ## Folder-structure mapping
 
-The bundled `wiki-companion` type suggests four top-level
-subdirectories under your local mirror (`state.local_wiki_root` —
-`.mwe/wiki/` by default, or the directory you ingested in place).
+This skill suggests four top-level subdirectories under your local
+mirror (`state.local_wiki_root` — `.mwe/wiki/` by default, or the
+directory you ingested in place).
 Deviations are neither an error nor a warning — the server does not
 check folder shape at all. What the standard layout buys is that one
 subject lands on one page, which is what recall ranks on and what a
@@ -59,11 +58,11 @@ be.
 | `runbooks/` | One page per operational procedure (deploy steps, rollback, oncall response, recovery from $known-incident). Steps explicit, copy-pasteable. | `runbook_id: <slug>`, `severity: routine/oncall/incident`, `last_synced` |
 | `architecture/` | Cross-module concerns: data flow, service topology, event/queue ownership. Diagrams (mermaid / ascii) go here. Fewer files than `modules/`, broader scope. | `topic: <slug>`, `last_synced` |
 | `_briefing.md` (root) | Your inbox — see `smart-consumer`. Others reach it with `wiki_admin_notify`; **you** write it with an ordinary `wiki_admin_push` (the server refuses a smart consumer notifying its own wiki). | (you own it; the server appends to it) |
-| `_meta.md` (root) | Auto-managed metadata: `owner_user`, `shared_with`, `wiki_type`. Edited via dashboard `/dashboard/wiki/<id>/sharing`, not by the smart consumer. | (managed by the server) |
+| `_meta.md` (root) | Auto-managed metadata: `wiki_id`, `parent_wiki_id`, `wiki_type`, `shared_with`. Edited via dashboard `/dashboard/wiki/<id>/sharing`, not by the smart consumer. | (managed by the server) |
 
 Other folders (`adr/`, `notes/`, `playbooks/`, `glossary/`) are simply
-tolerated: there is a single bundled smart-wiki type and no custom-type
-registration, and nothing on the server objects to a layout of your own.
+tolerated: `wiki_type` is a free-form label with no registry behind it,
+and nothing on the server objects to a layout of your own.
 Never force the four folders onto a wiki already organised its own way.
 
 What the push response's `warnings[]` **does** carry is page **shape** —
@@ -183,13 +182,13 @@ the user asks about the underlying topic and the
 ## Change-log page — first-class, structured by date, rotated (never dropped)
 
 A project wiki often carries a root-level append-only changelog
-(`log.md`, `CHANGELOG.md`, a `decisions/` index) — a chronological trail,
-like this repo's own `wiki/logs.md`. It is **first-class content:**
-maintainers read it to retrace what was done, in order — **never exclude
-it, never atomise it into facts.** Do not dismiss it as "redundant with
-the op-log": mwe's server-side op-log is a low-level audit of *page
-writes*, while a curated changelog is a human narrative of *what changed
-and why* — a different artefact, and the one people actually read.
+(`log.md`, `CHANGELOG.md`, a `decisions/` index) — a chronological
+trail. It is **first-class content:** maintainers read it to retrace what
+was done, in order — **never exclude it, never atomise it into facts.**
+Do not dismiss it as "redundant with the op-log": mwe's server-side
+op-log is a low-level audit of *page writes*, while a curated changelog
+is a human narrative of *what changed and why* — a different artefact,
+and the one people actually read.
 
 It just needs the **append-only log-page discipline** from
 `smart-consumer` ("keep them bounded, rotate by period"), plus two
@@ -248,5 +247,5 @@ for "classify this file".
 - Sibling skills: `smart-consumer` (parent, the cwd-bound mode this one
   specialises) and [`smart-onboarding`](smart-onboarding.md) (first
   connect: the import, the shape report, the repair proposal).
-- Bundled `wiki-companion` type (the `wiki_type` stem + smart-consumer
-  detection): `crates/mwe-core/src/smart.rs`.
+- The `wiki_type` stem a smart wiki carries, and how
+  `smart_bootstrap` reports it: `crates/mwe-core/src/smart.rs`.

@@ -1,7 +1,7 @@
 ---
 name: standard-conversational
 version: 1.8.0
-description: "Default conversational pattern for standard consumers (openclaw, hermes, nanoclaw): wiki_ingest_message passthrough, recent_messages window, disambiguation, locale plumbing, events_poll cadence, on-the-fly date corrections + sharing changes on the facts the sender is the subject of, no wiki_admin_* writes."
+description: "Default conversational pattern for standard consumers (openclaw, hermes, nanoclaw): wiki_ingest_message passthrough, recent_messages window, disambiguation, locale plumbing, events_poll cadence, on-the-fly date corrections + sharing changes on stored facts, no wiki_admin_* writes."
 depends_on: ["core"]
 applies_to:
   consumer_class: standard
@@ -37,16 +37,17 @@ for the dispatcher.
 - Intent classification (capture vs recall vs structural vs skip).
 - Recall (vector + full-text + multi-hop) with ACL filtering.
 - Capture / supersede / forget routing.
-- **Operation-path edits on stored facts the sender is the subject of** — a date
-  correction ("the milk expires on the 20th, not the 25th") and a sharing change
-  ("make this one visible to everyone", "share it with the family group") are
-  recognized in the same `wiki_ingest_message` turn and applied act-first
-  (the gate is server-side: only the fact's **subject** — the user it is
-  about, or a member of the group it is about — may edit it; standard memory
-  wikis only). You still just pass the raw message
-  through.
-- Structural proposal emission (questionnaire when a new wiki or
-  type should emerge).
+- **Operation-path edits on stored facts** — a date correction ("the milk
+  expires on the 20th, not the 25th") and a sharing change ("make this one
+  visible to everyone", "share it with the family group") are recognized in
+  the same `wiki_ingest_message` turn and applied act-first. The gate is
+  server-side and differs between the two: a date correction takes the fact's
+  **subject**, whoever recorded it, or anyone it was shared with; a sharing
+  change takes the **subject** alone — the user it is about, or a member of
+  the group it is about. Standard memory wikis only. You still just pass the
+  raw message through.
+- Structural turns (a new wiki, a move, a scope change): the turn
+  applies nothing and the reply seed nudges the user to the dashboard.
 - Topic extraction (server-internal, never exposed).
 
 You — the consumer — are a **thin passthrough**: pass the raw user
@@ -151,7 +152,7 @@ Verified against
     candidate_id: string;
     description: string;
   }>;
-  llm_used: string;                      // diagnostic
+  llm_used: boolean;                     // diagnostic: the classifier answered
   took_ms: number;
   pending_votes?: {...};                 // key present ONLY when the user owes a vote
   document_promoted?: {...};             // key present ONLY when an oversized paste was
@@ -241,7 +242,7 @@ What *does* reach the user is what somebody **did to their facts**: a
 change to a fact about them, or a fact somebody stated about them. That
 is a different question, and the reason these events exist at all.
 
-There is nothing to approve and nothing to undo. The memory keeps
+None of that reshuffling asks the user anything. The memory keeps
 itself; the user steers it by talking to you.
 
 ### Polling cadence
@@ -313,9 +314,8 @@ turn captured, which `wiki_forget` takes.)
 
 - ❌ **Client-side intent classification.** Do not pattern-match on
   user text and pick an enum for `dashboard_link`. The server
-  classifies. If a structural change happens, the server applies it and
-  says nothing: the memory keeps itself, and there is nothing for the
-  user to confirm.
+  classifies, and on a structural turn the `suggested_seed` it returns
+  is already the nudge toward the dashboard.
 - ❌ **Trying to call any `structure_proposal_*` tool over MCP.**
   There is no `structure_proposal_*` family on the MCP surface. The dashboard
   is the only surface for those actions. Surface a `dashboard_link` URL

@@ -43,9 +43,9 @@ smart consumer notifying its own wiki (`403
 smart_does_not_notify_own_wiki`), because writing your own inbox is a
 write, not a message. mwe-mcp's REM cycle skips all
 write-jobs on smart wikis (no auto-promote, no auto-archive, no
-page compilation), runs read-jobs (recall pre-indexing, dedup source), and
-adds one notify-only sub-job (the Briefing dispatcher) that drops
-items into `_briefing.md`.
+page compilation, no dedup). One sub-job reaches them, and it is
+notify-only: the Briefing dispatcher reads their indexed sections and
+drops items into `_briefing.md`.
 
 ## The conversation also feeds personal memory (the superset)
 
@@ -199,12 +199,13 @@ stored.
 - **No per-fragment markers, no per-fragment ACL.** Smart wikis carry
   **no** `{{f=…}}` markers and no per-fragment ACL — those are the
   pillar of **standard memory wikis** only. The ACL here is
-  **wiki-level**, in `_meta`: the owner is your user (`owner_user`),
-  and the wiki is **private until the owner shares it** from the
-  dashboard (`shared_with`). You never stamp ACL onto a paragraph.
+  **wiki-level**: the owner is your user, read off the wiki's place in
+  the tree, and the wiki is **private until the owner shares it** from
+  the dashboard (`shared_with` in `_meta`). You never stamp ACL onto a
+  paragraph.
 - **Recall indexes the content by section.** On each push the touched
   pages are re-chunked into **heading-delimited sections**, embedded,
-  and the wiki's rows are dropped-and-reinserted. So the only
+  and each of those pages' rows are replaced in place. So the only
   guard-rails you must respect are: **keep pages
   reasonably structured with markdown headings** (each
   heading-delimited section becomes a recallable unit), and **leave
@@ -381,8 +382,9 @@ To replace the whole wiki after a local regeneration, push the new
 page set with `mode: upsert` and list every now-removed page in the
 push's `deletes` list. There is no single "replace everything" mode —
 `upsert` (+ deletes) is the only edit mode beside `create`. Each op is
-recorded in the op-log; the dashboard's `/dashboard/wiki/<id>/op-log`
-exposes a one-click revert window.
+recorded in the op-log; on the dashboard's `/dashboard/wiki/<id>/op-log`
+an admin can revert any write op that captured a pre-image, in one
+click.
 
 ### Read the push response — it tells you things you cannot see
 
@@ -523,11 +525,10 @@ shared-with team members notify there too.
 
 ### Read at session start
 
-`smart_bootstrap` pulls `_briefing.md` from the server. Parse its
-`## Unread` section (or whichever convention the bundled type uses —
-the bundled `wiki-companion` uses headings of the form
-`## From <source> @ <ts>` with items marked `unread:`). Surface the
-unread items to the user **before** discussing any other topic:
+`smart_bootstrap` hands back the pending items themselves, in
+`recent_briefing` — already filtered to `processed_at IS NULL`, so there
+is nothing to parse out of the file. Surface them to the user **before**
+discussing any other topic:
 
 > *"3 new briefing notes since the last session:*
 >
@@ -548,8 +549,10 @@ unread items to the user **before** discussing any other topic:
 When the user acknowledges or acts on an item, move it from
 `_briefing.md` to `_briefing.archive.md` (append-only) with a
 `## Resolved @ <ts>` heading and the resolution note. Push both
-files in a single `wiki_admin_push mode: upsert` so the move is
-atomic.
+files in a single `wiki_admin_push mode: upsert`, carrying the item ids
+in that push's `mark_processed`, so the move and the item's
+`processed_at` land together — otherwise the next `smart_bootstrap`
+serves the same item again.
 
 ### Leave a note for your next session
 
@@ -572,15 +575,16 @@ your own inbox is just a write you are already authorised to make.
 ## Three-layer briefing classification
 
 Each briefing item carries a `kind` tag — `observation`, `reasoning`,
-or `external` — that decides routing on REM's side. The classifier
-is server-side; you receive the items already tagged in
-`BriefingItem.kind`. Surface them grouped by kind when the volume
-warrants it:
+or `external`. Whoever notifies sets it (`wiki_admin_notify`'s `kind`,
+`observation` when omitted; REM's own sub-jobs stamp theirs), so you
+receive the items already tagged in `BriefingItem.kind`, and
+`briefing_counts` totals them per kind. Surface them grouped by kind
+when the volume warrants it:
 
 | `kind` | Meaning | Typical sources |
 |---|---|---|
 | `observation` | A factual delta the user or a peer noticed | a standard consumer forwards; team notifies via `shared_with` |
-| `reasoning` | An inference REM made (stale draft, recall-hot section, dedup candidate) | Briefing dispatcher, dedup-source |
+| `reasoning` | An inference REM made (stale draft, recall-hot section) | Briefing dispatcher |
 | `external` | A reference outside the wiki that the user wants tied in | Citations from chat, links from the dashboard |
 
 ## Citation IDs
@@ -588,8 +592,8 @@ warrants it:
 When notifying about a specific section, populate
 `wiki_admin_notify.target_cite` with a handle of the form
 `wiki://<wiki_id>/<page_path>(#<heading-slug>)?`. The server validates
-it via `briefing::parse_cite` and renders it in `_briefing.md` as an
-Obsidian autolink. Example:
+it via `briefing::parse_cite` and renders it in `_briefing.md` as a
+markdown autolink. Example:
 
 ```
 wiki_admin_notify(
@@ -602,8 +606,9 @@ wiki_admin_notify(
 ```
 
 The user gets a click-through from `_briefing.md` straight to the
-relevant heading inside Obsidian (or the dashboard `/cite/` resolver
-when it lands).
+relevant heading inside Obsidian, and the dashboard resolves the same
+item at `/cite/<briefing_item_id>` (e.g. `/cite/bi_42`), which redirects
+to the page and its anchor.
 
 ## Shared-with smart wikis
 
