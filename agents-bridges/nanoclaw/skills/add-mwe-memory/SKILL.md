@@ -231,9 +231,13 @@ Send the agent a message. The first thing to confirm is that you are talking to
 a **new** container — an old one answers perfectly well and remembers nothing.
 
 ```bash
-docker ps --filter name=nanoclaw --format '{{.Names}}\t{{.CreatedAt}}'
-docker logs $(docker ps -q --filter name=nanoclaw | head -1) 2>&1 | grep '\[mwe\]'
+docker ps --filter label=nanoclaw-session --format '{{.Names}}\t{{.CreatedAt}}'
+docker logs "$(docker ps -q --filter label=nanoclaw-session | head -1)" 2>&1 | grep '\[mwe\]'
 ```
+
+(The label, not the name: `nanoclaw-session` is one of the four canonical
+labels every session container carries, while the container's *name* is the
+session driver's business and differs between them.)
 
 `[mwe] memory is on for this agent` is the runner saying it read the patched
 code and found the plugin. A container older than your restart, or one whose

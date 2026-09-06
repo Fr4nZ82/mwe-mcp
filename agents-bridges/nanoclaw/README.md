@@ -169,8 +169,12 @@ from your nanoclaw fork.
    about the memory:
 
    ```bash
-   docker logs $(docker ps -q --filter name=nanoclaw | head -1) 2>&1 | grep '\[mwe\]'
+   docker logs "$(docker ps -q --filter label=nanoclaw-session | head -1)" 2>&1 | grep '\[mwe\]'
    ```
+
+   (The label, not the name: `nanoclaw-session` is one of the four canonical
+   labels every session container carries, and the container's name belongs to
+   whichever session driver started it.)
 
    `[mwe] memory is on for this agent` is the runner saying it read the patched
    code and found the plugin. No `[mwe]` line means the pre-skill runner is
