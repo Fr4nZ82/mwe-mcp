@@ -58,6 +58,20 @@ for (const tool of ['mwe_search', 'mwe_dashboard_link', 'mwe_disambig_commit']) 
 }
 ok('the persona names the block the bridge actually injects', persona.includes('<memory-context>'));
 ok('the persona names the window the bridge actually injects', persona.includes('<recent-conversation>'));
+// The two governance blocks arrive framed but need the persona to say what
+// they are for: an owed forget-request vote, and a message kept as a document.
+// Matched on the flattened text, so a reflowed paragraph stays green.
+const flat = persona.replace(/\s+/g, ' ');
+ok(
+  'the persona says what to do with a vote the person owes',
+  flat.includes('forget a fact this person is part of') &&
+    flat.includes('cast on the dashboard and nowhere else') &&
+    flat.includes('what silence costs'),
+);
+ok(
+  'the persona says what to do when a message was kept as a document',
+  flat.includes('long enough to be a document') && flat.includes('will be quotable'),
+);
 ok('the persona forbids a second memory on disk', persona.includes('Never write a memory file'));
 ok('the persona covers guests', persona.toLowerCase().includes('guest'));
 ok(

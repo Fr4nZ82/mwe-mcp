@@ -22,6 +22,13 @@ script a multi-turn flow (e.g. a `needs_disambig` first turn):
 
     stub.responses["wiki_ingest_message"]["needs_disambig"] = True
 
+The two governance blocks of an ingest response ride the same knob. They
+are **absent** from the default payload, because the server sends each
+one only on the turn it applies to; a smoke that wants one splices the
+canonical fixture in:
+
+    stub.responses["wiki_ingest_message"]["pending_votes"] = PENDING_VOTES
+
 The stub also serves the out-of-band media endpoint (`POST …/media`,
 multipart/form-data — the media-pipeline design note): each upload
 is recorded in `stub.media_uploads` ({kind, caption, description,
@@ -58,6 +65,32 @@ DEFAULT_RESPONSES = {
     "events_poll": {"events": []},
     "events_ack": {"acked": 0},
     "dashboard_link": {"dashboard_path": "/dashboard/"},
+}
+
+# The `pending_votes` block of an ingest response: the acting member owes a
+# vote on a request to forget a fact they are part of. Voting is a dashboard
+# action, so the block carries where to go, not a way to vote from here — and
+# no fact text, only its id.
+PENDING_VOTES = {
+    "count": 1,
+    "requests": [{
+        "proposal_id": "p-forget-1",
+        "fact_id": "f-2026-06-12-0001",
+        "requester": "bob",
+        "deadline": "2026-06-19T09:00:00Z",
+        "dashboard_path": "/dashboard/proposals/p-forget-1/open-in-chat",
+    }],
+    "dashboard_path": "/dashboard/proposals",
+    "note": "vote_no_to_block_silence_is_consent",
+}
+
+# The `document_promoted` block: the turn was document-shaped, so the server
+# archived it verbatim on the media rail and queued it for document ingestion
+# instead of filing the whole paste as one message.
+DOCUMENT_PROMOTED = {
+    "catalog_id": "c-2026-06-12-doc-001.txt",
+    "job_id": "j-2026-06-12-0007",
+    "existing": False,
 }
 
 

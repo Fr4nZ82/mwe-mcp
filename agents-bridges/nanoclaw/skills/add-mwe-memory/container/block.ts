@@ -27,13 +27,88 @@ export interface DisambigCandidate {
   description?: string;
 }
 
+/**
+ * One forget request the speaker still owes a vote on.
+ *
+ * The block also names the proposal and the fact by id; those stay out of the
+ * prompt, because nothing the agent can do takes one.
+ */
+export interface PendingVoteRequest {
+  requester?: string;
+  deadline?: string;
+}
+
+/** The speaker's outstanding votes on requests to forget a fact. */
+export interface PendingVotes {
+  count?: number;
+  requests?: PendingVoteRequest[];
+  /** Where on the dashboard the requests are answered. */
+  dashboard_path?: string;
+}
+
 /** The fields of the ingest response this bridge injects. */
 export interface IngestPayload {
   rules?: string;
   recent_window?: string;
   context_snippet?: string;
+  /** Present only on a turn where the speaker owes a forget-request vote. */
+  pending_votes?: PendingVotes;
+  /** Present only when this turn's message was archived as a document. */
+  document_promoted?: Record<string, unknown>;
   needs_disambig?: boolean;
   disambig_candidates?: DisambigCandidate[];
+}
+
+/**
+ * The framing for `document_promoted`: the message was long enough to be a
+ * document, so the memory archived it whole and word for word and queued it
+ * for document ingestion, filing only an excerpt as conversation. That
+ * reading finishes in the background, which is why the agent is told not to
+ * go looking for it now.
+ */
+const DOCUMENT_PROMOTED_LINE =
+  'The memory kept this turn\'s message as a document: it was long enough to be one, so it is ' +
+  'archived whole and word for word, and is being read into memory as a document rather than filed ' +
+  'as a message. Tell the person it is stored and will be quotable, and do not ask them to send it ' +
+  'again. The reading finishes in the background — do not go looking for it this turn.';
+
+/**
+ * The framing for `pending_votes`: somebody asked the memory to forget a fact
+ * this person is part of, and their vote is still missing.
+ *
+ * Voting is a dashboard action — no tool on the MCP surface casts one — so the
+ * line hands over what is waiting and points at the dashboard. The request
+ * names the fact by id only, so the agent is told not to invent its words.
+ *
+ * The block rides every turn until the vote is cast or the window closes, and
+ * nothing server-side records that the agent mentioned it. The line therefore
+ * carries its own cadence: raise it, then let the thread be the proof it was
+ * raised — a reminder repeated on every message until the window closes is the
+ * notification voice this product does not use.
+ */
+function pendingVotesLine(block: PendingVotes): string {
+  const requests = block.requests ?? [];
+  const count = typeof block.count === 'number' ? block.count : requests.length;
+  if (count <= 0) return '';
+  const path = (block.dashboard_path ?? '').trim();
+  const what =
+    count === 1
+      ? '1 open request to forget a fact they are part of'
+      : `${count} open requests to forget facts they are part of`;
+  const lines = [`The memory is waiting on this person's vote: ${what}.`];
+  for (const request of requests) {
+    const requester = (request.requester ?? '').trim() || 'somebody';
+    const deadline = (request.deadline ?? '').trim();
+    lines.push(`- asked by ${requester}${deadline ? `, open until ${deadline}` : ''}`);
+  }
+  lines.push(
+    'Tell them what is waiting and offer them the link from mwe_dashboard_link: the vote is cast ' +
+      `on the dashboard${path ? `, under ${path},` : ''} and nowhere else. The request does not ` +
+      'carry the fact\'s own words — do not guess them. Saying nothing until the deadline is ' +
+      'consent and the fact is forgotten; it takes enough noes to keep it. This rides every turn ' +
+      'until they vote: if the thread above shows you raising it already, do not raise it again.',
+  );
+  return lines.join('\n');
 }
 
 function escapeXml(value: string): string {
@@ -48,6 +123,12 @@ function escapeXml(value: string): string {
  * mistaken for a fact. Each field is already self-labelled server-side, so it
  * is injected verbatim with no preamble of the bridge's own.
  *
+ * The governance blocks ride beside those directives, each on the turn it
+ * applies to: like a rule they are something the memory needs the agent to act
+ * on, and ahead of the recalled facts so a decision the person owes is not
+ * buried under what the turn called up. The disambiguation ask closes the
+ * block, next to the message it is about.
+ *
  * `suggested_seed` is deliberately absent. It is a pre-drafted reply for a
  * consumer with no model of its own; nanoclaw always has one, and splicing a
  * ready-made answer into the turn invites the model to continue it instead of
@@ -57,6 +138,9 @@ export function renderRecallBlock(payload: IngestPayload): string {
   const parts: string[] = [];
   const rules = (payload.rules ?? '').trim();
   if (rules) parts.push(rules);
+  const votes = payload.pending_votes ? pendingVotesLine(payload.pending_votes) : '';
+  if (votes) parts.push(votes);
+  if (payload.document_promoted) parts.push(DOCUMENT_PROMOTED_LINE);
   const recent = (payload.recent_window ?? '').trim();
   if (recent) parts.push(recent);
   const snippet = (payload.context_snippet ?? '').trim();

@@ -19,7 +19,7 @@ from pathlib import Path
 BRIDGE = Path(__file__).resolve().parent
 sys.path.insert(0, str(BRIDGE.parent / "_harness"))
 
-from stub_server import StubMwe  # noqa: E402
+from stub_server import DOCUMENT_PROMOTED, PENDING_VOTES, StubMwe  # noqa: E402
 
 HOME = Path(os.environ["HERMES_HOME"])
 PASSED = 0
@@ -181,6 +181,47 @@ def main():
            and commit["arguments"]["text"] == "buttala")
         out = json.loads(provider.handle_tool_call("mwe_disambig_commit", {"candidate_id": "c1"}))
         ok("stale commit rejected", "error" in out)
+
+        # --- the two governance blocks reach the agent -----------------------
+        # Both are absent from a normal turn, so the quiet turn is asserted
+        # first: a framing line that leaks onto every turn would train the
+        # agent to ignore it.
+        quiet = provider.prefetch("un turno qualunque")
+        ok("a turn without the blocks says nothing about a vote or a document",
+           "waiting on this user's vote" not in quiet
+           and "kept this turn's message as a document" not in quiet)
+        ok("a turn without the blocks leaves no blank section behind",
+           "\n\n\n" not in quiet and not quiet.endswith("\n"))
+
+        stub.responses["wiki_ingest_message"] = dict(
+            stub.responses["wiki_ingest_message"],
+            pending_votes=PENDING_VOTES,
+            document_promoted=DOCUMENT_PROMOTED,
+        )
+        block = provider.prefetch("e adesso che si fa?")
+        ok("the owed vote reaches the agent",
+           "waiting on this user's vote" in block and "1 open request" in block)
+        ok("the vote line names who asked and by when",
+           "asked by bob" in block and "2026-06-19T09:00:00Z" in block)
+        ok("the vote line sends the user to the dashboard, the only place to vote",
+           "mwe_dashboard_link" in block and "/dashboard/proposals" in block
+           and "nowhere else" in block)
+        ok("the vote line carries the consent rule and forbids inventing the fact",
+           "Saying nothing until the deadline is consent" in block
+           and "do not guess them" in block)
+        ok("the reminder is raised once, not repeated on every message",
+           "do not raise it again" in block)
+        ok("the promoted document reaches the agent",
+           "kept this turn's message as a document" in block
+           and "do not ask them to send it again" in block)
+        ok("the governance lines sit ahead of the recalled memory",
+           block.index("waiting on this user's vote")
+           < block.index("kept this turn's message as a document")
+           < block.index("(stub) nothing relevant on file"))
+        stub.responses["wiki_ingest_message"] = {
+            k: v for k, v in stub.responses["wiki_ingest_message"].items()
+            if k not in ("pending_votes", "document_promoted")
+        }
 
         # --- built-in memory one-way mirror -----------------------------------
         before = len(stub.calls("wiki_ingest_message"))

@@ -138,6 +138,69 @@ DISAMBIG_SCHEMA = {
 }
 
 
+# The framing for the `document_promoted` block of an ingest response: the
+# user's turn was long enough to be a document, so the server archived it
+# whole on the media rail and queued it for document ingestion, filing only an
+# excerpt as conversation. Reading it in finishes in the background, which is
+# why the agent is told not to go looking for it on this turn.
+DOCUMENT_PROMOTED_LINE = (
+    "The memory kept this turn's message as a document: it was long enough to "
+    "be one, so it is archived whole and word for word, and is being read into "
+    "memory as a document rather than filed as a message. Tell the user it is "
+    "stored and will be quotable, and do not ask them to send it again. The "
+    "reading finishes in the background — do not go looking for it this turn."
+)
+
+
+def _pending_votes_line(block: Dict[str, Any]) -> str:
+    """Frame the `pending_votes` block for the agent.
+
+    Somebody asked the memory to forget a fact this user is part of, and the
+    user's vote is still missing. The vote is a dashboard action — there is no
+    vote tool on the MCP surface — so the line hands over what is waiting and
+    points at the dashboard. The block names the fact by id only, so the agent
+    is told not to invent its words.
+
+    The block rides every turn until the vote is cast or the window closes, and
+    nothing server-side records that the agent has mentioned it. The line
+    therefore carries its own cadence: raise it, then let the thread be the
+    proof it was raised — a reminder repeated on every message until the
+    window closes is the notification voice this product does not use.
+    """
+    if not isinstance(block, dict):
+        return ""
+    requests = [r for r in (block.get("requests") or []) if isinstance(r, dict)]
+    try:
+        count = int(block.get("count") or len(requests))
+    except (TypeError, ValueError):
+        count = len(requests)
+    if count <= 0:
+        return ""
+    path = str(block.get("dashboard_path") or "").strip()
+    where = f", under {path}," if path else ""
+    what = (
+        "1 open request to forget a fact they are part of"
+        if count == 1
+        else f"{count} open requests to forget facts they are part of"
+    )
+    lines = [f"The memory is waiting on this user's vote: {what}."]
+    for req in requests:
+        requester = str(req.get("requester") or "somebody").strip()
+        deadline = str(req.get("deadline") or "").strip()
+        until = f", open until {deadline}" if deadline else ""
+        lines.append(f"- asked by {requester}{until}")
+    lines.append(
+        "Tell the user what is waiting and offer them the link from "
+        f"mwe_dashboard_link: the vote is cast on the dashboard{where} and "
+        "nowhere else. The request does not carry the fact's own words — do "
+        "not guess them. Saying nothing until the deadline is consent and the "
+        "fact is forgotten; it takes enough noes to keep it. This rides every "
+        "turn until they vote: if the thread above shows you raising it "
+        "already, do not raise it again."
+    )
+    return "\n".join(lines)
+
+
 def _load_json_config(hermes_home: str | Path) -> Dict[str, Any]:
     path = Path(hermes_home) / "mwe.json"
     if not path.is_file():
@@ -557,11 +620,21 @@ class MweMemoryProvider(MemoryProvider):
         rules = (resp.get("rules") or "").strip()
         if rules:
             parts.append(rules)
+        # The two governance blocks ride beside the directives (per-turn
+        # contract), each present only on the turn it applies to: like a rule
+        # they are something the memory needs the agent to act on, and ahead of
+        # the recalled facts so a decision the user owes is not buried under
+        # what the turn called up.
+        votes = _pending_votes_line(resp.get("pending_votes") or {})
+        if votes:
+            parts.append(votes)
+        if resp.get("document_promoted"):
+            parts.append(DOCUMENT_PROMOTED_LINE)
         # The user's live thread from their OTHER surfaces (cross-consumer
         # recent window, group 43). Self-labelled server-side — header,
         # relative ages and the do-not-re-answer framing included — so it
-        # is injected verbatim, between the directives and the recalled
-        # facts: thread first, memory after.
+        # is injected verbatim, ahead of the recalled facts: thread
+        # first, memory after.
         recent = (resp.get("recent_window") or "").strip()
         if recent:
             parts.append(recent)
@@ -590,12 +663,6 @@ class MweMemoryProvider(MemoryProvider):
             )
         else:
             self._pending_disambig = None
-        attention = resp.get("pending_attention")
-        if attention:
-            parts.append(
-                "Pending attention on the memory dashboard: "
-                + json.dumps(attention, ensure_ascii=False)
-            )
         return "\n\n".join(parts)
 
     def _commit_disambig(self, candidate_id: str) -> Dict[str, Any]:

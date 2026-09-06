@@ -383,6 +383,79 @@ async function main(): Promise<void> {
   ok('the commit replays the same message', committed.arguments.text === 'ho visto Alice');
   scriptStub({});
 
+  // -- the two governance blocks reach the agent ----------------------------
+  // The wire shape is the server's (`call_wiki_ingest_message`): both keys are
+  // absent unless the turn earned them, which is why the plain turn above is
+  // asserted to carry neither.
+  ok(
+    'a plain turn says nothing about a vote or a document',
+    !prompt1.includes("waiting on this person's vote") && !prompt1.includes('as a document'),
+  );
+  ok(
+    'a plain turn leaves no blank paragraph in the fence',
+    !prompt1.slice(0, prompt1.indexOf('</memory-context>')).includes('\n\n\n'),
+  );
+  scriptStub({
+    wiki_ingest_message: {
+      intent_classified: 'capture',
+      context_snippet: 'Recall: (stub) nothing relevant on file.',
+      pending_votes: {
+        count: 1,
+        requests: [
+          {
+            proposal_id: 'p-forget-1',
+            fact_id: 'f-2026-06-12-0001',
+            requester: 'bob',
+            deadline: '2026-06-19T09:00:00Z',
+            dashboard_path: '/dashboard/proposals/p-forget-1/open-in-chat',
+          },
+        ],
+        dashboard_path: '/dashboard/proposals',
+        note: 'vote_no_to_block_silence_is_consent',
+      },
+      document_promoted: { catalog_id: 'c-2026-06-12-doc-001.txt', job_id: 'j-1', existing: false },
+      llm_used: 'stub',
+    },
+  });
+  insertChat('g1', 'Alice', '1', 'ti incollo il regolamento intero');
+  const governance = recordingProvider('<message to="famiglia">ricevuto</message>');
+  const beforeGovernance = outboundChat().length;
+  await runTurn(governance.provider, () => outboundChat().length > beforeGovernance, 'governance turn');
+  const governancePrompt = governance.prompts[0] ?? '';
+  ok('the owed vote reaches the agent', governancePrompt.includes("waiting on this person's vote"));
+  ok(
+    'the vote line names who asked and by when',
+    governancePrompt.includes('asked by bob, open until 2026-06-19T09:00:00Z'),
+  );
+  ok(
+    'it sends the person to the dashboard, the only place a vote is cast',
+    governancePrompt.includes('mwe_dashboard_link') &&
+      governancePrompt.includes('/dashboard/proposals') &&
+      governancePrompt.includes('nowhere else'),
+  );
+  ok(
+    'it carries the consent rule and forbids inventing the fact',
+    governancePrompt.includes('Saying nothing until the deadline is consent') &&
+      governancePrompt.includes('do not guess them'),
+  );
+  ok(
+    'the reminder is raised once, not repeated on every message',
+    governancePrompt.includes('do not raise it again'),
+  );
+  ok(
+    'the promoted document reaches the agent',
+    governancePrompt.includes("kept this turn's message as a document") &&
+      governancePrompt.includes('do not ask them to send it again'),
+  );
+  ok(
+    'governance rides ahead of the recalled memory, inside the same fence',
+    governancePrompt.indexOf("waiting on this person's vote") <
+      governancePrompt.indexOf('(stub) nothing relevant on file') &&
+      governancePrompt.indexOf("kept this turn's message as a document") <
+        governancePrompt.indexOf('</memory-context>'),
+  );
+  scriptStub({});
+
   // -- degradation: the memory falls over and the turn still answers --------
   scriptStub({ wiki_ingest_message: '__fail__' });
   insertChat('f1', 'Alice', '1', 'e adesso?');

@@ -65,6 +65,26 @@ the message back until it knows. Ask the person, in one plain question, which
 one they mean. When they answer, call `mwe_disambig_commit` with the id they
 picked — that call is what actually stores what they said.
 
+# When the memory has something to tell the person
+
+Two more things can appear in the block, right after `YOUR RULES`. Neither is
+an answer to what the person just said, so bring it up briefly at the end of
+your reply — it is never the whole reply.
+
+- **A vote they owe.** Somebody asked the memory to forget a fact this person
+  is part of, and it will not settle without them. Say how many are waiting,
+  who asked and by when, and offer the link from `mwe_dashboard_link`: the vote
+  is cast on the dashboard and nowhere else. The block does not carry the
+  fact's own words — do not invent them. Say plainly what silence costs: no
+  answer by the deadline is consent and the fact is forgotten, and it takes
+  enough noes to keep it. The reminder comes back every turn until they vote,
+  so raise it and then leave it: if you already told them in this conversation,
+  say nothing.
+- **Something they sent kept as a document.** When a message is long enough to
+  be a document, the memory archives it whole and reads it in as one. Tell them
+  it is stored and will be quotable, and do not ask them to send it again.
+  Do not go looking for it this turn — the reading finishes in the background.
+
 # Guests
 
 Someone the memory does not recognise is a **guest**. On a guest turn the

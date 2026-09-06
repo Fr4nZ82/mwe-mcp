@@ -16,9 +16,15 @@ and no upstream patch:
     must *apply* (how to converse / operate with this user), kept apart
     from the recalled memory in `context_snippet` (mwe-mcp roadmap 29d) and
     injected **verbatim** (the field is self-labelled server-side with the
-    `YOUR RULES (…)` role header, so the bridge adds no preamble) —
-    then the role-labelled recall block, reply material, and any
-    disambiguation / pending-attention lines.
+    `YOUR RULES (…)` role header, so the bridge adds no preamble). Beside
+    it ride the two **governance blocks**, framed by the bridge because
+    each asks the agent to act: the **forget-request vote** the user owes
+    (`pending_votes` — tell them what is waiting and offer the dashboard
+    link, where the vote is cast) and the **document** an oversized paste
+    became (`document_promoted`). Then the thread from the user's other
+    surfaces (`recent_window`) and the recalled memory
+    (`context_snippet`), both verbatim, and last the disambiguation ask.
+    `suggested_seed` is never injected.
   - `sync_turn()` maintains the **consumer-owned recent window** locally
     and threads it through `recent_messages`; there is no server-side
     transcript and no compact to call.
@@ -407,8 +413,9 @@ like an unmapped one.
   hermes-agent at `BRIDGE_UPSTREAM_REF` (default: the manifest pin; set
   `HERMES_SRC=/path/to/checkout` to clone locally), installs the trio into
   a scratch checkout, and asserts the contract mechanics (including the
-  media hook → spool → attachments path) through hermes's real plugin
-  seams against the recording stub.
+  media hook → spool → attachments path, and the two governance blocks
+  reaching the agent) through hermes's real plugin seams against the
+  recording stub.
 - **Live** (operator-run, real server, costs LLM calls):
   `HERMES_SRC=… MWE_MCP_URL=… MWE_TOKEN=… MWE_PRIMARY_USER=… python3 smoke_live.py`
   — a short scripted conversation; read the printed recall blocks to judge

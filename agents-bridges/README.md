@@ -142,7 +142,10 @@ the host framework at that ref (each host has its own way).
 2. **Map the six contract points to your host's seams** (memory-provider
    hook, prompt-builder, plugin API — whatever the host offers). The prize
    criteria: one mechanical ingest per turn, recall block after stable
-   content, window owned and trimmed bridge-side.
+   content, window owned and trimmed bridge-side, and the response's two
+   **governance blocks** (`pending_votes`, `document_promoted`) framed for
+   the agent rather than dropped — each carries something the person must
+   be told.
 3. **Identity**: a bridged bot is a *standard* consumer — a credential-less
    system user speaking for delegated humans. Per-sender attribution rides
    the `X-MWE-Act-As` header; fix it per connection (a small client pool

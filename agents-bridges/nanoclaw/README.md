@@ -35,6 +35,10 @@ per-turn contract **v1**
 - **The memory can start a conversation.** A fact minted for somebody else, or
   a commitment coming due, is delivered to that person's own chat, phrased by
   the agent, in their language.
+- **What the memory needs from a person reaches them.** A request to forget a
+  fact they are part of comes back as a heads-up on their next turn, with the
+  dashboard link where the vote is cast and what silence costs; a message long
+  enough to be a document is archived whole, and the agent says so.
 
 Everything else nanoclaw gives an agent — chat, the web, its own container,
 scheduled tasks, several channels at once — is untouched.
@@ -231,10 +235,12 @@ template the way an operator does, and then drives **nanoclaw's own poll loop**
 with the mock provider against a recording stub of the MCP endpoint. What it
 asserts: one ingest per turn and one per reply; the window threaded, trimmed
 and persisted; act-as per sender and `guest` for the unmapped; the recall block
-ahead of the formatted batch; the disambiguation and its commit; the media
-upload and its catalog id; a memory outage that leaves the turn answering; no
-continuation between turns; and the reverse channel's poll → enqueue → ack
-order, including a notice that must not be delivered to the wrong person.
+ahead of the formatted batch; the disambiguation and its commit; the owed
+forget-request vote and the promoted document reaching the agent, and neither
+line showing up on a turn that did not earn it; the media upload and its
+catalog id; a memory outage that leaves the turn answering; no continuation
+between turns; and the reverse channel's poll → enqueue → ack order, including
+a notice that must not be delivered to the wrong person.
 
 `NANOCLAW_SRC=/path/to/a/local/checkout` clones from disk instead of GitHub;
 `MWE_SMOKE_KEEP=1` leaves the scratch fork behind to poke at.
@@ -310,5 +316,6 @@ server instead, each acting as the person speaking.
   discovers channels and providers. After an upgrade, run the skill again; it
   reports what is already in place, and `src/mwe-wiring.test.ts` goes red if an
   upgrade moved one of the reach-ins.
-- **`wiki_ingest_external`** — reading a document into memory as a unit — is
-  not wired yet. A document sent in chat is filed as an attachment.
+- **`wiki_ingest_external`** — handing the memory a document to read as a unit
+  — is not wired. A file sent in chat is filed as an attachment; a paste long
+  enough for the server to promote it is what becomes a document.

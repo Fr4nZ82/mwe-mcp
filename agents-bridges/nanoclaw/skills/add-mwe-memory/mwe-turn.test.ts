@@ -77,6 +77,47 @@ describe('the recall block', () => {
     expect(block).not.toContain('risposta pronta');
   });
 
+  it('hands over the owed vote: what is waiting, where it is cast, what silence costs', () => {
+    const block = renderRecallBlock({
+      context_snippet: 'RELEVANT MEMORY\nnothing much',
+      pending_votes: {
+        count: 1,
+        requests: [{ requester: 'bob', deadline: '2026-06-19T09:00:00Z' }],
+        dashboard_path: '/dashboard/proposals',
+      },
+    });
+    expect(block).toContain('1 open request');
+    expect(block).toContain('asked by bob, open until 2026-06-19T09:00:00Z');
+    expect(block).toContain('mwe_dashboard_link');
+    expect(block).toContain('/dashboard/proposals');
+    expect(block).toContain('Saying nothing until the deadline is consent');
+    // The block names the fact by id: an agent that fills the gap in would be
+    // telling the person what somebody wants forgotten, invented.
+    expect(block).toContain('do not guess them');
+    // The reminder rides every turn until the vote is cast: the agent raises
+    // it and then leaves it, rather than repeating it on every message.
+    expect(block).toContain('do not raise it again');
+    // Governance is not memory: it rides with the rules, ahead of the facts.
+    expect(block.indexOf('waiting on this person')).toBeLessThan(block.indexOf('RELEVANT MEMORY'));
+  });
+
+  it('says a long paste became a document, and not to go looking for it', () => {
+    const block = renderRecallBlock({
+      document_promoted: { catalog_id: 'c-2026-06-12-doc-001.txt', job_id: 'j-1', existing: false },
+    });
+    expect(block).toContain("kept this turn's message as a document");
+    expect(block).toContain('do not ask them to send it again');
+    expect(block).toContain('do not go looking for it this turn');
+  });
+
+  it('stays silent about both when the turn carries neither', () => {
+    const block = renderRecallBlock({ context_snippet: 'RELEVANT MEMORY\nthe dog is called Frodo' });
+    expect(block).not.toContain('vote');
+    expect(block).not.toContain('document');
+    // An empty framing line would leave a blank paragraph in the fence.
+    expect(block).not.toContain('\n\n\n');
+  });
+
   it('names the candidates and the tool that commits the choice', () => {
     const block = renderRecallBlock({
       needs_disambig: true,
