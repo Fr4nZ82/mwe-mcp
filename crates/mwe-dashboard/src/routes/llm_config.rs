@@ -1557,7 +1557,7 @@ mod tests {
     /// can produce, since the provider menu offers no empty option, and the
     /// only one the parser accepts. A test then overwrites the keys of the
     /// slot it is about.
-    fn full_form() -> HashMap<String, String> {
+    fn six_slot_form() -> HashMap<String, String> {
         let mut form: HashMap<String, String> = HashMap::new();
         for slot in SLOTS {
             let key = slot.yaml_key();
@@ -1574,7 +1574,7 @@ mod tests {
     /// whole submission is turned away and the five sound slots with it.
     #[test]
     fn parse_form_refuses_a_slot_with_no_provider() {
-        let mut form = full_form();
+        let mut form = six_slot_form();
         form.insert("ingest__backend".into(), String::new());
         let err = parse_form_into_llm_config(&form, &LlmConfig::default()).expect_err("refuses");
         match err {
@@ -1588,7 +1588,7 @@ mod tests {
 
     #[test]
     fn parse_form_rejects_unsupported_backend() {
-        let mut form = full_form();
+        let mut form = six_slot_form();
         form.insert("ingest__backend".into(), "google".into());
         form.insert("ingest__model".into(), "gemini".into());
         let prior = LlmConfig::default();
@@ -1606,7 +1606,7 @@ mod tests {
     /// operator does not pick the env-var per slot.
     #[test]
     fn parse_form_derives_anthropic_api_key_in_key_mode() {
-        let mut form = full_form();
+        let mut form = six_slot_form();
         form.insert("ingest__backend".into(), "anthropic".into());
         form.insert("ingest__model".into(), "claude-sonnet-4-6".into());
         let parsed = parse_form_into_llm_config(&form, &LlmConfig::default()).expect("parse");
@@ -1625,7 +1625,7 @@ mod tests {
     /// derive the Claude Code login sentinel instead of the key env-var.
     #[test]
     fn parse_form_anthropic_login_mode_derives_claude_code() {
-        let mut form = full_form();
+        let mut form = six_slot_form();
         form.insert("anthropic_auth_mode".into(), "login".into());
         form.insert("ingest__backend".into(), "anthropic".into());
         form.insert("ingest__model".into(), "claude-opus-4-8".into());
@@ -1644,7 +1644,7 @@ mod tests {
     /// Gemini and `OpenRouter` derive their well-known key env-vars.
     #[test]
     fn parse_form_derives_gemini_and_openrouter_keys() {
-        let mut form = full_form();
+        let mut form = six_slot_form();
         form.insert("ingest__backend".into(), "gemini".into());
         form.insert("ingest__model".into(), "gemini-3-flash-preview".into());
         form.insert("navigator__backend".into(), "openrouter".into());
@@ -1677,7 +1677,7 @@ mod tests {
     /// derived — the form does not carry it.
     #[test]
     fn parse_form_round_trips_gemini_slot() {
-        let mut form = full_form();
+        let mut form = six_slot_form();
         form.insert("ingest__backend".into(), "gemini".into());
         form.insert("ingest__model".into(), "gemini-3-flash-preview".into());
         let prior = LlmConfig::default();
@@ -1692,7 +1692,7 @@ mod tests {
     /// with the same sentence as a slot with no provider.
     #[test]
     fn parse_form_rejects_anthropic_with_missing_model() {
-        let mut form = full_form();
+        let mut form = six_slot_form();
         form.insert("ingest__backend".into(), "anthropic".into());
         form.insert("ingest__model".into(), String::new());
         let prior = LlmConfig::default();
@@ -1708,7 +1708,7 @@ mod tests {
 
     #[test]
     fn parse_form_round_trips_full_slot() {
-        let mut form = full_form();
+        let mut form = six_slot_form();
         form.insert("operator_chat__backend".into(), "anthropic".into());
         form.insert("operator_chat__model".into(), "claude-opus-4-7".into());
         form.insert("operator_chat__temperature".into(), "0.4".into());
@@ -1772,7 +1772,7 @@ mod tests {
 
     #[test]
     fn parse_form_preserves_profile_from_prior() {
-        let form = full_form();
+        let form = six_slot_form();
         let prior = LlmConfig {
             profile: Some("hybrid".into()),
             ..LlmConfig::default()
@@ -1783,7 +1783,7 @@ mod tests {
 
     #[test]
     fn parse_form_rejects_malformed_temperature() {
-        let mut form = full_form();
+        let mut form = six_slot_form();
         form.insert("ingest__temperature".into(), "not-a-number".into());
         let prior = LlmConfig::default();
         let err = parse_form_into_llm_config(&form, &prior).expect_err("rejects");
