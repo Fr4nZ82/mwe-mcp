@@ -11,8 +11,8 @@
 //! - `sender_id`     — the dashboard user.
 //! - `device_label`  — hardcoded to [`SESSION_DEVICE_LABEL`] so the
 //!   admin can recognise dashboard sessions in `token-list`.
-//! - `rate_limit_id` — [`SESSION_RATE_LIMIT_ID`]; can later be wired
-//!   to a stricter profile.
+//! - `rate_limit_id` — [`SESSION_RATE_LIMIT_ID`], the wider `rate_limits:`
+//!   profile a person clicking through the panel is held to.
 //! - `is_admin`      — the role at issuance time; trusted for the cookie
 //!   lifetime (60 minutes max), revocation via [`mwe_core::jwt::revoke`].
 //! - `consumer_id`   — never set on session cookies (act-as is for the
@@ -68,9 +68,12 @@ pub const SESSION_COOKIE_NAME: &str = "mwe_session";
 /// apart from MCP tokens.
 pub const SESSION_DEVICE_LABEL: &str = "dashboard-session";
 
-/// Placeholder `rate_limit_id` for session JWTs. May later be wired
-/// to a config-driven profile (e.g. stricter than `default`).
-pub const SESSION_RATE_LIMIT_ID: &str = "dashboard";
+/// `rate_limit_id` claim baked into every session JWT.
+///
+/// It names the `rate_limits:` profile in `mwe-mcp.config.yaml` whose
+/// ceilings hold the session, wider than `default` because a person
+/// clicking through the panel is not a consumer in a loop.
+pub const SESSION_RATE_LIMIT_ID: &str = mwe_core::config::DASHBOARD_RATE_LIMIT_ID;
 
 /// Path attribute of the session cookie — narrows it to the dashboard
 /// route tree so it never travels to `/mcp/*`.

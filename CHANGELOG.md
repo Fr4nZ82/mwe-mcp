@@ -450,6 +450,23 @@ and in the dashboard's session check. Eight migrations, `0068` through `0075`.
   far back an operator can ask why recall behaved as it did and how long
   cleartext recalled memory sits in the engine database.
 
+- **A token now has a ceiling, and it applies whether or not anybody wrote one
+  down.** Every token has always carried a `rate_limit_id` claim and the wire
+  had a `429 rate_limited` class, but nothing counted anything: a stolen token,
+  or a consumer whose loop lost its brakes, could run the classifier and the
+  navigator — model calls, on somebody's invoice — as fast as the network
+  allowed. The dispatcher counts every call against the profile the token
+  names: 120 calls a minute and 3 000 an hour, of which 30 a minute and 600 an
+  hour may be the calls that put a model or an embedding to work
+  (`wiki_ingest_message`, `wiki_ingest_external`, `wiki_navigate`,
+  `wiki_search`, `recall_core_global`). Counting is per token, so one runaway
+  consumer never spends another's allowance. Past the ceiling the call comes
+  back `rate_limited` with a `retry_after` in seconds. The new `rate_limits:`
+  section gives a named profile different numbers — `dashboard`, the profile
+  the sessions `dashboard_link` mints carry, is five times wider out of the
+  box — and a `rate_limit_id` with no profile falls back to `default`, so a
+  token cannot name its way out of a ceiling.
+
 ## 1.9.0 — 2026-08-02
 
 Recall was handing the model the wrong material and reaching the right page by

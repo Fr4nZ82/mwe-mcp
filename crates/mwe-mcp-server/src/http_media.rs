@@ -413,6 +413,9 @@ mod tests {
             document_policy: mwe_core::document::DocumentPolicy::default(),
             reindex_tx: None,
             read_only: false,
+            rate_limiter: Arc::new(crate::mcp::ratelimit::RateLimiter::new(
+                mwe_core::config::RateLimitsConfig::default(),
+            )),
         };
         (state, secret, pool, dir)
     }

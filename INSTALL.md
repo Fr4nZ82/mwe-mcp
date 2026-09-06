@@ -198,7 +198,7 @@ Snapshot that one folder and you've backed up the whole memory.
 
 ## Hardening checklist
 
-The defaults are already conservative; production exposure adds five habits:
+The defaults are already conservative; production exposure adds six habits:
 
 1. **Keep the bind on loopback** (both the exposure prompt and the
    non-interactive default resolve to `127.0.0.1:8742`) and expose the port
@@ -232,6 +232,29 @@ The defaults are already conservative; production exposure adds five habits:
    the consumer co-location topology are in
    [`INTEGRATING.md`](INTEGRATING.md#deployment-security--where-to-run-the-consumer)
    — `mwe-mcp doctor` audits the current install and prints fixes.
+6. **Give a busy consumer its own ceiling.** Every token is already held to
+   one: 120 calls a minute and 3 000 an hour, of which 30 a minute and 600 an
+   hour may be the calls that run a model or an embedding (`wiki_ingest_message`,
+   `wiki_ingest_external`, `wiki_navigate`, `wiki_search`, `recall_core_global`).
+   Past the ceiling a call comes back `429 rate_limited` with the seconds to
+   wait. The numbers are per **token**, so one runaway consumer never spends
+   another's allowance, and they are the ones that bound what a stolen token
+   can put on your invoice. To give one consumer different numbers, mint its
+   token with `--rate-limit-id <name>` and declare the name in
+   `mwe-mcp.config.yaml` (the file `mwe-mcp init` writes carries the shape,
+   commented out):
+
+   ```yaml
+   rate_limits:
+     nightly-import:
+       model_calls_per_minute: 120
+       model_calls_per_hour: 2000
+   ```
+
+   A profile states only the numbers it changes; the rest stay at the
+   built-in ones. A `rate_limit_id` with no profile of its own falls back to
+   `default`, so a token cannot name its way out of a ceiling. Read at boot —
+   a change wants a restart.
 
 Updates are a binary swap: stop the server, replace the binary (keep the old
 one as a `.bak`), start — pending migrations run at boot, forward only. Keep

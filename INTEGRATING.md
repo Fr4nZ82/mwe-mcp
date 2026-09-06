@@ -205,6 +205,32 @@ Two more operational rules learned the same way:
 
 ---
 
+## Call ceilings — what `429 rate_limited` means and what to do with it
+
+Every token is held to a ceiling on how many calls it may make, counted per
+token. The built-in numbers are 120 calls a minute and 3 000 an hour, of which
+30 a minute and 600 an hour may be the calls that put a model or an embedding
+to work: `wiki_ingest_message`, `wiki_ingest_external`, `wiki_navigate`,
+`wiki_search`, `recall_core_global`. The operator can give a consumer its own
+numbers by minting its token with a `rate_limit_id` and declaring that name in
+`rate_limits:` (see [`INSTALL.md`](INSTALL.md#hardening-checklist)).
+
+A call past the ceiling comes back as an error whose `data.error_class` is
+`rate_limited` and whose `data.retry_after` is the number of **seconds** after
+which the same call is worth making again:
+
+```json
+{ "error_class": "rate_limited", "retry_after": 34 }
+```
+
+What a bridge should do with it: wait that long and retry the call once, and
+if it is a per-turn call, tell the person the memory is busy rather than
+answering as if nothing happened — a turn whose ingest was refused stored
+nothing. Do not treat it as a dead token: nothing is wrong with the
+credential, and retrying immediately only spends the next window as well.
+
+---
+
 ## Per-project isolation (smart consumers)
 
 A smart consumer like **Claude Code** registers mwe-mcp **globally** (the MCP
@@ -451,11 +477,10 @@ consumer-agent runtime contract (what *the agent itself* must do with
 these fields) is in [`AGENT_INSTRUCTIONS.md`](AGENT_INSTRUCTIONS.md).
 
 **Latency note.** The recall block is computed in-line: a classifier
-completion plus — on capture/recall turns, when the `navigator` LLM slot
-is wired — a small number of navigator completions, all **before** your
-agent can compose its reply. The operator bounds this spend from the
-dashboard recall-settings page (hop depth, pages per hop, budgets); turn
-navigation off entirely by leaving the `navigator` slot unconfigured.
+completion plus — on capture/recall turns — a small number of navigator
+completions, all **before** your agent can compose its reply. The operator
+bounds this spend from the dashboard recall-settings page (hop depth, pages
+per hop, budgets).
 
 ### Still being hardened
 

@@ -73,8 +73,11 @@ pub enum ToolErrorClass {
     /// passed to `wiki_admin_push` does not match the current head;
     /// the consumer must `wiki_admin_pull`, re-diff, and retry.
     ConflictingOpLogHead,
-    /// `429 rate_limited` — generic rate-limit cap exceeded.
-    /// Currently surfaced only by `wiki_admin_notify` (`50/wiki/h`).
+    /// `429 rate_limited` — a call ceiling was exceeded. Two of them
+    /// answer with this class: the per-token ceilings the dispatcher
+    /// counts (`rate_limits:` in the config, see
+    /// [`super::ratelimit`]), which carry a `retry_after` in the error
+    /// body, and `wiki_admin_notify`'s own per-wiki cap (`50/wiki/h`).
     RateLimited,
     /// `423 wiki_locked_by_lease` — another smart consumer holds an
     /// active `wiki_admin_lease` on the target wiki. The
@@ -160,6 +163,10 @@ pub struct ToolError {
     /// Human message — short, English, no PII. Always suffixed with the
     /// class string so an operator reading raw logs has both.
     pub message: String,
+    /// Seconds after which the same call is worth making again. Set on a
+    /// refusal that is only about *when* — a rate limit — so a consumer
+    /// can wait the right amount instead of guessing or giving up.
+    pub retry_after_secs: Option<u64>,
 }
 
 impl ToolError {
@@ -168,7 +175,15 @@ impl ToolError {
         Self {
             class,
             message: message.into(),
+            retry_after_secs: None,
         }
+    }
+
+    /// Builder: tell the caller how many seconds to wait before retrying.
+    #[must_use]
+    pub const fn with_retry_after(mut self, secs: u64) -> Self {
+        self.retry_after_secs = Some(secs);
+        self
     }
 }
 
@@ -180,17 +195,21 @@ impl std::fmt::Display for ToolError {
 
 impl std::error::Error for ToolError {}
 
-/// Convert a [`ToolError`] into the rmcp wire shape. The wire class
-/// string rides as `data.error_class` so the consumer can branch on it
-/// regardless of the JSON-RPC code.
+/// Convert a [`ToolError`] into the rmcp wire shape.
+///
+/// The wire class string rides as `data.error_class` so the consumer can
+/// branch on it regardless of the JSON-RPC code, and `data.retry_after`
+/// rides beside it when the refusal was about timing.
 #[must_use]
 pub fn into_mcp_error(err: ToolError) -> McpError {
     let class = err.class.as_str();
-    McpError::new(
-        err.class.json_rpc_code(),
-        err.message,
-        Some(json!({ "error_class": class })),
-    )
+    let mut data = json!({ "error_class": class });
+    if let Some(secs) = err.retry_after_secs
+        && let Some(map) = data.as_object_mut()
+    {
+        map.insert("retry_after".to_owned(), json!(secs));
+    }
+    McpError::new(err.class.json_rpc_code(), err.message, Some(data))
 }
 
 /// Convenience builder for the common "deserialize args failed" path

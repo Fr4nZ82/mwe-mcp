@@ -612,10 +612,37 @@ fn seed_config_file(
         llm,
         ..Default::default()
     };
-    let yaml = serde_yaml::to_string(&config).context("serialising mwe-mcp.config.yaml")?;
+    let mut yaml = serde_yaml::to_string(&config).context("serialising mwe-mcp.config.yaml")?;
+    yaml.push_str(RATE_LIMITS_TEMPLATE);
     std::fs::write(path, yaml).with_context(|| format!("writing {}", path.display()))?;
     Ok(format!("wrote {}", path.display()))
 }
+
+/// The `rate_limits:` section as a worked example, commented out, appended
+/// to a freshly seeded config.
+///
+/// The ceilings bind whether or not the section is written, so this is not
+/// a switch that has to be turned on — it is the shape to copy when a
+/// consumer needs a different number from everybody else, and the place an
+/// operator finds out that a number exists at all.
+const RATE_LIMITS_TEMPLATE: &str = "\
+# Per-token call ceilings, by the `rate_limit_id` a token carries
+# (`mwe-mcp token-issue --rate-limit-id`, default `default`). The values
+# below are the built-in ones and apply with the section absent; write a
+# profile only to give a name different numbers. Read at boot.
+#
+# rate_limits:
+#   default:
+#     calls_per_minute: 120
+#     calls_per_hour: 3000
+#     model_calls_per_minute: 30    # ingest, navigate, search, external
+#     model_calls_per_hour: 600
+#   dashboard:                      # sessions minted by `dashboard_link`
+#     calls_per_minute: 600
+#     calls_per_hour: 15000
+#     model_calls_per_minute: 120
+#     model_calls_per_hour: 2400
+";
 
 /// Major upgrade entrypoint. See [`Command::Migrate`] for the
 /// scope statement.
@@ -2290,6 +2317,14 @@ fn dashboard_config_from(config: &Config) -> mwe_dashboard::DashboardConfig {
     }
 }
 
+/// The per-token call ceilings this deployment enforces.
+///
+/// Read from the file once, unlike the handles the dashboard swaps in
+/// place: a change to a ceiling wants a restart.
+fn rate_limiter_for(config: &Config) -> Arc<mcp::ratelimit::RateLimiter> {
+    Arc::new(mcp::ratelimit::RateLimiter::new(config.rate_limits.clone()))
+}
+
 /// Shared startup helper used by both transports.
 ///
 /// 1. Health-check every configured LLM slot (no silent fallbacks).
@@ -2460,6 +2495,7 @@ async fn bootstrap_state(workdir: &Path, config: &Config) -> Result<(McpState, D
         document_policy: config.document.resolved_policy(),
         reindex_tx: Some(reindex_tx),
         read_only: config.instance.read_only,
+        rate_limiter: rate_limiter_for(config),
     };
     let dashboard_state = DashboardState::new(pool, secret, blacklist, delegations)
         .with_config(dashboard_config_from(config))

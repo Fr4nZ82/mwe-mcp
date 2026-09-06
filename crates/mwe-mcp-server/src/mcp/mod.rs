@@ -11,9 +11,10 @@
 //!   transport, extracts the bearer JWT, verifies it, attaches an
 //!   [`state::IdentityProfile`] to the request extensions.
 //! - [`McpHandler`] (this module) reads the profile from request
-//!   extensions (the HTTP JWT), calls
-//!   the per-tool handler in [`tools`], and writes one
-//!   `tool_executions` row via [`mwe_core::audit::record`].
+//!   extensions (the HTTP JWT), counts the call against the token's
+//!   ceiling ([`ratelimit`]), calls the per-tool handler in [`tools`],
+//!   and writes one `tool_executions` row via
+//!   [`mwe_core::audit::record`].
 //! - [`schemas::all_tools`] lists every tool with its JSON Schema,
 //!   shared between `list_tools` and HTTP introspection.
 //!
@@ -41,6 +42,7 @@ use sha2::{Digest, Sha256};
 
 pub mod auth;
 pub mod error;
+pub mod ratelimit;
 pub mod schemas;
 pub mod state;
 pub mod tools;
@@ -218,6 +220,31 @@ pub const READ_ONLY_TOOLS: &[&str] = &[
     "events_poll",
 ];
 
+/// The tools whose call spends a model or an embedding while the caller
+/// waits.
+///
+/// They count against the lower **model** ceilings of the caller's
+/// `rate_limits:` profile as well as against the call ceilings.
+///
+/// The line is "does this call put a model to work on the request path".
+/// The three that run an LLM slot are here for the obvious reason — they
+/// arrive on an invoice — and the two recall tools are here because each
+/// embeds the caller's query before it can answer.
+///
+/// Deliberately **not** here: `wiki_admin_push`, `wiki_admin_signpost`
+/// and the two `wiki_forget` tools, which also touch the embedder. Their
+/// embedding is the bookkeeping of a write, it rides the local model
+/// behind the reindex queue rather than the request, and a bulk import
+/// held to thirty calls a minute would be a failure the operator did not
+/// have before. The call ceilings still bound them.
+pub const MODEL_COST_TOOLS: &[&str] = &[
+    "wiki_ingest_message",
+    "wiki_ingest_external",
+    "wiki_navigate",
+    "wiki_search",
+    "recall_core_global",
+];
+
 /// Direct dispatcher entry point — public for integration tests.
 ///
 /// Also used by callers that want to drive a single tool without
@@ -225,15 +252,43 @@ pub const READ_ONLY_TOOLS: &[&str] = &[
 /// `ServerHandler::call_tool` path: the audit row is **not** written
 /// here (the dispatcher writes it around this call).
 ///
-/// On a frozen deployment this is the one choke point every tool call
-/// passes through, so the write half of the surface is refused here in a
-/// single place — including tools that do not exist yet.
+/// This is the one choke point every tool call passes through, so the
+/// two refusals that are about the *call* rather than its arguments are
+/// made here, in a single place, including for tools that do not exist
+/// yet: a frozen deployment refuses the write half of the surface, and a
+/// token past its ceiling is refused whatever it asked for.
 pub async fn dispatch(
     state: &McpState,
     identity: &IdentityProfile,
     tool_name: &str,
     args: Value,
 ) -> Result<Value, ToolError> {
+    if let Err(refusal) = state.rate_limiter.check(
+        &identity.token_jti,
+        &identity.rate_limit_id,
+        MODEL_COST_TOOLS.contains(&tool_name),
+    ) {
+        tracing::warn!(
+            tool = tool_name,
+            sender = %identity.sender_id,
+            rate_limit_id = %identity.rate_limit_id,
+            ceiling = refusal.ceiling.key(),
+            limit = refusal.limit,
+            "rate limit: tool call refused"
+        );
+        return Err(ToolError::new(
+            ToolErrorClass::RateLimited,
+            format!(
+                "this token is over its `{}` ceiling of {} for the `{}` rate-limit profile; \
+                 retry in {}s",
+                refusal.ceiling.key(),
+                refusal.limit,
+                identity.rate_limit_id,
+                refusal.retry_after_secs
+            ),
+        )
+        .with_retry_after(refusal.retry_after_secs));
+    }
     if state.read_only && !READ_ONLY_TOOLS.contains(&tool_name) {
         tracing::info!(tool = tool_name, "read-only instance: tool call refused");
         return Err(ToolError::new(

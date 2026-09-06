@@ -72,11 +72,15 @@ async fn fixture_with_llm(
         document_policy: mwe_core::document::DocumentPolicy::default(),
         reindex_tx: None,
         read_only: false,
+        rate_limiter: Arc::new(mcp::ratelimit::RateLimiter::new(
+            mwe_core::config::RateLimitsConfig::default(),
+        )),
     };
     let identity = IdentityProfile {
         sender_id: "alice".into(),
         device_label: "test-cli".into(),
         rate_limit_id: "default".into(),
+        token_jti: "test-token".into(),
         consumer_id: consumer_id.map(str::to_owned),
         is_admin,
         consumer_class: mwe_core::jwt::ConsumerClass::Standard,
@@ -2302,4 +2306,117 @@ async fn read_only_refuses_to_mint_a_dashboard_session() {
         .await
         .expect_err("dashboard_link must be refused on a frozen instance");
     assert!(err.contains("instance_read_only"), "{err}");
+}
+
+// ---------- per-token call ceilings (`rate_limits:`) ----------
+
+/// The same fixture, holding every token to `profiles` instead of the
+/// built-in ceilings — so a test can reach a ceiling in three calls
+/// rather than in three thousand.
+async fn rate_limited_fixture(
+    profiles: &[(&str, mwe_core::config::RateLimitProfile)],
+) -> (McpState, IdentityProfile, tempfile::TempDir) {
+    let (mut state, identity, dir) = fixture(true, None).await;
+    let profiles = profiles
+        .iter()
+        .map(|(name, p)| ((*name).to_owned(), *p))
+        .collect();
+    state.rate_limiter = Arc::new(mcp::ratelimit::RateLimiter::new(
+        mwe_core::config::RateLimitsConfig { profiles },
+    ));
+    (state, identity, dir)
+}
+
+/// A token past the call ceiling of its profile is refused — with the
+/// class a consumer branches on and the number of seconds to wait.
+#[tokio::test]
+async fn a_token_over_its_call_ceiling_is_refused_with_a_retry_after() {
+    let (state, identity, _dir) = rate_limited_fixture(&[(
+        "default",
+        mwe_core::config::RateLimitProfile {
+            calls_per_minute: 2,
+            ..mwe_core::config::RateLimitProfile::default()
+        },
+    )])
+    .await;
+
+    for i in 1..=2 {
+        call(&state, &identity, "skill_list", json!({}))
+            .await
+            .unwrap_or_else(|e| panic!("call {i} is inside the ceiling: {e}"));
+    }
+    let err = mcp::dispatch(&state, &identity, "skill_list", json!({}))
+        .await
+        .expect_err("the third call is over the ceiling");
+    assert!(
+        matches!(err.class, mcp::error::ToolErrorClass::RateLimited),
+        "{err}"
+    );
+    assert!(err.message.contains("calls_per_minute"), "{err}");
+    assert!(
+        err.retry_after_secs.is_some(),
+        "a refusal about timing says when to come back: {err}"
+    );
+}
+
+/// The model ceiling is a second, lower ceiling on the calls that put a
+/// model or an embedding to work. A tool that spends neither keeps
+/// answering while it is exceeded — the two are not one counter.
+#[tokio::test]
+async fn the_model_ceiling_binds_only_the_calls_that_spend_a_model() {
+    let (state, identity, _dir) = rate_limited_fixture(&[(
+        "default",
+        mwe_core::config::RateLimitProfile {
+            model_calls_per_minute: 1,
+            ..mwe_core::config::RateLimitProfile::default()
+        },
+    )])
+    .await;
+
+    call(&state, &identity, "wiki_search", json!({"query": "one"}))
+        .await
+        .expect("the first search is inside the model ceiling");
+    let err = call(&state, &identity, "wiki_search", json!({"query": "two"}))
+        .await
+        .expect_err("the second search is over the model ceiling");
+    assert!(err.contains("rate_limited"), "{err}");
+    assert!(err.contains("model_calls_per_minute"), "{err}");
+
+    call(&state, &identity, "skill_list", json!({}))
+        .await
+        .expect("a call that spends no model is still served");
+}
+
+/// The ceiling that binds is the one named by the token's own
+/// `rate_limit_id`: the dashboard profile serves a call the default
+/// profile refuses at the same instant.
+#[tokio::test]
+async fn the_profile_that_binds_is_the_one_the_token_names() {
+    let tight = mwe_core::config::RateLimitProfile {
+        calls_per_minute: 1,
+        ..mwe_core::config::RateLimitProfile::default()
+    };
+    let wide = mwe_core::config::RateLimitProfile {
+        calls_per_minute: 50,
+        ..mwe_core::config::RateLimitProfile::default()
+    };
+    let (state, identity, _dir) =
+        rate_limited_fixture(&[("default", tight), ("dashboard", wide)]).await;
+
+    call(&state, &identity, "skill_list", json!({}))
+        .await
+        .expect("first call");
+    let err = call(&state, &identity, "skill_list", json!({}))
+        .await
+        .expect_err("the default profile stops at one call a minute");
+    assert!(err.contains("rate_limited"), "{err}");
+
+    let mut panel = identity.clone();
+    panel.rate_limit_id = "dashboard".into();
+    panel.token_jti = "panel-token".into();
+    for i in 1..=5 {
+        call(&state, &panel, "skill_list", json!({}))
+            .await
+            .unwrap_or_else(|e| panic!("dashboard call {i} is served: {e}"));
+    }
 }

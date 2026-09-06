@@ -40,8 +40,14 @@ pub struct IdentityProfile {
     pub sender_id: String,
     /// `device_label` claim — for audit (`tool_executions.device_label`).
     pub device_label: String,
-    /// `rate_limit_id` claim — referenced from `mwe-mcp.config.yaml`.
+    /// `rate_limit_id` claim — names the `rate_limits:` profile in
+    /// `mwe-mcp.config.yaml` whose ceilings this caller is held to.
     pub rate_limit_id: String,
+    /// `jti` claim — the token's own id, and the bucket the call
+    /// ceilings are counted in (see [`super::ratelimit`]). One token's
+    /// traffic is one token's business: a consumer in a loop must not
+    /// spend the allowance of every other token on the same profile.
+    pub token_jti: String,
     /// `consumer_id` claim — set on bot / orchestrator tokens; required
     /// for `events_poll` / `events_ack` calls.
     pub consumer_id: Option<String>,
@@ -68,6 +74,7 @@ impl IdentityProfile {
             sender_id: claims.sender_id,
             device_label: claims.device_label,
             rate_limit_id: claims.rate_limit_id,
+            token_jti: claims.jti,
             consumer_id: claims.consumer_id,
             is_admin: claims.is_admin,
             consumer_class: claims.consumer_class,
@@ -139,6 +146,12 @@ pub struct McpState {
     /// rather than on [`IdentityProfile`]: no token, role or consumer
     /// class lifts it.
     pub read_only: bool,
+    /// The per-token call ceilings (`rate_limits:` in the config),
+    /// counted by the dispatcher. Shared across connections because the
+    /// counters are per token, not per connection — a caller who opens a
+    /// fresh transport for every call is exactly the caller a ceiling is
+    /// for.
+    pub rate_limiter: Arc<super::ratelimit::RateLimiter>,
 }
 
 impl McpState {

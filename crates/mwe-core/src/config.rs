@@ -2,10 +2,9 @@
 //! `mwe-mcp.config.yaml` loader.
 //!
 //! Incremental — every sub-section becomes a Rust struct
-//! the moment another module needs it. The sections with a Rust home
-//! today:
+//! the moment another module needs it. The fields of [`Config`] are the
+//! sections that have one; one of them carries a rule the rest do not:
 //!
-//! - `logging`.
 //! - `llm` — six canonical functions (`ingest`, `operator_chat`,
 //!   `rem_promotions`, `rem_dedup_semantic`, `cronista`, `navigator`);
 //!   needed by the ingest orchestrator that consumes `llm.ingest`.
@@ -30,9 +29,9 @@
 //!
 //! ## Hot-reload
 //!
-//! Out of scope for now. The spec calls out `rate_limits`, `budget`,
-//! and `rem.schedule` as future hot-reload candidates; `logging.level`
-//! could join them but for now a restart is required.
+//! Out of scope for now: `rate_limits`, `rem.schedule` and
+//! `logging.level` are read at boot, and a change to any of them wants a
+//! restart.
 
 use std::fs;
 use std::path::{Path, PathBuf};
@@ -2375,6 +2374,156 @@ impl RemindersConfig {
     }
 }
 
+// ---------- Rate limits ----------
+
+/// Calls per minute a `default`-profile token may make. Two a second,
+/// sustained.
+const fn default_calls_per_minute() -> u32 {
+    120
+}
+
+/// Calls per hour a `default`-profile token may make — 50 a minute
+/// averaged, so a burst passes and a loop does not.
+const fn default_calls_per_hour() -> u32 {
+    3_000
+}
+
+/// Model-spending calls per minute for a `default`-profile token.
+const fn default_model_calls_per_minute() -> u32 {
+    30
+}
+
+/// Model-spending calls per hour for a `default`-profile token.
+const fn default_model_calls_per_hour() -> u32 {
+    600
+}
+
+/// One ceiling set, named by the `rate_limit_id` claim a token carries.
+///
+/// Four numbers, because two questions are being asked at once. The
+/// **call** ceilings bound the traffic a single token can put through the
+/// dispatcher at all; the **model** ceilings bound the subset of that
+/// traffic that puts a model or the embedder to work, which is the half
+/// that arrives on somebody's invoice. A runaway consumer trips the first
+/// pair in seconds; a token spending money quietly trips the second pair
+/// long before the bill does.
+///
+/// Minute *and* hour, because they answer different failures: the minute
+/// stops a hot loop, the hour stops a slow one that would otherwise run
+/// all night under the per-minute ceiling.
+///
+/// Every field has a default, so a profile in YAML may set one number and
+/// keep the rest.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct RateLimitProfile {
+    /// Calls of any kind, per minute. Default `120`.
+    #[serde(default = "default_calls_per_minute")]
+    pub calls_per_minute: u32,
+    /// Calls of any kind, per hour. Default `3000`.
+    #[serde(default = "default_calls_per_hour")]
+    pub calls_per_hour: u32,
+    /// Calls that spend a model or the embedder, per minute. Default `30`.
+    #[serde(default = "default_model_calls_per_minute")]
+    pub model_calls_per_minute: u32,
+    /// Calls that spend a model or the embedder, per hour. Default `600`.
+    #[serde(default = "default_model_calls_per_hour")]
+    pub model_calls_per_hour: u32,
+}
+
+impl Default for RateLimitProfile {
+    fn default() -> Self {
+        Self {
+            calls_per_minute: default_calls_per_minute(),
+            calls_per_hour: default_calls_per_hour(),
+            model_calls_per_minute: default_model_calls_per_minute(),
+            model_calls_per_hour: default_model_calls_per_hour(),
+        }
+    }
+}
+
+impl RateLimitProfile {
+    /// The ceilings the `dashboard` profile gets: five times the call
+    /// allowance and four times the model allowance of [`Self::default`].
+    ///
+    /// A person clicking through the panel is not a consumer in a loop,
+    /// and the one thing a limit must never do is stop the surface the
+    /// operator would use to see what is happening.
+    #[must_use]
+    pub const fn dashboard() -> Self {
+        Self {
+            calls_per_minute: 600,
+            calls_per_hour: 15_000,
+            model_calls_per_minute: 120,
+            model_calls_per_hour: 2_400,
+        }
+    }
+}
+
+/// `rate_limits:` section — one [`RateLimitProfile`] per `rate_limit_id`,
+/// keyed by the claim name a token carries (`mwe-mcp token-issue
+/// --rate-limit-id`, default `default`).
+///
+/// ```yaml
+/// rate_limits:
+///   default:
+///     calls_per_minute: 120
+///   nightly-import:
+///     model_calls_per_hour: 2000
+/// ```
+///
+/// **The ceilings apply whether or not this section exists.** An empty
+/// section means every token is held to the built-in numbers, not that
+/// nobody is held to anything: a limit that only exists once somebody
+/// writes it down is not a limit. What the section buys is a *different*
+/// number for a named profile.
+///
+/// A `rate_limit_id` with no entry here falls back to the `default`
+/// profile — configured if the operator wrote one, built-in otherwise —
+/// so a token can never name its way out of a ceiling.
+///
+/// Read once at boot; a change wants a restart.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(transparent)]
+pub struct RateLimitsConfig {
+    /// The profiles as written in YAML.
+    pub profiles: std::collections::BTreeMap<String, RateLimitProfile>,
+}
+
+/// The `rate_limit_id` every token carries unless one was chosen.
+pub const DEFAULT_RATE_LIMIT_ID: &str = "default";
+
+/// The `rate_limit_id` baked into the sessions `dashboard_link` mints.
+pub const DASHBOARD_RATE_LIMIT_ID: &str = "dashboard";
+
+impl RateLimitsConfig {
+    /// No profile was declared — every token is held to the built-in
+    /// ceilings.
+    #[must_use]
+    pub fn is_empty(&self) -> bool {
+        self.profiles.is_empty()
+    }
+
+    /// The ceilings that bind a token carrying `rate_limit_id`.
+    ///
+    /// Resolution order: the named profile, then the `default` profile,
+    /// then the built-in numbers — except for `dashboard`, whose built-in
+    /// is [`RateLimitProfile::dashboard`] rather than the default one.
+    #[must_use]
+    pub fn profile(&self, rate_limit_id: &str) -> RateLimitProfile {
+        if let Some(p) = self.profiles.get(rate_limit_id) {
+            return *p;
+        }
+        if rate_limit_id == DASHBOARD_RATE_LIMIT_ID {
+            return RateLimitProfile::dashboard();
+        }
+        self.profiles
+            .get(DEFAULT_RATE_LIMIT_ID)
+            .copied()
+            .unwrap_or_default()
+    }
+}
+
 // ---------- Instance posture ----------
 
 /// `instance:` section — the switches that belong to whoever runs the
@@ -2494,10 +2643,9 @@ impl InstanceConfig {
 
 /// Top-level config object.
 ///
-/// Sub-sections appear here as more modules need them; for now
-/// `logging`, `llm`, and `rem` are materialised, and the rest of the
-/// YAML is captured opaquely in [`Config::extra`] so it does not fail
-/// validation just because it predates the Rust struct.
+/// Sub-sections appear here as more modules need them; a key with no
+/// field of its own is captured opaquely in [`Config::extra`] so it does
+/// not fail validation just because it predates the Rust struct.
 ///
 /// `PartialEq` only (no `Eq`): inherits from [`LlmConfig`], which is
 /// in turn `PartialEq`-only because of the `f32`-typed temperature
@@ -2552,6 +2700,15 @@ pub struct Config {
     /// announces itself. See [`RemindersConfig`].
     #[serde(default)]
     pub reminders: RemindersConfig,
+    /// `rate_limits:` section — how many calls one token may make, per
+    /// `rate_limit_id`. See [`RateLimitsConfig`].
+    ///
+    /// Not written back when it holds no profile: the built-in ceilings
+    /// apply either way, and an empty `rate_limits: {}` above the
+    /// commented example `mwe-mcp init` seeds would make an operator who
+    /// uncomments it write the key twice.
+    #[serde(default, skip_serializing_if = "RateLimitsConfig::is_empty")]
+    pub rate_limits: RateLimitsConfig,
     /// Every other key in the YAML, preserved verbatim so we never
     /// strip an operator's settings during a round-trip.
     #[serde(flatten)]
@@ -4150,5 +4307,50 @@ mod tests {
         let back = serde_yaml::to_string(&cfg).expect("serialize");
         let again = Config::parse(Path::new("test.yaml"), &back).expect("reparse");
         assert_eq!(again.llm_pricing, cfg.llm_pricing);
+    }
+
+    /// A profile in YAML replaces the built-in numbers for the name it
+    /// declares, and the fields it leaves out keep theirs.
+    #[test]
+    fn a_rate_limit_profile_overrides_only_the_numbers_it_states() {
+        let raw = "rate_limits:\n  nightly-import:\n    model_calls_per_hour: 2000\n";
+        let cfg = Config::parse(Path::new("test.yaml"), raw).expect("parse");
+        let p = cfg.rate_limits.profile("nightly-import");
+        assert_eq!(p.model_calls_per_hour, 2000);
+        assert_eq!(
+            p.calls_per_minute,
+            RateLimitProfile::default().calls_per_minute,
+            "an unstated field keeps the built-in number"
+        );
+    }
+
+    /// With no section at all every token is still held to a ceiling —
+    /// the built-in one — and `dashboard` is held to its own, wider one.
+    #[test]
+    fn the_builtin_ceilings_bind_without_a_section() {
+        let cfg =
+            Config::parse(Path::new("test.yaml"), "logging:\n  level: info\n").expect("parse");
+        assert_eq!(
+            cfg.rate_limits.profile("default"),
+            RateLimitProfile::default()
+        );
+        assert_eq!(
+            cfg.rate_limits.profile("some-consumer"),
+            RateLimitProfile::default(),
+            "an unknown profile falls back to the default ceilings, not to none"
+        );
+        let dash = cfg.rate_limits.profile(DASHBOARD_RATE_LIMIT_ID);
+        assert_eq!(dash, RateLimitProfile::dashboard());
+        assert!(dash.calls_per_minute > RateLimitProfile::default().calls_per_minute);
+    }
+
+    /// An operator's own `default` profile is what an unknown name falls
+    /// back to — the built-in numbers are the floor, not an override of
+    /// what they wrote.
+    #[test]
+    fn an_unknown_profile_falls_back_to_the_operators_default() {
+        let raw = "rate_limits:\n  default:\n    calls_per_minute: 7\n";
+        let cfg = Config::parse(Path::new("test.yaml"), raw).expect("parse");
+        assert_eq!(cfg.rate_limits.profile("invented").calls_per_minute, 7);
     }
 }

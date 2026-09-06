@@ -42,8 +42,10 @@ use super::state::{IdentityProfile, McpState};
 /// Default `device_label` for session tokens issued by `dashboard_link`
 /// — matches `mwe-dashboard::auth::session::SESSION_DEVICE_LABEL`.
 const DASHBOARD_DEVICE_LABEL: &str = "dashboard-session";
-/// `rate_limit_id` baked into `dashboard_link`-minted sessions.
-const DASHBOARD_RATE_LIMIT_ID: &str = "dashboard";
+/// `rate_limit_id` baked into `dashboard_link`-minted sessions — the
+/// `rate_limits:` profile they are held to, and the same name
+/// `mwe-dashboard::auth::session::SESSION_RATE_LIMIT_ID` mints.
+const DASHBOARD_RATE_LIMIT_ID: &str = mwe_core::config::DASHBOARD_RATE_LIMIT_ID;
 /// Sliding TTL the dashboard cookie middleware refreshes. We mint the
 /// initial link with the same length so the URL stamp matches the
 /// cookie behaviour the user will see after the first interaction.
