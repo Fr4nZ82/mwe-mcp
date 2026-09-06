@@ -578,3 +578,54 @@ async fn an_erased_id_cannot_be_given_to_a_new_person() {
         "an id nobody was erased under is still free: {accepted}"
     );
 }
+
+/// The confirmation page names the copy the erasure cannot reach.
+///
+/// A snapshot is a sealed archive of the memory as it was, and restoring one
+/// brings the person back whole — the engine cannot open it, so the operator
+/// has to be told before pressing, and sent where the snapshots are. The
+/// training spool it *does* reach, and it says so, because emptying it costs
+/// everybody's training pairs and not only theirs.
+#[tokio::test]
+async fn the_forget_page_names_the_snapshot_and_the_training_spool() {
+    let (app, _pool, _tree, dir) = make_app_with_memory().await;
+    let admin_cookie = login_as_admin(&app).await;
+    create_user(&app, &admin_cookie, "galadriel").await;
+
+    let spool = dir.path().join("training-spool");
+    std::fs::create_dir_all(&spool).expect("spool dir");
+    std::fs::write(spool.join("2026-09-06.jsonl"), "{}\n").expect("spool file");
+
+    let response = send(
+        &app,
+        Request::builder()
+            .uri("/users/galadriel/forget")
+            .header(header::COOKIE, &admin_cookie)
+            .body(Body::empty())
+            .unwrap(),
+    )
+    .await;
+    assert_eq!(response.status(), StatusCode::OK);
+    let html = body_string(response).await;
+
+    assert!(
+        html.contains("snapshot taken before today still holds everything"),
+        "it must say an older snapshot still holds them: {html}"
+    );
+    assert!(
+        html.contains("/dashboard/admin/backup"),
+        "and send the operator to the snapshots: {html}"
+    );
+    assert!(
+        html.contains("The training spool is on disk and is reached"),
+        "it must account for the spool: {html}"
+    );
+    assert!(
+        html.contains("<strong>1</strong> file"),
+        "and count the files it will empty: {html}"
+    );
+    assert!(
+        html.contains("everybody's pairs"),
+        "and say emptying it is not only about this person: {html}"
+    );
+}

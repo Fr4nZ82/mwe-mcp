@@ -39,7 +39,7 @@
 //! it. The test of a rule is where it lives ([`crate::wiki::is_rules_page`]),
 //! which is the same test the channel that serves rules applies.
 //!
-//! ## No copy is kept
+//! ## No copy is kept, and the one the pass cannot reach
 //!
 //! An admin wiki delete moves the directory into `<workdir>/trash/` and lets
 //! `retention.trash_days` finish the job, because the operator may have
@@ -47,6 +47,20 @@
 //! is erased in place ([`crate::wiki_delete::HuskFate::Erase`]), and any
 //! subtree of theirs already sitting in the trash from an earlier delete is
 //! erased with it.
+//!
+//! The **training spool** is the other copy on disk, and it goes whole. With
+//! `training_spool` on, every model call appends the entire prompt to
+//! `<workdir>/training-spool/`, and a prompt carries the recalled memory
+//! verbatim — so those files hold the person, under no subject column of
+//! their own. They are emptied rather than filtered, and
+//! [`crate::training_spool::erase_all`] carries why a per-line filter would
+//! be a false claim.
+//!
+//! A **snapshot** is the copy this pass cannot reach: a sealed archive of
+//! the workdir as it was, which restoring brings back whole, person
+//! included. The confirmation page says so and points at the backup console
+//! — what to do with an old snapshot is the operator's decision, and the
+//! engine is not in a position to take it for them.
 //!
 //! ## The id does not come back
 //!
@@ -274,6 +288,11 @@ pub struct ForgetReport {
     pub wikis_erased: usize,
     /// Subtrees of theirs erased out of `<workdir>/trash/`.
     pub trash_dirs_erased: usize,
+    /// Training-spool files emptied. The spool records whole prompts, and a
+    /// prompt carries the recalled memory verbatim, so it holds them —
+    /// under no subject column of its own, which is why the whole spool
+    /// goes ([`crate::training_spool::erase_all`]).
+    pub training_spool_files_emptied: usize,
     /// Smart wikis outside their own subtree that still name them as owner.
     /// Left standing on purpose — a wiki somebody else may be reading is not
     /// this pass's to destroy — and reported so the operator can decide. No
@@ -424,11 +443,16 @@ pub async fn forget_user(
     // 10 — and whatever an earlier wiki delete left of theirs in the trash.
     report.trash_dirs_erased = erase_trashed_subtrees(tree, user_id);
 
-    // 11 — the id is spent. Last, so it is written only once every step
+    // 11 — the training spool, which is on disk and not in the database.
+    // It records whole prompts, and a prompt carries the recalled memory
+    // verbatim, so it holds what was just erased everywhere else.
+    report.training_spool_files_emptied = crate::training_spool::erase_all(tree.workdir())?;
+
+    // 12 — the id is spent. Last, so it is written only once every step
     // above has succeeded: an erasure that failed half-way is retried under
     // the same id, and a refusal recorded before the work would block the
     // retry.
-    enrollment::mark_forgotten(pool, user_id).await?;
+    enrollment::record_forgotten_id(pool, user_id).await?;
 
     tracing::info!(
         user = user_id,
@@ -449,6 +473,7 @@ pub async fn forget_user(
         lists_amended = report.lists_amended,
         wikis = report.wikis_erased,
         trash_dirs = report.trash_dirs_erased,
+        training_spool_files = report.training_spool_files_emptied,
         consumers = ?report.consumers_dismantled,
         oauth_rows = report.oauth_rows_removed,
         orphan_smart_wikis = ?report.orphan_smart_wikis,
@@ -517,6 +542,8 @@ pub struct ForgetPreview {
     pub media: u64,
     /// Wikis that will be erased — their own and everything under it.
     pub wikis: usize,
+    /// Training-spool files on disk, all of which will be emptied.
+    pub training_spool_files: usize,
 }
 
 /// Count what [`forget_user`] would do, without doing any of it.
@@ -559,6 +586,7 @@ pub async fn forget_preview(
         .filter(|id| tree.locate(id).is_ok())
         .and_then(|id| wiki_delete::collect_subtree(tree, &id).ok())
         .map_or(0, |subtree| subtree.len());
+    preview.training_spool_files = crate::training_spool::file_count(tree.workdir())?;
     Ok(Some(preview))
 }
 
@@ -1718,6 +1746,60 @@ mod tests {
             .await
             .unwrap();
         assert!(again.is_none());
+    }
+
+    /// The training spool holds whole prompts, so it holds her, and it is
+    /// emptied whole.
+    ///
+    /// A spool record has no subject and no sender column — the person is
+    /// inside `request.prompt`, as free text — so there is no honest way to
+    /// take out her lines and leave the rest, and a filter keyed on her id
+    /// would leave behind every prompt that describes her without naming her.
+    /// The files stay, empty, so today's file keeps taking appends.
+    #[tokio::test]
+    async fn the_training_spool_is_emptied_because_a_prompt_has_no_subject() {
+        let (dir, pool, tree) = workdir().await;
+        seed_wiki(&tree, "alice");
+        let tree = WikiTree::open(dir.path()).unwrap();
+        enrol(&pool, "alice").await;
+
+        let spool = dir.path().join(crate::training_spool::TRAINING_SPOOL_DIR);
+        std::fs::create_dir_all(&spool).unwrap();
+        // One line naming her, one that describes her without naming her.
+        std::fs::write(
+            spool.join("2026-09-06.jsonl"),
+            "{\"function\":\"ingest\",\"request\":{\"prompt\":\"sender_id: alice\"}}\n\
+             {\"function\":\"cronista\",\"request\":{\"prompt\":\"her check-up is on Thursday\"}}\n",
+        )
+        .unwrap();
+        std::fs::write(
+            spool.join("2026-09-07.jsonl"),
+            "{\"function\":\"navigator\"}\n",
+        )
+        .unwrap();
+        // Not a spool file, and not this pass's to touch.
+        std::fs::write(spool.join("README.md"), "notes\n").unwrap();
+
+        let report = forget_user(&pool, &tree, embedder(), "alice")
+            .await
+            .unwrap()
+            .expect("she was enrolled");
+
+        assert_eq!(report.training_spool_files_emptied, 2);
+        for day in ["2026-09-06.jsonl", "2026-09-07.jsonl"] {
+            let path = spool.join(day);
+            assert!(path.is_file(), "{day} must still be there to append to");
+            assert_eq!(
+                std::fs::read_to_string(&path).unwrap(),
+                "",
+                "{day} still holds prompts"
+            );
+        }
+        assert_eq!(
+            std::fs::read_to_string(spool.join("README.md")).unwrap(),
+            "notes\n",
+            "only the spool files are emptied"
+        );
     }
 
     /// The id is spent, and only that id.

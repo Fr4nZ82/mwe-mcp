@@ -35,7 +35,7 @@ use axum::http::header;
 use axum::response::{Html, IntoResponse, Response};
 use axum::routing::{get, post};
 use chrono::Utc;
-use maud::html;
+use maud::{Markup, html};
 use mwe_core::enrollment;
 use mwe_core::gdpr;
 use mwe_core::types::WikiId;
@@ -931,6 +931,39 @@ async fn forget_confirm(
     )))
 }
 
+/// The two copies the erasure does not simply remove: the training spool,
+/// which it empties whole because a spool line has no subject, and a
+/// snapshot, which it cannot open at all.
+///
+/// Its own function because the confirmation page is long enough already,
+/// and because this is the part an operator has to act on themselves.
+fn beyond_this_pass(user_id: &str, preview: &gdpr::ForgetPreview) -> Markup {
+    html! {
+            h3 { "What this pass cannot reach" }
+            p {
+                strong { "A snapshot taken before today still holds everything." }
+                " A backup is a sealed archive of the memory as it was, and "
+                "restoring one brings " code { (user_id) } " back whole. Deciding "
+                "what to do with the snapshots you already have is yours to make: "
+                a href="/dashboard/admin/backup" { "open the backup console" }
+                " and delete the ones from before this erasure, or keep them "
+                "knowingly."
+            }
+            @if preview.training_spool_files > 0 {
+                p {
+                    "The training spool is on disk and is reached: "
+                    strong { (preview.training_spool_files) }
+                    @if preview.training_spool_files == 1 { " file" } @else { " files" }
+                    " will be emptied. It records whole prompts, and a prompt carries "
+                    "the recalled memory word for word, so it holds them — with no "
+                    "column saying whose. That leaves no way to take out their lines "
+                    "and leave the rest, so all of it goes, everybody's pairs "
+                    "included. Running the deployment builds it again."
+                }
+            }
+    }
+}
+
 fn render_forget_confirm(
     chrome: layout::Chrome,
     session: &crate::auth::SessionUser,
@@ -940,105 +973,108 @@ fn render_forget_confirm(
 ) -> String {
     let title = format!("Forget — {user_id}");
     let body = html! {
-        h2 { "Forget " code { (user_id) } }
-        @if is_admin {
-            p.flash.flash-error {
-                "This is the deployment admin. Forgetting them would leave nobody who "
-                "can operate the deployment, so it is refused here."
-            }
-            p { a href="/dashboard/users" { "Back to the list" } }
-        } @else {
-            p.flash.flash-error {
-                strong { "Nothing is kept." }
-                " Their wiki is erased where it stands — it does not go to the trash, "
-                "and the 30-day window a deleted wiki gets does not apply. There is "
-                "nothing to put back afterwards."
-            }
+            h2 { "Forget " code { (user_id) } }
+            @if is_admin {
+                p.flash.flash-error {
+                    "This is the deployment admin. Forgetting them would leave nobody who "
+                    "can operate the deployment, so it is refused here."
+                }
+                p { a href="/dashboard/users" { "Back to the list" } }
+            } @else {
+                p.flash.flash-error {
+                    strong { "Nothing is kept." }
+                    " Their wiki is erased where it stands — it does not go to the trash, "
+                    "and the 30-day window a deleted wiki gets does not apply. This pass "
+                    "leaves nothing to put back; the one copy it cannot reach is a "
+                    "snapshot, and that is at the bottom of this page."
+                }
 
-            h3 { "What is destroyed" }
-            ul {
-                li {
-                    "Wikis erased, theirs and everything under it (the wiki a "
-                    "connected app writes for them lives there too): "
-                    strong { (preview.wikis) }
-                }
-                li {
-                    "Facts destroyed — everything they said about themselves, plus "
-                    "every behaviour rule about them: " strong { (preview.facts_destroyed) }
-                    ". A rule is an instruction, not a memory: handed to somebody "
-                    "else it would become an instruction about " em { "them" } "."
-                }
-                li {
-                    "Files they uploaded: " strong { (preview.media) }
-                    ". The copies on disk go too, unless somebody else uploaded the "
-                    "same file."
-                }
-                li {
-                    "Their sign-in and aliases, their group memberships, the "
-                    "permissions letting an app speak as them, the notices waiting "
-                    "for them, and the recent conversation window."
-                }
-                li {
-                    "The id " code { (user_id) } " itself is spent. What stays behind "
-                    "still names them, so handing the id to a new account would hand "
-                    "that person everything the memory keeps under the name. Creating "
-                    "a user under it is refused from here on; the same human coming "
-                    "back gets a different id."
-                }
-            }
-
-            h3 { "What stays, because it is somebody else's memory" }
-            ul {
-                li {
-                    "Facts other people told about them: "
-                    strong { (preview.facts_handed_over) } ". "
-                    em { "\"" (user_id) " did a great job on the client presentation\"" }
-                    " is the speaker's memory of their own working life, and it does "
-                    "not go because " code { (user_id) } " leaves. Each one passes to "
-                    "whoever said it, and " code { (user_id) } " stays written on it "
-                    "as a plain name — an "
-                    strong { "external subject" }
-                    ", a name the memory holds without it being anybody's account, so "
-                    "it gives nobody the right to read or change anything. A fact "
-                    "filed in their wiki moves into the new owner's."
-                }
-                li {
-                    "Facts they told about other people: "
-                    strong { (preview.facts_disowned) }
-                    ". They stay exactly where they are, and only the name of who "
-                    "said it goes, replaced by " code { "user:_removed" }
-                    " — an identity nobody can hold."
-                }
-                li {
-                    "The record of what was done on this deployment stays; the name "
-                    "of who did it is replaced the same way."
-                }
-            }
-
-            p.muted {
-                "Take the copy first if they asked for one: "
-                a href=(format!("/dashboard/users/{user_id}/export")) {
-                    "download everything about " (user_id)
-                }
-                ". You cannot build it afterwards."
-            }
-
-            form action=(format!("/dashboard/users/{user_id}/forget")) method="post" {
-                p {
-                    label for="confirm-id" {
-                        "Type the person's id (" code { (user_id) } ") to confirm:"
+                h3 { "What is destroyed" }
+                ul {
+                    li {
+                        "Wikis erased, theirs and everything under it (the wiki a "
+                        "connected app writes for them lives there too): "
+                        strong { (preview.wikis) }
+                    }
+                    li {
+                        "Facts destroyed — everything they said about themselves, plus "
+                        "every behaviour rule about them: " strong { (preview.facts_destroyed) }
+                        ". A rule is an instruction, not a memory: handed to somebody "
+                        "else it would become an instruction about " em { "them" } "."
+                    }
+                    li {
+                        "Files they uploaded: " strong { (preview.media) }
+                        ". The copies on disk go too, unless somebody else uploaded the "
+                        "same file."
+                    }
+                    li {
+                        "Their sign-in and aliases, their group memberships, the "
+                        "permissions letting an app speak as them, the notices waiting "
+                        "for them, and the recent conversation window."
+                    }
+                    li {
+                        "The id " code { (user_id) } " itself is spent. What stays behind "
+                        "still names them, so handing the id to a new account would hand "
+                        "that person everything the memory keeps under the name. Creating "
+                        "a user under it is refused from here on; the same human coming "
+                        "back gets a different id."
                     }
                 }
-                input id="confirm-id" type="text" name="confirm_id"
-                    autocomplete="off" placeholder=(user_id);
-                p {
-                    button type="submit" class="danger" { "Forget this person" }
-                    " · "
-                    a href="/dashboard/users" { "Cancel" }
+
+                h3 { "What stays, because it is somebody else's memory" }
+                ul {
+                    li {
+                        "Facts other people told about them: "
+                        strong { (preview.facts_handed_over) } ". "
+                        em { "\"" (user_id) " did a great job on the client presentation\"" }
+                        " is the speaker's memory of their own working life, and it does "
+                        "not go because " code { (user_id) } " leaves. Each one passes to "
+                        "whoever said it, and " code { (user_id) } " stays written on it "
+                        "as a plain name — an "
+                        strong { "external subject" }
+                        ", a name the memory holds without it being anybody's account, so "
+                        "it gives nobody the right to read or change anything. A fact "
+                        "filed in their wiki moves into the new owner's."
+                    }
+                    li {
+                        "Facts they told about other people: "
+                        strong { (preview.facts_disowned) }
+                        ". They stay exactly where they are, and only the name of who "
+                        "said it goes, replaced by " code { "user:_removed" }
+                        " — an identity nobody can hold."
+                    }
+                    li {
+                        "The record of what was done on this deployment stays; the name "
+                        "of who did it is replaced the same way."
+                    }
+                }
+
+                (beyond_this_pass(user_id, preview))
+
+    p.muted {
+                    "Take the copy first if they asked for one: "
+                    a href=(format!("/dashboard/users/{user_id}/export")) {
+                        "download everything about " (user_id)
+                    }
+                    ". You cannot build it afterwards."
+                }
+
+                form action=(format!("/dashboard/users/{user_id}/forget")) method="post" {
+                    p {
+                        label for="confirm-id" {
+                            "Type the person's id (" code { (user_id) } ") to confirm:"
+                        }
+                    }
+                    input id="confirm-id" type="text" name="confirm_id"
+                        autocomplete="off" placeholder=(user_id);
+                    p {
+                        button type="submit" class="danger" { "Forget this person" }
+                        " · "
+                        a href="/dashboard/users" { "Cancel" }
+                    }
                 }
             }
-        }
-    };
+        };
     layout::authenticated_reading_page(chrome, &title, session, &body)
 }
 
@@ -1142,6 +1178,26 @@ fn forget_summary(report: &gdpr::ForgetReport) -> String {
              retired and out of recall, and the nightly hygiene pass takes the words off \
              the page, but those pages are worth a look.",
             n = report.facts_left_as_tombstone,
+        );
+    }
+    if report.training_spool_files_emptied > 0 {
+        use std::fmt::Write as _;
+        let _ = write!(
+            msg,
+            " The training spool held whole prompts and therefore held them, with no \
+             column saying whose: {n} spool files were emptied, everybody's pairs \
+             included.",
+            n = report.training_spool_files_emptied,
+        );
+    }
+    {
+        use std::fmt::Write as _;
+        let _ = write!(
+            msg,
+            " A snapshot taken before now still holds all of it — restoring one brings \
+             {user} back whole. Delete the old snapshots from the backup console, or \
+             keep them knowingly.",
+            user = report.user_id,
         );
     }
     if !report.orphan_smart_wikis.is_empty() {

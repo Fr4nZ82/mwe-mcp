@@ -85,6 +85,18 @@ and in the dashboard's session check. Ten migrations, `0068` through `0077`.
   trash, and any subtree of theirs an earlier delete left in the trash is
   erased with it.
 
+  **Two copies live outside the memory, and the erasure treats them
+  differently.** The training spool, when it is switched on, records the
+  whole prompt of every model call, and a prompt carries the recalled memory
+  word for word — so it holds the person, with no column saying whose. There
+  is no honest way to take out their lines and leave the rest (a prompt can
+  describe somebody without ever spelling their id), so the spool is emptied
+  whole, everybody's training pairs included, and the erasure reports how
+  many files it emptied. A **snapshot** is the copy nothing can reach:
+  restoring one brings the person back with everything else. The confirmation
+  page says so before you press and links the backup console, because
+  deleting an old snapshot or keeping it knowingly is the operator's call.
+
   **The id is spent afterwards.** What survives the erasure still names the
   person — a fact handed to another speaker keeps their name, and so does a
   page somebody else wrote — so an account created under the same id would

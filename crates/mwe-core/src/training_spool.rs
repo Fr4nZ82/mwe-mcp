@@ -282,6 +282,69 @@ impl TrainingSpool {
     }
 }
 
+/// Empty every spool file in `workdir` — what a person's erasure does to
+/// the training spool ([`crate::gdpr::forget_user`]).
+///
+/// **All of it, not their lines.** A record has no subject and no sender
+/// column: the person is inside `request.prompt`, as free text, because a
+/// prompt carries the recalled memory verbatim. There is no honest per-line
+/// test for "this one is about her" — a prompt can describe somebody
+/// without ever spelling their id, and a filter keyed on the id would leave
+/// those lines behind while reporting the spool clean. So the spool is
+/// emptied whole, and the erasure says how many files it emptied.
+///
+/// What that costs is a dataset, and a dataset the deployment regenerates by
+/// running: the spool is a derived training artefact, nothing in the product
+/// reads it back, and it is off by default. What the alternative costs is a
+/// copy of a person the memory promised to remove.
+///
+/// The files are truncated rather than deleted, so today's file keeps taking
+/// appends and the directory keeps its shape. Runs whatever the enabled flag
+/// says: files written while it was on are still there after it is switched
+/// off.
+///
+/// Returns how many files were emptied.
+///
+/// # Errors
+///
+/// [`std::io::Error`] when the directory cannot be read or a file cannot be
+/// truncated. Unlike recording, this is **not** best-effort — an erasure
+/// that cannot erase has to say so.
+pub fn erase_all(workdir: &Path) -> std::io::Result<usize> {
+    let dir = workdir.join(TRAINING_SPOOL_DIR);
+    if !dir.is_dir() {
+        return Ok(0);
+    }
+    let mut emptied = 0;
+    for entry in std::fs::read_dir(&dir)? {
+        let path = entry?.path();
+        if path.extension().is_some_and(|e| e == "jsonl") {
+            std::fs::write(&path, b"")?;
+            emptied += 1;
+        }
+    }
+    Ok(emptied)
+}
+
+/// Spool files currently on disk, for the confirmation page's count.
+///
+/// # Errors
+///
+/// [`std::io::Error`] when the directory cannot be read.
+pub fn file_count(workdir: &Path) -> std::io::Result<usize> {
+    let dir = workdir.join(TRAINING_SPOOL_DIR);
+    if !dir.is_dir() {
+        return Ok(0);
+    }
+    let mut n = 0;
+    for entry in std::fs::read_dir(&dir)? {
+        if entry?.path().extension().is_some_and(|e| e == "jsonl") {
+            n += 1;
+        }
+    }
+    Ok(n)
+}
+
 /// Coarse wire string for [`crate::llm::FinishReason`].
 const fn finish_reason_str(reason: crate::llm::FinishReason) -> &'static str {
     match reason {

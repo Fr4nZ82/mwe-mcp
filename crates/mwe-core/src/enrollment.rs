@@ -822,7 +822,7 @@ pub async fn reject_if_agent(pool: &SqlitePool, user_id: &str) -> Result<(), Str
 ///
 /// # Errors
 /// - [`sqlx::Error`] for any SQL failure.
-pub async fn mark_forgotten(pool: &SqlitePool, user_id: &str) -> Result<(), sqlx::Error> {
+pub async fn record_forgotten_id(pool: &SqlitePool, user_id: &str) -> Result<(), sqlx::Error> {
     sqlx::query("INSERT OR IGNORE INTO forgotten_user_ids (user_id, forgotten_at) VALUES (?, ?)")
         .bind(user_id)
         .bind(chrono::Utc::now().to_rfc3339())
