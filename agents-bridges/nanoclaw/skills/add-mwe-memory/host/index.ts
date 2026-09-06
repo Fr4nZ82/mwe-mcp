@@ -22,7 +22,7 @@ import { unguarded } from '../../guard/index.js';
 import { onHostStart, onHostShutdown } from '../../host-lifecycle.js';
 import { log } from '../../log.js';
 import { resolveSession, writeSessionMessage } from '../../session-manager.js';
-import { groupEnabled, loadMweConfig, type MweConfig } from './config.js';
+import { chatLookup, groupEnabled, loadMweConfig, type MweConfig } from './config.js';
 import { startEventsDaemon, type Delivery } from './events.js';
 import { handleMweRequest, type MweOp, type MweRequestArgs } from './turn.js';
 
@@ -37,8 +37,8 @@ function token(): string {
   return readEnvFile(['MWE_TOKEN']).MWE_TOKEN ?? '';
 }
 
-function config(): MweConfig | null {
-  return loadMweConfig(process.cwd());
+function config(onWarn?: (message: string) => void): MweConfig | null {
+  return loadMweConfig(process.cwd(), onWarn);
 }
 
 /**
@@ -54,13 +54,16 @@ function config(): MweConfig | null {
  * Returns true only once the write is durable — the caller acks on that.
  */
 async function enqueueDelivery(delivery: Delivery): Promise<boolean> {
-  const [channelType, ...rest] = delivery.senderKey.split(':');
-  const platformId = rest.join(':');
-  if (!channelType || !platformId) {
+  const lookup = chatLookup(delivery.senderKey);
+  if (!lookup) {
     log.warn('mwe: malformed senderMap key, cannot route a notice', { senderKey: delivery.senderKey });
     return false;
   }
-  const group = await getMessagingGroupByPlatform(channelType, platformId);
+  let group = null;
+  for (const platformId of lookup.platformIds) {
+    group = await getMessagingGroupByPlatform(lookup.channelType, platformId);
+    if (group) break;
+  }
   if (!group) {
     log.warn('mwe: no messaging group for this chat yet — the notice waits', { senderKey: delivery.senderKey });
     return false;
@@ -134,7 +137,9 @@ registerDeliveryAction(
 let stopEvents: (() => void) | undefined;
 
 onHostStart(() => {
-  const cfg = config();
+  // The one read that reports what the configuration dropped: a malformed
+  // senderMap is named once here, not on every turn that loads the file.
+  const cfg = config((message) => log.warn(message));
   if (!cfg) return;
   const secret = token();
   if (!secret) {

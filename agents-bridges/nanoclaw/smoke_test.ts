@@ -114,6 +114,13 @@ const config = {
 
 const answered = new Set<string>();
 let hostRequests = 0;
+/**
+ * How long the host takes to answer one request. An ingest against a live
+ * memory costs tens of seconds, and the turn boundary's ingest is awaited
+ * *inside* the open query — so above zero this puts the container in the state
+ * it is in whenever the memory is slower than the follow-up poller.
+ */
+let hostLatencyMs = 0;
 
 /**
  * One pass of the host's delivery poll, restricted to what this bridge adds:
@@ -132,6 +139,7 @@ async function pumpHost(): Promise<void> {
     if (content.action !== 'mwe_request') continue;
     answered.add(row.id);
     hostRequests++;
+    if (hostLatencyMs > 0) await Bun.sleep(hostLatencyMs);
     const frame = await handleMweRequest(
       { op: content.op, args: content.args ?? {} },
       { config, token: 'test-jwt' },
@@ -217,6 +225,44 @@ function recordingProvider(reply: string): { provider: unknown; prompts: string[
     return reply;
   });
   return { provider, prompts };
+}
+
+/**
+ * A provider whose turn takes real time.
+ *
+ * `processQuery` runs a follow-up poller every 500 ms for as long as a query is
+ * open, and what that poller does on a tick is the difference between an agent
+ * that answers and one that ends its own turn before writing a word. A mock
+ * answering inside the same microtask never lets that timer fire, so no
+ * assertion built on it can see that decision at all. This one waits, on the
+ * clock, before its first text event.
+ */
+function slowProvider(reply: string, delayMs: number): { provider: unknown; prompts: string[] } {
+  const prompts: string[] = [];
+  const mock = new MockProvider({}, (prompt: string) => {
+    prompts.push(prompt);
+    return reply;
+  });
+  const inner = mock.query.bind(mock);
+  mock.query = (input: { prompt: string; continuation?: string }) => {
+    const query = inner(input);
+    return {
+      ...query,
+      events: {
+        async *[Symbol.asyncIterator]() {
+          let waited = false;
+          for await (const event of query.events) {
+            if (!waited && event.type === 'text') {
+              await Bun.sleep(delayMs);
+              waited = true;
+            }
+            yield event;
+          }
+        },
+      },
+    };
+  };
+  return { provider: mock, prompts };
 }
 
 /** Run the real poll loop until `until` holds, then stop it. */
@@ -509,6 +555,70 @@ async function main(): Promise<void> {
         governancePrompt.indexOf('</memory-context>'),
   );
   scriptStub({});
+
+  // -- a turn that outlives the follow-up poll still answers ----------------
+  // The rule: the memory being on is not a reason to end a turn. Only a
+  // follow-up is. A turn with nothing pending runs to its answer however long
+  // the model and the host take over it.
+  // An ordinary ingest answer, named here rather than inherited: the section
+  // above leaves the stub scripted with the governance blocks.
+  scriptStub({
+    wiki_ingest_message: {
+      intent_classified: 'capture',
+      context_snippet: 'Recall: (stub) nothing relevant on file.',
+    },
+  });
+  const beforeSlow = outboundChat().length;
+  const beforeSlowIngests = ingests().length;
+  insertChat('m10', 'Alice', '1', 'quanto manca?');
+  const slow = slowProvider('<message to="famiglia">poco</message>', 1_200);
+  // The host answers slowly too: the turn-boundary ingest is awaited inside
+  // the open query, so this keeps the poller ticking against a live stream.
+  hostLatencyMs = 800;
+  await runTurn(
+    slow.provider,
+    () => outboundChat().length > beforeSlow && ingests().length >= beforeSlowIngests + 2,
+    'a turn slower than the follow-up poll',
+  );
+  hostLatencyMs = 0;
+  ok(
+    'a turn longer than the follow-up poll still reaches the person',
+    outboundChat().length > beforeSlow,
+    'the stream was aborted before the reply was written',
+  );
+  ok('the slow turn ingested the message and the reply', ingests().length === beforeSlowIngests + 2);
+  ok('the reply is the one the model wrote', outboundChat().at(-1)?.text === 'poco');
+
+  // -- a follow-up mid-turn ends the query instead of riding it -------------
+  // The other half of the same rule: a message the memory never saw must not
+  // be pushed into a live stream, so its arrival ends the query and it gets a
+  // turn of its own, with its own ingest and its own recall block.
+  const beforeFollowUp = ingests().length;
+  insertChat('m11', 'Alice', '1', 'prima domanda');
+  const withFollowUp = slowProvider('<message to="famiglia">eccomi</message>', 1_500);
+  const followUpTimer = setTimeout(() => insertChat('m12', 'Alice', '1', 'anzi, aspetta'), 700);
+  await runTurn(
+    withFollowUp.provider,
+    () => ingests().some((c) => c.arguments.text === 'anzi, aspetta'),
+    'the follow-up to get its own ingest',
+  );
+  clearTimeout(followUpTimer);
+  const followUpPrompts = withFollowUp.prompts;
+  ok(
+    'the follow-up never rode the query that was already open',
+    followUpPrompts.length > 0 && !followUpPrompts[0].includes('anzi, aspetta'),
+    JSON.stringify(followUpPrompts[0]?.slice(-120)),
+  );
+  ok(
+    'the follow-up is ingested as its own turn',
+    ingests()
+      .slice(beforeFollowUp)
+      .some((c) => c.arguments.text === 'anzi, aspetta'),
+  );
+  ok(
+    'and it arrives with a recall block of its own',
+    followUpPrompts.some((p) => p.includes('anzi, aspetta') && p.startsWith('<memory-context>')),
+  );
 
   // -- degradation: the memory falls over and the turn still answers --------
   scriptStub({ wiki_ingest_message: '__fail__' });

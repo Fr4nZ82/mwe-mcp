@@ -9,8 +9,11 @@ Stamp it into a nanoclaw fork:
 ncl groups create --template mwe --name mwe --new
 ```
 
-`--name` is yours to choose — it becomes the agent's name and the group folder.
-The product imposes no character: pick the name the household will use.
+`--name` is yours to choose — it becomes the group folder and how the agent
+shows up in `ncl`. It is **not** what the agent answers to: the bridge stops
+nanoclaw injecting a configured name, so the agent's name is a fact of the
+memory (`WHO YOU ARE`) that anybody it serves can give it, in chat. The product
+imposes no character either: it is the household's assistant, not a brand.
 
 ## What it gives the agent
 
@@ -27,11 +30,17 @@ block, per-sender attribution, the reverse channel — are the
 template without that skill installed is a normal nanoclaw agent that has been
 told about a memory it cannot reach.
 
-Install order, both from the same bridge:
+Both arrive from the same bridge, and either order works:
 
-1. the skill (`.claude/skills/add-mwe-memory`), applied to the fork,
-2. this template (`templates/mwe`), stamped into a group,
-3. the group id added to `groups` in `mwe.json`.
+- **Template first** is what nanoclaw's setup wizard does — it stamps the first
+  agent before you have a skill to apply. Applying the skill afterwards clears
+  the memory tree that first boot wrote, so this is the ordinary path.
+- **Skill first** on a fork that already runs: apply it, then stamp the group.
+
+Either way the skill's last step restarts the agent containers as well as the
+service: a container that keeps running answers with the code it booted with.
+`groups` in `mwe.json` stays empty — it is an opt-*out* list, and what makes a
+group ask for the memory is this plugin.
 
 The bridge README has the full walkthrough.
 

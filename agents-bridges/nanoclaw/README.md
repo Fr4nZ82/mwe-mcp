@@ -28,7 +28,15 @@ per-turn contract **v1**
   `X-MWE-Act-As`. Somebody unmapped speaks as `guest`: their turn recalls only
   public memory and stores nothing.
 - **The built-in memory is off.** No `memory/index.md`, no session-start
-  injection, no `conversations/` transcript.
+  injection, no `conversations/` transcript. A tree an earlier boot already
+  wrote is removed when it is still nanoclaw's untouched templates, and
+  nanoclaw's shared `CLAUDE.md` reaches the group without the two sections
+  that teach that store.
+- **Its name comes from the people it serves.** nanoclaw puts a configured
+  name at the top of every system prompt; a memory agent is not given one
+  there. Its name is a fact of the memory — the recall block's `WHO YOU ARE` —
+  so telling it what to be called is something anybody it serves can do, in
+  chat, and it holds.
 - **No session is carried between turns.** Every turn is a fresh provider
   query; its conversational context is the bridge's own recent window plus the
   recall block. Nothing is ever compacted or summarized.
@@ -68,12 +76,21 @@ curl <your-mwe-origin>/bridges/nanoclaw/install.sh | sh
 These are the steps it performs, if you would rather do them by hand. Run them
 from your nanoclaw fork.
 
-1. **Get nanoclaw at the tested ref.**
+1. **Get nanoclaw at the tested ref, with its registry branches.**
 
    ```bash
    git clone https://github.com/nanocoai/nanoclaw
    cd nanoclaw && git checkout v2.3.0
+   git fetch --depth 1 origin channels:refs/remotes/origin/channels
+   git fetch --depth 1 origin providers:refs/remotes/origin/providers
    ```
+
+   The last two lines are not optional. nanoclaw ships no channel adapter in
+   trunk: `/add-telegram` and its siblings copy their files with
+   `git show origin/channels:<path>`, and the alternative providers come from
+   `origin/providers` the same way. A clone of one ref tracks only that ref, so
+   without those refs the setup wizard dies at the channel step with
+   `fatal: invalid object name 'origin/channels'`.
 
 2. **Copy the two directories in.**
 
@@ -84,20 +101,37 @@ from your nanoclaw fork.
    ```
 
 3. **Run nanoclaw's setup** if this is a fresh install (`bash nanoclaw.sh`).
-   At **Template setup** choose **Local templates**, then `mwe`; it stamps the
-   first agent for you. On an existing install, stamp it yourself:
+
+   Name the template first and the wizard offers it instead of asking you to
+   find it:
+
+   ```bash
+   echo 'NANOCLAW_TEMPLATE_PATH=mwe' >> .env
+   ```
+
+   That is the one key nanoclaw's wizard reads out of `.env` (`setup/auto.ts`
+   bridges it into the run); it then asks you to confirm the `mwe` template and
+   stamps the first agent. Decline, and you pick it by hand: **Local
+   templates**, then `mwe`. On an existing install, stamp it yourself:
 
    ```bash
    ncl groups create --template mwe --name mwe --new
    ```
 
-   `--name` is yours: it becomes the agent's name and its group folder. The
-   product imposes no character.
+   `--name` is yours: it becomes the group folder, and nanoclaw's own default
+   for the agent's name. It is not what the agent answers to — that is the
+   memory's business, and anybody it serves can tell it in chat.
+
+   **What the wizard still asks**, whatever is in `.env`: where the sandbox
+   image comes from (**Build it here** needs no account), the OneCLI vault, the
+   Claude sign-in it opens in your browser, and — when you connect a channel —
+   the pairing code you send the bot.
 
 4. **Apply the skill.** From Claude Code, `/add-mwe-memory`. It asks three
    questions — the endpoint, your chat id, your mwe user id — then copies the
-   modules in, splices the reach-ins into five of nanoclaw's own files,
-   writes `mwe.json`, builds and tests.
+   modules in, splices the reach-ins into seven of nanoclaw's own files,
+   clears a memory tree an earlier boot left behind, writes `mwe.json`, builds
+   and tests.
 
    Without Claude Code, the same steps are in
    [`skills/add-mwe-memory/SKILL.md`](skills/add-mwe-memory/SKILL.md) as
@@ -112,13 +146,38 @@ from your nanoclaw fork.
    The installer never carries it, never logs it, and never asks for it on a
    command line.
 
-6. **Fill in `senderMap`** — one line per person (below) — and restart:
+6. **Fill in `senderMap`** — one line per person (below) — and restart. Both
+   halves: the host service, and the agent containers.
 
    ```bash
    source setup/lib/install-slug.sh && systemctl --user restart $(systemd_unit)
+   pnpm exec tsx .claude/skills/add-mwe-memory/restart-mwe-groups.ts
    ```
 
+   The second line is the one that is easy to miss. nanoclaw leaves a session's
+   container running when the host service stops, and the agent runner is a
+   process that read its modules at boot — a read-only mount of the patched
+   source does not reload them. Until the container is replaced, the agent
+   answers with the code as it was before the skill: no ingest, no recall
+   block, a session carried between turns, and **nothing in any log saying
+   so**. The script stops the containers of every group carrying the plugin;
+   they come back on the next message.
+
 7. **Connect a channel** and talk to it.
+
+8. **Check you are talking to the new container**, before you believe anything
+   about the memory:
+
+   ```bash
+   docker logs $(docker ps -q --filter name=nanoclaw | head -1) 2>&1 | grep '\[mwe\]'
+   ```
+
+   `[mwe] memory is on for this agent` is the runner saying it read the patched
+   code and found the plugin. No `[mwe]` line means the pre-skill runner is
+   still serving that chat: `ncl groups restart --id <agent-group-id>`, then
+   send another message. The turn itself shows up as `mwe_request` in the host
+   log and as a `system` row in the session's outbound mailbox
+   (`data/*/<session>/outbound.db`).
 
 ## Configuration — `mwe.json`
 
@@ -145,7 +204,7 @@ after the first two lines is yours to edit.
 | key | what it does |
 |---|---|
 | `serverUrl` | the MCP endpoint, ending in `/mcp`. Plain HTTP is fine for a loopback server; anything else should be HTTPS. |
-| `senderMap` | `<channel>:<platform id>` → mwe user id. **Explicit entries only.** Anyone not listed is a `guest`; there is no fallback to the owner. |
+| `senderMap` | `<channel>:<platform id>` → mwe user id. **Explicit entries only.** Anyone not listed is a `guest`; there is no fallback to the owner. A key with no channel in it (`alice`) is dropped at load with one warning — it names no chat, so nothing could be delivered to it. |
 | `operatorSender` | the chat that gets the daily recap of what the memory did. Empty = no recap. |
 | `locale` | BCP-47 tag sent as `metadata.locale`. Empty = each user's own server-side default. |
 | `maxWindow` | how many messages of recent conversation ride each turn (default 16, the server's cap). |
@@ -165,7 +224,9 @@ is the `mwe` plugin stamped into this group?
 | the session-start hook injects nothing | `container/agent-runner/src/memory/hook.ts` — the hook stays registered, and emits no context |
 | no session is resumed and none is stored | `container/agent-runner/src/poll-loop.ts` — `continuation` is `undefined` on every query, and both `setContinuation` writes are skipped |
 | a follow-up never rides a live query | the same file — a pending message ends the stream and starts a new turn instead |
-| nothing is compacted or summarized | consequence of the above: a turn's context is one turn, so the provider's compaction window is never approached and the transcript-rotation path is never entered |
+| nothing is compacted or summarized, and no `conversations/` transcript is written | consequence of the above. Both archive calls sit behind a session: the pre-compact hook, which a one-turn context never reaches, and the transcript rotation, which runs only when a stored session is about to be resumed. A session found on disk at startup is dropped before that check, so a container replaced mid-life writes none either |
+| the shared `CLAUDE.md` arrives without its `Memory` and `Conversation history` sections | `src/claude-md-compose.ts` — a memory group gets the base filtered by `src/modules/mwe/base.ts` instead of the symlink to it. Host-side, so this one is not in the container |
+| the system prompt does not name the agent | `container/agent-runner/src/destinations.ts` — the identity section is not built; the name is the memory's `WHO YOU ARE` |
 
 Take the plugin off a group (`rm -rf groups/<folder>/plugins/mwe`) and every
 one of them reverts at the next container start.
@@ -241,6 +302,13 @@ line showing up on a turn that did not earn it; the media upload and its
 catalog id; a memory outage that leaves the turn answering; no continuation
 between turns; and the reverse channel's poll → enqueue → ack order, including
 a notice that must not be delivered to the wrong person.
+
+Two of those turns run **on the clock**: a provider that takes longer to answer
+than the follow-up poller's interval, with the host answering slowly too. A
+turn that outlives that poller must still reach the person, and a follow-up
+arriving mid-query must end the query rather than ride it. A mock that answers
+in the same microtask never lets that timer fire, which is how a loop that
+aborted every turn before writing a word stayed green here.
 
 `NANOCLAW_SRC=/path/to/a/local/checkout` clones from disk instead of GitHub;
 `MWE_SMOKE_KEEP=1` leaves the scratch fork behind to poke at.

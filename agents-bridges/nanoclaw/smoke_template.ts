@@ -79,6 +79,24 @@ ok(
   flat.includes('It answers with the memory for that message'),
 );
 ok('the persona forbids a second memory on disk', persona.includes('Never write a memory file'));
+// The name is a fact of the memory, not a container setting — the bridge stops
+// nanoclaw injecting a configured one, so the persona must say where it comes
+// from instead, and must not tell the agent to answer to a name it was given.
+ok(
+  'the persona says the name comes from the people it serves, and lives in the memory',
+  flat.includes('Your name is the one the people you serve give you') && flat.includes('WHO YOU ARE'),
+);
+ok(
+  'the persona forbids inventing a name and taking one from a chat label',
+  flat.includes('do not invent one') && flat.includes('sender=') && flat.includes('WHO IS SPEAKING'),
+);
+// The standing rule, stated as a denial because the plausible alternative —
+// the person who installs the agent names it — is the one nanoclaw itself
+// implements and the one this bridge does not.
+ok(
+  'the persona never sources the name from whoever installed the agent',
+  !flat.includes('installed you chose your name') && !flat.includes('answer to it'),
+);
 ok('the persona covers guests', persona.toLowerCase().includes('guest'));
 ok(
   'the persona does not promise a seed the bridge never injects',

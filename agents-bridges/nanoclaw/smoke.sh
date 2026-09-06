@@ -75,6 +75,7 @@ echo "checking the install is idempotent"
     PATCHER=.claude/skills/add-mwe-memory/apply-fork-patches.ts
     UPSTREAM="container/agent-runner/src/poll-loop.ts container/agent-runner/src/memory"
     UPSTREAM="$UPSTREAM src/modules/index.ts container/agent-runner/src/mcp-tools/index.ts"
+    UPSTREAM="$UPSTREAM container/agent-runner/src/destinations.ts src/claude-md-compose.ts"
     before="$(git status --porcelain | sort)"
     bun "$PATCHER" | grep -q '^applied: 0 edit(s)' || { echo "FAIL: re-applying changed the fork"; exit 1; }
     bun "$PATCHER" --remove >/dev/null
@@ -83,6 +84,20 @@ echo "checking the install is idempotent"
     bun "$PATCHER" >/dev/null
     [ "$before" = "$(git status --porcelain | sort)" ] || { echo "FAIL: the round trip left the fork different"; exit 1; }
     echo "ok   applying twice is a no-op, and --remove restores the originals"
+)
+
+# The restart step the harness skips (it owns process lifecycle), run here for
+# the one path that needs no host: a fork where no group carries the plugin
+# must say so and exit clean, not reach for ncl.
+echo "checking the group restart step"
+(
+    cd "$FORK"
+    out="$(pnpm exec tsx .claude/skills/add-mwe-memory/restart-mwe-groups.ts)"
+    echo "$out" | grep -q 'no group carries the mwe plugin yet' || {
+        echo "FAIL: the restart step did not recognise a fork with no mwe group: $out"
+        exit 1
+    }
+    echo "ok   the restart step is a no-op with no mwe group"
 )
 
 # The tests the skill ships, run where they landed.

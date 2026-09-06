@@ -12,7 +12,17 @@ import fs from 'fs';
 import os from 'os';
 import path from 'path';
 
-import { actAsFor, GUEST, groupEnabled, loadMweConfig, reverseRoutes, type MweConfig } from './config.js';
+import {
+  actAsFor,
+  chatLookup,
+  GUEST,
+  groupEnabled,
+  loadMweConfig,
+  reverseRoutes,
+  type MweConfig,
+} from './config.js';
+import { dropSections, mweSharedBase } from './base.js';
+import { mweGroupFolders, mweGroupIds, SCAFFOLD_FILES, whyMemoryTreeIsNotPristine } from './groups.js';
 import { handleMweRequest } from './turn.js';
 import {
   buildDigestInstruction,
@@ -400,5 +410,184 @@ describe('the token', () => {
       { config: config(), token: 'jwt', clientFor: () => client as never },
     );
     expect(spy).toHaveBeenCalledWith('wiki_search', expect.objectContaining({ query: 'cane' }));
+  });
+});
+
+describe('a senderMap key', () => {
+  function writeConfig(dir: string, senderMap: Record<string, string>): void {
+    fs.writeFileSync(
+      path.join(dir, 'mwe.json'),
+      JSON.stringify({ serverUrl: 'http://127.0.0.1:8742/mcp', senderMap }),
+    );
+  }
+
+  it('is dropped when it names no channel, and reported once', () => {
+    // A bare key (the shape hermes accepts) routes nothing: there is no channel
+    // to deliver a notice on. Keeping it meant a warning per key per tick of the
+    // reverse channel. It is dropped at load instead, and named once.
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'mwe-cfg-'));
+    writeConfig(dir, { 'telegram:1': 'alice', bob: 'bob', '': 'nobody' });
+    const warnings: string[] = [];
+    const loaded = loadMweConfig(dir, (message) => warnings.push(message));
+    expect(loaded?.senderMap).toEqual({ 'telegram:1': 'alice' });
+    expect(warnings).toHaveLength(1);
+    expect(warnings[0]).toContain('bob');
+    expect(warnings[0]).toContain('<channel>:<platform id>');
+    // A person behind a dropped key is a guest, never somebody else.
+    expect(actAsFor(loaded as MweConfig, 'bob')).toBe(GUEST);
+  });
+
+  it('is silent when the file is clean, and silent when nobody is listening', () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'mwe-cfg-'));
+    writeConfig(dir, { 'telegram:1': 'alice' });
+    const warnings: string[] = [];
+    expect(loadMweConfig(dir, (message) => warnings.push(message))?.senderMap).toEqual({ 'telegram:1': 'alice' });
+    expect(warnings).toEqual([]);
+    // The per-turn read passes no callback: a malformed file is named once per
+    // host start, not once per turn.
+    writeConfig(dir, { bob: 'bob' });
+    expect(loadMweConfig(dir)?.senderMap).toEqual({});
+  });
+});
+
+describe('finding the chat a notice belongs in', () => {
+  it('asks for the platform id nanoclaw actually stores', () => {
+    // nanoclaw's Telegram adapter registers a paired chat with the channel in
+    // the column: platform_id = 'telegram:<chat id>'. Asking for the bare id —
+    // the obvious reading of "<channel>:<platform id>" — matches no row, and
+    // every notice waits forever for a chat that is right there.
+    const lookup = chatLookup('telegram:123456789');
+    expect(lookup?.channelType).toBe('telegram');
+    expect(lookup?.platformIds[0]).toBe('telegram:123456789');
+    expect(lookup?.platformIds).toContain('123456789');
+  });
+
+  it('has nothing to look up for a key that names no channel', () => {
+    expect(chatLookup('alice')).toBeNull();
+    expect(chatLookup('')).toBeNull();
+  });
+});
+
+describe('which groups carry the memory', () => {
+  function stampGroup(root: string, folder: string, withPlugin: boolean): string {
+    const groupDir = path.join(root, 'groups', folder);
+    fs.mkdirSync(groupDir, { recursive: true });
+    if (withPlugin) {
+      fs.mkdirSync(path.join(groupDir, 'plugins', 'mwe'), { recursive: true });
+      fs.writeFileSync(path.join(groupDir, 'plugins', 'mwe', 'plugin.json'), '{"name":"mwe"}');
+    }
+    return groupDir;
+  }
+
+  it('is decided by the stamped plugin, not by a setting', () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), 'mwe-fork-'));
+    stampGroup(root, 'famiglia', true);
+    stampGroup(root, 'lavoro', false);
+    expect(mweGroupFolders(root)).toEqual(['famiglia']);
+    expect(mweGroupIds(root, [
+      { id: 'ag-1', folder: 'famiglia' },
+      { id: 'ag-2', folder: 'lavoro' },
+      { folder: 'famiglia' },
+    ])).toEqual(['ag-1']);
+  });
+
+  it('is an empty list for a fork that has never spawned an agent', () => {
+    expect(mweGroupFolders(fs.mkdtempSync(path.join(os.tmpdir(), 'mwe-fork-')))).toEqual([]);
+  });
+});
+
+describe('the shared CLAUDE.md a memory group receives', () => {
+  const BASE = [
+    'You are a NanoClaw agent.',
+    '',
+    '## Workspace',
+    '',
+    'Files you create are saved in `/workspace/agent/`.',
+    '',
+    '## Memory',
+    '',
+    'Your persistent memory lives under `/workspace/agent/memory/`.',
+    '',
+    '## Conversation history',
+    '',
+    'The `conversations/` folder holds searchable transcripts.',
+    '',
+  ].join('\n');
+
+  function fork(withPlugin: boolean): { root: string; groupDir: string } {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), 'mwe-base-'));
+    fs.mkdirSync(path.join(root, 'container'), { recursive: true });
+    fs.writeFileSync(path.join(root, 'container', 'CLAUDE.md'), BASE);
+    const groupDir = path.join(root, 'groups', 'famiglia');
+    fs.mkdirSync(groupDir, { recursive: true });
+    if (withPlugin) {
+      fs.mkdirSync(path.join(groupDir, 'plugins', 'mwe'), { recursive: true });
+      fs.writeFileSync(path.join(groupDir, 'plugins', 'mwe', 'plugin.json'), '{"name":"mwe"}');
+    }
+    return { root, groupDir };
+  }
+
+  it('drops the sections that teach a second memory on disk', () => {
+    // The persona says never to look in memory/ or conversations/. The base
+    // said the opposite, and said it AFTER the persona. Both go.
+    const { root, groupDir } = fork(true);
+    const base = mweSharedBase(root, groupDir) as string;
+    expect(base).not.toContain('## Memory');
+    expect(base).not.toContain('/workspace/agent/memory/');
+    expect(base).not.toContain('## Conversation history');
+    expect(base).not.toContain('conversations/');
+    // Everything else nanoclaw tells an agent is untouched.
+    expect(base).toContain('You are a NanoClaw agent.');
+    expect(base).toContain('## Workspace');
+    expect(base).toContain('Files you create are saved in `/workspace/agent/`.');
+  });
+
+  it('leaves a group without the plugin on nanoclaw own base', () => {
+    // null means "keep the symlink": an ordinary agent is untouched, and the
+    // bridge never rewrites a base for a group that did not ask for one.
+    const { root, groupDir } = fork(false);
+    expect(mweSharedBase(root, groupDir)).toBeNull();
+  });
+
+  it('drops a named section whole, and only the named ones', () => {
+    expect(dropSections('## A\nkeep me not\n\n## B\nkeep me\n', ['A'])).toBe('## B\nkeep me\n');
+    expect(dropSections('## A\nbody\n', ['Missing'])).toBe('## A\nbody\n');
+  });
+});
+
+describe('the memory tree an earlier boot left behind', () => {
+  function scaffold(): { memoryDir: string; templatesDir: string } {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), 'mwe-scaffold-'));
+    const templatesDir = path.join(root, 'templates');
+    const memoryDir = path.join(root, 'memory');
+    for (const dir of [templatesDir, memoryDir]) fs.mkdirSync(path.join(dir, 'system'), { recursive: true });
+    for (const rel of SCAFFOLD_FILES) {
+      fs.writeFileSync(path.join(templatesDir, rel), `template ${rel}\n`);
+      fs.writeFileSync(path.join(memoryDir, rel), `template ${rel}\n`);
+    }
+    return { memoryDir, templatesDir };
+  }
+
+  it('is removable only when it is the templates and nothing else', () => {
+    const { memoryDir, templatesDir } = scaffold();
+    expect(whyMemoryTreeIsNotPristine(memoryDir, templatesDir)).toBeNull();
+  });
+
+  it('is kept when the agent wrote anything of its own', () => {
+    const { memoryDir, templatesDir } = scaffold();
+    fs.writeFileSync(path.join(memoryDir, 'alice.md'), 'she prefers the early train\n');
+    expect(whyMemoryTreeIsNotPristine(memoryDir, templatesDir)).toContain('alice.md');
+  });
+
+  it('is kept when a template was edited, byte for byte', () => {
+    const { memoryDir, templatesDir } = scaffold();
+    fs.appendFileSync(path.join(memoryDir, 'system/definition.md'), 'and one more rule\n');
+    expect(whyMemoryTreeIsNotPristine(memoryDir, templatesDir)).toContain('system/definition.md');
+  });
+
+  it('is kept when it is not the scaffold at all', () => {
+    const { memoryDir, templatesDir } = scaffold();
+    fs.rmSync(path.join(memoryDir, 'index.md'));
+    expect(whyMemoryTreeIsNotPristine(memoryDir, templatesDir)).toContain('index.md');
   });
 });

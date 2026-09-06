@@ -3,7 +3,7 @@
  * The edits `add-mwe-memory` makes to nanoclaw's own files.
  *
  * Everything else the skill installs is a whole new file. These are splices
- * into upstream code, across five files, so they live here rather than in
+ * into upstream code, across seven files, so they live here rather than in
  * prose: each is an exact anchor plus a replacement carrying an `// mwe:`
  * marker, applied at most once and removable by the same script with
  * `--remove`. Run it twice and the second run changes nothing and says so;
@@ -32,8 +32,10 @@ interface Patch {
 const POLL_LOOP = 'container/agent-runner/src/poll-loop.ts';
 const SCAFFOLD = 'container/agent-runner/src/memory/scaffold.ts';
 const MEMORY_HOOK = 'container/agent-runner/src/memory/hook.ts';
+const DESTINATIONS = 'container/agent-runner/src/destinations.ts';
 const MCP_BARREL = 'container/agent-runner/src/mcp-tools/index.ts';
 const HOST_BARREL = 'src/modules/index.ts';
+const CLAUDE_MD_COMPOSE = 'src/claude-md-compose.ts';
 
 const PATCHES: Patch[] = [
   // 1. The memory tree. The scaffold is called unconditionally from the
@@ -75,7 +77,56 @@ const source = mweActive() ? undefined : readSource();
 const context = source ? memoryContextForSessionStart(source, process.argv[2]) : undefined;
 if (context) console.log(context);`,
   },
-  // 3. The per-turn contract: the ingest and the recall block go in front of
+  // 3. The agent's name. nanoclaw injects a configured one at the top of
+  // every system prompt; with the memory on, the name is a fact the memory
+  // holds and the people it serves give, so the section is not injected.
+  {
+    file: DESTINATIONS,
+    anchor: `import { getAgentMailbox } from './mailbox/index.js';
+import type { Destination } from './mailbox/types.js';`,
+    replacement: `import { getAgentMailbox } from './mailbox/index.js';
+import type { Destination } from './mailbox/types.js';
+
+import { mweActive } from './mwe/active.js'; // mwe: the memory switch`,
+  },
+  {
+    file: DESTINATIONS,
+    anchor: `  const sections: string[] = [];
+
+  if (assistantName) {`,
+    replacement: `  const sections: string[] = [];
+
+  // mwe: the agent's name is a fact of the memory — the \`WHO YOU ARE\`
+  // section of the recall block, given by the people it serves. A name
+  // configured on this side would name it before anybody had.
+  if (assistantName && !mweActive()) {`,
+  },
+  // 4. The shared CLAUDE.md. The base teaches an on-disk memory tree and a
+  // conversations/ folder to recall from; for a memory group those are
+  // instructions to look where the persona forbids, and they are composed
+  // AFTER the persona, where a model reads them as the later word.
+  {
+    file: CLAUDE_MD_COMPOSE,
+    anchor: `import { readGroupPersona } from './group-persona.js';
+import type { AgentGroup } from './types.js';`,
+    replacement: `import { readGroupPersona } from './group-persona.js';
+import { mweSharedBase } from './modules/mwe/base.js'; // mwe: the base a memory group gets
+import type { AgentGroup } from './types.js';`,
+  },
+  {
+    file: CLAUDE_MD_COMPOSE,
+    anchor: `  const sharedLink = path.join(groupDir, '.claude-shared.md');
+  syncSymlink(sharedLink, SHARED_CLAUDE_MD_CONTAINER_PATH);`,
+    replacement: `  const sharedLink = path.join(groupDir, '.claude-shared.md');
+  // mwe: a group carrying the plugin gets the base with its memory sections
+  // removed, written where the symlink would have gone. Recomposed on every
+  // spawn, so it cannot drift from the fork's own base; a group without the
+  // plugin keeps the symlink and the base entire.
+  const mweBase = mweSharedBase(process.cwd(), groupDir);
+  if (mweBase === null) syncSymlink(sharedLink, SHARED_CLAUDE_MD_CONTAINER_PATH);
+  else writeAtomic(sharedLink, mweBase);`,
+  },
+  // 5. The per-turn contract: the ingest and the recall block go in front of
   // the batch nanoclaw already formatted, and the turn opens a fresh provider
   // session every time.
   {
@@ -139,13 +190,48 @@ import { clearWindow } from './mwe/window.js';`,
   },
   {
     file: POLL_LOOP,
-    anchor: `        if (pending.some((m) => isRunnerCommand(m))) {`,
-    replacement: `        // mwe: a follow-up is a new turn, and a new turn is a new query with
+    anchor: `        // Accumulated context must not engage a warm query by itself.
+        if (!newMessages.some((m) => m.trigger === 1)) return;
+
+        const newIds = newMessages.map((m) => m.id);`,
+    replacement: `        // Accumulated context must not engage a warm query by itself.
+        if (!newMessages.some((m) => m.trigger === 1)) return;
+
+        // mwe: a follow-up is a new turn, and a new turn is a new query with
         // its own ingest and recall block. Pushing it into the live stream
-        // would hand the model a message the memory never saw. Leave the rows
-        // pending and let the outer loop pick them up, exactly as a slash
-        // command does.
-        if (mweStateless() || pending.some((m) => isRunnerCommand(m))) {`,
+        // would hand the model a message the memory never saw. So end this
+        // query and leave the rows pending and unclaimed — the outer loop
+        // picks them up on its next pass, exactly as it does a slash command.
+        // It sits here, after the poller has found a real trigger=1 follow-up,
+        // and not at the top: asked earlier it would fire on the poller's own
+        // schedule and end every turn before the agent had written a word.
+        if (mweStateless()) {
+          log('mwe: follow-up arrived — ending this query so the next turn gets its own ingest and recall');
+          endedForCommand = true;
+          query.abort();
+          return;
+        }
+
+        const newIds = newMessages.map((m) => m.id);`,
+  },
+  // A session on disk is a session carried between turns, so the stateless
+  // model has to drop one at startup as well as never write one: a container
+  // that outlived a host restart, or a group wired after its first turns,
+  // both leave one behind.
+  {
+    file: POLL_LOOP,
+    anchor: `  let continuation: string | undefined = migrateLegacyContinuation(config.providerName);`,
+    replacement: `  let continuation: string | undefined = migrateLegacyContinuation(config.providerName);
+
+  // mwe: a stored session would be resumed here and hand the model the very
+  // transcript the recall block replaces. Dropped once, at startup, so "no
+  // session is carried between turns" also holds for the first turn after a
+  // container is replaced.
+  if (mweStateless() && continuation) {
+    log('mwe: dropping a stored session — a turn is the recall block plus the recent window');
+    clearContinuation(config.providerName);
+    continuation = undefined;
+  }`,
   },
   {
     file: POLL_LOOP,
@@ -171,7 +257,7 @@ import { clearWindow } from './mwe/window.js';`,
         clearContinuation(config.providerName);
         clearWindow(); // mwe: a clean slate means the recent window too`,
   },
-  // 4. The two barrels.
+  // 6. The two barrels.
   {
     file: MCP_BARREL,
     anchor: `import './self-mod.js';`,

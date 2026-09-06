@@ -21,7 +21,13 @@ What changes for an agent in a group carrying the `mwe` plugin:
 - **The built-in memory tree is off.** `memory/index.md` is not created and
   the session-start hook injects nothing: a second, ungoverned store would go
   stale, skip per-reader redaction and give the model a place to look instead
-  of the recall block.
+  of the recall block. A scaffold an earlier boot already wrote is removed
+  when it is still NanoClaw's untouched templates, and NanoClaw's shared
+  `CLAUDE.md` reaches the group without the sections that teach that store.
+- **The agent's name comes from the people it serves.** NanoClaw puts a
+  configured name at the top of the system prompt; a memory agent is not
+  given one there. Its name is a fact of the memory, in the recall block's
+  `WHO YOU ARE`, and until somebody has given it one it does not have one.
 - **No session is carried between turns.** Each turn opens a fresh provider
   query whose conversational context is the recent window plus the recall
   block, so nothing ever needs compacting and no summary is ever written.
@@ -80,11 +86,14 @@ The memory server is reached from the host, never from inside an agent
 container: NanoClaw refuses a container whose environment carries a
 secret-shaped value, so the bearer token stays on this side of the boundary and
 the container asks the host to act for it. This is that host side — the MCP
-client, the configuration, the per-turn handler, the reverse channel and the
+client, the configuration, which groups carry the memory, the shared
+`CLAUDE.md` they receive, the per-turn handler, the reverse channel and the
 registration that wires them in — plus the tests that guard them.
 
 ```nc:copy
 host/config.ts -> src/modules/mwe/config.ts
+host/groups.ts -> src/modules/mwe/groups.ts
+host/base.ts -> src/modules/mwe/base.ts
 host/client.ts -> src/modules/mwe/client.ts
 host/turn.ts -> src/modules/mwe/turn.ts
 host/events.ts -> src/modules/mwe/events.ts
@@ -111,17 +120,33 @@ mwe-turn.test.ts -> container/agent-runner/src/mwe/mwe-turn.test.ts
 
 ### 3. The reach-ins
 
-Five of NanoClaw's own files need a line or two: the poll loop runs the turn's
+Seven of NanoClaw's own files need a line or two: the poll loop runs the turn's
 memory work and opens a fresh session each time, the memory scaffold and its
-session-start hook stand down, and two barrels pick up the new modules. Each
-edit is anchored on exact upstream text and applied at most once, so running
-this again after an upgrade is safe and says so.
+session-start hook stand down, the system prompt stops naming the agent, the
+`CLAUDE.md` composer hands a memory group a base without the sections that
+teach an on-disk store, and two barrels pick up the new modules. Each edit is
+anchored on exact upstream text and applied at most once, so running this again
+after an upgrade is safe and says so.
 
 ```nc:run effect:wire
 pnpm exec tsx .claude/skills/add-mwe-memory/apply-fork-patches.ts
 ```
 
-### 4. The configuration
+### 4. The memory tree an earlier boot left behind
+
+If a group was stamped and woken before this skill was applied — the order the
+README recommends — its first container already copied NanoClaw's three memory
+templates into `groups/<folder>/memory/`. The switch stops them being written
+again; it does not remove the copy. This does, for every group carrying the
+plugin, and **only** when the tree is still those three files byte for byte.
+Anything else is somebody's work: it is kept and named, and yours to read and
+delete.
+
+```nc:run effect:wire
+pnpm exec tsx .claude/skills/add-mwe-memory/clear-memory-scaffold.ts
+```
+
+### 5. The configuration
 
 `mwe.json` at the fork root holds the endpoint and who is who. An existing file
 is merged into, so a senderMap you have been building up survives.
@@ -134,7 +159,7 @@ Add one `senderMap` line per person as they arrive. The key is their
 `<channel>:<platform id>`, the value their mwe user id. Anyone not listed
 speaks as a guest, which is the safe answer — never somebody else's identity.
 
-### 5. The token
+### 6. The token
 
 The bearer token is the one thing this skill will not touch: it is not an
 argument, it is not logged, and it never passes through an installer.
@@ -162,7 +187,8 @@ cd container/agent-runner && bun test src/mwe/mwe-turn.test.ts
 ```
 
 The agent-runner source is bind-mounted into the container, so there is no
-image to rebuild — a restart is enough.
+image to rebuild. Two things have to restart, though, and the second is the one
+that is easy to miss.
 
 ```nc:run effect:restart
 source setup/lib/install-slug.sh && systemctl --user restart $(systemd_unit)
@@ -170,6 +196,18 @@ source setup/lib/install-slug.sh && systemctl --user restart $(systemd_unit)
 
 On macOS the restart is `launchctl kickstart -k gui/$(id -u)/$(launchd_label)`
 instead.
+
+**A running agent container survives that.** NanoClaw does not stop a session's
+container when the host service stops, and the runner is a process that read
+its modules at boot — a read-only mount of the patched source does not reload
+them. Until the container is replaced, the agent keeps answering with the code
+as it was before: no ingest, no recall block, a session carried between turns,
+and nothing in any log saying so. This stops the containers of every group
+carrying the plugin; they come back on the next message.
+
+```nc:run effect:restart
+pnpm exec tsx .claude/skills/add-mwe-memory/restart-mwe-groups.ts
+```
 
 ## Give an agent the memory
 
@@ -181,23 +219,42 @@ that explains the memory and the mechanics that provide it arrive together.
 ncl groups create --template mwe --name mwe --new
 ```
 
-Pick any name — it becomes the agent's name and its group folder. Then connect
-a channel the usual way (`/manage-channels`, or `ncl wirings create`) and
-restart. A group without the plugin is an ordinary NanoClaw agent, untouched.
+`--name` becomes the group folder and how the agent shows up in `ncl`. It is
+not what the agent answers to: that name is a fact of the memory, and anybody
+it serves can tell it in chat. Then connect a channel the usual way
+(`/manage-channels`, or `ncl wirings create`) and restart both halves. A group
+without the plugin is an ordinary NanoClaw agent, untouched.
 
 ## Check it worked
 
-Send the agent a message, then look at the host log:
+Send the agent a message. The first thing to confirm is that you are talking to
+a **new** container — an old one answers perfectly well and remembers nothing.
+
+```bash
+docker ps --filter name=nanoclaw --format '{{.Names}}\t{{.CreatedAt}}'
+docker logs $(docker ps -q --filter name=nanoclaw | head -1) 2>&1 | grep '\[mwe\]'
+```
+
+`[mwe] memory is on for this agent` is the runner saying it read the patched
+code and found the plugin. A container older than your restart, or one whose
+log has no `[mwe]` line at all, is the pre-skill runner: stop it with
+`ncl groups restart --id <agent-group-id>` and send another message.
+
+Then the turn itself, from the two sides that record it:
 
 ```bash
 journalctl --user -u nanoclaw -n 50 | grep mwe
+ncl sessions list
 ```
 
-A working turn logs `mwe_request` handling on the host and, in the container
-log, `memory is on for this agent`. Then ask the agent something you told it
-in an earlier conversation: it should answer without being reminded.
+A working turn logs `mwe_request` handling on the host, and the session's
+outbound mailbox (`data/*/<session>/outbound.db`, table `messages_out`) carries
+`system` rows whose content names `mwe_request`. No such row means the turn
+never asked the memory anything.
 
-To see what it stored, ask it for your dashboard link.
+Then ask the agent something you told it in an earlier conversation: it should
+answer without being reminded. To see what it stored, ask it for your dashboard
+link.
 
 ## Troubleshooting
 
