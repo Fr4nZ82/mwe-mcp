@@ -20,7 +20,7 @@ async fn create_admin(app: &axum::Router) -> String {
             .uri("/setup")
             .header(header::CONTENT_TYPE, "application/x-www-form-urlencoded")
             .body(Body::from(format!(
-                "email=francesco@example.com&admin_id=francesco\
+                "email=alice@example.com&admin_id=alice\
                  &password={PASSWORD}&password_confirm={PASSWORD}"
             )))
             .unwrap(),
@@ -57,7 +57,7 @@ async fn sign_in(app: &axum::Router) -> String {
             .uri("/login")
             .header(header::CONTENT_TYPE, "application/x-www-form-urlencoded")
             .body(Body::from(format!(
-                "email=francesco@example.com&password={PASSWORD}"
+                "email=alice@example.com&password={PASSWORD}"
             )))
             .unwrap(),
     )

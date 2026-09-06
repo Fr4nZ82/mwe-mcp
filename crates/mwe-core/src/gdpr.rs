@@ -1460,7 +1460,7 @@ mod tests {
         sqlx::query(
             "INSERT INTO consumer_delegations
                  (consumer_id, allowed_sender_ids, granted_at, granted_by)
-             VALUES ('assistant', '[\"alice\",\"bob\"]', '2026-09-06T00:00:00Z', 'francesco')",
+             VALUES ('assistant', '[\"alice\",\"bob\"]', '2026-09-06T00:00:00Z', 'carol')",
         )
         .execute(&pool)
         .await

@@ -22,7 +22,7 @@ async fn login_as_admin(app: &axum::Router) -> String {
             .uri("/setup")
             .header(header::CONTENT_TYPE, "application/x-www-form-urlencoded")
             .body(Body::from(
-                "email=francesco@example.com&admin_id=francesco&password=correct-horse-battery&password_confirm=correct-horse-battery",
+                "email=alice@example.com&admin_id=alice&password=correct-horse-battery&password_confirm=correct-horse-battery",
             ))
             .unwrap(),
     )
@@ -235,7 +235,7 @@ async fn the_deployment_admin_cannot_be_forgotten() {
     let response = send(
         &app,
         Request::builder()
-            .uri("/users/francesco/forget")
+            .uri("/users/alice/forget")
             .header(header::COOKIE, &admin_cookie)
             .body(Body::empty())
             .unwrap(),
@@ -256,10 +256,10 @@ async fn the_deployment_admin_cannot_be_forgotten() {
         &app,
         Request::builder()
             .method("POST")
-            .uri("/users/francesco/forget")
+            .uri("/users/alice/forget")
             .header(header::CONTENT_TYPE, "application/x-www-form-urlencoded")
             .header(header::COOKIE, &admin_cookie)
-            .body(Body::from("confirm_id=francesco"))
+            .body(Body::from("confirm_id=alice"))
             .unwrap(),
     )
     .await;

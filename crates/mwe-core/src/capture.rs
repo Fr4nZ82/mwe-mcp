@@ -13,8 +13,8 @@
 //! - `_internal.wiki_forget` — tombstone an index row with a reason.
 //!   The filesystem stays untouched (the marker becomes orphaned in
 //!   the file; the re-index leaves it alone since `deleted_at` is the
-//!   authoritative tombstone). A future `wiki_lint` can flag the
-//!   orphan for operator cleanup.
+//!   authoritative tombstone). `wiki_lint` flags the orphan for the
+//!   operator ([`crate::lint`]).
 //! - `_internal.wiki_link` — append a `[[wiki_id/page]]` link to a
 //!   page. No `fact_index` touch (links are not facts).
 //!
@@ -28,12 +28,10 @@
 //!   elsewhere — the REM nightly sub-jobs — journal in `rem_ops_log`
 //!   (see [`crate::wal`]).
 //! - **Cross-user attribution constraints.** When `sender != subject`
-//!   the sender must have read access to the subject's wiki. The check
-//!   is a later tightening — the agent composing the call today is the
-//!   only writer surface, and it is trusted.
-//!
-//! The four functions here are the floor; later milestones layer
-//! policy on top.
+//!   nothing here asks whether the sender may read the subject's wiki.
+//!   This floor writes; who is allowed to ask for the write is settled
+//!   by the surface holding the identity, which is the MCP dispatcher or
+//!   the dashboard, before the call reaches this module.
 
 use std::path::{Path, PathBuf};
 use std::sync::Arc;

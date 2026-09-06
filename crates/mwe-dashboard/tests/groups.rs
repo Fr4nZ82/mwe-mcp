@@ -16,7 +16,7 @@ async fn login_as_admin(app: &axum::Router) -> String {
             .uri("/setup")
             .header(header::CONTENT_TYPE, "application/x-www-form-urlencoded")
             .body(Body::from(
-                "email=francesco@example.com&admin_id=francesco&password=correct-horse-battery&password_confirm=correct-horse-battery",
+                "email=alice@example.com&admin_id=alice&password=correct-horse-battery&password_confirm=correct-horse-battery",
             ))
             .unwrap(),
     )

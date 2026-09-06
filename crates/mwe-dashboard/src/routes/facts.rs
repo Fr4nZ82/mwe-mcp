@@ -480,12 +480,11 @@ async fn edit_form(
         FactId::parse(&fact_id_raw).map_err(|e| DashboardError::BadRequest(format!("{e}")))?;
     let reveal = crate::reveal::active(&state, &user, &jar);
     let row = load_visible_fact(&state, &user, &fact_id, reveal).await?;
-    // Both structured forms gate on the **subject** axis: ACL (visibility) is
-    // the subject's privacy call, and validity (an *update* of the fact, not a
-    // destruction) is likewise the subject's act. Only `delete` keys on
-    // `sender` / a vote.
-    let can_acl = subject_or_admin(&user, &row);
-    let can_validity = subject_or_admin(&user, &row);
+    // One gate for both structured forms: ACL (visibility) is the subject's
+    // privacy call, and validity (an *update* of the fact, not a destruction)
+    // is the subject's act too, so the same principal may do both or neither.
+    // Only `delete` keys on `sender` / a vote.
+    let can_govern = subject_or_admin(&user, &row);
     let is_smart = wiki_is_smart(&state, &row.wiki_id);
     tracing::info!(
         sender_id = %user.sender_id,
@@ -493,14 +492,7 @@ async fn edit_form(
         "dashboard: /facts/.../edit form rendered"
     );
     Ok(Html(render_edit_form(
-        &state,
-        &user,
-        &fact_id,
-        &row,
-        can_acl,
-        can_validity,
-        is_smart,
-        None,
+        &state, &user, &fact_id, &row, can_govern, is_smart, None,
     )))
 }
 
@@ -599,16 +591,14 @@ async fn edit_submit(
     let Some(message) = compose_edit_message(&fact_id, &row, &delta) else {
         // Nothing changed — re-render the form with an inline flash so
         // the user understands why the submit didn't go anywhere.
-        let can_acl = subject_or_admin(&user, &row);
-        let can_validity = subject_or_admin(&user, &row);
+        let can_govern = subject_or_admin(&user, &row);
         let is_smart = wiki_is_smart(&state, &row.wiki_id);
         return Ok(Html(render_edit_form(
             &state,
             &user,
             &fact_id,
             &row,
-            can_acl,
-            can_validity,
+            can_govern,
             is_smart,
             Some("No change detected — edit at least one field before submitting."),
         )));
@@ -1681,18 +1671,17 @@ fn filter_hidden_inputs(filters: &FactsFilters, page_size: usize) -> Markup {
 ///
 /// `flash` is shown above the form when set (the unchanged-submit branch
 /// in [`edit_submit`] uses it to nudge the user without forcing them off
-/// the page). `can_acl` (subject-or-admin) and `can_validity` (subject-or-admin)
-/// gate the two structured sub-forms (both the subject's acts — visibility and
-/// update), and `is_smart` is the fact's wiki family — together they decide
-/// whether each structured action renders as a live form or as a disabled note
-/// (smart wikis carry no per-fragment ACL / validity).
+/// the page). `can_govern` is [`subject_or_admin`], the one gate over both
+/// structured sub-forms — visibility and validity are both the subject's
+/// acts — and `is_smart` is the fact's wiki family: together they decide
+/// whether the structured actions render as live forms or as a note saying
+/// why not (smart wikis carry no per-fragment ACL / validity).
 fn render_edit_form(
     state: &DashboardState,
     user: &SessionUser,
     fact_id: &FactId,
     row: &FactIndexRow,
-    can_acl: bool,
-    can_validity: bool,
+    can_govern: bool,
     is_smart: bool,
     flash: Option<&str>,
 ) -> String {
@@ -1709,7 +1698,7 @@ fn render_edit_form(
         @if chrome.read_only {
             (crate::read_only::notice())
         } @else {
-            (structured_actions_section(fact_id, row, can_acl, can_validity, is_smart))
+            (structured_actions_section(fact_id, row, can_govern, is_smart))
             (supersede_section(fact_id))
         }
     };
@@ -1859,17 +1848,16 @@ fn fact_summary_dl(fact_id: &FactId, row: &FactIndexRow, body_html: &Markup) -> 
 }
 
 /// The structured engine-direct ACL + validity sub-forms. Renders a
-/// disabled note on smart wikis (no per-fragment governance); otherwise each
-/// form renders only for the principal who may submit it: the **ACL** form
-/// needs `can_acl` (subject-or-admin — visibility is the subject's call), the
-/// **validity** form needs `can_validity` (subject-or-admin —
-/// updating validity is the subject's act too, not a destruction). When the
-/// viewer can do neither, an axis-accurate refusal note replaces both.
+/// disabled note on smart wikis (no per-fragment governance); otherwise both
+/// forms render for whoever may submit them, which is one principal for both:
+/// [`subject_or_admin`]. Visibility is the subject's privacy call and
+/// validity is an *update* of the fact rather than a destruction, so the
+/// subject's act as well — a viewer who may do one may do the other, and a
+/// viewer who may do neither gets the note instead of both forms.
 fn structured_actions_section(
     fact_id: &FactId,
     row: &FactIndexRow,
-    can_acl: bool,
-    can_validity: bool,
+    can_govern: bool,
     is_smart: bool,
 ) -> Markup {
     let acl_action = format!("/dashboard/facts/{}/acl", fact_id.as_str());
@@ -1894,7 +1882,7 @@ fn structured_actions_section(
                     "per-fragment. Use the smart wiki's sharing page or the "
                     "smart consumer's own channels."
                 }
-            } @else if !can_acl && !can_validity {
+            } @else if !can_govern {
                 p.muted {
                     "Both are the subject's to change — the person or group the "
                     "fact is about — or an admin's: its visibility (ACL) and the "
@@ -1908,52 +1896,38 @@ fn structured_actions_section(
                     strong { "final" }
                     " — to put it back, make the opposite change."
                 }
-                @if can_acl {
-                    form.fact-acl method="post" action=(acl_action) {
-                        h3 { "Change " code { "ACL" } }
-                        p {
-                            label for="acl-subject" { code { "subject" } }
-                            input id="acl-subject" type="text" name="subject"
-                                value=(subject_current)
-                                placeholder="e.g. user:alice or group:famiglia or global";
-                        }
-                        p {
-                            label for="acl-allow" { code { "allow=" } " (comma-separated list)" }
-                            input id="acl-allow" type="text" name="allow"
-                                value=(allow_current)
-                                placeholder="e.g. user:bob, group:lavoro";
-                            small.muted { "Clear the field to empty the list." }
-                        }
-                        p { button type="submit" { "Apply ACL" } }
+                form.fact-acl method="post" action=(acl_action) {
+                    h3 { "Change " code { "ACL" } }
+                    p {
+                        label for="acl-subject" { code { "subject" } }
+                        input id="acl-subject" type="text" name="subject"
+                            value=(subject_current)
+                            placeholder="e.g. user:alice or group:famiglia or global";
                     }
-                } @else {
-                    p.muted {
-                        "Only the fact's subject — the person or group it is "
-                        "about — or an admin may change its visibility (ACL)."
+                    p {
+                        label for="acl-allow" { code { "allow=" } " (comma-separated list)" }
+                        input id="acl-allow" type="text" name="allow"
+                            value=(allow_current)
+                            placeholder="e.g. user:bob, group:lavoro";
+                        small.muted { "Clear the field to empty the list." }
                     }
+                    p { button type="submit" { "Apply ACL" } }
                 }
-                @if can_validity {
-                    form.fact-validity method="post" action=(validity_action) {
-                        h3 { "Correct the validity" }
-                        p {
-                            label for="validity-from" { code { "valid_from" } }
-                            input id="validity-from" type="date" name="valid_from"
-                                value=(date_part(valid_from_current));
-                            small.muted { "Leave blank to keep this bound unchanged." }
-                        }
-                        p {
-                            label for="validity-to" { code { "valid_to" } }
-                            input id="validity-to" type="date" name="valid_to"
-                                value=(date_part(valid_to_current));
-                            small.muted { "Leave blank to keep this bound unchanged." }
-                        }
-                        p { button type="submit" { "Apply validity" } }
+                form.fact-validity method="post" action=(validity_action) {
+                    h3 { "Correct the validity" }
+                    p {
+                        label for="validity-from" { code { "valid_from" } }
+                        input id="validity-from" type="date" name="valid_from"
+                            value=(date_part(valid_from_current));
+                        small.muted { "Leave blank to keep this bound unchanged." }
                     }
-                } @else {
-                    p.muted {
-                        "Only the fact's subject — the person or group it is "
-                        "about — or an admin may correct its validity."
+                    p {
+                        label for="validity-to" { code { "valid_to" } }
+                        input id="validity-to" type="date" name="valid_to"
+                            value=(date_part(valid_to_current));
+                        small.muted { "Leave blank to keep this bound unchanged." }
                     }
+                    p { button type="submit" { "Apply validity" } }
                 }
             }
         }
@@ -2363,34 +2337,38 @@ mod tests {
         }
     }
 
-    /// The refusal notes on the structured-actions block must name the gate
+    /// The refusal note on the structured-actions block must name the gate
     /// the handler actually enforces. Both the ACL form and the validity
-    /// form run through [`enforce_subject_or_admin`], so both refusals name
+    /// form run through [`enforce_subject_or_admin`], so the refusal names
     /// the **subject** — never the author, which is the `delete` gate that
     /// sits on the same page and admits a different person. A refusal that
     /// names the wrong axis sends the one person who can make the change
     /// away to find somebody who cannot.
+    ///
+    /// One gate, so the two forms arrive and leave together: there is no
+    /// viewer who gets the ACL form and a refusal for validity.
     #[test]
-    fn the_refusal_notes_name_the_subject_gate_not_the_author() {
+    fn the_refusal_note_names_the_subject_gate_not_the_author() {
         let fact_id = FactId::parse("018f1234-5678-7abc-9def-0123456789ab").expect("parse");
         let row = make_row("018f1234-5678-7abc-9def-0123456789ab");
 
-        // Nobody may act: the combined note.
-        let refused = structured_actions_section(&fact_id, &row, false, false, false).into_string();
+        let refused = structured_actions_section(&fact_id, &row, false, false).into_string();
         assert!(refused.contains("the subject's to change"), "{refused}");
         assert!(
             !refused.contains("its author"),
             "the validity gate is the subject, not the author: {refused}"
         );
+        assert!(
+            !refused.contains("Apply ACL") && !refused.contains("Apply validity"),
+            "neither form is offered to somebody who may submit neither: {refused}"
+        );
 
-        // Both forms render for somebody who may act, and neither refusal
-        // note comes along with them.
-        let allowed = structured_actions_section(&fact_id, &row, true, true, false).into_string();
+        let allowed = structured_actions_section(&fact_id, &row, true, false).into_string();
         assert!(allowed.contains("Apply ACL"), "{allowed}");
         assert!(allowed.contains("Apply validity"), "{allowed}");
         assert!(
-            !allowed.contains("or an admin may correct its validity"),
-            "{allowed}"
+            !allowed.contains("the subject's to change"),
+            "the refusal note does not come along with the forms: {allowed}"
         );
     }
 

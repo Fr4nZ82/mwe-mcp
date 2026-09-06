@@ -19,7 +19,7 @@ async fn login_as_admin(app: &axum::Router) -> String {
             .uri("/setup")
             .header(header::CONTENT_TYPE, "application/x-www-form-urlencoded")
             .body(Body::from(
-                "email=francesco@example.com&admin_id=francesco&password=correct-horse-battery&password_confirm=correct-horse-battery",
+                "email=carol@example.com&admin_id=carol&password=correct-horse-battery&password_confirm=correct-horse-battery",
             ))
             .unwrap(),
     )
@@ -66,18 +66,18 @@ async fn issue_smart_token_for_admin_renders_token() {
     let cookie = login_as_admin(&app).await;
 
     // The admin is a human with a login, so the diagonal-correct mono-user
-    // token for them is a *smart* (Pattern A) token owned by francesco.
+    // token for them is a *smart* (Pattern A) token owned by carol.
     let html = issue(
         &app,
         &cookie,
-        "consumer_class=smart&owner_id=francesco&consumer_id=cc-laptop\
+        "consumer_class=smart&owner_id=carol&consumer_id=cc-laptop\
          &device_label=claude-code&rate_limit_id=default&ttl_profile=internal",
     )
     .await;
     assert!(html.contains("Token issued"), "{html}");
     // Token starts with the canonical JWT header for HS256.
     assert!(html.contains("eyJ"), "expected a JWT in the response");
-    // Derived is_admin: francesco is the admin → claim must be true.
+    // Derived is_admin: carol is the admin → claim must be true.
     assert!(html.contains("isAdmin"), "{html}");
     assert!(
         html.contains("smart"),
@@ -167,12 +167,12 @@ async fn standard_bot_id_cannot_hijack_a_human_account() {
     let cookie = login_as_admin(&app).await;
     create_user(&app, &cookie, "frodo").await;
 
-    // `francesco` is the admin — a human *with* a login. Binding a
+    // `carol` is the admin — a human *with* a login. Binding a
     // standard (multi-user) token to it would leak across users.
     let html = issue(
         &app,
         &cookie,
-        "consumer_class=standard&consumer_id=francesco&device_label=x\
+        "consumer_class=standard&consumer_id=carol&device_label=x\
          &rate_limit_id=default&ttl_profile=internal&allowed_sender_ids=frodo",
     )
     .await;

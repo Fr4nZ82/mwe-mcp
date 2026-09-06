@@ -18,7 +18,7 @@ async fn login_as_admin(app: &axum::Router) -> String {
             .uri("/setup")
             .header(header::CONTENT_TYPE, "application/x-www-form-urlencoded")
             .body(Body::from(
-                "email=francesco@example.com&admin_id=francesco&password=correct-horse-battery&password_confirm=correct-horse-battery",
+                "email=alice@example.com&admin_id=alice&password=correct-horse-battery&password_confirm=correct-horse-battery",
             ))
             .unwrap(),
     )
@@ -60,7 +60,7 @@ async fn change_password_then_old_password_no_longer_logs_in() {
             .uri("/login")
             .header(header::CONTENT_TYPE, "application/x-www-form-urlencoded")
             .body(Body::from(
-                "email=francesco@example.com&password=correct-horse-battery",
+                "email=alice@example.com&password=correct-horse-battery",
             ))
             .unwrap(),
     )
@@ -76,7 +76,7 @@ async fn change_password_then_old_password_no_longer_logs_in() {
             .uri("/login")
             .header(header::CONTENT_TYPE, "application/x-www-form-urlencoded")
             .body(Body::from(
-                "email=francesco@example.com&password=brand-new-pw-2026!",
+                "email=alice@example.com&password=brand-new-pw-2026!",
             ))
             .unwrap(),
     )

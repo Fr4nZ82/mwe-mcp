@@ -66,7 +66,7 @@ async fn setup_submit_creates_admin_and_sets_session_cookie() {
                 "application/x-www-form-urlencoded",
             )
             .body(Body::from(
-                "email=francesco@example.com&admin_id=francesco&password=correct-horse-battery&password_confirm=correct-horse-battery",
+                "email=alice@example.com&admin_id=alice&password=correct-horse-battery&password_confirm=correct-horse-battery",
             ))
             .unwrap(),
     )
@@ -179,7 +179,7 @@ async fn login_then_home_then_logout_full_cycle() {
             .uri("/login")
             .header(header::CONTENT_TYPE, "application/x-www-form-urlencoded")
             .body(Body::from(
-                "email=francesco@example.com&password=correct-horse-battery",
+                "email=alice@example.com&password=correct-horse-battery",
             ))
             .unwrap(),
     )
@@ -201,7 +201,7 @@ async fn login_then_home_then_logout_full_cycle() {
     assert_eq!(response.status(), StatusCode::OK);
     let html = body_string(response).await;
     assert!(html.contains("Signed in as"), "{html}");
-    assert!(html.contains("francesco"), "{html}");
+    assert!(html.contains("alice"), "{html}");
     assert!(html.contains("admin"), "{html}");
 
     // POST /logout revokes + clears.
@@ -261,7 +261,7 @@ async fn login_with_wrong_password_shows_generic_flash() {
             .uri("/login")
             .header(header::CONTENT_TYPE, "application/x-www-form-urlencoded")
             .body(Body::from(
-                "email=francesco@example.com&password=wrong-password-1",
+                "email=alice@example.com&password=wrong-password-1",
             ))
             .unwrap(),
     )
@@ -301,7 +301,7 @@ async fn create_admin(app: &axum::Router) {
             .uri("/setup")
             .header(header::CONTENT_TYPE, "application/x-www-form-urlencoded")
             .body(Body::from(
-                "email=francesco@example.com&admin_id=francesco&password=correct-horse-battery&password_confirm=correct-horse-battery",
+                "email=alice@example.com&admin_id=alice&password=correct-horse-battery&password_confirm=correct-horse-battery",
             ))
             .unwrap(),
     )
