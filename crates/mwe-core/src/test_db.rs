@@ -101,6 +101,37 @@ impl TestWorkdir {
     }
 }
 
+/// How long the guard keeps trying to remove a directory before giving up.
+///
+/// One attempt is enough on Linux and macOS. On Windows a file scanner
+/// holds a just-written file open for a moment, `DeleteFile` fails with a
+/// sharing violation, and the single attempt `TempDir` makes leaves the
+/// whole directory behind — the leak this module exists to prevent,
+/// arriving by another door. A few hundred milliseconds of retrying costs
+/// nothing where the first attempt already worked.
+const REMOVAL_PATIENCE: std::time::Duration = std::time::Duration::from_secs(2);
+
+impl Drop for TestWorkdir {
+    fn drop(&mut self) {
+        for dir in &self.dirs {
+            remove_dir_all_patiently(dir.path());
+        }
+    }
+}
+
+/// Remove `dir` and everything under it, retrying while another process
+/// still holds one of its files open. Silent on failure: the guard is a
+/// test convenience, and a test must not die in a destructor.
+fn remove_dir_all_patiently(dir: &std::path::Path) {
+    let deadline = std::time::Instant::now() + REMOVAL_PATIENCE;
+    while let Err(e) = std::fs::remove_dir_all(dir) {
+        if e.kind() == std::io::ErrorKind::NotFound || std::time::Instant::now() >= deadline {
+            return;
+        }
+        std::thread::sleep(std::time::Duration::from_millis(25));
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
