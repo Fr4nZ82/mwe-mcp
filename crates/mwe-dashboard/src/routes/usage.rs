@@ -368,9 +368,8 @@ fn render(
                 @match first_day {
                     Some(d) => { "The ledger starts on " strong { (d) } "." },
                     None => {
-                        "The ledger is empty: recording begins with the first model "
-                        "call this server makes after the upgrade that introduced it. "
-                        "A month measured from today is a clean month."
+                        "The ledger is empty: it starts at the first model call this "
+                        "server makes, and every call after that is in it."
                     },
                 }
             }
@@ -603,8 +602,9 @@ fn render(
             a href="/dashboard/admin/llm-config" { "LLM config editor" }
             "; the full prompt/completion recorder is the "
             a href="/dashboard/admin/training-spool" { "training spool" }
-            ", which is a distillation dataset and not this. Embedding calls "
-            "are not counted here — the bundled embedder runs locally."
+            ", which records the prompts themselves and not what they cost. "
+            "Embedding calls are not in this ledger at all, whichever embedder "
+            "serves them."
         }
     }
 }

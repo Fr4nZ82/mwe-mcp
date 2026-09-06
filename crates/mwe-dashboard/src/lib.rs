@@ -1,18 +1,19 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 //! `mwe-dashboard` — built-in PWA for `mwe-mcp`.
 //!
-//! The dashboard is the **identity console** of mwe-mcp:
-//! it bootstraps the single admin, lets that admin
-//! invite regular users via single-use `UUIDv7` links, manages groups and
-//! consumer-delegation-aware tokens, and exposes a self-service "change
-//! your own password" page. Everything else (memory explorer, chat,
-//! audit, proposals, costs) ships separately.
+//! The dashboard is the whole operator-facing surface of mwe-mcp: it
+//! bootstraps the single admin, invites regular users over single-use
+//! `UUIDv7` links, manages groups and consumer-delegation-aware tokens —
+//! and, beside that, browses the memory (wikis, pages, facts, sections),
+//! runs the operative chat, shows the recall traces, the model usage and
+//! spend, the dream history, and every engine setting an operator edits.
 //!
 //! Stack: Axum 0.7 + Maud 0.26 server-side templates +
 //! `axum-extra` cookie jar + `argon2` PHC + `mwe-core::jwt` for the
-//! sliding-TTL session cookie. No client-side JS framework, no HTMX —
-//! plain `<form method="POST">` everywhere so the surface
-//! stays minimal and reviewable.
+//! sliding-TTL session cookie. No client-side framework: plain
+//! `<form method="POST">` everywhere, with a handful of small vanilla
+//! scripts (`ui.js`, `chat.js`, …) for the panels that need one, so the
+//! surface stays reviewable.
 //!
 //! Auth model summary (see [`crate::auth::session`] for the full story):
 //! the session cookie holds the **same JWT shape** as MCP-local tokens,

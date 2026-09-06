@@ -87,6 +87,33 @@ and in the dashboard's session check. Eight migrations, `0068` through `0075`.
 
 ### Changed
 
+- **The dashboard says what the engine does.** Its prose had been left behind
+  by the engine under it, and the cost was borne by whoever believed it. The
+  Help panel taught four things to say to the chat, and three named
+  capabilities no tool has ever had — moving a wiki into another scope,
+  retuning an item's time-to-live, changing an item schema — so the operator
+  argued with a model that could only refuse. Three sign-up forms offered an
+  underscore in an id and the validator on the same page refused it. The fact
+  browser said a validity correction belonged to the fact's author when the
+  handler asks for its **subject**, sending the one person who could make the
+  change away to find somebody who could not. The page-description form
+  promised the line was never overwritten, when the writer composes a fresh
+  one every time it rewrites that page. Setup said email recovery was coming
+  in a later milestone, with the recovery flow already mounted. The post-signup
+  page told a new user the chat panel captured and recalled what they typed,
+  which is the one thing that panel does not do. Beside them: an offer to
+  disambiguate by appending a query parameter no handler reads, a page footer
+  denying the raw editor this same file mounts, and five Italian strings on an
+  English surface.
+
+  **A model slot with no model is not a way to run.** Four places sold one as a
+  supported mode — a Health row reading "unconfigured · feature off", a Dream
+  trigger advertising "promotion without an LLM" as the cheap option, and two
+  slot descriptions explaining what still works without them. All six slots are
+  mandatory; the pages say that now, and the empty Health row reads NO MODEL.
+  In the same pass the same thing stopped being called three things: **slot**
+  everywhere, where the LLM page said role, function and slot in one screen.
+
 - **A forget-request vote is raised near its deadline, not every turn.** The
   `pending_votes` block rides every turn of its seven-day window, and both
   bridges told the agent to raise it once and then judge from the thread

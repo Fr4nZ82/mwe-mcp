@@ -494,7 +494,7 @@ async fn restart_now(
         @if recovery_hint(&state) {
             p.muted { "The staged recovery applies during the restart, safety snapshot first." }
         }
-        p { a href="/dashboard/admin/backup" { "Back to the Backup console" } }
+        p { a href="/dashboard/admin/backup" { "Back to Backup" } }
     };
     Ok(Html(layout::authenticated_page(
         chrome,

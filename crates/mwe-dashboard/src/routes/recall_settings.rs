@@ -300,14 +300,13 @@ fn render(
         }
 
         p.muted {
-            "Related dials elsewhere: the navigator's "
-            strong { "model tier" } " is the " code { "navigator" }
-            " slot in the "
+            "Related dials elsewhere: which model serves the navigator is the "
+            code { "navigator" } " slot in the "
             a href="/dashboard/admin/llm-config" { "LLM config editor" }
-            "; the " strong { "dream cadence" } " (light/full intervals) "
-            "is the " code { "rem.schedule:" } " section of the YAML; the "
-            "dream " strong { "policy" } " (per-cycle caps and thresholds) "
-            "is the "
+            "; the " strong { "dream cadence" } " — how often the Light and "
+            "Full REM runs fire — is on the "
+            a href="/dashboard/settings/me" { "Settings page" }
+            "; how much one cycle may touch is the "
             a href="/dashboard/admin/rem-settings" { "REM settings panel" }
             "."
         }

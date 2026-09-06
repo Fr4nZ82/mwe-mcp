@@ -264,12 +264,6 @@ fn compose_primer(proposal_id: &str) -> String {
     )
 }
 
-/// Build a workhorse LLM backend from the dashboard's `llm.ingest`
-/// slot when one is configured. Returns `None` otherwise — kind
-/// handlers that require an LLM surface their own `handler_data`
-/// failure in that case.
-///
-/// Routes through [`MemoryHandles::backend_for`] so the API key
 /// Build the `answers` JSON the chassis expects from the submitted
 /// form fields.
 ///

@@ -40,10 +40,19 @@ pub fn router() -> Router<DashboardState> {
 }
 
 /// Selectable backends: `(value, label)`.
+///
+/// `openai` is a name the config parser accepts and the embedder
+/// builder refuses (`ConfigError::UnsupportedEmbeddingBackend`), so a
+/// server saved onto it does not start. The label says exactly that: a
+/// softer one reads as a feature on the way and invites the operator to
+/// pick it.
 const BACKENDS: &[(&str, &str)] = &[
     ("ollama", "Ollama (HTTP — local / remote)"),
     ("bundled", "Bundled (in-binary Candle / bge-m3)"),
-    ("openai", "OpenAI-compatible (not yet wired)"),
+    (
+        "openai",
+        "OpenAI-compatible (not supported — the server refuses to start on it)",
+    ),
 ];
 
 struct Flash<'a> {

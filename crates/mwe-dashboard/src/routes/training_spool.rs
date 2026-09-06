@@ -1,7 +1,8 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 //! Admin-only toggle for the training spool — the prompt/completion
-//! pair recorder backing future distillation fine-tunes of the local
-//! slot models (`mwe_core::training_spool`).
+//! pair recorder whose files are the raw material for training a local
+//! model to take over a slot (`mwe_core::training_spool`). This crate
+//! records; nothing here trains.
 //!
 //! Two routes, both behind [`AdminUser`], mirroring the
 //! [REM-settings editor](super::rem_settings):
@@ -125,10 +126,12 @@ fn render(
         p.muted {
             "Records every internal-LLM exchange — slot, model, full "
             "prompt, full completion — as one JSON line per call into "
-            "per-day files under " code { (dir_display) } ". The point: "
-            "the strong API slots act as teachers, and their traces "
-            "become the fine-tuning dataset that lets a small local "
-            "model take over the slot (distillation). Backs the "
+            "per-day files under " code { (dir_display) } ". What it is "
+            "for: a strong model answering on a slot leaves a trace of "
+            "how that slot should be answered, and those traces are the "
+            "raw material for training a small local model to take the "
+            "slot over. The recording is what this page does; the "
+            "training is yours to do elsewhere, with the files. Backs the "
             code { "training_spool:" } " section of "
             code { (CONFIG_FILENAME) } "."
         }

@@ -72,7 +72,7 @@ fn restart_note() -> Markup {
             "Saved to " code { (CONFIG_FILENAME) } " (with a " code { ".bak" }
             "); this section is read once at boot, so it applies at the "
             strong { "next server restart" } " — the "
-            a href="/dashboard/admin/backup" { "Backup console" }
+            a href="/dashboard/admin/backup" { "Backup" }
             " has a Restart button."
         }
     }
@@ -97,7 +97,7 @@ fn timezone_section(current: Option<&str>) -> Markup {
             p.muted {
                 "Default IANA timezone (e.g. " code { "Europe/Rome" } ") — the "
                 code { "recall.ingest_timezone" } " key. The ingest classifier "
-                "stamps wall-clock times the user speaks (\"domani alle 9\") in "
+                "stamps wall-clock times the user speaks (\"tomorrow at 9\") in "
                 "this zone; unset, they are read as UTC. A user's " strong { "own" }
                 " timezone — set on the " a href="/dashboard/users" { "users page" }
                 " or by the welcome wizard — always wins over this default, so "

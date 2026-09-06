@@ -53,10 +53,9 @@
 //! edits (no action) or regenerate from bundled (the existing reset
 //! button preserves the previous content as `.bak`).
 //!
-//! Diff / upgrade UI between the workdir file and the bundled default
-//! is **deliberately deferred**: it requires a diff
-//! library and a structured merge flow, and ships in a later
-//! milestone if operator demand justifies it.
+//! There is no diff or merge view between the workdir file and the
+//! bundled default: the drift pill says the two differ and the reset
+//! button takes the new one, keeping the old content as `.bak`.
 
 use std::fs;
 use std::path::{Path, PathBuf};
@@ -110,10 +109,6 @@ impl PromptStatus {
 
     const fn badge_class(self) -> &'static str {
         match self {
-            // The CSS already styles `.flash-success` (green) and
-            // `.flash-error` (red); reuse those classes so the badge
-            // picks up theming without a new selector. `info` falls
-            // back to muted text.
             Self::MatchesDefault => "badge-default",
             Self::Modified => "badge-modified",
             Self::BundledOnly => "badge-bundled",

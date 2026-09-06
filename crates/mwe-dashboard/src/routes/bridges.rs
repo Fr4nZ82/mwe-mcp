@@ -506,8 +506,9 @@ fn hermes_guide_body(consumer: &str, origin: &str) -> Markup {
             "The installer never touches your token. After the files are in place: "
         }
         ul {
-            li { "Issue a token from the " a href="/dashboard/home" { "dashboard home" }
-                " and set it as " code { "MWE_TOKEN" } " in hermes's " code { ".env" } "." }
+            li { "Issue a " strong { "standard" } " consumer token from the "
+                a href="/dashboard/tokens" { "Tokens" } " page and set it as "
+                code { "MWE_TOKEN" } " in hermes's " code { ".env" } "." }
             li { "Set " code { "memory_enabled: false" } " and "
                 code { "user_profile_enabled: false" } " in hermes's "
                 code { "config.yaml" } " so mwe-mcp is the only memory." }
@@ -1701,8 +1702,15 @@ mod tests {
         assert!(html.contains("user_profile_enabled: false"));
         assert!(html.contains("mwe-watchdog"));
         assert!(html.contains("Restart hermes"));
-        // The token is issued from the home, not minted here.
-        assert!(html.contains("dashboard home"));
+        // The token is issued on the Tokens page, not minted here — and it
+        // is a standard one, because hermes is a standard consumer. The
+        // nanoclaw guide says the same, in the same words.
+        assert!(html.contains("href=\"/dashboard/tokens\""), "{html}");
+        assert!(
+            html.contains("<strong>standard</strong> consumer token"),
+            "{html}"
+        );
+        assert!(!html.contains("dashboard home"), "{html}");
     }
 
     #[test]
