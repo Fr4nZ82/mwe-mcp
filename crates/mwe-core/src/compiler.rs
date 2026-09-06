@@ -1758,10 +1758,7 @@ pub async fn refresh_list_page(
     source_path: &str,
 ) -> Result<bool> {
     let handle = tree.locate(&parse_wiki_id(wiki_id))?;
-    let Some(rel) = source_path.strip_prefix(&format!(
-        "{}/",
-        handle.rel_dir().to_string_lossy().replace('\\', "/")
-    )) else {
+    let Some(rel) = source_path.strip_prefix(&format!("{}/", handle.rel_dir_posix())) else {
         return Ok(false);
     };
     let page_path = std::path::Path::new(rel);

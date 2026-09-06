@@ -1152,8 +1152,7 @@ async fn page_acl_map_for(
     let handle = tree
         .locate(wiki_id)
         .map_err(|e| DashboardError::Internal(format!("locate {wiki_id:?}: {e}")))?;
-    let source_path = handle.rel_dir().join(page);
-    let source_path = source_path.to_string_lossy();
+    let source_path = handle.source_path(page);
     if reveal {
         fact_index::page_acl_map(&state.pool, &source_path)
             .await
@@ -1382,7 +1381,7 @@ fn page_view_href(
     Some(format!(
         "/dashboard/wiki/{}/view/{}",
         encode_path_segments(wiki_id),
-        encode_path_segments(&resolved.to_string_lossy().replace('\\', "/"))
+        encode_path_segments(&mwe_core::wiki::posix_path(&resolved))
     ))
 }
 

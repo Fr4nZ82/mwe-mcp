@@ -852,10 +852,7 @@ async fn apply_move_same_wiki(
     // CREATES a page, or a hallucinated `dest_page` could invent one out of
     // thin air. Refuse anything not enumerated.
     match source_handle.list_pages() {
-        Ok(pages)
-            if pages
-                .iter()
-                .any(|p| p.rel_path.to_string_lossy().replace('\\', "/") == dest_page) => {},
+        Ok(pages) if pages.iter().any(|p| p.rel_path_posix() == dest_page) => {},
         Ok(_) => {
             report.errors.push(format!(
                 "move refused: dest page {dest_page} is not a page of this wiki"
@@ -904,8 +901,7 @@ async fn apply_move_same_wiki(
 /// The handlers join it back onto the wiki's `abs_dir`, so a workdir-relative
 /// path would double the prefix.
 fn page_wiki_relative(handle: &WikiHandle, source_path: &str) -> String {
-    let rel_dir = handle.rel_dir().to_string_lossy().replace('\\', "/");
-    let prefix = format!("{rel_dir}/");
+    let prefix = format!("{}/", handle.rel_dir_posix());
     source_path
         .strip_prefix(&prefix)
         .unwrap_or(source_path)
@@ -947,7 +943,7 @@ fn describe_destinations(tree: &WikiTree, wiki_id: &WikiId, source_path: &str) -
                     |infos| {
                         infos
                             .iter()
-                            .map(|p| p.rel_path.to_string_lossy().replace('\\', "/"))
+                            .map(crate::wiki::PageInfo::rel_path_posix)
                             .collect::<Vec<_>>()
                     },
                 );
@@ -971,7 +967,7 @@ fn describe_destinations(tree: &WikiTree, wiki_id: &WikiId, source_path: &str) -
         let current = page_wiki_relative(&handle, source_path);
         if let Ok(page_infos) = handle.list_pages() {
             for p in page_infos {
-                let rel = p.rel_path.to_string_lossy().replace('\\', "/");
+                let rel = p.rel_path_posix();
                 if rel != current {
                     pages.push(rel);
                 }

@@ -1355,10 +1355,26 @@ pub const MAX_ACL_DEFAULT_HOPS: usize = 64;
 pub struct DiscoveredWiki {
     /// Absolute directory of the wiki.
     pub abs_dir: PathBuf,
-    /// Directory relative to the workdir (e.g. `wikis/alice/acmecorp`).
+    /// Directory relative to the workdir (e.g. `wikis/alice/acmecorp`),
+    /// as a host path — [`Self::rel_dir_posix`] for the string form.
     pub rel_dir: PathBuf,
     /// Parsed `_meta.md`.
     pub meta: WikiMeta,
+}
+
+impl DiscoveredWiki {
+    /// [`Self::rel_dir`] as the canonical POSIX string — the prefix every
+    /// `source_path` under this wiki starts with.
+    #[must_use]
+    pub fn rel_dir_posix(&self) -> String {
+        posix_path(&self.rel_dir)
+    }
+
+    /// The canonical `source_path` of one page of this wiki.
+    #[must_use]
+    pub fn source_path(&self, page: &Path) -> String {
+        posix_path(&self.rel_dir.join(page))
+    }
 }
 
 fn walk_node(wikis_dir: &Path, abs_dir: &Path, out: &mut Vec<DiscoveredWiki>) -> Result<()> {
@@ -1407,11 +1423,33 @@ impl WikiHandle {
         self.abs_dir.as_path()
     }
 
-    /// Directory of this wiki, relative to the workdir.
+    /// Directory of this wiki, relative to the workdir, as a host path.
+    ///
+    /// For anything that becomes a string — a database key, a payload, a
+    /// URL — reach for [`Self::rel_dir_posix`] or [`Self::source_path`]
+    /// instead: this one carries the host separator.
     #[must_use]
     #[allow(clippy::missing_const_for_fn)] // PathBuf::as_path is not const yet
     pub fn rel_dir(&self) -> &Path {
         self.rel_dir.as_path()
+    }
+
+    /// Directory of this wiki, relative to the workdir, as the canonical
+    /// POSIX string — `wikis/alice/garden` on every platform.
+    #[must_use]
+    pub fn rel_dir_posix(&self) -> String {
+        posix_path(&self.rel_dir)
+    }
+
+    /// The canonical `source_path` of one page of this wiki: the exact
+    /// string `fact_index.source_path` and `wiki_sections.source_path`
+    /// carry for it, `wikis/alice/cucina.md`.
+    ///
+    /// `page` is the page's path inside the wiki (`cucina.md`,
+    /// `recipes/pasta.md`).
+    #[must_use]
+    pub fn source_path(&self, page: &Path) -> String {
+        posix_path(&self.rel_dir.join(page))
     }
 
     /// Workdir this wiki lives inside.
@@ -1487,12 +1525,22 @@ impl WikiHandle {
 /// One row of [`WikiHandle::list_pages`].
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct PageInfo {
-    /// File path relative to the wiki directory (e.g. `recipes/pasta.md`).
+    /// File path relative to the wiki directory (e.g. `recipes/pasta.md`),
+    /// as a host path — [`Self::rel_path_posix`] for the string form.
     pub rel_path: PathBuf,
     /// Absolute file path.
     pub abs_path: PathBuf,
     /// Byte size of the file at enumeration time.
     pub size: u64,
+}
+
+impl PageInfo {
+    /// [`Self::rel_path`] as the canonical POSIX string — the page name the
+    /// engine compares, stores and puts in a URL.
+    #[must_use]
+    pub fn rel_path_posix(&self) -> String {
+        posix_path(&self.rel_path)
+    }
 }
 
 /// Enumerate the pages of the wiki rooted at `abs_dir` — the function behind
@@ -1557,22 +1605,36 @@ fn list_pages_inner(wiki_root: &Path, cur: &Path, out: &mut Vec<PageInfo>) -> Re
     Ok(())
 }
 
+/// Render a path as the engine's canonical **POSIX** string: `/` between
+/// components on every platform.
+///
+/// This is the **only** place the separator is normalised. Every path that
+/// becomes a database key (the `source_path` column of `fact_index` and of
+/// `wiki_sections`), a `wiki_events` payload, a dashboard URL, or one half of
+/// a comparison against one of those, passes through here or through one of
+/// the accessors built on it ([`workdir_relative_source_path`],
+/// [`WikiHandle::source_path`], [`WikiHandle::rel_dir_posix`],
+/// [`DiscoveredWiki::rel_dir_posix`], [`PageInfo::rel_path_posix`]).
+///
+/// The reason it is centralised rather than spelled out at each site: a
+/// Windows `Path` stringifies to `wikis\alice\intro.md`, which compares equal
+/// to nothing the engine ever stored, and the failure is silent — the row is
+/// simply not found, so a page renders as if every region on it were private.
+#[must_use]
+pub fn posix_path(p: &Path) -> String {
+    p.to_string_lossy().replace('\\', "/")
+}
+
 /// Convert an absolute path under the workdir to the canonical
 /// **POSIX-style** `source_path` we store in `fact_index.source_path` and
 /// emit through `wiki_events` payloads.
 ///
-/// Returns the workdir-relative path with `/` separators on every
-/// platform — Windows `to_string_lossy()` would otherwise produce
-/// `wikis\alice\intro.md`, which then fails to match the on-disk lint
-/// scan + capture pipeline expectations.
-///
-/// When `abs_path` is not under `workdir` we fall back to the lossy
-/// rendering of the full path; the caller should treat that as a
-/// programming error.
+/// When `abs_path` is not under `workdir` we fall back to the rendering of
+/// the full path; the caller should treat that as a programming error.
 #[must_use]
 pub fn workdir_relative_source_path(workdir: &Path, abs_path: &Path) -> String {
     let rel = abs_path.strip_prefix(workdir).unwrap_or(abs_path);
-    rel.to_string_lossy().replace('\\', "/")
+    posix_path(rel)
 }
 
 /// Reject paths that try to leave the wiki directory.
@@ -1763,7 +1825,7 @@ pub fn page_case_conflict(abs_dir: &Path, rel: &Path) -> Option<String> {
             continue;
         }
         if let Some(existing) = folded {
-            let found = prefix.join(&existing).to_string_lossy().replace('\\', "/");
+            let found = posix_path(&prefix.join(&existing));
             return Some(format!(
                 "case-collides with existing `{found}` — a case-insensitive mirror treats them as the same file; reuse that exact spelling"
             ));
@@ -3362,5 +3424,135 @@ mod tests {
         // Two entries differing only by case → ambiguous, refuse.
         std::fs::write(dir.join("Docs/SETUP.md"), "x").unwrap();
         assert!(resolve_page_case_insensitive(dir, Path::new("docs/setup.md")).is_none());
+    }
+
+    // ---------- the canonical POSIX source path ----------
+
+    /// A host path becomes the string the database keys on, and on Windows
+    /// that host path is `wikis\alice\cucina.md`. This is the whole reason
+    /// [`posix_path`] exists, so it is asserted on a component that carries
+    /// a backslash — which a Linux run can build and a Linux run therefore
+    /// fails on if the normalisation is ever dropped.
+    #[test]
+    fn posix_path_replaces_the_host_separator_on_every_platform() {
+        assert_eq!(
+            posix_path(Path::new(r"wikis\alice\cucina.md")),
+            "wikis/alice/cucina.md"
+        );
+        assert_eq!(
+            posix_path(&PathBuf::from("wikis").join("alice")),
+            "wikis/alice"
+        );
+        // Already POSIX: unchanged, not double-processed.
+        assert_eq!(
+            posix_path(Path::new("wikis/alice/cucina.md")),
+            "wikis/alice/cucina.md"
+        );
+    }
+
+    /// The wiki's own accessors are the ones callers reach for, so they get
+    /// the same guarantee — a handle can only hand out a POSIX string.
+    #[test]
+    fn a_wiki_hands_out_its_source_paths_in_posix_form() {
+        let dir = tempdir().unwrap();
+        let workdir = dir.path();
+        let abs_dir = workdir.join("wikis").join("alice");
+        std::fs::create_dir_all(&abs_dir).unwrap();
+        std::fs::write(
+            abs_dir.join(META_FILENAME),
+            "---\nwiki_id: alice\nwiki_type: wiki-user\nparent_wiki_id: null\n\
+             slug: alice\ntitle: Alice\nacl_default: 'user:alice'\n---\n",
+        )
+        .unwrap();
+        let tree = WikiTree::open(workdir).unwrap();
+        let handle = tree.locate(&WikiId::parse("alice").unwrap()).unwrap();
+        assert_eq!(handle.rel_dir_posix(), "wikis/alice");
+        assert_eq!(
+            handle.source_path(Path::new("cucina.md")),
+            "wikis/alice/cucina.md"
+        );
+        // A nested page keeps every separator POSIX, not just the last one.
+        assert_eq!(
+            handle.source_path(&PathBuf::from("recipes").join("pasta.md")),
+            "wikis/alice/recipes/pasta.md"
+        );
+        // What the reader computes is byte-identical to what the writer
+        // stores — the two sides of the comparison that a lost `\` breaks.
+        assert_eq!(
+            handle.source_path(Path::new("cucina.md")),
+            workdir_relative_source_path(workdir, &abs_dir.join("cucina.md"))
+        );
+    }
+
+    /// Every one of these shapes was a live bug on Windows: a path joined
+    /// or stringified with the host separator, compared against a
+    /// `source_path` column that only ever holds `/`. The comparison
+    /// silently misses, the ACL map comes back empty, and a page renders as
+    /// if every region on it were private.
+    ///
+    /// The compiler cannot see it and neither can a Linux test run, so the
+    /// guard is structural: the separator is normalised in `wiki.rs` and
+    /// nowhere else, and the accessors above are how the rest of the
+    /// workspace gets a string out of a path.
+    #[test]
+    fn nothing_outside_this_file_spells_the_separator_normalisation_itself() {
+        const FORBIDDEN: &[(&str, &str)] = &[
+            (
+                r#"to_string_lossy().replace('\\', "/")"#,
+                "call wiki::posix_path (or an accessor built on it) instead",
+            ),
+            (
+                "rel_dir().join(",
+                "call WikiHandle::source_path(page) — it returns the POSIX string",
+            ),
+            (
+                "rel_dir.join(",
+                "call DiscoveredWiki::source_path(page) — it returns the POSIX string",
+            ),
+            (
+                "rel_dir().to_string_lossy",
+                "call WikiHandle::rel_dir_posix()",
+            ),
+            (
+                "rel_dir.to_string_lossy",
+                "call DiscoveredWiki::rel_dir_posix()",
+            ),
+        ];
+        let crates_dir = Path::new(env!("CARGO_MANIFEST_DIR")).parent().unwrap();
+        let mut offences = Vec::new();
+        let mut scanned = 0usize;
+        let mut stack = vec![crates_dir.to_path_buf()];
+        while let Some(dir) = stack.pop() {
+            for entry in std::fs::read_dir(&dir).unwrap().flatten() {
+                let path = entry.path();
+                if path.is_dir() {
+                    if path.file_name().is_some_and(|n| n == "target") {
+                        continue;
+                    }
+                    stack.push(path);
+                    continue;
+                }
+                if path.extension().is_none_or(|e| e != "rs")
+                    || path.file_name().is_some_and(|n| n == "wiki.rs")
+                {
+                    continue;
+                }
+                scanned += 1;
+                let body = std::fs::read_to_string(&path).unwrap();
+                for (needle, remedy) in FORBIDDEN {
+                    for (n, line) in body.lines().enumerate() {
+                        if line.contains(needle) {
+                            offences.push(format!(
+                                "{}:{}: `{needle}` — {remedy}",
+                                path.display(),
+                                n + 1
+                            ));
+                        }
+                    }
+                }
+            }
+        }
+        assert!(scanned > 50, "the scan found only {scanned} files to read");
+        assert!(offences.is_empty(), "{}", offences.join("\n"));
     }
 }

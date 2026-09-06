@@ -352,8 +352,7 @@ async fn target_surfaced(
         let Ok(handle) = tree.locate(&wid) else {
             continue;
         };
-        let fragment_path = handle.rel_dir().join(&f.page);
-        if fragment_path.to_str() == Some(row.source_path.as_str()) {
+        if handle.source_path(&f.page) == row.source_path {
             return Ok(true);
         }
     }

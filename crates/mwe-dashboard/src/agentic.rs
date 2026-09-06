@@ -1537,7 +1537,7 @@ fn build_supersede_request(
             tool: AgenticTool::WikiSupersede.name(),
             detail: e.to_string(),
         })?;
-    let rel_dir_posix = handle.rel_dir().to_string_lossy().replace('\\', "/");
+    let rel_dir_posix = handle.rel_dir_posix();
     let page_str = old_row
         .source_path
         .strip_prefix(&format!("{rel_dir_posix}/"))
@@ -1948,8 +1948,7 @@ async fn move_fact_same_wiki(
 /// `paragraph_to_file` / `fact_refile` engines expect), derived from the
 /// workdir-relative `source_path` by stripping the wiki's `rel_dir` prefix.
 fn move_fact_wiki_relative_page(handle: &mwe_core::wiki::WikiHandle, source_path: &str) -> String {
-    let rel_dir = handle.rel_dir().to_string_lossy().replace('\\', "/");
-    let prefix = format!("{rel_dir}/");
+    let prefix = format!("{}/", handle.rel_dir_posix());
     source_path
         .strip_prefix(&prefix)
         .unwrap_or(source_path)

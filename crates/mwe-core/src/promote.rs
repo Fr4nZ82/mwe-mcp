@@ -798,7 +798,7 @@ struct MovedPageAddress {
 
 impl MovedPageAddress {
     fn stem(page: &std::path::Path) -> String {
-        let page = page.to_string_lossy().replace('\\', "/");
+        let page = crate::wiki::posix_path(page);
         page.strip_suffix(".md").unwrap_or(&page).to_owned()
     }
 

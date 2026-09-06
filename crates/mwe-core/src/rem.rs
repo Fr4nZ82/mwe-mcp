@@ -3255,7 +3255,7 @@ fn wiki_relative_page(d: &wiki::DiscoveredWiki, source_path: &str) -> Option<Str
     std::path::Path::new(source_path)
         .strip_prefix(&d.rel_dir)
         .ok()
-        .map(|p| p.to_string_lossy().replace('\\', "/"))
+        .map(wiki::posix_path)
 }
 
 // ---------- Page-group → wiki regrouping ----------
@@ -3860,7 +3860,7 @@ fn grouping_existing_wikis_all(
 fn source_path_of(by_id: &HashMap<&str, &wiki::DiscoveredWiki>, qualified: &str) -> Option<String> {
     let (wiki, page) = qualified.split_once('/')?;
     let d = by_id.get(wiki)?;
-    Some(format!("{}/{page}", d.rel_dir.to_string_lossy()))
+    Some(d.source_path(std::path::Path::new(page)))
 }
 
 /// The inventory of ONE candidate: its pages, each with its fact count and a

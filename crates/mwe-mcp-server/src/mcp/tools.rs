@@ -934,11 +934,10 @@ pub(super) async fn call_wiki_read(
     // weaker gating is not a degradation, it is a leak. `_active` drops
     // superseded/deleted rows so a retired region still on the page
     // redacts fail-closed instead of surfacing to its old audience.
-    let source_path = handle.rel_dir().join(page);
-    let db_acl =
-        mwe_core::fact_index::page_acl_map_active(&state.pool, &source_path.to_string_lossy())
-            .await
-            .map_err(|e| ToolError::new(ToolErrorClass::InternalError, e.to_string()))?;
+    let source_path = handle.source_path(page);
+    let db_acl = mwe_core::fact_index::page_acl_map_active(&state.pool, &source_path)
+        .await
+        .map_err(|e| ToolError::new(ToolErrorClass::InternalError, e.to_string()))?;
     let rendered =
         mwe_core::render::render_for_sender(&body, &db_acl, &identity.sender_id, &sender_groups);
     Ok(json!({
@@ -996,10 +995,7 @@ fn wiki_dir_index(
         .map(|w| {
             (
                 w.meta.wiki_id.as_str().to_owned(),
-                (
-                    w.rel_dir.to_string_lossy().replace('\\', "/"),
-                    w.meta.wiki_type,
-                ),
+                (w.rel_dir_posix(), w.meta.wiki_type),
             )
         })
         .collect()

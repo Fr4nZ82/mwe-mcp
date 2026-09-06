@@ -344,7 +344,7 @@ fn is_rules_page_path(page: &Path) -> bool {
 /// and `None` means **no candidate**, not "fall back to the wiki root": a
 /// wiki root is not a landing at all.
 fn page_within(rel_dir: &Path, source_path: &str) -> Option<PathBuf> {
-    let prefix = format!("{}/", rel_dir.to_string_lossy().replace('\\', "/"));
+    let prefix = format!("{}/", crate::wiki::posix_path(rel_dir));
     let rest = source_path.strip_prefix(&prefix)?;
     if rest.is_empty() {
         None

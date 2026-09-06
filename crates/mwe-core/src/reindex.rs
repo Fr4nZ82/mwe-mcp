@@ -752,12 +752,7 @@ fn plan_page_source_paths(tree: &WikiTree) -> anyhow::Result<HashSet<String>> {
     let rel_by_wiki: std::collections::HashMap<String, String> = tree
         .walk()?
         .into_iter()
-        .map(|d| {
-            (
-                d.meta.wiki_id.as_str().to_owned(),
-                d.rel_dir.to_string_lossy().replace('\\', "/"),
-            )
-        })
+        .map(|d| (d.meta.wiki_id.as_str().to_owned(), d.rel_dir_posix()))
         .collect();
     Ok(plan
         .pages
@@ -1057,7 +1052,7 @@ pub async fn reconcile_wiki_ids(
         .walk()?
         .into_iter()
         .map(|d| {
-            let mut p = d.rel_dir.to_string_lossy().replace('\\', "/");
+            let mut p = d.rel_dir_posix();
             p.push('/');
             (p, d.meta.wiki_id.as_str().to_owned())
         })

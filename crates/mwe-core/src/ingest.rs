@@ -6318,8 +6318,7 @@ fn fragment_source_path(
 ) -> Option<String> {
     let wid = WikiId::parse(&fragment.wiki_id).ok()?;
     let handle = tree.locate(&wid).ok()?;
-    let source_path = handle.rel_dir().join(&fragment.page);
-    source_path.to_str().map(str::to_owned)
+    Some(handle.source_path(&fragment.page))
 }
 
 /// Stable header of the recall block's due-soon section.

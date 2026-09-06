@@ -681,7 +681,7 @@ async fn relocate(
         report.facts_unplaced += 1;
         return Ok(());
     };
-    let rel_dir = source.rel_dir().to_string_lossy().replace('\\', "/");
+    let rel_dir = source.rel_dir_posix();
     let source_page = row
         .source_path
         .strip_prefix(&format!("{rel_dir}/"))

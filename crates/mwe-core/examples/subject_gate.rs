@@ -344,11 +344,7 @@ async fn run_probe(
         };
         // Which of the card's facts the flat slot already carries — the
         // double-pay a loose gate would buy.
-        let card_page = format!(
-            "wikis/{}/{}",
-            handle.rel_dir().to_string_lossy(),
-            wiki::PROFILE_FILENAME
-        );
+        let card_page = handle.source_path(std::path::Path::new(wiki::PROFILE_FILENAME));
         let already: BTreeSet<&str> = hits
             .iter()
             .filter(|h| h.source_path == card_page)
