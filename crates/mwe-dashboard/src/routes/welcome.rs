@@ -11,10 +11,11 @@
 //! client-side steps that map to the three universal ingest
 //! destinations:
 //!
-//! 1. **Identity + always-on → the identity card.** The card plus a
-//!    health/safety slot. The ingest LLM marks these `salience: high`
-//!    and the engine routes the always-on core to the owner's
-//!    always-on base context of the card (`@profile.md`).
+//! 1. **Identity + always-on → the identity card.** The card's own
+//!    fields plus a health/safety line. The ingest LLM marks these
+//!    `salience: high`, and a high-salience fact is routed to the
+//!    wiki's identity card, `@profile.md` — the page recall serves
+//!    whole on every turn.
 //! 2. **Governance rules → `@rules.md`.** Privacy / sharing / do-not-store
 //!    presets. The ingest LLM marks each `engine_rule: true` and the
 //!    engine appends it to the sender's `@rules.md` policy page
@@ -22,14 +23,12 @@
 //! 3. **The rest → normal pipeline.** Low-weight preferences the LLM
 //!    files wherever it sees fit.
 //!
-//! ⚠️ **The primer names no page**, and that is why the identity split cost
-//! it nothing. It composes first-person prose and pushes it through the
-//! ordinary chat entry point, so where a fact lands is decided downstream:
-//! the ingest classifier marks a biographical statement `salience: high`, and
-//! `planner::identity_card_target` sends a high-salience fact to the wiki's
-//! foundation card. That card is `@profile.md`; the split
-//! it is `@profile.md`. Nothing here was hardcoded, so the routing followed
-//! the split for free — only these words had to change.
+//! ⚠️ **The primer names no page.** It composes first-person prose and
+//! pushes it through the ordinary chat entry point, so where a fact lands is
+//! decided downstream: the ingest classifier marks a biographical statement
+//! `salience: high`, and `planner::identity_card_target` sends a
+//! high-salience fact to the wiki's identity card, `@profile.md`. Nothing
+//! here names a destination.
 //!
 //! So the primer reaches the card **through a classifier judgement** rather
 //! than by assertion: a primer fact the model marks `normal` lands on the
@@ -118,8 +117,8 @@ pub fn router() -> Router<DashboardState> {
 /// `email` which is read server-side from `user_credentials`.
 ///
 /// The fields are grouped by the wizard's three steps, which map to the
-/// three universal ingest destinations: step 1 → the user's
-/// the card's always-on base context (identity + health/safety, marked
+/// three universal ingest destinations: step 1 → the user's identity
+/// card (identity + health/safety, marked
 /// `salience: high` by the ingest LLM), step 2 → the user's `@rules.md`
 /// engine-policy page (privacy / do-not-store directives, routed by the
 /// `engine_rule` flag the ingest LLM sets), step 3 → the normal pipeline
@@ -331,9 +330,9 @@ fn render_welcome_landing(chrome: layout::Chrome, user: &SessionUser, turn: &Cha
             "on the right, along with what the system understood."
         }
         p.muted {
-            "From now on the chat panel is the starting point for everything: write what you want to "
-            "save, ask for what you want to recall. The history stays in your browser; none of it is "
-            "replayed to the model — autocapture saves directly, recall finds things when needed."
+            "The chat panel on the right stays with you across the dashboard. It is an operative "
+            "surface — it acts on the memory through tools, it does not auto-capture or recall "
+            "what you type there. Its scrollback stays in your browser."
         }
         p {
             a href="/dashboard/home" { "Go to the home" }
@@ -710,9 +709,9 @@ fn render_form(
         @if !ingest_available {
             (components::flash(
                 "error",
-                "The `llm.ingest` LLM slot is not configured in mwe-mcp.config.yaml. \
-                 Save won't work until the slot is wired. \
-                 You can press Skip for now to continue without a profile."
+                "The ingest model slot has no model yet, and Save runs through it — \
+                 an admin sets it on the LLM config page. You can press Skip for \
+                 now and fill your profile in later."
             ))
         }
 
@@ -746,8 +745,9 @@ fn step1_identity_fieldset(email_value: &str, locale_default: &str) -> Markup {
             legend { "1 · Who you are" }
             p.muted {
                 "Your identity and the things an assistant must "
-                strong { "always" } " know: they go into your main page, "
-                "the base context of every interaction."
+                strong { "always" } " know. They go on your "
+                strong { "identity card" } " — the one page the memory serves "
+                "whole, every time somebody talks to you."
             }
             p.flash.flash-info {
                 "Everything you enter here — health & safety included — is "

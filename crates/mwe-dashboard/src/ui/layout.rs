@@ -505,14 +505,14 @@ fn nav_link(href: &str, label: &str) -> Markup {
 /// - `.chat-panel-messages` is the scroll area populated entirely
 ///   client-side from `localStorage.mwe-mcp.chat.history` (FIFO, 100
 ///   entries). The server *never* injects past turns into this list:
-///   conversation history is a client concern — the engine relies on
-///   `wiki_recall` + autocapture for the continuity that an LLM
-///   context window would normally provide.
-/// - A form at the bottom that posts to `/dashboard/chat` with
-///   `Accept: application/json`. `chat.js` intercepts the submit,
-///   `fetch`-es the endpoint, appends the returned `response_html` to
-///   the scroll area, and persists the turn to `localStorage` —
-///   trimming the oldest entries when the list exceeds 100.
+///   the scrollback is a client concern, and the only thing that rides
+///   the wire is the bounded recent window the agentic loop needs to
+///   resolve a confirmation ([`crate::routes::chat`]).
+/// - A form at the bottom. `chat.js` intercepts the submit and
+///   `fetch`-es `/dashboard/chat/agentic`, appending the turn's tool
+///   trace and final reply to the scroll area and persisting it to
+///   `localStorage` — trimming the oldest entries when the list
+///   exceeds 100.
 ///
 /// The form keeps a real `method="post"` action so the no-JavaScript
 /// path is honest: visitors without JS submit a vanilla form and the
@@ -569,7 +569,7 @@ fn chat_panel() -> Markup {
                 label for="chat-panel-text" class="sr-only" { "Chat with the engine" }
                 textarea id="chat-panel-text" name="text" rows="2"
                     class="w-full bg-bg p-2 border border-border rounded text-text font-mono text-sm resize-y focus:outline-none focus:border-phosphor"
-                    placeholder="Operate on the memory by chatting — move a wiki, retune or reshape items, or ask what's pending." {}
+                    placeholder="Ask what the memory holds, correct or forget a fact, or ask what's pending." {}
                 button type="submit"
                     class="self-end px-3 py-1.5 text-xs font-bold border border-phosphor rounded bg-bg-2 text-phosphor hover:bg-bg-3 hover:text-phosphor-bright" {
                     "Send"
@@ -630,30 +630,32 @@ fn help_modal() -> Markup {
 /// and by the no-JS `GET /dashboard/help` fallback page so the two
 /// cannot drift.
 ///
-/// Concise and skimmable: the chat is *how you operate on the memory*,
-/// with example phrasings mapped to what they do. The dashboard chrome
-/// is English, so the copy is English with the italian phrasings the
-/// internal LLM understands shown as the spoken examples.
+/// Every example maps onto a tool the panel actually carries
+/// ([`crate::agentic::tool_descriptors`]) — a help page that names a
+/// capability the loop cannot reach sends the operator to argue with a
+/// model that will refuse. `help_examples_name_only_wired_capabilities`
+/// in `crate::agentic` pins the pairing.
 #[must_use]
 pub fn help_body() -> Markup {
     html! {
         p style="margin:.2rem 0 .8rem;font-size:.85rem;color:var(--text-dim);line-height:1.5" {
-            "The chat panel on the right is how you operate on your memory — "
-            "moving things, retuning them, changing their shape, undoing them. "
-            "Just say what you want in plain language; the assistant uses the "
-            "tools and always asks you to confirm before it writes anything."
+            "The chat panel on the right is how you operate on the memory you can "
+            "already read: finding facts, correcting them, moving them, forgetting "
+            "them, and answering what is waiting on you. Say what you want in plain "
+            "language; the assistant works through the tools and always asks you to "
+            "confirm before it writes anything."
         }
         ul style="margin:0;padding:0;list-style:none;display:flex;flex-direction:column;gap:.55rem" {
-            (help_row("\u{201C}move the list into the family group\u{201D}",
-                "Move a wiki to another scope (e.g. into a group)."))
-            (help_row("\u{201C}keep items two days\u{201D}",
-                "Retune an item\u{2019}s permanence / time-to-live."))
-            (help_row("\u{201C}add a \u{00AB}who-ordered\u{00BB} field to the items\u{201D}",
-                "Change the item schema."))
-            (help_row("\u{201C}move the shopping facts onto their own page\u{201D}",
-                "Reshape where facts live."))
+            (help_row("\u{201C}what do you know about the car?\u{201D}",
+                "Search the memory you are allowed to read."))
+            (help_row("\u{201C}that is wrong \u{2014} I moved to Bologna in March\u{201D}",
+                "Replace a fact with a corrected version."))
+            (help_row("\u{201C}forget everything I said about the old job\u{201D}",
+                "List the matching facts, then forget the ones you confirm."))
+            (help_row("\u{201C}move this fact onto the health page\u{201D}",
+                "Move one fact to another page or wiki (admin only)."))
             (help_row("\u{201C}what have I got pending?\u{201D}",
-                "Review the proposals still waiting on you."))
+                "Review the proposals still waiting on you, and vote on a forget request."))
         }
         p style="margin:.9rem 0 0;font-size:.78rem;color:var(--text-dim);line-height:1.45" {
             "Tip: the badge in the top bar lights up when you have something in "

@@ -2,10 +2,11 @@
 //! Integration coverage for the first-login profile wizard
 //! (`/dashboard/welcome`).
 //!
-//! The wizard requires `llm.ingest` configured — without it
+//! The wizard runs through the ingest model slot — with no model on it
 //! `Save` fails 422 and only `Skip` works. These tests run against a
-//! `MemoryHandles` bundle with `LlmConfig::default()` (no slots wired)
-//! so they exercise the no-LLM branch end-to-end. The happy-path
+//! `MemoryHandles` bundle with `LlmConfig::default()` (no slots wired),
+//! which is a half-wired install, not a supported way to run: they
+//! exercise the refusal end-to-end. The happy-path
 //! Save-with-LLM is a manual test the operator runs once Ollama is up
 //! against the workhorse — there is no facility to inject a fake
 //! backend through `LlmFunctionConfig::build_backend` today.
@@ -97,9 +98,15 @@ async fn welcome_get_shows_no_llm_banner_when_ingest_slot_missing() {
     .await;
     assert!(response.status().is_success());
     let html = body_string(response).await;
+    // Named in words an operator can act on, not as a YAML path: the
+    // banner has to say which slot and where to fill it.
     assert!(
-        html.contains("llm.ingest`"),
-        "no-LLM banner must mention the slot: {html}"
+        html.contains("ingest model slot has no model"),
+        "the banner must name the slot: {html}"
+    );
+    assert!(
+        html.contains("LLM config page"),
+        "the banner must say where to fill it: {html}"
     );
 }
 
@@ -128,8 +135,8 @@ async fn welcome_post_save_fails_422_without_llm_slot() {
     );
     let html = body_string(response).await;
     assert!(
-        html.contains("llm.ingest`"),
-        "error body must mention the missing slot: {html}"
+        html.contains("ingest model slot has no model"),
+        "the refusal must name the slot: {html}"
     );
 
     // No marker anywhere in the wiki — capture was not attempted.

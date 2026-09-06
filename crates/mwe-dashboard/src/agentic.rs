@@ -2190,6 +2190,42 @@ mod tests {
         assert_eq!(AgenticTool::from_name("dream_trigger"), None);
     }
 
+    /// The Help panel is the only place that tells an operator what this
+    /// chat can do, so every capability it names must land on a tool the
+    /// loop carries: an offer with no tool behind it sends the operator to
+    /// argue with a model that can only refuse. The negative list below
+    /// holds the shapes that are tempting to write and that nothing here
+    /// serves — moving a wiki, an item's time-to-live, an item schema.
+    #[test]
+    fn help_examples_name_only_wired_capabilities() {
+        let help = crate::ui::layout::help_body().into_string();
+        let wired: Vec<String> = tool_descriptors().into_iter().map(|d| d.name).collect();
+
+        // What the page offers, paired with the tool that serves it.
+        for (offer, tool) in [
+            ("what do you know about", "wiki_recall"),
+            ("Replace a fact", "wiki_supersede"),
+            ("forget everything I said", "wiki_forget"),
+            ("Move one fact", "wiki_move_fact"),
+            ("proposals still waiting on you", "structure_proposal_list"),
+            ("vote on a forget request", "structure_proposal_vote"),
+        ] {
+            assert!(help.contains(offer), "Help no longer offers {offer:?}");
+            assert!(
+                wired.iter().any(|n| n == tool),
+                "Help offers {offer:?} but `{tool}` is not wired into the panel",
+            );
+        }
+
+        // And the negation: no capability the loop cannot reach.
+        for absent in ["move a wiki", "item schema", "time-to-live"] {
+            assert!(
+                !help.contains(absent),
+                "Help offers {absent:?}, which no tool in the panel serves",
+            );
+        }
+    }
+
     #[test]
     fn tool_descriptors_match_dispatch_names() {
         for descriptor in tool_descriptors() {

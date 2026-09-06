@@ -1211,8 +1211,8 @@ async fn chat_agentic_returns_422_when_the_chat_slot_is_missing() {
     assert_eq!(response.status(), StatusCode::UNPROCESSABLE_ENTITY);
     let body = body_string(response).await;
     assert!(
-        body.contains("llm.operator_chat`"),
-        "validation body should name the missing slot: {body}"
+        body.contains("operator-chat model slot has no model"),
+        "the refusal must name the slot in words the operator can act on: {body}"
     );
 }
 

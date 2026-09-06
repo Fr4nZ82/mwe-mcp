@@ -16,17 +16,20 @@
 //!       no-JavaScript fallback that still works for visitors hitting
 //!       `/dashboard/chat` directly.
 //!
-//! The conversation history is not persisted server-side. Fact
-//! continuity across turns rides the auto-capture + recall path (every
-//! fact the user tells the chat lands in their wiki on the spot, and the
-//! next turn recalls it through `wiki_recall` on relevance) rather than a
-//! replayed context window. The one exception is the agentic loop's
-//! propose → confirm → act handshake: each submission replays a **bounded
-//! recent `{user, assistant}` window** (sent by `chat.js`, clamped by
-//! [`parse_chat_history`]) so a bare "sì" resolves against the
-//! assistant's prior proposal.
-//! The full chat history lives in the browser's `localStorage` for the
-//! user's benefit (scrollback), trimmed FIFO at 100 entries by
+//! **Two paths, and they are not the same surface.** The chat panel every
+//! authenticated page carries posts to `POST /dashboard/chat/agentic`: an
+//! agentic loop over the whitelisted `_internal.*` tools, which acts on
+//! memory the operator can already read and captures nothing of what they
+//! type. `POST /dashboard/chat` is the no-JavaScript fallback and the
+//! welcome primer's entry point; it runs the message through
+//! `wiki_ingest_message`, so that one does capture and recall.
+//!
+//! No conversation history is persisted server-side on either path. The
+//! agentic loop replays a **bounded recent `{user, assistant}` window**
+//! (sent by `chat.js`, clamped by [`parse_chat_history`]) so a bare "sì"
+//! resolves against the assistant's prior proposal, and nothing more.
+//! The full scrollback lives in the browser's `localStorage` for the
+//! user's benefit, trimmed FIFO at 100 entries by
 //! [`crate::assets`]' `chat.js`.
 
 use std::sync::Arc;
@@ -205,8 +208,8 @@ pub async fn process_submission(
         .backend_for(LlmFunction::Ingest)
         .map_err(|e| match e {
             BackendForError::SlotMissing(_) => DashboardError::Validation(
-                "The `llm.ingest` LLM is not configured in mwe-mcp.config.yaml. \
-             Configure the deployment's chosen model before continuing."
+                "The ingest model slot has no model. Set one on the LLM config \
+             page before continuing."
                     .into(),
             ),
             BackendForError::BuildFailed { detail, .. } => {
@@ -319,13 +322,16 @@ fn wants_json(headers: &HeaderMap) -> bool {
 fn render_page(chrome: layout::Chrome, user: &SessionUser, turn: Option<&ChatTurn>) -> String {
     let body = html! {
         p.muted {
-            "Type a natural-language command or question. The dashboard runs it through "
-            code { "wiki_ingest_message" }
-            " with " code { "context_hint=dashboard_command" } " so structural intents bias toward suggestions you can apply later."
+            "The conversation lives in the panel on the right, and its scrollback "
+            "stays in your browser. There the chat is an operative surface: it acts "
+            "on the memory through tools, and does not capture or recall what you "
+            "type."
         }
         p.muted {
-            "The conversation lives in the panel on the right, with history kept locally in your browser. "
-            "The chat is the single entry point for every LLM call from the dashboard."
+            "Without JavaScript the panel's box posts to this page instead, and that "
+            "path behaves differently: it runs your message through the ordinary "
+            "capture and recall, exactly as a message to your assistant would be, "
+            "and prints below what the engine made of it."
         }
 
         @if let Some(t) = turn {
@@ -343,8 +349,8 @@ fn render_page_with_error(chrome: layout::Chrome, user: &SessionUser, error: &st
     let body = html! {
         (components::flash("error", error))
         p.muted {
-            "Use the chat panel on the right to send a message. Submit from there is intercepted by the local "
-            code { "chat.js" } " and persists history in " code { "localStorage" } "."
+            "Use the chat panel on the right to send a message. Its scrollback stays "
+            "in your browser."
         }
     };
     layout::authenticated_page(chrome, "Chat", user, &body)
@@ -455,9 +461,8 @@ pub async fn agentic_submission(
     // 2026-08-19: *«la chat operativa deve avere il suo modello dedicato»*).
     let backend = memory.backend_for_chat().map_err(|e| match e {
         BackendForError::SlotMissing(_) => DashboardError::Validation(
-            "The dashboard-chat LLM is not configured in mwe-mcp.config.yaml. \
-             Configure the `llm.operator_chat` slot for the agentic loop \
-             before continuing."
+            "The operator-chat model slot has no model, and this chat runs on \
+             it. Set one on the LLM config page before continuing."
                 .into(),
         ),
         BackendForError::BuildFailed { slot, detail } => {
@@ -673,17 +678,18 @@ pub fn response_panel(response: &IngestResponse) -> Markup {
                     }
                 }
                 p.muted {
-                    "For now, pick the right candidate on a future "
-                    "submit by appending " code { "?disambig_choice=<id>" }
-                    " — a full UI is planned."
+                    "The engine could not tell which of these the message meant. "
+                    "Say which one in your next message, naming it in words."
                 }
             }
 
             @if matches!(response.intent, IntentKind::Structural) {
                 p.muted {
-                    "Structural intent → "
-                    a href="/dashboard/wiki" { "open the wiki list" }
-                    " to act on it."
+                    "This message asked for a change to the shape of the memory. "
+                    "The engine does not act on that here — ask for it in the chat "
+                    "panel, which can, or "
+                    a href="/dashboard/wiki" { "browse the wikis" }
+                    " to see where things stand."
                 }
             }
         }
