@@ -85,8 +85,9 @@ After each step, check what the memory did on the dashboard
 
 ## What counts as a pass
 
-Every step above, plus: no error in the host log, and `journalctl --user -u
-nanoclaw | grep 'mwe_request failed'` empty for the whole run.
+Every step above, plus: no error in the host log, and
+`source setup/lib/install-slug.sh && journalctl --user -u $(systemd_unit) |
+grep 'mwe_request failed'` empty for the whole run.
 
 ## Tear down
 

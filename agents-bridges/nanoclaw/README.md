@@ -181,7 +181,7 @@ from your nanoclaw fork.
    still serving that chat: `ncl groups restart --id <agent-group-id>`, then
    send another message. The turn itself shows up as `mwe_request` in the host
    log and as a `system` row in the session's outbound mailbox
-   (`data/*/<session>/outbound.db`).
+   (`data/v2-sessions/<agent group>/<session>/outbound.db`).
 
 ## Configuration — `mwe.json`
 

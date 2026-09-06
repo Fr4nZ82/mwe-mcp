@@ -247,14 +247,23 @@ log has no `[mwe]` line at all, is the pre-skill runner: stop it with
 Then the turn itself, from the two sides that record it:
 
 ```bash
-journalctl --user -u nanoclaw -n 50 | grep mwe
-ncl sessions list
+source setup/lib/install-slug.sh && journalctl --user -u $(systemd_unit) -n 50 | grep mwe
 ```
 
-A working turn logs `mwe_request` handling on the host, and the session's
-outbound mailbox (`data/*/<session>/outbound.db`, table `messages_out`) carries
-`system` rows whose content names `mwe_request`. No such row means the turn
-never asked the memory anything.
+(The unit is `nanoclaw-v2-<slug>`, one install per checkout — the same helper
+the restart step above uses. A bare `-u nanoclaw` matches nothing.)
+
+A working turn logs `mwe_request` handling on the host. The other side of the
+same turn is the session's outbound mailbox, where the container wrote the
+request (needs `sqlite3`):
+
+```bash
+sqlite3 "$(ls -t data/*/*/*/outbound.db | head -1)" \
+  "SELECT timestamp, substr(content,1,60) FROM messages_out WHERE kind='system'"
+```
+
+No `mwe_request` row there means the turn never asked the memory anything —
+which is the shape of a container running code from before the skill.
 
 Then ask the agent something you told it in an earlier conversation: it should
 answer without being reminded. To see what it stored, ask it for your dashboard
@@ -268,7 +277,7 @@ The turn is degrading, which is by design: a memory failure never kills a turn.
 The reason is in the host log.
 
 ```bash
-journalctl --user -u nanoclaw -n 200 | grep 'mwe_request failed'
+source setup/lib/install-slug.sh && journalctl --user -u $(systemd_unit) -n 200 | grep 'mwe_request failed'
 ```
 
 `MWE_TOKEN missing from .env` and `mwe.json missing or unreadable` say exactly
