@@ -68,7 +68,7 @@ No permissions database bolted on top, no per-document walls. Visibility is enfo
 - ⏳ **Facts that know when they stop being true.** Every fact carries a validity window, and closes on contradiction, expiry or completion. Closing is never deleting: the window shuts, the history stays, the prose narrates it.
 - 🧭 **Recall that walks the wiki instead of grepping it.** Local embeddings seed the entry points, then a navigator follows pages, links and hubs the way a person would. That's how the deviating fact surfaces: the cancelled trip, the allergy behind the dinner plan.
 - 🌙 **A nightly cycle that keeps the memory in shape.** While nobody is waiting, REM deduplicates, merges near-synonym pages, closes what conversations left open, re-anchors rotting dates, and recompiles everything into prose.
-- 🧩 **Shape emerges per fact, with no schema to declare.** A passing detail is a line, a topic that accumulates becomes a page and then its own sub-wiki. A shopping list renders as records while a person's story reads as prose.
+- 🧩 **Shape emerges per fact, with no schema to declare.** A passing detail is a line, facts that pile up on one subject become a page, and pages that pile up around one subject become a **topic wiki** of their own — named after the subject, standing beside the people's wikis, owned by nobody. Both thresholds are operator knobs. A shopping list renders as records while a person's story reads as prose.
 - 🧵 **No compaction, no session to reset.** Most stacks summarize the conversation into a lossy digest when context fills, which is exactly where agent state corrupts. Here the durable memory stays a complete wiki and recall refills a small window every turn.
 - 🔌 **Any MCP agent, the same memory.** Claude Code, Cursor, a Telegram or voice assistant, your own. Swap a harness or add another, the memory stays one.
 
@@ -86,15 +86,15 @@ mwe-mcp serve
 
 **On Windows**, open the [latest release](https://github.com/Fr4nZ82/mwe-mcp/releases/latest), download `mwe-mcp-<version>-x86_64-pc-windows-msvc.zip` from its **Assets** section, unzip it, then run `mwe-mcp.exe serve`.
 
-**3. Finish setup in the browser.** Open `http://127.0.0.1:8742/dashboard/setup`. The first-run wizard creates the admin account, your users and groups, and picks how the internal LLM runs: all-local via Ollama, hybrid, or API.
+**3. Finish setup in the browser.** Open `http://127.0.0.1:8742/dashboard/setup`. The first-run wizard creates the admin account, then takes you straight to the models, because the memory does not work without them: mwe-mcp has **six model slots** — `ingest`, `operator_chat`, `rem_promotions`, `rem_dedup_semantic`, `cronista`, `navigator` — and **all six are required**. A one-click profile fills all six at once — everything on Anthropic (`all-api`), everything on a local [Ollama](https://ollama.com) (`all-local`), or a mix of the two (`hybrid`) — and the editor takes any of five backends on any slot afterwards. Embeddings always run locally and are free. Then the short profile primer, and your users, groups and tokens from their own consoles.
 
-**4. Connect an agent.** If you have none of your own, take the ready-made assistant: `/bridges/nanoclaw` on your own server installs [NanoClaw](https://github.com/nanocoai/nanoclaw) with one command, preconfigured so this memory is its only memory. For Claude Code it's one command and an OAuth sign-in, with no token to paste:
+**4. Connect a consumer** — a consumer is any program that talks to the memory for a person. If you have none of your own, take **the ready-made assistant**: `/bridges/nanoclaw` on your own server installs [NanoClaw](https://github.com/nanocoai/nanoclaw) with one command, preconfigured so this memory is its only memory. For Claude Code it is one command and an OAuth sign-in, with no token to paste:
 
 ```bash
 claude mcp add --transport http mwe-mcp http://127.0.0.1:8742/mcp --scope user
 ```
 
-Every other consumer gets tailored copy-paste setup from the `/bridges` catalog your own server serves.
+Every other consumer gets tailored copy-paste setup from the `/bridges` catalog your own server serves — each entry with a page for you and an `install.md` a capable agent can follow itself.
 
 mwe-mcp ships as a **single self-contained binary** with the embedder bundled in, a vendored SQLite and `rustls` (no OpenSSL), serving both the MCP endpoint and the dashboard on one port. Building from source is deliberately boring: `cargo build --release` needs no running database and no prepared query cache. For a binary you will actually deploy use **`cargo prod`** (aliased in `.cargo/config.toml` to `build --release --features local-embedder`): it compiles the Candle embedder in, which is what the prebuilt releases ship with and what a `embedding.backend: bundled` config needs at runtime.
 
@@ -108,7 +108,7 @@ Deployment topologies, LLM profiles and security posture are in [`INSTALL.md`](I
 
 We are not trying to win the recall race. Remembering more, faster and cheaper is a well-funded contest with years of optimization behind it, and it isn't the axis this was built on.
 
-> **Honest disclosure:** everything above is designed, implemented and exercised end-to-end, on a multi-week multi-user replay corpus and on a live household deployment that ran from spring to August 2026. Not on years of organic production data at scale. The MCP tool families are a stable surface under semver.
+> **Honest disclosure:** everything above is designed, implemented and exercised end-to-end, on a multi-week multi-user replay corpus and on a live household deployment. Not on years of organic production data at scale. The MCP tool families are a stable surface under semver.
 
 ## How it works
 
@@ -147,7 +147,7 @@ flowchart TB
 
 1. **Per turn**, the agent calls one tool, `wiki_ingest_message`, with the raw user message. The internal LLM classifies it (capture / recall / structural / skip) and routes it. The agent gets back a context block with recalled memory, imminent commitments and a draft reply, and never sees a filesystem path.
 2. **Capture and dedup are deterministic**: local embeddings, cosine, a string-similarity check. Bounded latency, predictable cost.
-3. **Nightly**, with nobody waiting, the REM cycle tends the memory and recompiles the fact store into prose pages, one home per fact. Every structural change lands immediately and leaves a receipt you can read in the dashboard; the memory is steered by talking to it, not by rolling changes back.
+3. **Nightly**, with nobody waiting, the REM cycle tends the memory and recompiles the fact store into prose pages, one home per fact. A structural change lands immediately and is never rolled back — the memory is steered by talking to it. A change somebody asked for, in a conversation or from the dashboard, sends its subject a notice with a link to read what happened; the night's own housekeeping is silent.
 4. **Storage is a single folder.** `wikis/` holds the Markdown prose, `engine.db` beside it holds the per-fact governance. Snapshot the folder and you have backed up the memory. Export it and every fragment carries its governance inline — subject, audience, sender in the marker itself — so the archive reads on its own, without the index beside it. Reading such an archive back in is a job for a future importer; no import path ships today.
 
 The consumer pays for conversation volume. mwe-mcp pays a low floor, and it isn't a *second* bill: it is memory work a serious consumer would otherwise do itself, relocated to one place and paid once, then amortized across every agent that shares the memory.
@@ -169,7 +169,7 @@ The agent talks to a small surface of **high-level** MCP tools grouped into fami
 | **D — Read** | `wiki_read`, `wiki_search`, `wiki_navigate`, all ACL-aware, including *as-of-a-date* queries against the validity windows. |
 | **E — Audit / health** | Audit-trail search and integrity checks. |
 | **F — Setup** | Onboarding and bulk ingest of legacy data, with per-message semantic clocks so imported history keeps its dates. |
-| **G — Dashboard** | One-shot signed link into the built-in PWA. |
+| **G — Dashboard** | One-shot signed link into the built-in dashboard. |
 | **H — Smart-wiki writes** | Authoritative writes for coding agents: push, pull, notify, cooperative leases. |
 | **I — Skill catalog** | Server-served operational instructions, etag-cached, pulled on demand instead of baked into a system prompt. |
 | **K — Smart bootstrap** | Smart-consumer session start and transversal recall. |
@@ -179,22 +179,24 @@ The families are the stable, semver-governed surface. Exact tool counts may stil
 
 ## Built-in dashboard
 
-The dashboard is also **where you correct the memory**. On the memory proper the compiler owns the prose, so a wrong fact is fixed here (per-fact records, inline comments, an operative chat that applies structured changes), not by rewriting a paragraph in a text editor. That is what keeps the prose and the governance index in step. Project wikis authored by coding agents are the other way round: those are filesystem-authored and hand-editable.
+The dashboard is also **where you correct the memory**. On a standard wiki the compiler owns the prose, so a wrong fact is fixed here (per-fact records, inline comments, an operative chat that applies structured changes), not by rewriting a paragraph in a text editor. That is what keeps the prose and the governance index in step. A **smart wiki** — the kind a coding agent keeps for a project — is the other way round: its consumer is the author, writes it whole over `wiki_admin_push`, and the engine only indexes what it is given.
 
-`mwe-mcp serve` brings up an Axum-hosted PWA at `/dashboard/*`, on the same listener as `/mcp`:
+`mwe-mcp serve` brings up the dashboard at `/dashboard/*`, on the same listener as `/mcp`:
 
-- **Identity console.** First-run wizard, users, groups and tokens, consumer delegation, a welcome flow that seeds each user's identity, rules and preferences.
-- **Memory explorer.** Browse every indexed wiki: rendered Markdown redacted to *your* eyes, page list, metadata, active-fact counts, smart-wiki views.
-- **Receipts tray.** Every structural change with its context, and the forget requests waiting for a vote.
-- **Agentic chat.** A floating panel that *operates on* the memory, with explicit write confirmations.
-- **Admin config.** LLM-slot editor, API keys, operational prompts, full-archive export with inline governance markers.
+- **Your own memory first.** Everyone lands on their wiki, the facts about them, the rules they set and what was recalled for them. The whole-deployment counters are the operator's and are shown to an admin alone.
+- **Memory explorer.** Browse every wiki you can read: rendered Markdown redacted to *your* eyes, page list, metadata, active-fact counts, smart wikis.
+- **Fact browser.** Every fact you may read, filtered by who it is about — it opens on you — with the superseded and deleted rows one filter away.
+- **Operative chat.** A floating panel that *operates on* the memory, with explicit write confirmations. It is also where a change waiting for you is reviewed, and where a vote on a forget request is cast.
+- **Identity console.** Users, groups and tokens, consumer delegation, a welcome flow that seeds each user's identity, rules and preferences, and the two GDPR actions on a person's page: **export** everything the memory holds about them, **forget** them.
+- **Admin config.** The six model slots and their keys, operational prompts, recall and REM knobs, usage and spend against a daily budget, backups, and a full-archive export with inline governance markers.
 
 ## Documentation
 
 - [`INSTALL.md`](INSTALL.md) — standalone install, topologies, LLM profiles, security posture.
 - [`INTEGRATING.md`](INTEGRATING.md) — wire your own agent: the per-turn contract, tokens, transports.
-- [`AGENT_INSTRUCTIONS.md`](AGENT_INSTRUCTIONS.md) — the operational contract the *consumer agent itself* follows.
-- [`agents-bridges/`](agents-bridges/) — ready-made bridges, plus the `/bridges` catalog your server serves.
+- [`AGENT_INSTRUCTIONS.md`](AGENT_INSTRUCTIONS.md) — the bootstrap an *agent* reads to connect: its wire identity, and the skills it loads for the rest.
+- [`agents-bridges/`](agents-bridges/) — the ready-made bridges and the guide to writing one, plus the `/bridges` catalog your server serves.
+- [`CHANGELOG.md`](CHANGELOG.md) — what shipped, release by release, breaking changes called out.
 
 ## Contributing
 
