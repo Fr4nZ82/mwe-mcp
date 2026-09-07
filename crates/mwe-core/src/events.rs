@@ -18,9 +18,9 @@
 //! Lifecycle rules typically wake on a condition that stays true across
 //! several REM cycles (e.g. `due_at < now AND status = pending`). The
 //! interpreter must not emit the same event every night until the
-//! operator marks the fact as `done`. [`find_recent_event_for`] is the
-//! cheap pre-check used by lifecycle: if a matching `(kind, fact_id)`
-//! row already exists in the past N days, skip the insert.
+//! operator marks the fact as `done`. [`find_recent_event_for_recipient`]
+//! is the cheap pre-check used by lifecycle: if a matching `(kind,
+//! fact_id)` row already exists in the past N days, skip the insert.
 //!
 //! The window is the caller's to choose, and it is bounded by the queue's
 //! retention: [`crate::housekeeping`] keeps each kind of row at least as
@@ -293,36 +293,22 @@ pub async fn insert_event(
     Ok(row.0)
 }
 
-/// Idempotency probe used by the lifecycle interpreter.
+/// Idempotency probe used by the lifecycle interpreter: has this
+/// notification already fired?
 ///
-/// Returns `true` when a row with the same `(kind, fact_id)` was
-/// emitted within `window`. The caller short-circuits to skip the insert,
-/// and owns `window`: a span longer than the retention
-/// [`crate::housekeeping`] gives that kind reads rows that are already
-/// gone, so the two are set together.
-///
-/// `fact_id` is required — global events are not deduplicated by this
-/// helper (they have no natural key beyond `kind`, and the lifecycle
-/// interpreter today only fires per-region events).
-///
-/// # Errors
-///
-/// - [`EventsError::Db`] for any SQL failure.
-pub async fn find_recent_event_for(
-    pool: &SqlitePool,
-    kind: EventKind,
-    fact_id: &str,
-    window: chrono::Duration,
-) -> Result<bool> {
-    find_recent_event_for_recipient(pool, kind, fact_id, None, window).await
-}
-
-/// [`find_recent_event_for`], asked of ONE addressee.
+/// Returns `true` when a row with the same `(kind, fact_id)` was emitted
+/// within `window`. The caller short-circuits to skip the insert, and owns
+/// `window`: a span longer than the retention [`crate::housekeeping`] gives
+/// that kind reads rows that are already gone, so the two are set together.
 ///
 /// An event carries a single `recipient_id`, so a fact that must reach
-/// several people is several events — and "has this already fired" is then a
-/// question about a person, not about the fact. Asked without a recipient it
-/// is the older question, about the fact whoever it went to.
+/// several people is several events, and the question is then about a
+/// person: pass `Some(id)` to ask it of one addressee, `None` to ask it of
+/// the fact whoever the event went to.
+///
+/// `fact_id` is required — global events are not deduplicated here (they
+/// have no natural key beyond `kind`, and the lifecycle interpreter only
+/// fires per-region events).
 ///
 /// # Errors
 ///
@@ -765,10 +751,11 @@ mod tests {
         )
         .await
         .expect("insert");
-        let seen = find_recent_event_for(
+        let seen = find_recent_event_for_recipient(
             &pool,
             EventKind::StructureApplied,
             fact_id,
+            None,
             chrono::Duration::days(30),
         )
         .await
@@ -797,10 +784,11 @@ mod tests {
             .execute(&pool)
             .await
             .expect("backdate");
-        let seen = find_recent_event_for(
+        let seen = find_recent_event_for_recipient(
             &pool,
             EventKind::ArchiveProposed,
             fact_id,
+            None,
             chrono::Duration::days(30),
         )
         .await
@@ -1108,10 +1096,11 @@ mod tests {
         .await
         .expect("insert");
         // Same fact, different kind ⇒ probe must return false.
-        let seen = find_recent_event_for(
+        let seen = find_recent_event_for_recipient(
             &pool,
             EventKind::ArchiveProposed,
             fact_id,
+            None,
             chrono::Duration::days(30),
         )
         .await
