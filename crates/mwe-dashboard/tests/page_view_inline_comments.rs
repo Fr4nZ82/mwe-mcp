@@ -1580,7 +1580,11 @@ async fn the_comment_form_says_who_will_read_it() {
     let (app, _pool, tree, _dir) = make_app_with_memory().await;
     let cookie = login_as_admin(&app).await;
     seed_alice_with_page(&tree, "cucina.md", "# Cucina\n\n## Colazione\n\nCoffee.\n");
-    seed_smart_casa_with_page(&tree, "impianti.md", "# Impianti\n\n## Boiler\n\nServiced.\n");
+    seed_smart_casa_with_page(
+        &tree,
+        "impianti.md",
+        "# Impianti\n\n## Boiler\n\nServiced.\n",
+    );
 
     for (uri, expected, refused) in [
         (

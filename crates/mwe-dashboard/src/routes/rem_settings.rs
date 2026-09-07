@@ -330,7 +330,7 @@ async fn save(
     // kind of refusal nobody forgives twice.
     let parsed = match parse_form(&form) {
         Ok(parsed) => parsed,
-        Err(e) => return Ok(refused(&state, &admin, &form, &e.to_string())?),
+        Err(e) => return refused(&state, &admin, &form, &e.to_string()),
     };
 
     // Preserve every non-REM-policy section of the existing Config by

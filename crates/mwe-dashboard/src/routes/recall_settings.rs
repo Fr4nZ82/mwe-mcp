@@ -342,7 +342,7 @@ async fn save(
     // of refusal nobody forgives twice.
     let mut parsed = match parse_form(&form) {
         Ok(parsed) => parsed,
-        Err(e) => return Ok(refused(&state, &admin, &form, &e.to_string())?),
+        Err(e) => return Ok(refused(&state, &admin, &form, &e.to_string())),
     };
 
     // Preserve every non-recall section of the existing Config by
@@ -502,7 +502,7 @@ fn refused(
     admin: &AdminUser,
     typed: &HashMap<String, String>,
     msg: &str,
-) -> Result<Response> {
+) -> Response {
     let chrome = layout::Chrome::of(state);
     let body = render(
         chrome,
@@ -511,5 +511,5 @@ fn refused(
         Some(typed),
         Some(Flash { kind: "error", msg }),
     );
-    Ok((StatusCode::UNPROCESSABLE_ENTITY, Html(body)).into_response())
+    (StatusCode::UNPROCESSABLE_ENTITY, Html(body)).into_response()
 }

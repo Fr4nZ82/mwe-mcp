@@ -1602,7 +1602,11 @@ struct PageViewFlags {
     smart: bool,
 }
 
-#[allow(clippy::too_many_arguments)]
+#[allow(
+    clippy::too_many_arguments,
+    clippy::too_many_lines,
+    reason = "one page body rendered in order; splitting it would hide the order"
+)]
 fn render_view_page_body(
     wiki_id: &WikiId,
     page_path: &str,
@@ -2140,6 +2144,10 @@ fn derive_topic(body: &str) -> String {
     truncated
 }
 
+#[allow(
+    clippy::too_many_arguments,
+    reason = "one form's fields, each threaded from the handler that knows it"
+)]
 fn render_comment_form(
     chrome: layout::Chrome,
     user: &SessionUser,

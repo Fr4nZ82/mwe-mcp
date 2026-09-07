@@ -238,6 +238,10 @@ async fn empty_journal_renders_and_links_nothing() {
 }
 
 #[tokio::test]
+#[allow(
+    clippy::too_many_lines,
+    reason = "one walk from journal to viewer to feed; splitting it hides the order"
+)]
 async fn journal_lists_and_viewer_replays_a_recorded_trace() {
     let (app, pool, _dir) = make_app().await;
     let cookie = login_as_admin(&app).await;
