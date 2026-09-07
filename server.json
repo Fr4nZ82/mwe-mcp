@@ -3,7 +3,7 @@
   "name": "io.github.Fr4nZ82/mwe-mcp",
   "title": "mwe-mcp — Memory Wiki Engine",
   "description": "Self-hosted multi-user memory for AI agents: a human-readable Markdown wiki with per-fragment ACL.",
-  "version": "1.9.0",
+  "version": "2.0.0",
   "repository": {
     "url": "https://github.com/Fr4nZ82/mwe-mcp",
     "source": "github"
@@ -12,9 +12,9 @@
   "packages": [
     {
       "registryType": "mcpb",
-      "identifier": "https://github.com/Fr4nZ82/mwe-mcp/releases/download/v1.9.0/mwe-mcp-v1.9.0-x86_64-unknown-linux-gnu.tar.gz",
-      "version": "1.9.0",
-      "fileSha256": "580adad6b3cccc1db90e75f9e278abe02a45d013ecdb027e739b63313b842b7e",
+      "identifier": "https://github.com/Fr4nZ82/mwe-mcp/releases/download/v2.0.0/mwe-mcp-v2.0.0-x86_64-unknown-linux-gnu.tar.gz",
+      "version": "2.0.0",
+      "fileSha256": "0d30bffe6e290be80864a8e08ff4d3ede2a4eac8639e8f89eac81aa4a17a5951",
       "transport": {
         "type": "streamable-http",
         "url": "http://127.0.0.1:8742/mcp"
@@ -22,9 +22,9 @@
     },
     {
       "registryType": "mcpb",
-      "identifier": "https://github.com/Fr4nZ82/mwe-mcp/releases/download/v1.9.0/mwe-mcp-v1.9.0-aarch64-apple-darwin.tar.gz",
-      "version": "1.9.0",
-      "fileSha256": "688cdc4606a9cc59e4abf636313d5bc1c6f07afb42a5cf2c48c5572d59140922",
+      "identifier": "https://github.com/Fr4nZ82/mwe-mcp/releases/download/v2.0.0/mwe-mcp-v2.0.0-aarch64-apple-darwin.tar.gz",
+      "version": "2.0.0",
+      "fileSha256": "bec3c46cabe3a3537639511409ba89d90b48cc3833bdb6c3b792b866ec0d3360",
       "transport": {
         "type": "streamable-http",
         "url": "http://127.0.0.1:8742/mcp"
@@ -32,9 +32,9 @@
     },
     {
       "registryType": "mcpb",
-      "identifier": "https://github.com/Fr4nZ82/mwe-mcp/releases/download/v1.9.0/mwe-mcp-v1.9.0-x86_64-pc-windows-msvc.zip",
-      "version": "1.9.0",
-      "fileSha256": "c1df0015c2c1fa45683b0f4ebfd355b1f53a17c6c08483ef69d266276b2cd288",
+      "identifier": "https://github.com/Fr4nZ82/mwe-mcp/releases/download/v2.0.0/mwe-mcp-v2.0.0-x86_64-pc-windows-msvc.zip",
+      "version": "2.0.0",
+      "fileSha256": "449a4b2a24e7446408c715e2f571c8331e916e0b88b818ce34fabd1cf08657c5",
       "transport": {
         "type": "streamable-http",
         "url": "http://127.0.0.1:8742/mcp"
