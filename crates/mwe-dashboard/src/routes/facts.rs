@@ -412,9 +412,9 @@ async fn index(
 
     // The facts table reads `fact_index` (promoted facts). A freshly-ingested
     // claim sits un-promoted in `capture_buffer` until the next Light run
-    // consolidates it — invisible here, yet already recalled by the agent via
+    // consolidates it — invisible here, yet already recalled by a consumer via
     // the "fresh" slot. Surface those captures at the top, badged, so the
-    // operator view does not silently lag the agent's knowledge. Both calls
+    // operator view does not silently lag what a consumer already sees. Both calls
     // pull the FULL row (every column), ACL-filtered, honouring the same
     // filters incl. `sort` / `include_inactive`.
     let fresh = recall::wiki_buffered_full_for(&state.pool, &core_filters, &sender_ctx, reveal)

@@ -97,7 +97,7 @@ async fn request_submit(
 
     if within_limit && cfg.is_sendable() && !addr.is_empty() {
         // The lookup mirrors login exactly: email → user_id, only for
-        // users that actually have a credential row (system/bot users do
+        // users that actually have a credential row (system / consumer users do
         // not). A miss is silent — same response as a hit.
         if let Some(user_id) = lookup_user_by_email(&state, &addr).await? {
             // No public address, no link: one built from the request
@@ -256,7 +256,7 @@ async fn reset_submit(
 // ---------- DB + request helpers ----------
 
 /// Resolve a login email to its `user_id`, only for users that have a
-/// credential row (a `must_change`-style bot/system user without one is
+/// credential row (a `must_change`-style system user without one is
 /// not recoverable). Same shape as the login resolver.
 async fn lookup_user_by_email(state: &DashboardState, email: &str) -> Result<Option<String>> {
     let row: Option<(String,)> = sqlx::query_as(

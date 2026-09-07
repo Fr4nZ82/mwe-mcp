@@ -104,11 +104,11 @@ async fn submit(
         .into_response());
     }
 
-    // Mutual exclusion, agent side (migration 0050): never grant a dashboard
-    // login to a consumer-agent identity. `validate_token_identity` bars the
+    // Mutual exclusion, consumer side (migration 0050): never grant a dashboard
+    // login to a consumer's own identity. `validate_token_identity` bars the
     // other direction (a credentialed human can't bind a standard token); this is
     // the defense-in-depth at the credential-creation end — an identity is either
-    // a human with a login or a bot's credential-less system user, never both.
+    // a human with a login or a consumer's credential-less system user, never both.
     if let Err(msg) = mwe_core::enrollment::reject_if_agent(&state.pool, &invitation.user_id).await
     {
         tracing::warn!(user = %invitation.user_id, "invite acceptance blocked (is_agent): {msg}");

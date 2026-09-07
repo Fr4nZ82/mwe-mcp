@@ -617,7 +617,7 @@ fn compose_identity_section(email: Option<&str>, form: &ProfileSubmission) -> St
 /// policy sentences under [`ENGINE_RULES_SECTION_MARKER`]. Each is a
 /// directive addressed to the memory engine, so the ingest LLM marks it
 /// `engine_rule: true` and it lands in `@rules.md`. Q4 (tone)
-/// is a *behaviour* rule for the consumer agent, not an engine rule —
+/// is a *behaviour* rule for the consumer, not an engine rule —
 /// out of scope here (it belongs to the consumer-routing path).
 fn compose_engine_rules_section(form: &ProfileSubmission) -> String {
     let mut rules: Vec<String> = Vec::new();

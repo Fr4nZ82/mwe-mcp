@@ -175,7 +175,7 @@ fn render_list(
                             @if let Some(email) = &u.email { (email) }
                             @else { span.muted { "— no email (can't sign in)" } }
                         }
-                        // An agent is an enrolled identity like any other, so
+                        // A consumer is an enrolled identity like any other, so
                         // its row is here — but it is a bot's memory identity,
                         // never a person, and it can never hold a login.
                         td {
@@ -1236,7 +1236,7 @@ async fn reinvite(
             "Use `mwe-mcp admin-reset` for the admin, not the dashboard.".into(),
         ));
     }
-    // Mutual exclusion, agent side (migration 0050): a consumer-agent identity is
+    // Mutual exclusion, consumer side (migration 0050): a consumer's identity is
     // credential-less by construction (it authenticates with a standard token,
     // not a login). Never mint a dashboard invitation for it — the mirror of
     // `validate_token_identity`, which refuses a standard token to a credentialed

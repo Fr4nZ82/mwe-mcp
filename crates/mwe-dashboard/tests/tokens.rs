@@ -2,7 +2,7 @@
 //! End-to-end integration of /dashboard/tokens: issue (smart and
 //! standard), revoke, delegation edit. Verifies that the JWT `is_admin`
 //! claim is derived (from the owner for a smart token, always false for a
-//! standard one), that a standard token mints its bot system user on the
+//! standard one), that a standard token mints its system user on the
 //! fly, and that standard issuance upserts `consumer_delegations`.
 
 mod common;
@@ -92,7 +92,7 @@ async fn issue_standard_token_mints_bot_and_creates_delegation_row() {
     create_user(&app, &cookie, "frodo").await;
     create_user(&app, &cookie, "galadriel").await;
 
-    // No pre-created bot account: the standard path mints `samviseprod`
+    // No pre-created account: the standard path mints `samviseprod`
     // as a credential-less system user, then binds the token to it.
     let html = issue(
         &app,
@@ -107,7 +107,7 @@ async fn issue_standard_token_mints_bot_and_creates_delegation_row() {
         html.contains("standard"),
         "standard class in claims: {html}"
     );
-    // consumer_id (= the bot id = the sender) surfaces in the claims card
+    // consumer_id (= the sender) surfaces in the claims card
     // and the delegation table on the same page.
     assert!(
         html.contains("samviseprod"),
@@ -144,7 +144,7 @@ async fn standard_issue_rejects_empty_delegation() {
     )
     .await;
     assert!(html.contains("at least one allowed sender"), "{html}");
-    // The bot must NOT have been created when validation fails first.
+    // The system user must NOT have been created when validation fails first.
     let users = send(
         &app,
         Request::builder()
@@ -187,7 +187,7 @@ async fn standard_bot_id_rejects_unwiki_safe_id() {
 
     // Underscore is rejected by the enrollment id grammar itself (every
     // enrollable id is a valid wiki id), so the
-    // bot path bounces it at the first guard, before the wiki-id parse
+    // standard path bounces it at the first guard, before the wiki-id parse
     // fallback ever runs.
     let html = issue(
         &app,

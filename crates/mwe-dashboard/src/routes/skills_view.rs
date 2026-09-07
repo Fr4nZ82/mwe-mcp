@@ -10,7 +10,7 @@
 //!
 //! The bundled skills mirror the same files the MCP `skill_list` /
 //! `skill_fetch` tools surface to consumers — operators can confirm
-//! they're seeing the same artefacts the agents see.
+//! they're seeing the same artefacts the consumers see.
 
 use axum::Router;
 use axum::extract::{Path as AxumPath, State};

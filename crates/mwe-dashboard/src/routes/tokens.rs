@@ -9,7 +9,7 @@
 //!   tables.
 //! - POST `/tokens/issue`                           — validate, resolve
 //!   the sender from the chosen **consumer class** (smart ⇒ the picked
-//!   human owner; standard ⇒ the bot id, a system user created on the
+//!   human owner; standard ⇒ the consumer id, a system user created on the
 //!   spot), upsert `consumer_delegations` for a standard token, sign a
 //!   JWT, and render the page with the new token shown **once** (the
 //!   server never persists issued tokens).

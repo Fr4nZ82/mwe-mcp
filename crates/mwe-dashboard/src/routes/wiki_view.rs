@@ -477,7 +477,7 @@ async fn delete_apply(
             "dashboard: dissolve triggered a full reorg to re-place the freed facts"
         );
     }
-    // The deleted subtree may have been a web-agent consumer's smart wiki:
+    // The deleted subtree may have been a web consumer's smart wiki:
     // drain the now-dangling consumer (and its OAuth rows) right away
     // instead of waiting for the next scheduled sweep. Best-effort.
     // The retention windows come from the file rather than a default:

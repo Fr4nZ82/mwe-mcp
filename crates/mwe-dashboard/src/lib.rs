@@ -63,7 +63,7 @@ pub fn router(state: DashboardState) -> Router {
 ///
 /// Mounts `GET /cite/:bi_id` by `mwe-mcp-server` at
 /// the root of the HTTP tree so the canonical short URL — embeddable
-/// in agent replies — does not need a `/dashboard/` prefix. The same
+/// in a consumer's replies — does not need a `/dashboard/` prefix. The same
 /// handler is also reachable as `/dashboard/cite/:bi_id` via
 /// [`router`] so it shows up in the dashboard public tree (URL bar
 /// stays tidy when navigating in-app). Both mount points share one
@@ -79,8 +79,8 @@ pub fn cite_router(state: DashboardState) -> Router {
 /// Public, anonymous **bridge-distribution** router, mounted at the root
 /// of the HTTP tree by `mwe-mcp-server` (next to [`cite_router`]).
 ///
-/// Serves the product front page (`/`) with the "I'm a Human / I'm an
-/// Agent" affordance, the bridge catalog (`/bridges`,
+/// Serves the product front page (`/`), which sends a consumer to the
+/// catalog and a human to the sign-in, the bridge catalog (`/bridges`,
 /// `/bridges/:consumer`), and the self-contained installers
 /// (`/bridges/:consumer/install.{sh,ps1,md}`). Every route is
 /// unauthenticated by design — none of it is secret, and `curl … | sh`

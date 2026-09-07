@@ -101,7 +101,7 @@ async fn redeem(
 
     // 4. Second-factor gate. A magic link proves the consumer vouches for
     //    the user out-of-band, but it does NOT bypass 2FA when the subject
-    //    has it on — otherwise anyone able to make the bot mint a link
+    //    has it on — otherwise anyone able to make the consumer mint a link
     //    would sidestep the second factor. Hand off to the challenge,
     //    carrying the validated deep-link as the post-auth destination.
     let dest = safe_next(q.next.as_deref());

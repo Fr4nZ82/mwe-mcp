@@ -64,7 +64,7 @@ struct SmartWikiRow {
     wiki_id: String,
     title: String,
     wiki_type: String,
-    /// The wiki is a consumer agent's own operational memory: the `_meta.md`
+    /// The wiki is a consumer's own operational memory: the `_meta.md`
     /// `is_agent` marker the sign-in flow stamps, **or** the `agent`
     /// `wiki_type` label that flow also writes.
     ///

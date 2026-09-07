@@ -64,11 +64,11 @@ struct NanoclawBridge;
 
 /// Catalog of bridged consumers, in display order. A consumer appears
 /// here only when its bridge ships a served onboarding surface — a
-/// `curl … | sh` installer (nanoclaw, hermes) **or** an agent-driven
-/// `install.md` (claude-code).
+/// `curl … | sh` installer (nanoclaw, hermes) **or** an `install.md`
+/// the consumer follows itself (claude-code).
 ///
 /// nanoclaw leads: it is the ready-made assistant, the one consumer an
-/// operator with no agent of their own can install and talk to.
+/// operator with none of their own can install and talk to.
 const BRIDGES: &[(&str, &str)] = &[
     ("nanoclaw", "NanoClaw (nanoco)"),
     ("hermes", "Hermes (Nous Research)"),
@@ -275,8 +275,8 @@ fn claude_ai_section(origin: &str, may_mint: bool) -> Markup {
 /// Per-consumer install guide body. No token here — that lives on the
 /// dashboard home's "Connect a consumer" card. Dispatches on the
 /// consumer: nanoclaw and hermes ship a `curl … | sh` installer;
-/// claude-code is an agent-driven `install.md` (no files, no shell
-/// installer).
+/// claude-code gets an `install.md` it follows itself (no files, no
+/// shell installer).
 fn guide_body(consumer: &str, origin: &str, may_mint: bool) -> Markup {
     match consumer {
         "nanoclaw" => nanoclaw_guide_body(origin, may_mint),
@@ -392,8 +392,8 @@ fn nanoclaw_guide_body(origin: &str, may_mint: bool) -> Markup {
 /// Human guide for the **Claude Code** smart-consumer bridge: register the
 /// MCP server and sign in over OAuth (no token), then install the
 /// strongly-recommended session-start hook. No plugins and no `curl … | sh`. The
-/// agent registers the server itself; the OAuth sign-in and the hook are the
-/// operator's (the agent stops and asks) — see `install.md`.
+/// consumer registers the server itself; the OAuth sign-in and the hook are
+/// the operator's (it stops and asks) — see `install.md`.
 fn claude_code_guide_body(origin: &str) -> Markup {
     let mcp_add = format!("claude mcp add --transport http mwe-mcp {origin}/mcp --scope user");
     let agent_line = format!(
@@ -761,7 +761,7 @@ fn render_install_sh_hermes() -> String {
 /// registry branches fetched into remote-tracking refs
 /// ([`NANOCLAW_REGISTRY_BRANCHES`]) so a channel can be installed, and
 /// the template pick in `.env` ([`NANOCLAW_TEMPLATE_ENV_LINE`]) so the
-/// wizard offers this agent. Neither is fatal to the file placement and
+/// wizard offers this template. Neither is fatal to the file placement and
 /// neither goes near the token.
 ///
 /// `None` when the manifest carries no upstream repo or pin: an
@@ -943,7 +943,7 @@ fn render_install_ps1(consumer: &str) -> Option<String> {
     Some(s)
 }
 
-/// Machine-readable instructions an agent is pointed at ("Read … and
+/// Machine-readable instructions a consumer is pointed at ("Read … and
 /// follow"). `origin` is the request-derived public origin. Dispatches
 /// per consumer; `None` for one without a served `install.md`.
 fn render_install_md(consumer: &str, origin: &str) -> Option<String> {
@@ -955,9 +955,9 @@ fn render_install_md(consumer: &str, origin: &str) -> Option<String> {
     }
 }
 
-/// Agent-driven install for the **nanoclaw** bridge — points the agent
-/// at the served `curl … | sh` installer, then hands it the five steps
-/// it must have the *operator* do. The token is one of them: an agent
+/// The **nanoclaw** install a consumer runs itself — it is pointed at
+/// the served `curl … | sh` installer, then handed the five steps it
+/// must have the *operator* do. The token is one of them: a consumer
 /// that mints or pastes a credential on the operator's behalf is the
 /// one failure mode this whole surface is shaped to prevent.
 fn render_install_md_nanoclaw(origin: &str) -> String {
@@ -1001,8 +1001,8 @@ fn render_install_md_nanoclaw(origin: &str) -> String {
             templates**, then `mwe`, by hand. On an install that already has\n\
             agents: `ncl groups create --template mwe --name mwe --new` —\n\
             `--name` is theirs to choose and becomes the group folder. It is\n\
-            **not** what the agent answers to: its name is a fact of this\n\
-            memory, and anybody it serves can tell it in chat.\n\
+            **not** what the assistant answers to: its name is a fact of\n\
+            this memory, and anybody it serves can tell it in chat.\n\
          2. Apply the skill: `/add-mwe-memory` from Claude Code. Without Claude\n\
             Code, the same steps are ordinary shell commands in\n\
             `.claude/skills/add-mwe-memory/SKILL.md`. It asks three questions —\n\
@@ -1014,7 +1014,7 @@ fn render_install_md_nanoclaw(origin: &str) -> String {
             skill, with nothing in any log to say so.\n\
          3. Issue a **standard** consumer token from the mwe-mcp dashboard and\n\
             set it as `MWE_TOKEN` in the checkout's `.env`, then tick every\n\
-            person the agent will speak for — plus `guest` — in that consumer's\n\
+            person the consumer will speak for — plus `guest` — in its\n\
             delegations. Without the `guest` delegation an unrecognised sender\n\
             is refused rather than answered anonymously.\n\
          4. Fill in `senderMap` in `mwe.json`, one line per person\n\
@@ -1022,7 +1022,7 @@ fn render_install_md_nanoclaw(origin: &str) -> String {
             NanoClaw. Anyone not listed speaks as a guest; there is no fallback\n\
             to the owner.\n\
          5. Connect a channel (`/manage-channels`, or `ncl wirings create`) and\n\
-            talk to the agent.\n\
+            talk to the assistant.\n\
          \n\
          The `mwe` template is what switches NanoClaw's built-in memory off for\n\
          a group: a group carrying that plugin creates no `memory/` tree, injects\n\

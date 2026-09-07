@@ -14,7 +14,7 @@
 //! performs *only* the translation (`bi_id` → wiki page URL). Access
 //! control fires on the destination `/dashboard/wiki/<wiki_id>/<path>`
 //! page, which already runs through the session middleware. This keeps
-//! the URL short, copy-pasteable, and embeddable in agent responses
+//! the URL short, copy-pasteable, and embeddable in a consumer's replies
 //! even when the recipient is not logged in (they will be redirected
 //! to `/dashboard/login` on the destination if needed).
 //!

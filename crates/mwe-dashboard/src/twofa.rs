@@ -9,7 +9,7 @@
 //! ## Scope
 //!
 //! 2FA gates only the human `/dashboard/login` surface; the MCP path is
-//! bearer-JWT, and system/bot users (no `user_credentials` row) are
+//! bearer-JWT, and system / consumer users (no `user_credentials` row) are
 //! exempt by construction.
 //!
 //! ## Secret at rest
