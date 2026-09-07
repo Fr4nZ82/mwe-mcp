@@ -18,7 +18,8 @@
 //!     claude-code has just an `install.md`, and nanoclaw no `.ps1`.
 //! - **Dashboard tab** (`/dashboard/bridges`, authenticated) for the
 //!   operator: the *same* catalog + guide bodies wrapped in the dashboard
-//!   shell, so "Bridges" sits in the nav next to Wikis / Facts / Settings.
+//!   shell. Wiring a consumer in is the operator's job, so "Bridges" is a
+//!   nav entry for an admin; the page answers anybody who has the address.
 //!   Shared body functions take a base prefix so the in-page links resolve
 //!   under `/dashboard` there and at the root publicly.
 //!

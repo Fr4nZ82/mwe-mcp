@@ -118,6 +118,11 @@ pub struct FactsFilters {
     /// most people arrive with. Empty string treated as unset; a value
     /// that is not a principal is dropped rather than refused, so a
     /// hand-edited URL narrows to nothing instead of failing the page.
+    ///
+    /// A person arriving at a bare `/dashboard/facts` gets themselves
+    /// here, filled in by [`index`] — see its note on why an empty
+    /// `subject` (the widening link) is a different thing from an absent
+    /// one.
     #[serde(default)]
     pub subject: Option<String>,
     /// Scope to a single `fact_type` tag. Empty string treated as unset.
@@ -1479,10 +1484,9 @@ fn render_index(
 /// "facts you can read" but every user's facts, so the banner replaces it.
 ///
 /// `opened_on_self` is the bare-address arrival of a person: the list in
-/// front of them is the facts about them, so the paragraph says so and
-/// carries the one link that widens it. That link is an **empty**
-/// `subject`, which is a query string, which is how the page knows not to
-/// narrow again.
+/// front of them is the facts about them, so the lead says so and carries
+/// the one link that widens it. That link is an **empty** `subject`, which
+/// is a query string, which is how the page knows not to narrow again.
 fn index_intro(reveal: bool, opened_on_self: bool) -> Markup {
     html! {
         @if reveal {
@@ -1490,31 +1494,33 @@ fn index_intro(reveal: bool, opened_on_self: bool) -> Markup {
         } @else if opened_on_self {
             p.muted {
                 "The facts this memory holds " strong { "about you" } " — wherever "
-                "they are filed, including on a group's pages. "
+                "they are filed, including on other people's and groups' pages. "
                 a href="/dashboard/facts?subject=" { "Everything I can read →" }
+                " widens it to every fact your standard wikis grant you, which "
+                "includes facts about other people."
             }
-            p.muted {
-                "That wider list is every fact your standard wikis grant you, "
-                "which includes facts about other people. Either way "
-                code { "About" } " narrows to what the memory holds about one "
-                "person or group and " code { "Wiki" } " narrows to what is "
-                "filed in one place, which is not the same set. Smart-wiki "
-                "documentation is indexed as "
-                a href="/dashboard/facts/sections" { "sections" }
-                " instead. Filters narrow together, and " code { "Topic" }
-                " takes one word. Arrowed headers sort; click an id to copy it."
-            }
+            (how_the_filters_narrow())
         } @else {
             p.muted {
                 "Every fact you can read — the governed memory of your standard "
-                "wikis. " code { "About" } " narrows to what the memory holds "
-                "about one person or group; " code { "Wiki" } " narrows to what "
-                "is filed in one place, which is not the same set. Smart-wiki "
-                "documentation is indexed as "
-                a href="/dashboard/facts/sections" { "sections" }
-                " instead. Filters narrow together, and " code { "Topic" }
-                " takes one word. Arrowed headers sort; click an id to copy it."
+                "wikis."
             }
+            (how_the_filters_narrow())
+        }
+    }
+}
+
+/// The sentence under the lead, the same one whoever is reading: what each
+/// filter narrows by, where smart-wiki documentation went, and how to sort.
+fn how_the_filters_narrow() -> Markup {
+    html! {
+        p.muted {
+            code { "About" } " narrows to what the memory holds about one person "
+            "or group; " code { "Wiki" } " narrows to what is filed in one place, "
+            "which is not the same set. Smart-wiki documentation is indexed as "
+            a href="/dashboard/facts/sections" { "sections" }
+            " instead. Filters narrow together, and " code { "Topic" }
+            " takes one word. Arrowed headers sort; click an id to copy it."
         }
     }
 }

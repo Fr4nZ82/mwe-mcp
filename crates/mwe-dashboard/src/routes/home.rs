@@ -101,6 +101,8 @@ pub async fn index(
                 p { "Point any consumer — the bot or assistant that talks to this "
                     "memory — at this server:" }
                 pre.endpoint-display { (mcp_url) }
+                // A frozen deployment mints nothing, so it is shown no
+                // door to the mint.
                 @if !frozen {
                     p {
                         a href="/dashboard/tokens" { "Issue a token →" }
