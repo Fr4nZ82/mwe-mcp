@@ -7427,9 +7427,9 @@ async fn run_lease_expirer(
 /// Per-row outcomes from `process_briefing_item`:
 ///
 /// - `Processed` → counted in `items_processed`.
-/// - `AlreadyProcessed` → counted in `items_already_processed`
-///   (real-world cause: an interactive Submit drained the row between
-///   the candidate scan and the per-row call).
+/// - `AlreadyProcessed` → counted in `items_already_processed` (a
+///   concurrent pass drained the row between the candidate scan and the
+///   per-row call).
 /// - `WikiNotFound` → counted in `items_wiki_missing`, no DB write,
 ///   the operator gets a heads-up via the report.
 ///

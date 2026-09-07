@@ -730,7 +730,7 @@ async fn ensure_system_user(state: &DashboardState, bot_id: &str) -> Result<Opti
         }
         return Ok(Some(format!(
             "{bot_id:?} is a human account with a login — pick a different consumer id (binding it \
-             would let the bot read and write as that person)."
+             would let the consumer read and write as that person)."
         )));
     }
     let group_clash: i64 =

@@ -1410,7 +1410,7 @@ mod tests {
     }
 
     /// This form makes a **person**: someone who signs in, which is why
-    /// the email is mandatory. An **agent** has no inbox and no login —
+    /// the email is mandatory. A **consumer** has no inbox and no login —
     /// its identity is minted by the standard consumer token that binds
     /// it. Somebody who arrives here wanting one must be sent there
     /// rather than stopped by a required field with no explanation.

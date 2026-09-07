@@ -4,7 +4,7 @@
 //! The same non-secret content is reachable two ways, so we never have
 //! to ask "who is visiting":
 //!
-//! - **Public** (root-mounted, anonymous) for agents and `curl`:
+//! - **Public** (root-mounted, anonymous) for consumers and `curl`:
 //!   - `GET /` — slim product front page: a line pointing a consumer at
 //!     the bridge catalog, and a sign-in link for the human.
 //!   - `GET /bridges` + `GET /bridges/:consumer` — the catalog and the
@@ -1707,7 +1707,7 @@ mod tests {
     }
 
     #[test]
-    fn front_body_points_agent_at_catalog_and_human_at_signin() {
+    fn front_body_points_a_consumer_at_the_catalog_and_a_human_at_signin() {
         let html = front_body("").into_string();
         assert!(html.contains("If you are a consumer"));
         assert!(html.contains("/bridges"));
@@ -1715,7 +1715,7 @@ mod tests {
     }
 
     #[test]
-    fn catalog_lists_hermes_with_agent_instructions_link() {
+    fn catalog_lists_hermes_with_a_link_to_the_instructions_it_follows() {
         let pub_html =
             catalog_body("", "https://memory.anna.dev", /* may_mint */ true).into_string();
         assert!(pub_html.contains("hermes"));

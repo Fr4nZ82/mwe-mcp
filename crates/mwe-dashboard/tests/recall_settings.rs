@@ -213,7 +213,7 @@ async fn save_rejects_a_malformed_number_naming_the_field() {
 }
 
 /// A refused save hands the form back with what was typed still in it.
-/// The whole panel is one submit, so a single bad number used to cost
+/// The whole panel is one submit: without this, one bad number costs
 /// every other field on the page.
 #[tokio::test]
 async fn a_refused_save_gives_the_form_back_with_the_typed_values() {

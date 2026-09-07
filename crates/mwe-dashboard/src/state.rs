@@ -175,9 +175,9 @@ pub struct MemoryHandles {
 
 /// An in-flight "Log in with Claude Code" attempt.
 ///
-/// Held in a single slot on [`DashboardState`] between the `start`
-/// redirect and the `callback`/`paste` completion (one operator login at
-/// a time; a new attempt overwrites any abandoned one).
+/// Held in a single slot on [`DashboardState`] between `start`, which
+/// mints it, and `paste`, which spends it (one operator login at a time;
+/// a new attempt overwrites any abandoned one).
 ///
 /// The `redirect_uri` is not recorded: the flow has exactly one, the
 /// out-of-band page on Claude's own domain
@@ -460,9 +460,9 @@ pub struct DashboardState {
     pub recall: Arc<RwLock<RecallConfig>>,
 
     /// Single-slot holder for an in-flight "Log in with Claude Code"
-    /// OAuth attempt (shared across the `start` → `callback`/`paste`
-    /// requests). Empty until the operator starts a login from the
-    /// LLM-config page. Test/personal use only — see [`PendingClaudeLogin`].
+    /// OAuth attempt (shared across the `start` → `paste` requests).
+    /// Empty until the operator starts a login from the LLM-config page.
+    /// Test/personal use only — see [`PendingClaudeLogin`].
     pub claude_login: Arc<Mutex<Option<PendingClaudeLogin>>>,
 
     /// Live status of the admin Dream console's **background** runs. The
