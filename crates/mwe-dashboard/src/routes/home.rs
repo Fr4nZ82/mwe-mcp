@@ -105,8 +105,7 @@ pub async fn index(
         @if !missing_slots.is_empty() {
             p.flash.flash-error {
                 strong {
-                    (missing_slots.len()) " of the six model slots "
-                    (if missing_slots.len() == 1 { "has" } else { "have" })
+                    (missing_slots_phrase(missing_slots.len()))
                     " no model: " (missing_slots.join(", ")) "."
                 }
                 " The memory does not work until every slot has one. "
@@ -228,6 +227,29 @@ pub async fn index(
     Ok(Html(layout::authenticated_page(chrome, "Home", &user, &body)).into_response())
 }
 
+/// The subject of the unconfigured-slots banner: how many of the six have
+/// nothing behind them, and the verb that goes with it.
+///
+/// There are six slots and all six are mandatory, so `missing` runs 1 to 6
+/// and the sentence says it in words — "all six model slots have", "two of
+/// the six model slots have". A digit against a spelled number in the same
+/// sentence reads as a defect ("6 of the six"), which is what a reader
+/// meets on the one screen that has to be believed: a fresh install.
+fn missing_slots_phrase(missing: usize) -> String {
+    let word = match missing {
+        1 => "One",
+        2 => "Two",
+        3 => "Three",
+        4 => "Four",
+        5 => "Five",
+        // Every slot: naming the count twice ("six of the six") says less
+        // than saying it once.
+        _ => return "All six model slots have".to_owned(),
+    };
+    let verb = if missing == 1 { "has" } else { "have" };
+    format!("{word} of the six model slots {verb}")
+}
+
 /// The counts that belong to the operator's consoles.
 ///
 /// Read only for an admin: each one counts rows on a page a non-admin is
@@ -270,5 +292,21 @@ impl OperatorCounts {
             pending_invitations,
             recent_calls,
         })
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::missing_slots_phrase;
+
+    /// The banner is read on a fresh install, so it counts in words all the
+    /// way up: one slot or six, the number and the total are the same kind
+    /// of word in the same sentence.
+    #[test]
+    fn the_phrase_counts_in_words_and_agrees_with_its_verb() {
+        assert_eq!(missing_slots_phrase(1), "One of the six model slots has");
+        assert_eq!(missing_slots_phrase(2), "Two of the six model slots have");
+        assert_eq!(missing_slots_phrase(5), "Five of the six model slots have");
+        assert_eq!(missing_slots_phrase(6), "All six model slots have");
     }
 }
