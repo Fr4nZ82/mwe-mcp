@@ -211,3 +211,36 @@ async fn save_rejects_a_malformed_number_naming_the_field() {
     // Nothing was persisted.
     assert!(!workdir.join(CONFIG_FILENAME).exists());
 }
+
+/// A refused save hands the form back with what was typed still in it.
+/// The whole panel is one submit, so a single bad number used to cost
+/// every other field on the page.
+#[tokio::test]
+async fn a_refused_save_gives_the_form_back_with_the_typed_values() {
+    let (app, _workdir, _dir) = make_app().await;
+    let cookie = login_as_admin(&app).await;
+    let response = send(
+        &app,
+        Request::builder()
+            .method("POST")
+            .uri("/admin/recall-settings")
+            .header(header::COOKIE, cookie)
+            .header(header::CONTENT_TYPE, "application/x-www-form-urlencoded")
+            .body(Body::from(
+                "max_hops=abc&recall_top_k=17&recent_window_chars=900",
+            ))
+            .unwrap(),
+    )
+    .await;
+    assert_eq!(response.status(), StatusCode::UNPROCESSABLE_ENTITY);
+    let html = body_string(response).await;
+    for kept in [
+        r#"name="recall_top_k" type="number" min="0" value="17""#,
+        // …including the ones at the far end of the form.
+        r#"name="recent_window_chars" type="number" min="0" value="900""#,
+        // …and the offending one, so the admin sees what they wrote.
+        r#"name="max_hops" type="number" min="0" value="abc""#,
+    ] {
+        assert!(html.contains(kept), "a refused save dropped `{kept}`");
+    }
+}

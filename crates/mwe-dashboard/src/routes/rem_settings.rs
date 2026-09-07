@@ -33,6 +33,7 @@ use std::path::{Path, PathBuf};
 
 use axum::Router;
 use axum::extract::State;
+use axum::http::StatusCode;
 use axum::response::{Html, IntoResponse, Response};
 use axum::routing::get;
 use maud::{Markup, html};
@@ -235,14 +236,19 @@ async fn page(State(state): State<DashboardState>, admin: AdminUser) -> Result<H
     let workdir = workdir_of(&state)?;
     let cfg = Config::load_raw(&workdir)
         .map_err(|e| DashboardError::Internal(format!("config load: {e}")))?;
-    let body = render(chrome, admin.session(), &cfg.rem.policy, None);
+    let body = render(chrome, admin.session(), &cfg.rem.policy, None, None);
     Ok(Html(body))
 }
 
+/// `typed` is the raw form body of a save that did not go through: its
+/// values win over the stored ones so a refused save hands the admin
+/// back what they wrote, instead of a bare error page and fourteen
+/// fields to fill again.
 fn render(
     chrome: layout::Chrome,
     session: &crate::auth::SessionUser,
     cfg: &RemPolicyConfig,
+    typed: Option<&HashMap<String, String>>,
     flash: Option<Flash<'_>>,
 ) -> String {
     let body: Markup = html! {
@@ -282,7 +288,10 @@ fn render(
                             td { label for=(k.field) { (k.label) } }
                             td {
                                 input id=(k.field) name=(k.field) type="number" min="0"
-                                    value=(override_value(cfg, k.field))
+                                    value=(typed
+                                        .and_then(|t| t.get(k.field))
+                                        .cloned()
+                                        .unwrap_or_else(|| override_value(cfg, k.field)))
                                     placeholder=(k.default);
                             }
                             td { code { (k.default) } }
@@ -316,7 +325,13 @@ async fn save(
     HtmlForm(form): HtmlForm<HashMap<String, String>>,
 ) -> Result<Response> {
     let chrome = layout::Chrome::of(&state);
-    let parsed = parse_form(&form)?;
+    // A number that will not parse hands the whole form back with what
+    // was typed still in it. Losing fourteen fields to one typo is the
+    // kind of refusal nobody forgives twice.
+    let parsed = match parse_form(&form) {
+        Ok(parsed) => parsed,
+        Err(e) => return Ok(refused(&state, &admin, &form, &e.to_string())?),
+    };
 
     // Preserve every non-REM-policy section of the existing Config by
     // re-loading from disk and replacing only the `rem.policy` field
@@ -359,6 +374,7 @@ async fn save(
         chrome,
         admin.session(),
         &parsed,
+        None,
         Some(Flash {
             kind: "success",
             msg: "REM settings saved and hot-reloaded — the next REM cycle uses them.",
@@ -436,4 +452,27 @@ fn parse_num<T: std::str::FromStr>(
     raw.parse::<T>().map(Some).map_err(|_| {
         DashboardError::Validation(format!("`{field}` must be a non-negative integer"))
     })
+}
+
+/// The page a save that did not go through comes back as: the same
+/// form, the values the admin typed still in the fields, the reason
+/// across the top — and a `422`, because nothing was written.
+fn refused(
+    state: &DashboardState,
+    admin: &AdminUser,
+    typed: &HashMap<String, String>,
+    msg: &str,
+) -> Result<Response> {
+    let chrome = layout::Chrome::of(state);
+    let workdir = workdir_of(state)?;
+    let cfg = Config::load_raw(&workdir)
+        .map_err(|e| DashboardError::Internal(format!("config load: {e}")))?;
+    let body = render(
+        chrome,
+        admin.session(),
+        &cfg.rem.policy,
+        Some(typed),
+        Some(Flash { kind: "error", msg }),
+    );
+    Ok((StatusCode::UNPROCESSABLE_ENTITY, Html(body)).into_response())
 }
