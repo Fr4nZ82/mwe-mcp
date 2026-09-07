@@ -224,8 +224,9 @@ fn mcp_url(headers: &HeaderMap) -> String {
 /// There are six slots and all six are mandatory, so `missing` runs 1 to 6
 /// and the sentence says it in words — "all six model slots have", "two of
 /// the six model slots have". A digit against a spelled number in the same
-/// sentence reads as a defect ("6 of the six"), which is what a reader
-/// meets on the one screen that has to be believed: a fresh install.
+/// sentence ("6 of the six") reads as a defect, and the screen this
+/// sentence appears on is a fresh install: the one that has to be
+/// believed before anything else is.
 fn missing_slots_phrase(missing: usize) -> String {
     let word = match missing {
         1 => "One",
