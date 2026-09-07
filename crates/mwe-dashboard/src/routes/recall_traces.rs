@@ -198,8 +198,9 @@ fn render_index_body(rows: &[TraceRow], reveal: bool, is_admin: bool) -> Markup 
         @if reveal { (crate::reveal::banner()) }
         p class="text-text-dim max-w-prose" {
             "The most recent recalls, newest first — what your own turns pulled "
-            "out of memory and what was injected back into the consumer. Open a "
-            "trace to replay the navigator's route."
+            "out of memory, and what was handed to the consumer (the bot or "
+            "assistant that was talking to you). Open one to watch the walk it "
+            "took through the pages."
             @if reveal {
                 " Admin reveal is on, so this is every user's recall."
             } @else if is_admin {
@@ -215,13 +216,13 @@ fn render_index_body(rows: &[TraceRow], reveal: bool, is_admin: bool) -> Markup 
                 thead {
                     tr {
                         th { "When" }
-                        th { "Source" }
-                        th { "Sender" }
-                        th { "Turn" }
-                        th { "Hits" }
-                        th { "Hops" }
-                        th { "Stop" }
-                        th { "Injected" }
+                        th { "What ran" }
+                        th { "Who it was for" }
+                        th { "What was asked" }
+                        th { "Facts found" }
+                        th { "Steps walked" }
+                        th { "Why it stopped" }
+                        th { "Text handed over" }
                         th { }
                     }
                 }
@@ -254,33 +255,105 @@ fn render_index_row(row: &TraceRow) -> Markup {
             td { @if let Some(t) = &trace { (hit_counts(t)) } }
             td { @if let Some(t) = &trace { (t.hops.len()) } }
             td { @if let Some(t) = &trace {
-                @if let Some(stop) = &t.nav_stop { (stop) } @else { span class="text-text-dim" { "flat only" } }
+                @match &t.nav_stop {
+                    Some(stop) => span title=(nav_stop_sentence(stop)) { (nav_stop_short(stop)) },
+                    None => span class="text-text-dim" { "did not walk" },
+                }
             } }
             td { @if let Some(t) = &trace {
-                (t.injected_block.as_deref().map_or(0, str::len)) " ch"
+                (t.injected_block.as_deref().map_or(0, str::len)) " characters"
             } }
             td { a href=(href) { "view" } }
         }
     }
 }
 
+/// The three places a recalled fact can come from, counted, in the
+/// words the viewer's own section headings use.
 fn hit_counts(t: &RecallTrace) -> String {
-    let mut parts = vec![format!("{} flat", t.flat_hits.len())];
+    let mut parts = vec![format!("{} by similarity", t.flat_hits.len())];
     if !t.fresh_hits.is_empty() {
-        parts.push(format!("{} fresh", t.fresh_hits.len()));
+        parts.push(format!("{} not yet on a page", t.fresh_hits.len()));
     }
     if !t.due_soon.is_empty() {
-        parts.push(format!("{} due", t.due_soon.len()));
+        parts.push(format!("{} ending soon", t.due_soon.len()));
     }
     parts.join(" · ")
 }
 
+/// What made the recall run: a consumer's own turn, or somebody asking
+/// the memory to go and look.
 fn source_badge(source: TraceSource) -> Markup {
     let label = match source {
-        TraceSource::Ingest => "ingest",
-        TraceSource::Navigate => "navigate",
+        TraceSource::Ingest => "consumer turn",
+        TraceSource::Navigate => "deep search",
     };
     html! { span class="badge" { (label) } }
+}
+
+/// Why the walk ended, short enough for a table cell.
+///
+/// The wire tokens are [`mwe_core::recall_nav::NavStop`]; an unknown one
+/// (a journal row written by a newer engine) shows as itself rather than
+/// being swallowed.
+fn nav_stop_short(stop: &str) -> &str {
+    match stop {
+        "done" => "collected enough",
+        "budget" => "text budget spent",
+        "hop_cap" => "depth limit reached",
+        "llm_degraded" => "navigator failed",
+        "nothing_opened" => "nothing passed vetting",
+        "pool_exhausted" => "no pages left",
+        "empty_fan" => "no doors to walk",
+        other => other,
+    }
+}
+
+/// The same reason said in full. Kept word for word in step with
+/// `STOP_CAPTIONS` in `assets/recall-trace.js`, which prints it over the
+/// replay of the same walk.
+fn nav_stop_sentence(stop: &str) -> &str {
+    match stop {
+        "done" => "the navigator judged the collection sufficient",
+        "budget" => "the prose budget ran out",
+        "hop_cap" => "the depth dial ran out",
+        "llm_degraded" => "the navigator LLM failed — the turn survived on what was collected",
+        "nothing_opened" => "every pick was vetted away — the funnel stopped",
+        "pool_exhausted" => "no unvisited candidates remained",
+        "empty_fan" => "the fan was empty — nothing to walk",
+        other => other,
+    }
+}
+
+/// Where the words the search started from came from.
+///
+/// The wire tokens are the `seed_mode` strings the recall path writes
+/// ([`mwe_core::recall_trace::RecallTrace`]); an unknown one shows as
+/// itself.
+fn seed_mode_in_words(mode: &str) -> &str {
+    match mode {
+        "classifier" => "what the engine read the message to be about",
+        "caller" => "the words the caller named",
+        "query_extraction" => "words pulled out of the question",
+        "rag_only" => "similarity alone",
+        "guest" => "a guest turn, with nobody to look up",
+        other => other,
+    }
+}
+
+/// How a page came to be offered to the navigator.
+///
+/// The wire tokens are the `origin` strings the funnel writes
+/// ([`mwe_core::recall_nav`]); an unknown one shows as itself.
+fn origin_in_words(origin: &str) -> &str {
+    match origin {
+        "rag" => "similarity",
+        "topic" => "a topic of the message",
+        "situational" => "the situation the consumer described",
+        "link" => "a link from a page already open",
+        "principal" => "who the message is about",
+        other => other,
+    }
 }
 
 /// `2026-07-03T21:04:05.123+00:00` → `2026-07-03 21:04:05` (fallback: as-is).
@@ -304,9 +377,9 @@ fn render_viewer_body(row: &TraceRow, trace: &RecallTrace, reveal: bool) -> Mark
         script src="/dashboard/static/recall-trace.js" type="module" {}
 
         (render_meta(row, trace))
-        (render_hits_section("Flat recall (similarity)", &trace.flat_hits, true))
-        (render_hits_section("Fresh (not yet consolidated)", &trace.fresh_hits, false))
-        (render_hits_section("Due soon", &trace.due_soon, false))
+        (render_hits_section("Found by similarity", &trace.flat_hits, true))
+        (render_hits_section("Not yet on a page", &trace.fresh_hits, false))
+        (render_hits_section("Ending soon", &trace.due_soon, false))
         (render_fan(trace))
         (render_hops(trace))
         (render_injected(trace))
@@ -316,32 +389,39 @@ fn render_viewer_body(row: &TraceRow, trace: &RecallTrace, reveal: bool) -> Mark
 fn render_meta(row: &TraceRow, trace: &RecallTrace) -> Markup {
     html! {
         section class="term-panel mt-4 p-4" {
-            h2 class="mt-0" { "Turn" }
+            h2 class="mt-0" { "What was asked" }
             p class="whitespace-pre-wrap" { (trace.turn_text) }
             table class="config-table" {
                 tbody {
                     tr { th { "When" } td { (compact_stamp(&row.created_at)) } }
-                    tr { th { "Source" } td { (source_badge(row.source)) } }
-                    tr { th { "Sender" } td { (row.sender_id) } }
+                    tr { th { "What ran" } td { (source_badge(row.source)) } }
+                    tr { th { "Who it was for" } td { (row.sender_id) } }
                     @if let Some(consumer) = &trace.consumer {
-                        tr { th { "Consumer" } td { (consumer) } }
+                        tr { th { "Consumer" } td {
+                            (consumer)
+                            span.muted { " — the bot or assistant that asked" }
+                        } }
                     }
                     @if let Some(intent) = &trace.intent {
-                        tr { th { "Intent" } td { (intent) } }
+                        tr { th { "Read as" } td {
+                            (crate::ui::components::intent_in_words(intent))
+                        } }
                     }
-                    tr { th { "Seeds" } td {
-                        (trace.seed_mode)
+                    tr { th { "Search started from" } td {
+                        (seed_mode_in_words(&trace.seed_mode))
                         @if !trace.topics.is_empty() { " · topics: " (trace.topics.join(", ")) }
-                        @if !trace.subjects.is_empty() { " · subjects: " (trace.subjects.join(", ")) }
+                        @if !trace.subjects.is_empty() { " · people: " (trace.subjects.join(", ")) }
                     } }
-                    tr { th { "Navigation" } td {
+                    tr { th { "The walk" } td {
                         @match &trace.nav_stop {
                             Some(stop) => {
-                                (trace.hops.len()) " hop(s), stopped: " (stop) " · "
-                                (trace.chars_collected) " / " (trace.char_budget) " chars"
-                                @if trace.truncated { " (truncated)" }
+                                (trace.hops.len()) " step(s), stopped because "
+                                (nav_stop_sentence(stop)) " · "
+                                (trace.chars_collected) " of " (trace.char_budget)
+                                " characters collected"
+                                @if trace.truncated { " (cut short)" }
                             },
-                            None => { "not run (flat only)" },
+                            None => { "did not run — the answer came from similarity alone" },
                         }
                     } }
                     tr { th { "Took" } td { (trace.took_ms) " ms" } }
@@ -393,14 +473,18 @@ fn render_fan(trace: &RecallTrace) -> Markup {
     }
     html! {
         section class="term-panel mt-4 p-4" {
-            h2 class="mt-0" { "Entry-point fan" }
+            h2 class="mt-0" { "Doors the walk could start from" }
+            p.muted {
+                "The pages the search offered the navigator as a starting point, "
+                "strongest first."
+            }
             table class="config-table" {
-                thead { tr { th { "Weight" } th { "Family" } th { "Wiki" } th { "Page" } } }
+                thead { tr { th { "Strength" } th { "Found by" } th { "Wiki" } th { "Page" } } }
                 tbody {
                     @for ep in &trace.entry_points {
                         tr {
                             td { (format!("{:.2}", ep.weight)) }
-                            td { (ep.origin) }
+                            td { (origin_in_words(&ep.origin)) }
                             td { (ep.wiki_id) }
                             td { (ep.page.as_deref().unwrap_or("(overview)")) }
                         }
@@ -425,19 +509,19 @@ fn render_hops(trace: &RecallTrace) -> Markup {
 fn render_hop(i: usize, hop: &HopTrace) -> Markup {
     html! {
         section class="term-panel mt-4 p-4" {
-            h2 class="mt-0" { "Hop " (i + 1) }
+            h2 class="mt-0" { "Step " (i + 1) }
             @if let Some(note) = &hop.note {
                 p { "Navigator: " em { (PreEscaped("\u{201c}")) (note) (PreEscaped("\u{201d}")) }
                     @if hop.done { " · done" } }
             } @else if hop.done { p { "Navigator: done" } }
             details {
-                summary { (hop.candidates.len()) " candidate(s) offered" }
+                summary { (hop.candidates.len()) " page(s) offered to choose from" }
                 table class="config-table" {
-                    thead { tr { th { "Via" } th { "Wiki" } th { "Page" } th { "Card" } } }
+                    thead { tr { th { "Found by" } th { "Wiki" } th { "Page" } th { "What it says it holds" } } }
                     tbody {
                         @for c in &hop.candidates {
                             tr {
-                                td { (c.origin) }
+                                td { (origin_in_words(&c.origin)) }
                                 td { (c.wiki_id) }
                                 td { (c.page.as_deref().unwrap_or("(overview)")) }
                                 td class="text-xs" {
@@ -455,7 +539,14 @@ fn render_hop(i: usize, hop: &HopTrace) -> Markup {
                     @for r in &hop.requested {
                         li {
                             (r.wiki_id) "/" (r.page.as_deref().unwrap_or("(overview)"))
-                            @if !r.opened { span class="text-amber" { " — discarded by vetting" } }
+                            // Several things refuse a pick: it was not one of
+                            // the pages offered, it named a wiki and no page,
+                            // it is the reserved rules page, or it could not
+                            // be read. The trace does not record which, so the
+                            // line does not claim one.
+                            @if !r.opened {
+                                span class="text-amber" { " — not opened" }
+                            }
                         }
                     }
                 }
@@ -464,7 +555,10 @@ fn render_hop(i: usize, hop: &HopTrace) -> Markup {
                 div class="mt-2" {
                     p class="mb-1" {
                         strong { (o.wiki_id) "/" (o.page) }
-                        span class="text-text-dim" { " · " (o.chars) " chars · " (o.discovered) " new candidate(s) exposed" }
+                        span class="text-text-dim" {
+                            " · " (o.chars) " characters read · " (o.discovered)
+                            " further page(s) it could lead to"
+                        }
                     }
                     pre class="whitespace-pre-wrap text-xs" { (o.excerpt) }
                 }
@@ -477,13 +571,13 @@ fn render_injected(trace: &RecallTrace) -> Markup {
     html! {
         @if let Some(block) = &trace.injected_block {
             section class="term-panel mt-4 p-4" {
-                h2 class="mt-0" { "Injected into the consumer" }
+                h2 class="mt-0" { "Handed to the consumer" }
                 pre class="whitespace-pre-wrap" { (block) }
             }
         }
         @if let Some(rules) = &trace.rules_block {
             section class="term-panel mt-4 p-4" {
-                h2 class="mt-0" { "Rules field" }
+                h2 class="mt-0" { "Standing rules handed over" }
                 pre class="whitespace-pre-wrap" { (rules) }
             }
         }

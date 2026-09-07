@@ -18,8 +18,9 @@
 //!   console at each trigger, so the next dream honours the new
 //!   values, no restart needed.
 //!
-//! Only **resources** are configured here (per-cycle caps, mass bars,
-//! the briefing grace): semantic judgment — what to merge, promote, or
+//! Only **resources** are configured here (per-cycle caps, the fact
+//! counts a page must reach before it is split or founds a wiki, the
+//! briefing grace): semantic judgment — what to merge, promote, or
 //! rewrite — stays with the LLM sub-jobs, never in a knob. The dream
 //! *cadence* (`rem.schedule:` — light/full intervals) is the Dream
 //! cadence section of the Settings page ([`super::server_settings`]);
@@ -71,25 +72,26 @@ fn knobs() -> Vec<Knob> {
     vec![
         Knob {
             field: "auto_promote_min_page_facts",
-            label: "Split — min page mass, prose (facts)",
+            label: "Split a prose page — facts it must hold first",
             default: def.auto_promote_min_page_facts.to_string(),
-            help: "Active facts a PROSE page must hold before the split pass shows it to \
-                   the LLM (a resource pre-filter, not a semantic gate)."
+            help: "Live facts a PROSE page must hold before the split pass even \
+                   looks at it. A size floor that saves model calls, not a judgment \
+                   that the page should be split."
                 .to_owned(),
         },
         Knob {
             field: "auto_promote_min_page_facts_technical",
-            label: "Split — min page mass, technical prose (facts)",
+            label: "Split a technical-prose page — facts it must hold first",
             default: def.auto_promote_min_page_facts_technical.to_string(),
-            help: "The same floor for a `prosa-tecnica` page — scanned by points rather \
-                   than read as a thread, so it tolerates more mass. A `lista` page is \
-                   never split by mass at all: it is consulted, and half a list is not \
-                   an answer."
+            help: "The same floor for a `prosa-tecnica` page — read point by point \
+                   rather than as a thread, so it carries more before it needs \
+                   splitting. A `lista` page is never split on size at all: it is \
+                   consulted, and half a list is not an answer."
                 .to_owned(),
         },
         Knob {
             field: "auto_promote_group_min_pages",
-            label: "Auto-promote — pages to found a wiki",
+            label: "Found a new wiki — pages on one subject it takes",
             default: def.auto_promote_group_min_pages.to_string(),
             help: "Pages of one subject the regrouping pass must find, anywhere in the memory, \
                    to found a wiki. Birth only: filing into a wiki that exists has no floor."
@@ -97,93 +99,98 @@ fn knobs() -> Vec<Knob> {
         },
         Knob {
             field: "auto_promote_cap",
-            label: "Auto-promote — changes per cycle",
+            label: "Splitting and founding — changes per cycle",
             default: def.auto_promote_cap.to_string(),
-            help: "Structural changes the auto-promote sub-job may apply per cycle \
-                   (both rungs share it)."
+            help: "Changes to the shape of the memory the promotion pass may make \
+                   in one cycle. Splitting a page and founding a wiki share the \
+                   allowance."
                 .to_owned(),
         },
         Knob {
             field: "page_merge_cap",
-            label: "Page merge — confirmations per cycle",
+            label: "Merging two pages — pairs checked per cycle",
             default: def.page_merge_cap.to_string(),
-            help: "Candidate pairs the page-merge sub-job sends to the LLM confirmer per \
-                   cycle. 0 disables the sub-job."
+            help: "Pairs of pages that look like the same subject, sent to the model \
+                   to confirm, per cycle. 0 turns the pass off."
                 .to_owned(),
         },
         Knob {
             field: "structure_review_cap",
-            label: "Structural review — page moves per cycle",
+            label: "Moving a page to another wiki — moves per cycle",
             default: def.structure_review_cap.to_string(),
             help: "Pages the structural review may move to a DIFFERENT wiki per cycle. It is \
                    the only pass that looks at the whole memory at once, and the only one \
                    that can move a page out of the wiki it was born in. Small on purpose: a \
-                   move rewrites paths and retargets links. 0 disables the sub-job."
+                   move rewrites paths and retargets links. 0 turns the pass off."
                 .to_owned(),
         },
         Knob {
             field: "completion_sweep_cap",
-            label: "Completion sweep — evidence facts per cycle",
+            label: "Closing what has been overtaken — facts checked per cycle",
             default: def.completion_sweep_cap.to_string(),
-            help: "Evidence facts the completion sweep sends to the LLM per cycle. \
-                   0 disables the sub-job."
+            help: "Facts that look like evidence something older is finished, sent \
+                   to the model per cycle. 0 turns the pass off."
                 .to_owned(),
         },
         Knob {
             field: "contradiction_sweep_cap",
-            label: "Contradiction sweep — seeds per cycle",
+            label: "Facts that contradict each other — starting points per cycle",
             default: def.contradiction_sweep_cap.to_string(),
-            help: "Freshly contradicted seeds the cluster sweep sends to the LLM per cycle. \
-                   0 disables the sub-job."
+            help: "Freshly contradicted facts the sweep starts from when it gathers \
+                   a cluster for the model, per cycle. 0 turns the pass off."
                 .to_owned(),
         },
         Knob {
             field: "date_normalize_cap",
-            label: "Date normalizer — facts per cycle",
+            label: "Putting dates in order — facts per cycle",
             default: def.date_normalize_cap.to_string(),
-            help: "Lexically flagged facts the date normalizer sends to the LLM per cycle, \
-                   oldest first. 0 disables the sub-job."
+            help: "Facts whose wording looks like a date (\"last Tuesday\") sent to \
+                   the model to be turned into a real one, oldest first, per cycle. \
+                   0 turns the pass off."
                 .to_owned(),
         },
         Knob {
             field: "provenance_hygiene_cap",
-            label: "Provenance hygiene — repairs per cycle",
+            label: "Repairing where a fact came from — repairs per cycle",
             default: def.provenance_hygiene_cap.to_string(),
-            help: "Trailing source-pointer facts repaired per cycle (deterministic — \
-                   embedder spend only). 0 disables the sub-job."
+            help: "Facts left pointing at the wrong source, repaired per cycle. No \
+                   model call — this one only re-reads. 0 turns the pass off."
                 .to_owned(),
         },
         Knob {
             field: "briefing_processor_grace_secs",
-            label: "Briefing processor — grace (seconds)",
+            label: "A new comment is left alone for — seconds",
             default: def.briefing_processor_grace.num_seconds().to_string(),
-            help: "How long a fresh dashboard comment is left alone before the cycle \
-                   interprets it (the operator might still be editing). The synchronous \
-                   dashboard Submit bypasses the grace."
+            help: "How long a fresh comment left on a page is untouched before the \
+                   cycle reads it and changes the facts from it — you might still be \
+                   editing. \"Mark as read\" on a smart wiki does not wait."
                 .to_owned(),
         },
         Knob {
             field: "husk_gc_cap",
-            label: "Husk-page GC — removals per cycle",
+            label: "Emptied pages — files removed per cycle",
             default: def.husk_gc_cap.to_string(),
-            help: "Plan-absent husk page files (every fact on them tombstoned or \
-                   superseded) removed per full cycle. 0 disables the sub-job."
+            help: "Page files with nothing live left on them — every fact closed or \
+                   replaced — and no longer listed in the engine\'s own notes. Removed \
+                   per full cycle. 0 turns the pass off."
                 .to_owned(),
         },
         Knob {
             field: "recall_repair_cap",
-            label: "Recall repair — misses per cycle",
+            label: "Something the memory failed to find — cases judged per cycle",
             default: def.recall_repair_cap.to_string(),
-            help: "Pending recall misses judged per cycle (each costs a proposal call plus \
-                   a gold-set gate replay on a scratch snapshot). 0 disables the sub-job."
+            help: "Recorded cases where a recall should have found something and did \
+                   not, judged per cycle. Each costs one model call plus a replay of \
+                   the known-good set on a throwaway copy. 0 turns the pass off."
                 .to_owned(),
         },
         Knob {
             field: "recall_tuning_recurrence",
-            label: "Recall repair — recurrence for the operator notice",
+            label: "Same fact missed this many times — then you are told",
             default: def.recall_tuning_recurrence.to_string(),
-            help: "Miss count on the same fact at which an unrepaired miss queues the \
-                   recall-tuning operator notice (never auto-applied)."
+            help: "How many times the same fact must be missed, unrepaired, before \
+                   the cycle raises a notice for you. Nothing is ever changed on its \
+                   own from it."
                 .to_owned(),
         },
     ]
@@ -253,12 +260,13 @@ fn render(
 
         h2 { "REM settings" }
         p.muted {
-            "Behaviour knobs of the REM cycle (auto-promote mass bars, "
-            "per-cycle sweep caps, the briefing-processor grace), backing "
+            "What the night is allowed to do, and how much of it per cycle: how "
+            "big a page has to get before it is split, how many changes each "
+            "pass may make, how long a new comment is left alone. These back "
             "the " code { "rem.policy:" } " section of " code { (CONFIG_FILENAME) }
             ". Leave a field empty to keep the built-in default (shown "
             "as the placeholder). Semantic judgment — what to merge, "
-            "promote, or rewrite — stays with the LLM sub-jobs, not here."
+            "promote, or rewrite — stays with the passes themselves, not here."
         }
 
         form action="/dashboard/admin/rem-settings" method="post" {
@@ -291,8 +299,7 @@ fn render(
             "Related dials elsewhere: the " strong { "dream cadence" }
             " (light/full intervals — " code { "rem.schedule:" } ") is on the "
             a href="/dashboard/settings/me" { "Settings page" }
-            "; the sub-jobs' " strong { "model tiers" }
-            " are the slots in the "
+            "; which model each pass runs on is set in the "
             a href="/dashboard/admin/llm-config" { "LLM config editor" }
             "; the per-turn recall resources are the "
             a href="/dashboard/admin/recall-settings" { "recall settings" }

@@ -267,8 +267,22 @@ async fn journal_lists_and_viewer_replays_a_recorded_trace() {
     .await;
     assert_eq!(response.status(), StatusCode::OK);
     let html = body_string(response).await;
-    for needle in ["ingest", "alice", "cosa cucino stasera", "1 flat", "done"] {
+    // The journal is read by whoever the recall was for, so it names
+    // things the way they would: not the wire tokens the payload carries.
+    for needle in [
+        "consumer turn",
+        "alice",
+        "cosa cucino stasera",
+        "1 by similarity",
+        "collected enough",
+    ] {
         assert!(html.contains(needle), "missing `{needle}`: {html}");
+    }
+    for jargon in ["Hits", "Hops", ">done<", "flat</td>"] {
+        assert!(
+            !html.contains(jargon),
+            "the journal still shows `{jargon}`: {html}"
+        );
     }
     let id_pos = html.find("/recall-traces/").expect("view link");
     let id: i64 = html[id_pos + "/recall-traces/".len()..]
@@ -293,15 +307,26 @@ async fn journal_lists_and_viewer_replays_a_recorded_trace() {
     for needle in [
         "trace-stage",
         "recall-trace.js",
-        "Entry-point fan",
-        "Hop 1",
+        "Doors the walk could start from",
+        "Step 1",
         "the guest's page holds the dietary constraints",
-        "discarded by vetting",
-        "Injected into the consumer",
+        "not opened",
+        "Handed to the consumer",
         "celiaca",
         "hermes1",
     ] {
         assert!(html.contains(needle), "missing `{needle}`: {html}");
+    }
+    for jargon in [
+        "Entry-point fan",
+        "Hop 1",
+        "Injected into the consumer",
+        "Family",
+    ] {
+        assert!(
+            !html.contains(jargon),
+            "the viewer still shows `{jargon}`: {html}"
+        );
     }
 
     // The data feed the viewer fetches.

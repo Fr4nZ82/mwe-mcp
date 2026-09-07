@@ -331,7 +331,7 @@ fn filter_form(filters: &SectionsFilters, page_size: usize) -> Markup {
         form.facts-filter method="get" action="/dashboard/facts/sections" {
             div.field-grid {
                 p {
-                    label for="filter-wiki-id" { "wiki_id" }
+                    label for="filter-wiki-id" { "Wiki" }
                     input id="filter-wiki-id" type="text" name="wiki_id"
                         value=(filters.wiki_id.as_deref().unwrap_or(""))
                         placeholder="e.g. alice-lnprint";

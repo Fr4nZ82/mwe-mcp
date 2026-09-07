@@ -239,9 +239,9 @@ async fn view_briefing(
     let body = html! {
         section.meta {
             dl {
-                dt { "wiki_id" }       dd { code { (wiki_id.as_str()) } }
-                dt { "Unread items" }  dd { (unread_count) }
-                dt { "Total items" }   dd { (total_count) }
+                dt { "Wiki" }               dd { code { (wiki_id.as_str()) } }
+                dt { "Waiting to be read" } dd { (unread_count) }
+                dt { "Ever received" }      dd { (total_count) }
             }
         }
 

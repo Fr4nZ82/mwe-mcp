@@ -757,7 +757,7 @@ pub fn response_panel(response: &IngestResponse) -> Markup {
             details.chat-response-detail {
                 summary { "How this turn was handled" }
                 dl {
-                    dt { "Read as" } dd { (intent_in_words(response.intent)) }
+                    dt { "Read as" } dd { (components::intent_in_words(response.intent.as_str())) }
                     dt { "Model called" } dd { (if response.llm_used { "yes" } else { "no" }) }
                     dt { "Took" } dd { (response.took_ms) " ms" }
                     @if let Some(id) = &response.capture_id {
@@ -766,19 +766,6 @@ pub fn response_panel(response: &IngestResponse) -> Markup {
                 }
             }
         }
-    }
-}
-
-/// What the engine decided the turn was, in the reader's words.
-///
-/// [`IntentKind::as_str`] is the wire token, for a log or a test; this
-/// is the same decision said to somebody who has never read the engine.
-const fn intent_in_words(intent: IntentKind) -> &'static str {
-    match intent {
-        IntentKind::Capture => "something to remember",
-        IntentKind::Recall => "a question about what is remembered",
-        IntentKind::Structural => "a request to change how the memory is arranged",
-        IntentKind::Skip => "nothing to remember",
     }
 }
 

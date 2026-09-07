@@ -1362,33 +1362,36 @@ fn render_index(
             p.muted { "No facts to show." }
         } @else {
             table.facts-table.compact {
+                // The sort tokens stay the column names the query
+                // understands; the labels are what the reader is asked to
+                // recognise, and the two are not the same job.
                 thead { tr {
-                    th { "actions" }
-                    th { "fact_id" }
-                    th { "status" }
-                    (sort_header(filters, page_size, "wiki_id", "wiki_id"))
-                    (sort_header(filters, page_size, "fact_type", "fact_type"))
-                    (sort_header(filters, page_size, "salience", "salience"))
-                    (sort_header(filters, page_size, "subject_id", "subject_id"))
-                    th { "sender_id" }
-                    th { "allow_ids" }
-                    th { "topics" }
-                    th { "body" }
-                    (sort_header(filters, page_size, "valid_from", "valid_from"))
-                    (sort_header(filters, page_size, "valid_to", "valid_to"))
-                    th { "decay_reason" }
-                    (sort_header(filters, page_size, "created_at", "created_at"))
-                    (sort_header(filters, page_size, "updated_at", "updated_at"))
-                    (sort_header(filters, page_size, "last_recall_at", "last_recall_at"))
-                    (sort_header(filters, page_size, "recall_count_30d", "recall_30d"))
-                    th { "style" }
-                    th { "source_ref" }
-                    th { "authored_refs" }
-                    th { "superseded_at" }
-                    th { "superseded_by" }
-                    th { "successor" }
-                    th { "deleted_at" }
-                    th { "deleted_reason" }
+                    th { "Actions" }
+                    th { "Id" }
+                    th { "Status" }
+                    (sort_header(filters, page_size, "wiki_id", "Wiki"))
+                    (sort_header(filters, page_size, "fact_type", "Kind"))
+                    (sort_header(filters, page_size, "salience", "Importance"))
+                    (sort_header(filters, page_size, "subject_id", "About"))
+                    th { "Said by" }
+                    th { "Also readable by" }
+                    th { "Topics" }
+                    th { "What it says" }
+                    (sort_header(filters, page_size, "valid_from", "Holds from"))
+                    (sort_header(filters, page_size, "valid_to", "Holds until"))
+                    th { "Why it ended" }
+                    (sort_header(filters, page_size, "created_at", "Recorded"))
+                    (sort_header(filters, page_size, "updated_at", "Last changed"))
+                    (sort_header(filters, page_size, "last_recall_at", "Last recalled"))
+                    (sort_header(filters, page_size, "recall_count_30d", "Recalls (30 days)"))
+                    th { "Page style" }
+                    th { "From document" }
+                    th { "Pages of the same turn" }
+                    th { "Replaced on" }
+                    th { "Replaced by" }
+                    th { "See instead" }
+                    th { "Forgotten on" }
+                    th { "Why forgotten" }
                 } }
                 tbody {
                     @for row in page_rows {
@@ -1456,8 +1459,8 @@ fn index_intro(reveal: bool) -> Markup {
                 "Filtered list of every fact you can read — the governed memory of "
                 "your standard wikis. Smart-wiki documentation is indexed as "
                 a href="/dashboard/facts/sections" { "sections" }
-                " instead. Filters compose in AND, and " code { "topic" }
-                " takes one term. Arrowed headers sort; click a fact id to copy it."
+                " instead. Filters narrow together, and " code { "Topic" }
+                " takes one word. Arrowed headers sort; click an id to copy it."
             }
         }
     }
@@ -1470,37 +1473,37 @@ fn filter_form(filters: &FactsFilters, page_size: usize) -> Markup {
             // collapse to one column on mobile (see `.field-grid`).
             div.field-grid {
                 p {
-                    label for="filter-wiki-id" { "wiki_id" }
+                    label for="filter-wiki-id" { "Wiki" }
                     input id="filter-wiki-id" type="text" name="wiki_id"
                         value=(filters.wiki_id.as_deref().unwrap_or(""))
                         placeholder="e.g. alice";
                 }
                 p {
-                    label for="filter-fact-type" { "fact_type" }
+                    label for="filter-fact-type" { "Kind" }
                     input id="filter-fact-type" type="text" name="fact_type"
                         value=(filters.fact_type.as_deref().unwrap_or(""))
                         placeholder="e.g. preference";
                 }
                 p {
-                    label for="filter-topic" { "topic" }
+                    label for="filter-topic" { "Topic" }
                     input id="filter-topic" type="text" name="topic"
                         value=(filters.topic.as_deref().unwrap_or(""))
                         placeholder="e.g. gardening";
                 }
                 p {
-                    label for="filter-created-after" { "created_after (ISO 8601)" }
+                    label for="filter-created-after" { "Recorded after" }
                     input id="filter-created-after" type="text" name="created_after"
                         value=(filters.created_after.as_deref().unwrap_or(""))
                         placeholder="2026-01-01T00:00:00Z";
                 }
                 p {
-                    label for="filter-created-before" { "created_before (ISO 8601)" }
+                    label for="filter-created-before" { "Recorded before" }
                     input id="filter-created-before" type="text" name="created_before"
                         value=(filters.created_before.as_deref().unwrap_or(""))
                         placeholder="2026-12-31T23:59:59Z";
                 }
                 p.field-narrow {
-                    label for="filter-page-size" { "page_size" }
+                    label for="filter-page-size" { "Rows per page" }
                     input id="filter-page-size" type="number" name="page_size"
                         min="1" max=(MAX_PAGE_SIZE.to_string())
                         value=(page_size.to_string());
@@ -1510,7 +1513,7 @@ fn filter_form(filters: &FactsFilters, page_size: usize) -> Markup {
                         input id="filter-include-inactive" type="checkbox"
                             name="include_inactive" value="1"
                             checked[filters.include_inactive()];
-                        " include inactive (superseded / deleted)"
+                        " include facts that no longer hold (replaced or forgotten)"
                     }
                 }
             }
@@ -1522,7 +1525,7 @@ fn filter_form(filters: &FactsFilters, page_size: usize) -> Markup {
                     input type="hidden" name="dir" value=(dir);
                 }
             }
-            p { button type="submit" { "Filtra" } }
+            p { button type="submit" { "Filter" } }
         }
     }
 }
@@ -1764,17 +1767,17 @@ fn fact_summary_dl(fact_id: &FactId, row: &FactIndexRow, body_html: &Markup) -> 
         section.meta.fact-edit-summary {
             h2 { "Current state of fact " code { (fact_id.as_str()) } }
             dl {
-                dt { "wiki_id" } dd { @if row.wiki_id.is_empty() { "— (not placed yet)" } @else { code { (row.wiki_id) } } }
-                dt { "subject" } dd { code { (row.subject_id) } }
-                dt { "sender" }
+                dt { "Wiki" } dd { @if row.wiki_id.is_empty() { "— (not placed yet)" } @else { code { (row.wiki_id) } } }
+                dt { "About" } dd { code { (row.subject_id) } }
+                dt { "Said by" }
                 dd {
                     @if let Some(sender) = &row.sender_id {
                         code { (sender) }
                     } @else {
-                        span.muted { "(unknown — legacy row)" }
+                        span.muted { "(not recorded)" }
                     }
                 }
-                dt { "allow" }
+                dt { "Also readable by" }
                 dd {
                     @if allow_current.is_empty() {
                         span.muted { "(empty)" }
@@ -1782,7 +1785,7 @@ fn fact_summary_dl(fact_id: &FactId, row: &FactIndexRow, body_html: &Markup) -> 
                         code { (allow_current) }
                     }
                 }
-                dt { "topics" }
+                dt { "Topics" }
                 dd {
                     @if topics_current.is_empty() {
                         span.muted { "(empty)" }
@@ -1790,7 +1793,7 @@ fn fact_summary_dl(fact_id: &FactId, row: &FactIndexRow, body_html: &Markup) -> 
                         code { (topics_current) }
                     }
                 }
-                dt { "fact_type" }
+                dt { "Kind" }
                 dd {
                     @if fact_type_current.is_empty() {
                         span.muted { "(none)" }
@@ -1798,7 +1801,7 @@ fn fact_summary_dl(fact_id: &FactId, row: &FactIndexRow, body_html: &Markup) -> 
                         code { (fact_type_current) }
                     }
                 }
-                dt { "valid_from" }
+                dt { "Holds from" }
                 dd {
                     @if valid_from_current.is_empty() {
                         span.muted { "(none)" }
@@ -1806,7 +1809,7 @@ fn fact_summary_dl(fact_id: &FactId, row: &FactIndexRow, body_html: &Markup) -> 
                         code { (valid_from_current) }
                     }
                 }
-                dt { "valid_to" }
+                dt { "Holds until" }
                 dd {
                     @if valid_to_current.is_empty() {
                         span.muted { "(none)" }
@@ -1815,7 +1818,7 @@ fn fact_summary_dl(fact_id: &FactId, row: &FactIndexRow, body_html: &Markup) -> 
                     }
                 }
                 @if let Some(successor) = &row.successor_fact_id {
-                    dt { "successor" }
+                    dt { "See instead" }
                     dd {
                         // The fact that replaced this one (closure-stamped):
                         // one click to the current truth's record.
@@ -1824,13 +1827,13 @@ fn fact_summary_dl(fact_id: &FactId, row: &FactIndexRow, body_html: &Markup) -> 
                         }
                     }
                 }
-                dt { "created" } dd { code { (row.created_at) } }
+                dt { "Recorded" } dd { code { (row.created_at) } }
                 @if let Some(source_ref) = &row.source_ref {
-                    dt { "source_ref" }
+                    dt { "From document" }
                     dd {
                         // A cited document must be viewable: a catalog id
                         // links to the ACL-gated media alias (view /
-                        // download); any other ref (URL, legacy) stays text.
+                        // download); anything else (a URL, say) stays text.
                         @if CatalogId::parse(source_ref).is_ok() {
                             a href=(format!("/dashboard/media/{source_ref}")) {
                                 code { (source_ref) }
@@ -1841,7 +1844,7 @@ fn fact_summary_dl(fact_id: &FactId, row: &FactIndexRow, body_html: &Markup) -> 
                     }
                 }
             }
-            h3 { code { "body" } }
+            h3 { "What it says" }
             div.wiki-page-view.prose { (body_html) }
         }
     }
@@ -1873,19 +1876,19 @@ fn structured_actions_section(
     let valid_to_current = row.valid_to.as_deref().unwrap_or("");
     html! {
         section.fact-structured-actions {
-            h2 { "ACL and validity (structured actions)" }
+            h2 { "Who may read it, and when it holds" }
             @if is_smart {
                 p.muted {
                     "This wiki is "
                     strong { "smart" }
-                    ": access and validity governance is wiki-level, not "
-                    "per-fragment. Use the smart wiki's sharing page or the "
-                    "smart consumer's own channels."
+                    ": who may read it is decided for the whole wiki, not fact "
+                    "by fact. Use the wiki's sharing page, or ask the consumer "
+                    "that owns it."
                 }
             } @else if !can_govern {
                 p.muted {
                     "Both are the subject's to change — the person or group the "
-                    "fact is about — or an admin's: its visibility (ACL) and the "
+                    "fact is about — or an admin's: who may read it, and the "
                     "dates it holds between. You are neither, for this fact."
                 }
             } @else {
@@ -1897,37 +1900,37 @@ fn structured_actions_section(
                     " — to put it back, make the opposite change."
                 }
                 form.fact-acl method="post" action=(acl_action) {
-                    h3 { "Change " code { "ACL" } }
+                    h3 { "Change who may read it" }
                     p {
-                        label for="acl-subject" { code { "subject" } }
+                        label for="acl-subject" { "About (the person or group it belongs to)" }
                         input id="acl-subject" type="text" name="subject"
                             value=(subject_current)
                             placeholder="e.g. user:alice or group:famiglia or global";
                     }
                     p {
-                        label for="acl-allow" { code { "allow=" } " (comma-separated list)" }
+                        label for="acl-allow" { "Also readable by (comma-separated)" }
                         input id="acl-allow" type="text" name="allow"
                             value=(allow_current)
                             placeholder="e.g. user:bob, group:lavoro";
                         small.muted { "Clear the field to empty the list." }
                     }
-                    p { button type="submit" { "Apply ACL" } }
+                    p { button type="submit" { "Save who may read it" } }
                 }
                 form.fact-validity method="post" action=(validity_action) {
-                    h3 { "Correct the validity" }
+                    h3 { "Correct the dates it holds between" }
                     p {
-                        label for="validity-from" { code { "valid_from" } }
+                        label for="validity-from" { "Holds from" }
                         input id="validity-from" type="date" name="valid_from"
                             value=(date_part(valid_from_current));
                         small.muted { "Leave blank to keep this bound unchanged." }
                     }
                     p {
-                        label for="validity-to" { code { "valid_to" } }
+                        label for="validity-to" { "Holds until" }
                         input id="validity-to" type="date" name="valid_to"
                             value=(date_part(valid_to_current));
                         small.muted { "Leave blank to keep this bound unchanged." }
                     }
-                    p { button type="submit" { "Apply validity" } }
+                    p { button type="submit" { "Save the dates" } }
                 }
             }
         }
@@ -2359,13 +2362,13 @@ mod tests {
             "the validity gate is the subject, not the author: {refused}"
         );
         assert!(
-            !refused.contains("Apply ACL") && !refused.contains("Apply validity"),
+            !refused.contains("Save who may read it") && !refused.contains("Save the dates"),
             "neither form is offered to somebody who may submit neither: {refused}"
         );
 
         let allowed = structured_actions_section(&fact_id, &row, true, false).into_string();
-        assert!(allowed.contains("Apply ACL"), "{allowed}");
-        assert!(allowed.contains("Apply validity"), "{allowed}");
+        assert!(allowed.contains("Save who may read it"), "{allowed}");
+        assert!(allowed.contains("Save the dates"), "{allowed}");
         assert!(
             !allowed.contains("the subject's to change"),
             "the refusal note does not come along with the forms: {allowed}"

@@ -1551,14 +1551,16 @@ async fn chat_ingest_e2e_captures_fact_with_fake_backend() {
     assert_eq!(response.status(), StatusCode::OK);
     let body = body_string(response).await;
     let resp: serde_json::Value = serde_json::from_str(&body).expect("ingest response is JSON");
-    let inner: serde_json::Value =
-        serde_json::from_str(resp["response_html"].as_str().unwrap_or(""))
-            .unwrap_or(serde_json::Value::Null);
-    // The response_html is HTML, not JSON — parse via string match
-    // instead of structure.
+    // `response_html` is a rendered fragment, so it is matched as text.
     let html = resp["response_html"].as_str().unwrap_or("");
-    assert!(html.contains("capture"), "intent capture in {html}");
-    let _ = inner; // silence unused
+    assert!(
+        html.contains("something to remember"),
+        "the panel says what the turn was read as, in words: {html}"
+    );
+    assert!(
+        !html.contains("dd>capture<"),
+        "and not the wire token: {html}"
+    );
 
     let count = fact_index::count_active_in_wiki(&pool, "alice")
         .await

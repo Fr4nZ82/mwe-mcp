@@ -221,6 +221,23 @@ fn json_quote(s: &str) -> String {
     out
 }
 
+/// What the engine decided a turn was, in the reader's words.
+///
+/// The argument is the wire token [`mwe_core::ingest::IntentKind::as_str`]
+/// writes — into a chat response and into a recall trace alike, which is
+/// why the translation lives here and not beside either surface. An
+/// unknown token (a trace written by a newer engine) shows as itself.
+#[must_use]
+pub fn intent_in_words(token: &str) -> &str {
+    match token {
+        "capture" => "something to remember",
+        "recall" => "a question about what is remembered",
+        "structural" => "a request to change how the memory is arranged",
+        "skip" => "nothing to remember",
+        other => other,
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

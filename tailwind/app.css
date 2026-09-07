@@ -597,12 +597,19 @@
     z-index: 2;
     background: var(--bg-3);
   }
+  /* A column heading is a label, not prose: it stays on one line at
+     every width. Wrapped, "Who it was for" becomes four stacked words
+     and the header is taller than the rows it names — and the table
+     scrolls sideways anyway, which is the answer to a heading that does
+     not fit. */
+  main table thead th {
+    white-space: nowrap;
+  }
   /* On mobile, cells get `white-space: nowrap` so single-line
      values stay readable; the user swipes the table to see
      hidden columns. Multi-line cells (long text, code blocks)
      opt out with their own override. */
   @media (max-width: 767px) {
-    main table th,
     main table td {
       white-space: nowrap;
     }
@@ -1062,6 +1069,9 @@
     border: 1px solid var(--border);
     background: var(--bg-1);
     color: var(--text-dim);
+    /* A two-word badge wrapped inside its own pill reads as two broken
+       pills. It is a label: one line, and the cell around it gives. */
+    white-space: nowrap;
   }
   .badge.badge-default {
     color: var(--p-bright);
