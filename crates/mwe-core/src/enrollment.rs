@@ -185,7 +185,11 @@ pub fn validate(file: &EnrollmentFile) -> Result<ValidationReport, EnrollmentErr
 
     let mut report = ValidationReport::default();
     let mut user_ids = std::collections::HashSet::new();
-    let mut alias_seen: std::collections::HashMap<String, String> =
+    // Keyed by the fold the resolution uses ([`crate::recall::folded_words`]),
+    // not by the raw spelling: two names that reach the same person are the
+    // same name, so «Éowyn» declared here is the `eowyn` already enrolled.
+    let mut user_id_keys: std::collections::HashSet<Vec<String>> = std::collections::HashSet::new();
+    let mut alias_seen: std::collections::HashMap<Vec<String>, String> =
         std::collections::HashMap::new();
 
     for user in &file.users {
@@ -203,16 +207,19 @@ pub fn validate(file: &EnrollmentFile) -> Result<ValidationReport, EnrollmentErr
         if !user_ids.insert(user.id.clone()) {
             return Err(EnrollmentError::DuplicateUserId(user.id.clone()));
         }
+        let own_key = crate::recall::folded_words(&user.id);
+        user_id_keys.insert(own_key.clone());
         // Alias collisions are soft — the alias still works, but the
         // operator should know the resolution may be ambiguous.
         for alias in &user.aliases {
-            if let Some(prev_user) = alias_seen.insert(alias.clone(), user.id.clone()) {
+            let key = crate::recall::folded_words(alias);
+            if let Some(prev_user) = alias_seen.insert(key.clone(), user.id.clone()) {
                 report.warnings.push(format!(
                     "alias {alias:?} is shared by users {prev_user} and {}",
                     user.id
                 ));
             }
-            if user_ids.contains(alias) && alias != &user.id {
+            if user_id_keys.contains(&key) && key != own_key {
                 report.warnings.push(format!(
                     "alias {alias:?} of {} matches an existing user id",
                     user.id
@@ -528,6 +535,10 @@ pub async fn list_users(pool: &SqlitePool) -> Result<Vec<EnrolledUserLite>, sqlx
 /// typed it**, because the roster shows these names to a model and the
 /// spelling they chose is the one to show.
 ///
+/// A name that already reaches **somebody else** never gets this far: both
+/// surfaces ask [`first_name_collision`] first and refuse it there, where the
+/// person who typed it can pick another one.
+///
 /// Returns the names actually added, in the order given; an empty list when
 /// there is no such user.
 ///
@@ -579,6 +590,81 @@ pub async fn add_aliases(
         .await?;
     tx.commit().await?;
     Ok(added)
+}
+
+/// A name that already reaches a **different** enrolled person, as
+/// [`first_name_collision`] found it.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct NameCollision {
+    /// The offered name, exactly as it was typed.
+    pub name: String,
+    /// The person who already answers to it.
+    pub user_id: String,
+    /// What that person carries, spelled the way they carry it: their user
+    /// id, or the alias declared for them.
+    pub existing: String,
+    /// Whether [`NameCollision::existing`] is their user id (rather than one
+    /// of their aliases). The two are worth telling apart to whoever has to
+    /// pick another name.
+    pub is_user_id: bool,
+}
+
+/// The first of `names` that another enrolled person already answers to —
+/// their user id, or an alias declared for them.
+///
+/// A name is how a claim finds its subject, so two people answering to the
+/// same one leaves the classifier a question with no right answer: whatever it
+/// picks, half the facts land on a stranger's page. Both places a name is
+/// declared ask this first — the operator's **Aliases** field and the
+/// first-sign-in primer's **Full name** / **Nickname** — and refuse the name
+/// rather than store an ambiguity nothing downstream can resolve.
+///
+/// `for_user` is the person the names are being declared for, and nothing of
+/// theirs collides with themselves: their own id and their own aliases are
+/// simply names they already have ([`add_aliases`] drops them as duplicates).
+///
+/// Comparison is [`crate::recall::folded_words`], whole and in order — the
+/// same fold the resolution uses, so a name refused here is exactly a name
+/// that would have matched two people at recall time, and «Éowyn» collides
+/// with an enrolled `eowyn`.
+///
+/// # Errors
+///
+/// Propagates the underlying `sqlx` error from [`list_users`].
+pub async fn first_name_collision(
+    pool: &SqlitePool,
+    for_user: &str,
+    names: &[&str],
+) -> Result<Option<NameCollision>, sqlx::Error> {
+    let fold = crate::recall::folded_words;
+    let mine = fold(for_user);
+    let users = list_users(pool).await?;
+    for name in names {
+        let name = name.trim();
+        let words = fold(name);
+        if words.is_empty() || words == mine {
+            continue;
+        }
+        for other in users.iter().filter(|u| u.user_id != for_user) {
+            if fold(&other.user_id) == words {
+                return Ok(Some(NameCollision {
+                    name: name.to_owned(),
+                    user_id: other.user_id.clone(),
+                    existing: other.user_id.clone(),
+                    is_user_id: true,
+                }));
+            }
+            if let Some(alias) = other.aliases.iter().find(|a| fold(a) == words) {
+                return Ok(Some(NameCollision {
+                    name: name.to_owned(),
+                    user_id: other.user_id.clone(),
+                    existing: alias.clone(),
+                    is_user_id: false,
+                }));
+            }
+        }
+    }
+    Ok(None)
 }
 
 /// A group reduced to what the planner's Fonditore needs.
@@ -2415,6 +2501,62 @@ mod tests {
             .expect("again");
         let stored = list_users(&pool).await.expect("roster");
         assert_eq!(stored[0].aliases, vec!["Eowyn", "Lady of Rohan"]);
+    }
+
+    /// A name reaches one person: a name another enrolled person already
+    /// answers to — their id or an alias declared for them — is a collision,
+    /// found under the same fold the resolution uses. The person's own names
+    /// are not.
+    #[tokio::test]
+    async fn first_name_collision_finds_another_persons_id_and_alias() {
+        let (_workdir, pool) = crate::test_db::TestWorkdir::with_db().await;
+        sqlx::query(
+            "INSERT INTO enrollment_users (user_id, aliases, is_admin) \
+             VALUES ('bob', '[\"Bobby\",\"Éowyn\"]', 0)",
+        )
+        .execute(&pool)
+        .await
+        .unwrap();
+        sqlx::query("INSERT INTO enrollment_users (user_id, aliases, is_admin) VALUES ('carol', '[\"Caz\"]', 0)")
+            .execute(&pool)
+            .await
+            .unwrap();
+
+        let hit = first_name_collision(&pool, "carol", &["Bob"])
+            .await
+            .expect("query")
+            .expect("bob's id is taken");
+        assert_eq!(hit.user_id, "bob");
+        assert_eq!(hit.existing, "bob");
+        assert!(hit.is_user_id, "matched their id, not an alias");
+
+        let hit = first_name_collision(&pool, "carol", &["ok", "bobby"])
+            .await
+            .expect("query")
+            .expect("bob's alias is taken");
+        assert_eq!(
+            hit.name, "bobby",
+            "the offered spelling comes back verbatim"
+        );
+        assert_eq!(hit.existing, "Bobby", "and the spelling bob carries");
+        assert!(!hit.is_user_id);
+
+        // The fold is the resolution's: an accent is not a different name.
+        assert!(
+            first_name_collision(&pool, "carol", &["eowyn"])
+                .await
+                .expect("query")
+                .is_some(),
+            "«Éowyn» and `eowyn` reach the same person"
+        );
+
+        // Their own id and their own alias are names they already have.
+        assert!(
+            first_name_collision(&pool, "carol", &["carol", "Caz", "", "Dot"])
+                .await
+                .expect("query")
+                .is_none()
+        );
     }
 
     /// No such row, nothing written and no error: the caller is a form that

@@ -314,3 +314,126 @@ async fn welcome_post_skip_declares_no_aliases() {
         "a skipped wizard declares nothing"
     );
 }
+
+/// Enrol a second person straight into the roster, with the aliases given.
+/// The primer's names are checked against this roster, so a test needs
+/// somebody else on the deployment to collide with.
+async fn enrol(pool: &sqlx::SqlitePool, user_id: &str, aliases: &[&str]) {
+    sqlx::query("INSERT INTO enrollment_users (user_id, email, aliases) VALUES (?, ?, ?)")
+        .bind(user_id)
+        .bind(format!("{user_id}@example.com"))
+        .bind(serde_json::to_string(aliases).expect("aliases json"))
+        .execute(pool)
+        .await
+        .expect("enrol");
+}
+
+/// A name reaches one person. A nickname that is already somebody else's user
+/// id is refused before anything at all is written: the wizard comes back with
+/// what was typed still in it, saying whose name it is.
+#[tokio::test]
+async fn welcome_post_refuses_a_name_another_person_answers_to() {
+    let (app, pool, _tree, _dir) = make_app_with_memory().await;
+    let cookie = setup_admin(&app).await;
+    enrol(&pool, "bob", &["Bobby"]).await;
+
+    let response = send(
+        &app,
+        Request::builder()
+            .method("POST")
+            .uri("/welcome")
+            .header(header::COOKIE, &cookie)
+            .header(header::CONTENT_TYPE, "application/x-www-form-urlencoded")
+            .body(Body::from(
+                "action=save&display_name=Alice+Liddell&nickname=bob&favorite_color=blu",
+            ))
+            .unwrap(),
+    )
+    .await;
+    assert_eq!(
+        response.status(),
+        StatusCode::OK,
+        "the wizard comes back, it does not fail the request"
+    );
+    let html = body_string(response).await;
+    assert!(
+        html.contains("already how this memory reaches bob"),
+        "the refusal names whose name it is: {html}"
+    );
+    assert!(
+        html.contains("their user id"),
+        "and says it is their id rather than one of their aliases: {html}"
+    );
+    assert!(
+        html.contains("value=\"Alice Liddell\""),
+        "the form comes back filled with what was typed: {html}"
+    );
+
+    assert!(
+        aliases_of(&pool, "alice").await.is_empty(),
+        "a refused submission declares nothing — not even the name that was fine"
+    );
+    let locale: Option<String> =
+        sqlx::query_scalar("SELECT locale FROM enrollment_users WHERE user_id = 'alice'")
+            .fetch_one(&pool)
+            .await
+            .expect("row");
+    assert!(
+        locale.is_none(),
+        "and writes nothing else either; got {locale:?}"
+    );
+}
+
+/// The same check against an alias somebody else declared, rather than their
+/// id — and the person's OWN id is not a collision: it is simply a name they
+/// already have, so it is skipped in silence and the rest goes through.
+#[tokio::test]
+async fn welcome_post_refuses_another_persons_alias_but_not_the_persons_own_id() {
+    let (app, pool, _tree, _dir) = make_app_with_memory().await;
+    let cookie = setup_admin(&app).await;
+    enrol(&pool, "bob", &["Bobby"]).await;
+
+    let response = send(
+        &app,
+        Request::builder()
+            .method("POST")
+            .uri("/welcome")
+            .header(header::COOKIE, &cookie)
+            .header(header::CONTENT_TYPE, "application/x-www-form-urlencoded")
+            .body(Body::from("action=save&display_name=Bobby&nickname=Ali"))
+            .unwrap(),
+    )
+    .await;
+    assert_eq!(response.status(), StatusCode::OK);
+    let html = body_string(response).await;
+    assert!(
+        html.contains("already how this memory reaches bob")
+            && html.contains("a name declared for them"),
+        "an alias of somebody else's is refused, and named as an alias: {html}"
+    );
+    assert!(aliases_of(&pool, "alice").await.is_empty());
+
+    // Their own id is not somebody else's name. Nothing is refused; the id is
+    // simply not added twice, and the other name is.
+    let response = send(
+        &app,
+        Request::builder()
+            .method("POST")
+            .uri("/welcome")
+            .header(header::COOKIE, &cookie)
+            .header(header::CONTENT_TYPE, "application/x-www-form-urlencoded")
+            .body(Body::from("action=save&display_name=Alice&nickname=Ali"))
+            .unwrap(),
+    )
+    .await;
+    assert_eq!(
+        response.status(),
+        StatusCode::UNPROCESSABLE_ENTITY,
+        "past the name check, the wizard fails on the unwired ingest slot"
+    );
+    assert_eq!(
+        aliases_of(&pool, "alice").await,
+        vec!["Ali"],
+        "the id is skipped in silence, never refused"
+    );
+}

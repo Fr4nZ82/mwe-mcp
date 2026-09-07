@@ -29,7 +29,9 @@ One account per person. The table lists **User id**, **Email**, **Role**,
   is asked their full name and their nickname, and both are added to this list
   as they typed them — this field is where you correct them and add the rest. A
   name of several words counts as one name and is matched whole: "Frodo
-  Baggins" reaches him, "Baggins" on its own does not.
+  Baggins" reaches him, "Baggins" on its own does not. A name another enrolled
+  person already answers to — their user id, or one of their aliases — is
+  refused when you save, naming whose it is: a name reaches one person.
 - **Timezone** (IANA, e.g. `Europe/Rome`) — times they speak, like *"tomorrow
   at 9"*, are read in this zone. Empty falls back to the deployment default on
   the [Settings](settings.md) page.

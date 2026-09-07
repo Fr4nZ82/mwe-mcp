@@ -61,7 +61,10 @@
 //! row**, because they are settings of the account rather than things to
 //! remember: the language and the time zone, and the full name and the
 //! nickname of step 1, which become the `aliases` every model resolving a
-//! name is shown (`enrollment::add_aliases`).
+//! name is shown (`enrollment::add_aliases`). Those two are refused when
+//! somebody else on the deployment already answers to them
+//! (`enrollment::first_name_collision`): the form comes back whole, saying
+//! whose name it is, and nothing at all is written.
 //!
 //! **No fallback.** If `llm.ingest` is not configured in
 //! `mwe-mcp.config.yaml`, the `Save` action returns 422 with an
@@ -209,18 +212,15 @@ async fn form(
         return Ok(Redirect::to("/dashboard/home").into_response());
     }
     let email = fetch_email_for(&state, &user.sender_id).await?;
-    let ingest_available = state
-        .memory
-        .as_ref()
-        .and_then(|m| m.defaults_for(LlmFunction::Ingest))
-        .is_some();
     let locale_default = preferred_locale(&headers);
     Ok(render_form(
         chrome,
         &user,
         email.as_deref(),
-        ingest_available,
+        ingest_available(&state),
         &locale_default,
+        &ProfileSubmission::default(),
+        /* error */ None,
     )
     .into_response())
 }
@@ -236,6 +236,33 @@ async fn submit(
     }
 
     let want_skip = form.action.trim().eq_ignore_ascii_case("skip");
+
+    // The two names of step 1 are declared before anything is written, and a
+    // name that already reaches somebody else is refused here rather than
+    // stored: two people answering to one name leaves every fact that says it
+    // filed by a coin toss. The form comes back whole, saying whose name it
+    // is, so the person can pick another. **Skip all** declares nothing, so
+    // it asks nothing.
+    if !want_skip
+        && let Some(msg) = name_collision_message(
+            &state,
+            &user.sender_id,
+            &[form.display_name.trim(), form.nickname.trim()],
+        )
+        .await?
+    {
+        let email = fetch_email_for(&state, &user.sender_id).await?;
+        return Ok(render_form(
+            chrome,
+            &user,
+            email.as_deref(),
+            ingest_available(&state),
+            DEFAULT_PRIMER_LOCALE,
+            &form,
+            Some(&msg),
+        )
+        .into_response());
+    }
 
     // The welcome wizard composes a primer message and pushes it
     // through the same chat entry point an interactive user would use.
@@ -728,12 +755,57 @@ fn compose_preferences_section(form: &ProfileSubmission) -> String {
     out
 }
 
+/// Whether the `ingest` slot has a model behind it. `Save` runs through that
+/// slot, so the form says up front when it has none instead of letting
+/// somebody fill three steps and meet a 422.
+fn ingest_available(state: &DashboardState) -> bool {
+    state
+        .memory
+        .as_ref()
+        .and_then(|m| m.defaults_for(LlmFunction::Ingest))
+        .is_some()
+}
+
+/// Refuse a name the memory already answers to for somebody else, and say
+/// whose it is.
+///
+/// The primer's **Full name** and **Nickname** become the names everybody else
+/// can reach this person by, so they are the same declaration the operator
+/// makes on the Users page and they are checked the same way
+/// ([`mwe_core::enrollment::first_name_collision`]). A name equal to the
+/// person's own id is not a collision — it is a name they already have.
+///
+/// Returns the message to put on the form, or `None` when nothing collides.
+async fn name_collision_message(
+    state: &DashboardState,
+    sender_id: &str,
+    names: &[&str],
+) -> Result<Option<String>> {
+    let Some(clash) = enrollment::first_name_collision(&state.pool, sender_id, names).await? else {
+        return Ok(None);
+    };
+    let what = if clash.is_user_id {
+        "their user id".to_owned()
+    } else {
+        format!("a name declared for them ({:?})", clash.existing)
+    };
+    Ok(Some(format!(
+        "The name {:?} is already how this memory reaches {} — it is {what}. Two people \
+         cannot answer to one name, so please choose another.",
+        clash.name, clash.user_id,
+    )))
+}
+
 fn render_form(
     chrome: layout::Chrome,
     user: &SessionUser,
     email: Option<&str>,
     ingest_available: bool,
     locale_default: &str,
+    // What was typed, so a refused submission comes back whole instead of
+    // asking somebody to write three steps again. Empty on the first visit.
+    form: &ProfileSubmission,
+    error: Option<&str>,
 ) -> Html<String> {
     let email_value = email.unwrap_or("");
     let body = html! {
@@ -745,6 +817,10 @@ fn render_form(
         }
         p.muted id="welcome-step-indicator" { "Step 1 of 3" }
 
+        @if let Some(msg) = error {
+            (components::flash("error", msg))
+        }
+
         @if !ingest_available {
             (components::flash(
                 "error",
@@ -755,9 +831,9 @@ fn render_form(
         }
 
         form id="welcome-form" action="/dashboard/welcome" method="post" {
-            (step1_identity_fieldset(email_value, locale_default))
-            (step2_rules_fieldset())
-            (step3_rest_fieldset())
+            (step1_identity_fieldset(email_value, locale_default, form))
+            (step2_rules_fieldset(form))
+            (step3_rest_fieldset(form))
         }
 
         // Two tiny vanilla listeners on the form. The stepper shows one
@@ -778,7 +854,16 @@ fn render_form(
 /// Step 1 fieldset → the identity card: its own fields plus the always-on
 /// health/safety slot. A "Salta tutto" submit is repeated on every step
 /// so the user can bail out at any point.
-fn step1_identity_fieldset(email_value: &str, locale_default: &str) -> Markup {
+fn step1_identity_fieldset(
+    email_value: &str,
+    locale_default: &str,
+    form: &ProfileSubmission,
+) -> Markup {
+    let language_value = if form.language.trim().is_empty() {
+        locale_default
+    } else {
+        form.language.as_str()
+    };
     html! {
         fieldset data-step="1" {
             legend { "1 · Who you are" }
@@ -809,39 +894,44 @@ fn step1_identity_fieldset(email_value: &str, locale_default: &str) -> Markup {
             p.help.muted { "Your account email, set by your admin. Shown for reference — recorded with your profile." }
 
             div.field-grid {
-                (components::text_field("display_name", "Full name", "text", "", false))
-                (components::text_field("nickname", "Nickname", "text", "", false))
+                (components::text_field("display_name", "Full name", "text", &form.display_name, false))
+                (components::text_field("nickname", "Nickname", "text", &form.nickname, false))
             }
             p.help.muted {
                 "These two become the names the memory recognises you by, beside your "
                 "user id: when somebody else mentions you by name, what they say is "
-                "filed as being about you. Your admin can change them later from your row "
-                "on the Users page."
+                "filed as being about you. A name somebody else here already answers "
+                "to cannot be one of yours. Your admin can change them later from your "
+                "row on the Users page."
             }
 
             label for="presentati" { "Introduce yourself freely" }
             textarea id="presentati" name="presentati" rows="4"
-                     placeholder="Tell us about yourself — whatever the fields below don't already capture." {}
+                     placeholder="Tell us about yourself — whatever the fields below don't already capture." {
+                (form.presentati)
+            }
 
             div.field-grid {
-                (components::text_field("birthday", "Date of birth", "date", "", false))
-                (components::text_field("address", "Address / city", "text", "", false))
-                (components::text_field("language", "Primary language (it, en, en-GB …)", "text", locale_default, true))
+                (components::text_field("birthday", "Date of birth", "date", &form.birthday, false))
+                (components::text_field("address", "Address / city", "text", &form.address, false))
+                (components::text_field("language", "Primary language (it, en, en-GB …)", "text", language_value, true))
                 p.help.muted {
                     "Required. This is the language your memory is written in, not only the "
                     "language a consumer answers you in: every page the engine compiles for "
                     "you is written in it. Pre-filled from your browser — change it if it is "
                     "wrong."
                 }
-                (components::text_field("timezone", "Time zone (e.g. Europe/Rome)", "text", "", false))
-                (components::text_field("pronouns", "Pronouns", "text", "", false))
-                (components::text_field("phone", "Phone", "tel", "", false))
-                (components::text_field("occupation", "Work / role", "text", "", false))
+                (components::text_field("timezone", "Time zone (e.g. Europe/Rome)", "text", &form.timezone, false))
+                (components::text_field("pronouns", "Pronouns", "text", &form.pronouns, false))
+                (components::text_field("phone", "Phone", "tel", &form.phone, false))
+                (components::text_field("occupation", "Work / role", "text", &form.occupation, false))
             }
 
             label for="health_safety" { "Health & safety (always relevant)" }
             textarea id="health_safety" name="health_safety" rows="2"
-                     placeholder="severe allergies, celiac disease, chronic conditions, «only ever write to me in Italian»…" {}
+                     placeholder="severe allergies, celiac disease, chronic conditions, «only ever write to me in Italian»…" {
+                (form.health_safety)
+            }
             p.help.muted {
                 "Things a consumer must keep in mind in every exchange, whatever the topic. "
                 "Saved public like the rest of this step — leave it blank and mention it in "
@@ -860,7 +950,7 @@ fn step1_identity_fieldset(email_value: &str, locale_default: &str) -> Markup {
 /// Step 2 fieldset → `@rules.md`: the governance presets (Q1 sharing /
 /// Q2 exclusions / Q3 private topics / Q5 do-not-store). Q4 (tone) is a
 /// consumer-behaviour rule, out of scope here.
-fn step2_rules_fieldset() -> Markup {
+fn step2_rules_fieldset(form: &ProfileSubmission) -> Markup {
     html! {
         fieldset data-step="2" {
             legend { "2 · Your rules" }
@@ -872,26 +962,28 @@ fn step2_rules_fieldset() -> Markup {
             fieldset.radio-group {
                 legend { "By default, how do we handle sharing your facts?" }
                 label {
-                    input type="radio" name="sharing_default" value="private";
+                    input type="radio" name="sharing_default" value="private" checked[form.sharing_default == "private"];
                     " Private by default — visible only to me, unless clearly meant to be shared."
                 }
                 label {
-                    input type="radio" name="sharing_default" value="group";
+                    input type="radio" name="sharing_default" value="group" checked[form.sharing_default == "group"];
                     " Shared with the relevant group when it makes sense — the consumer decides."
                 }
                 label {
-                    input type="radio" name="sharing_default" value="always_private";
+                    input type="radio" name="sharing_default" value="always_private" checked[form.sharing_default == "always_private"];
                     " Always private — never share them with any group."
                 }
             }
 
             div.field-grid {
                 (components::text_field("sharing_exclusions",
-                    "Who should it NEVER be shared with? (person or group)", "text", "", false))
+                    "Who should it NEVER be shared with? (person or group)", "text",
+                    &form.sharing_exclusions, false))
                 (components::text_field("private_topics",
-                    "Topics to always keep private (e.g. health, money, work)", "text", "", false))
+                    "Topics to always keep private (e.g. health, money, work)", "text",
+                    &form.private_topics, false))
                 (components::text_field("do_not_store",
-                    "Things to NEVER store", "text", "", false))
+                    "Things to NEVER store", "text", &form.do_not_store, false))
             }
 
             div.actions {
@@ -906,7 +998,7 @@ fn step2_rules_fieldset() -> Markup {
 
 /// Step 3 fieldset → normal pipeline: low-weight preferences. Carries the
 /// final "Save and go" submit.
-fn step3_rest_fieldset() -> Markup {
+fn step3_rest_fieldset(form: &ProfileSubmission) -> Markup {
     html! {
         fieldset data-step="3" {
             legend { "3 · The rest" }
@@ -915,13 +1007,17 @@ fn step3_rest_fieldset() -> Markup {
                 "wherever it makes most sense."
             }
 
-            (components::text_field("favorite_color", "Favorite color", "text", "", false))
+            (components::text_field("favorite_color", "Favorite color", "text", &form.favorite_color, false))
 
             label for="hobbies" { "Hobbies, interests, passions" }
-            textarea id="hobbies" name="hobbies" rows="2" placeholder="cooking, running, photography, AI, music…" {}
+            textarea id="hobbies" name="hobbies" rows="2" placeholder="cooking, running, photography, AI, music…" {
+                (form.hobbies)
+            }
 
             label for="food_preferences" { "Food preferences (tastes)" }
-            textarea id="food_preferences" name="food_preferences" rows="2" placeholder="vegetarian, love spicy food, no fish…" {}
+            textarea id="food_preferences" name="food_preferences" rows="2" placeholder="vegetarian, love spicy food, no fish…" {
+                (form.food_preferences)
+            }
 
             div.actions {
                 button type="button" data-back="1" class="secondary" { "← Back" }
@@ -1204,6 +1300,8 @@ mod tests {
             Some("frodo@example.com"),
             true,
             "en",
+            &ProfileSubmission::default(),
+            /* error */ None,
         )
         .0;
         assert!(html.contains("data-step=\"1\""), "{html}");

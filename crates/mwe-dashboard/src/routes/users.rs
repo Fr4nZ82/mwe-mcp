@@ -332,6 +332,11 @@ async fn new_submit(
     };
 
     let aliases = parse_aliases(&form.aliases);
+    if let Some(msg) = alias_collision_message(&state, user_id, &aliases).await? {
+        return Ok(
+            Html(render_new_form(chrome, admin.session(), &form, Some(&msg))).into_response(),
+        );
+    }
     let aliases_json = serde_json::to_string(&aliases)
         .map_err(|e| DashboardError::Internal(format!("encoding aliases: {e}")))?;
 
@@ -691,6 +696,10 @@ async fn edit_submit(
     };
 
     let aliases = parse_aliases(&form.aliases);
+    if let Some(msg) = alias_collision_message(&state, &user_id, &aliases).await? {
+        let twofa_enabled = crate::twofa::is_enabled(&state.pool, &user_id).await?;
+        return Ok(reject(&msg, twofa_enabled));
+    }
     let aliases_json = serde_json::to_string(&aliases)
         .map_err(|e| DashboardError::Internal(format!("encoding aliases: {e}")))?;
 
@@ -1361,6 +1370,10 @@ fn deliver_invitation(
 /// with the full name and the nickname their welcome page asks for
 /// (`mwe_core::enrollment::add_aliases`); this field is where those are
 /// corrected, and where every other name is added.
+///
+/// Both surfaces refuse a name that already reaches somebody else
+/// (`mwe_core::enrollment::first_name_collision`): one name, one person, or
+/// every fact that says it is filed by a coin toss.
 fn aliases_help() -> Markup {
     html! {
         p.help.muted {
@@ -1374,9 +1387,43 @@ fn aliases_help() -> Markup {
             "and the nickname somebody typed on their welcome page, at their "
             "first sign-in, are already in this list. A name written in "
             "several words counts as one name and is matched whole: half of "
-            "it reaches nobody."
+            "it reaches nobody. A name that already reaches another person "
+            "here — their id, or one of their aliases — is refused: a name "
+            "reaches one person."
         }
     }
+}
+
+/// Refuse an alias that already reaches somebody else, and say who.
+///
+/// A name is how a claim finds its subject, so two people answering to the
+/// same one leaves every fact that names it filed by a coin toss. The
+/// predicate is [`mwe_core::enrollment::first_name_collision`], shared with
+/// the first-sign-in primer, which asks the same question of the two names it
+/// collects. A name equal to `user_id`'s own id or already among their own
+/// aliases is not a collision — it is simply a name they have.
+///
+/// Returns the message to put on the form, or `None` when nothing collides.
+async fn alias_collision_message(
+    state: &DashboardState,
+    user_id: &str,
+    aliases: &[String],
+) -> Result<Option<String>> {
+    let offered: Vec<&str> = aliases.iter().map(String::as_str).collect();
+    let Some(clash) = enrollment::first_name_collision(&state.pool, user_id, &offered).await?
+    else {
+        return Ok(None);
+    };
+    let what = if clash.is_user_id {
+        "their user id".to_owned()
+    } else {
+        format!("an alias of theirs ({:?})", clash.existing)
+    };
+    Ok(Some(format!(
+        "The name {:?} already reaches {} — it is {what}. A name reaches one person, \
+         so choose a different one.",
+        clash.name, clash.user_id,
+    )))
 }
 
 fn parse_aliases(raw: &str) -> Vec<String> {

@@ -629,3 +629,98 @@ async fn the_forget_page_names_the_snapshot_and_the_training_spool() {
         "and say emptying it is not only about this person: {html}"
     );
 }
+
+/// A name reaches one person. The admin's **Aliases** field refuses a name
+/// another enrolled person already answers to — here an alias of theirs — and
+/// says whose it is, with the form still carrying what was typed.
+#[tokio::test]
+async fn an_alias_another_person_answers_to_is_refused() {
+    let (app, _dir) = make_app().await;
+    let admin_cookie = login_as_admin(&app).await;
+    create_user_raw(
+        &app,
+        &admin_cookie,
+        "user_id=bob&email=bob@example.com&aliases=Bobby",
+    )
+    .await;
+
+    // Creating somebody else under bob's declared alias.
+    let html = create_user_raw(
+        &app,
+        &admin_cookie,
+        "user_id=carol&email=carol@example.com&aliases=Bobby",
+    )
+    .await;
+    assert!(
+        html.contains("already reaches bob"),
+        "the refusal must name the person the alias belongs to: {html}"
+    );
+    assert!(
+        html.contains("Bobby"),
+        "and the name that collided, so the operator can pick another: {html}"
+    );
+    // Nothing was created: the id is still free.
+    let html = create_user_raw(
+        &app,
+        &admin_cookie,
+        "user_id=carol&email=carol@example.com&aliases=Caz",
+    )
+    .await;
+    assert!(
+        html.contains("/dashboard/accept-invite/"),
+        "carol was not created by the refused submission: {html}"
+    );
+
+    // Editing an existing person into the same collision is refused too, this
+    // time against another person's user id.
+    let response = send(
+        &app,
+        Request::builder()
+            .method("POST")
+            .uri("/users/carol")
+            .header(header::CONTENT_TYPE, "application/x-www-form-urlencoded")
+            .header(header::COOKIE, &admin_cookie)
+            .body(Body::from("email=carol@example.com&aliases=bob"))
+            .unwrap(),
+    )
+    .await;
+    assert_eq!(response.status(), StatusCode::OK);
+    let html = body_string(response).await;
+    assert!(
+        html.contains("already reaches bob") && html.contains("their user id"),
+        "an alias equal to another person's id is refused, and named as such: {html}"
+    );
+}
+
+/// Their own id, and their own aliases, are names they already have — not a
+/// collision. Editing a person while leaving their aliases as they are must
+/// go through.
+#[tokio::test]
+async fn a_persons_own_names_are_not_a_collision() {
+    let (app, _dir) = make_app().await;
+    let admin_cookie = login_as_admin(&app).await;
+    create_user_raw(
+        &app,
+        &admin_cookie,
+        "user_id=bob&email=bob@example.com&aliases=Bobby",
+    )
+    .await;
+
+    let response = send(
+        &app,
+        Request::builder()
+            .method("POST")
+            .uri("/users/bob")
+            .header(header::CONTENT_TYPE, "application/x-www-form-urlencoded")
+            .header(header::COOKIE, &admin_cookie)
+            .body(Body::from("email=bob@example.com&aliases=Bobby,+bob,+Rob"))
+            .unwrap(),
+    )
+    .await;
+    assert_eq!(response.status(), StatusCode::OK);
+    let html = body_string(response).await;
+    assert!(
+        html.contains("Updated user bob."),
+        "own id and own alias are not collisions: {html}"
+    );
+}

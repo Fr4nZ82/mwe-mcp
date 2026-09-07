@@ -856,7 +856,11 @@ one for whoever the memory is about.
   nickname they type at their first sign-in are added to their aliases, so
   somebody who introduces themself as "Frodo Baggins, called Fro" is reachable
   by both names from that moment on. A name of several words is one name,
-  matched whole and in the order it was declared.
+  matched whole and in the order it was declared. And because a name reaches
+  one person, **a name somebody else already answers to is refused** — on that
+  field and on the welcome page alike, with the form coming back as it was
+  typed and saying whose name it is; a name equal to the person's own id is
+  not refused, it is simply not added twice.
 
 - **A page can be commented on even when it has no headings, and a comment can
   say a fact is about somebody else.** Comment mode offered one way in — a

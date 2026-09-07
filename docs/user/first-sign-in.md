@@ -33,8 +33,10 @@ Your **name** and your **nickname** do one more thing besides going into your
 memory: they become the names the memory recognises you by, beside your user
 id. From then on, when somebody else mentions you by either of them, what they
 say is filed as being about you — and a name nobody has given it, however close
-to yours, belongs to somebody else. Leave both blank and only your user id
-reaches you, until your admin adds a name on your behalf.
+to yours, belongs to somebody else. A name somebody else here already answers
+to cannot be one of yours: the page comes back saying whose it is, with what
+you typed still in it, and you pick another. Leave both blank and only your
+user id reaches you, until your admin adds a name on your behalf.
 
 There is also **Health & safety (always relevant)**: things an assistant should
 keep in mind in every exchange, whatever the topic.
