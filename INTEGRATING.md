@@ -343,9 +343,12 @@ it announces itself on the wire:
 
 ## A wiki nobody owns
 
-`wiki_read` answers with the page's `wiki_id`, `page`, `title`,
-`wiki_type`, `owner` and the body rendered for the caller. **`owner` is
-`null`** whenever the wiki stands for nobody — a *topic wiki*, the kind
+`wiki_read` takes a `wiki_id` and a **required** `path` — there is no
+default page, and every path a consumer legitimately holds came from a
+`wiki_search` hit or a `wiki_navigate` fragment, both of which carry one
+in the spelling this tool accepts. It answers with the page's `wiki_id`,
+`page`, `title`, `wiki_type`, `owner` and the body rendered for the
+caller. **`owner` is `null`** whenever the wiki stands for nobody — a *topic wiki*, the kind
 the nightly grouping raises around a subject that has outgrown a single
 page. It is an ordinary answer, not a fault: what may be read there was
 decided fact by fact, exactly as everywhere else. A consumer that treats a

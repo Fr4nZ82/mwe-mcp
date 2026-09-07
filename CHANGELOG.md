@@ -11,10 +11,17 @@ semver-governed surface: breaking changes are called out explicitly.
 
 ## Unreleased
 
-The memory learned to say what a fact is *about* when that is not a person,
-and to link its pages on purpose. The rest is the engine catching up with its
-own promises — in the tool schemas, in the prompts a model obeys at runtime,
-and in the dashboard's session check. Ten migrations, `0068` through `0077`.
+The dashboard is rewritten, in what it says and in what it does. A person can
+ask for everything the memory holds about them, and for its removal. Spending
+has a daily ceiling that stops it. Linux, macOS and Windows are all the gate,
+each with a way to run the server under an account nobody logs in with. And a
+memory now ships with an assistant to talk to, installed with one command.
+
+Underneath, the memory learned to say what a fact is *about* when that is not
+a person, to link its pages on purpose, and to open the wikis its own nightly
+grouping raises. Ten migrations, `0068` through `0077`, and three breaking
+changes on the tool surface — plus a fourth that behaves like one: an unknown
+argument is refused instead of dropped.
 
 ### Added
 
@@ -572,6 +579,29 @@ and in the dashboard's session check. Ten migrations, `0068` through `0077`.
   deadline still rings, on the same schedule as before, and a closed plan is
   silent.
 
+- **Whoever said a claim may say it better.** Rewriting a fact asked only
+  its **subject**, so the person who had recorded a sentence could not correct
+  it whenever it was filed under somebody else — a parent who recorded the
+  hour their child was born was refused the correction, because the sentence
+  sits under the other parent. The gate is the subject **or** the author now,
+  on both supersede paths (the reconciliation stage and capture-time
+  supersede) and on the dashboard's own edit. It is the argument the
+  retraction gate already made — they said it, so they may say it better —
+  which had left rewriting strictly narrower than withdrawing. The audience
+  stays out on purpose: being told something does not make it yours to
+  restate, and a reader who thinks a claim has stopped being true retires it
+  instead.
+
+- **A second reading is not a correction of the first.** The reconciler is
+  taught one pair that reads as two facts and is one: a count measured from a
+  fixed point ("at 24 June she was at 29 weeks") against a later turn stating
+  the point itself. A measurement is the opposite case, and the model was
+  carrying the rule across to it — proposing that a weight recorded on a day
+  be replaced by a later one. A weight, a blood value, a blood pressure was
+  true of its day and stays true of it; two readings on two days are the shape
+  of a history, and superseding one deletes a measurement nobody withdrew,
+  which is most of what a memory of somebody's illness is made of.
+
 - **Every dashboard address an assistant offers opens a page.** Five of
   `dashboard_link`'s eight intents minted an address the dashboard has never
   mounted, and the cost fell on the person holding the link: redemption burns
@@ -636,14 +666,42 @@ and in the dashboard's session check. Ten migrations, `0068` through `0077`.
   interrupted** — somebody writing in mid-delivery waits that turn out and is
   served next, with an ingest and a recall block of their own.
 
+- **A reminder arrives as a reminder, and a link arrives as a link.** Three
+  things both bridges got wrong on the delivery side. A commitment falling due
+  was batched into the voice of the memory notices, so four reminders reached
+  one person as "a few things came in for you from other people's
+  conversations": each kind keeps its own block and its own heading now, and
+  the reminder block says what a reminder is — a commitment already in the
+  memory, coming up, at an hour on the clock the person reads, in the
+  install's own zone rather than a UTC instant. It does not say whose
+  commitment it is, because the notice carries no subject: the memory rings
+  one for its subject and for everybody it was shared with alike.
+
+  A dashboard link was handed on as the bare path the server mints, so an
+  assistant offered `/dashboard/auth/link?token=…` to somebody holding a
+  phone. Completing it is the consumer's job — the server does not know the
+  address it is reached at unless the operator declared one — and both bridges
+  now hang it on the dashboard origin they already use, as does the page a
+  `pending_votes` block names. An answer to a disambiguation carried the
+  server's raw JSON; it carries the same block an ordinary turn does,
+  under one line saying the message is stored.
+
+  Beside them: a person this consumer has no chat for at all is declared
+  `unroutable` and their notices are confirmed as they arrive, instead of
+  being retried every thirty seconds for ever; and re-applying the memory
+  skill after an upgrade refreshes the modules it copied into the fork, which
+  the install directive alone does not do — it wrote what was missing and
+  reported success on what was already there, leaving the fork on the old
+  bytes.
+
 - **The Users page says where an agent is created.** The "new user" form needs
   an email because it makes a person who signs in; a bot has neither. It now
-  points at the Tokens page, where a standard consumer's `Bot id` mints the
-  agent's identity and its wiki with no login.
+  points at the Tokens page, where a standard consumer's **Consumer id**
+  mints the agent's identity and its wiki with no login.
 
 - **The skills a model is handed at runtime say what the engine does.**
-  Twenty-two claims across the six bundled skills and `AGENT_INSTRUCTIONS.md`
-  described an engine that had moved under them, and three carried a visible
+  Twenty-two claims across five of the bundled skills and
+  `AGENT_INSTRUCTIONS.md` described an engine that had moved under them, and three carried a visible
   cost: `wiki_admin_notify` was documented as smart-only, so the one path by
   which a standard consumer reaches a smart consumer's inbox read as closed;
   an on-the-fly date correction was documented as the subject's alone when
@@ -788,9 +846,10 @@ and in the dashboard's session check. Ten migrations, `0068` through `0077`.
   consumer never spends another's allowance. Past the ceiling the call comes
   back `rate_limited` with a `retry_after` in seconds. The new `rate_limits:`
   section gives a named profile different numbers — `dashboard`, the profile
-  the sessions `dashboard_link` mints carry, is five times wider out of the
-  box — and a `rate_limit_id` with no profile falls back to `default`, so a
-  token cannot name its way out of a ceiling.
+  the sessions `dashboard_link` mints carry, gets five times the call
+  allowance and four times the model allowance out of the box — and a
+  `rate_limit_id` with no profile falls back to `default`, so a token cannot
+  name its way out of a ceiling.
 
 - **Signing out ends every session, on every device — and it now ends
   this one.** Two faults, one surface. Signing out revoked only the
