@@ -3130,7 +3130,7 @@ mod tests {
             resolve_wikilink_href(&index, Some("alice"), "cucina").as_deref(),
             Some("/dashboard/wiki/alice/view/cucina.md")
         );
-        // Ancestor next: `[[dossier]]` on a page of the emerged sub-wiki
+        // Ancestor next: `[[dossier]]` on a page of the topic wiki
         // reaches the parent's page (the prod dossier-stub shape).
         assert_eq!(
             resolve_wikilink_href(&index, Some("famiglia-carol"), "dossier").as_deref(),

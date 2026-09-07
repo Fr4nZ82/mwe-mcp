@@ -2548,7 +2548,7 @@ const IDENTITY_TONE: &str = "narrative-first-person-when-sender-equals-subject";
 /// Resolve the prose tone of a page's wiki from its `wiki_type`.
 ///
 /// The known actor / root wiki types map straight to a fixed tone; every
-/// other wiki type (emergent topic wikis, content wikis) falls back to a
+/// other wiki type (topic wikis, content wikis) falls back to a
 /// neutral narrative tone. Cached per wiki within a compile run — which is why
 /// the per-page narrowing lives in [`tone_for_page`] and not here.
 fn resolve_tone(tree: &WikiTree, wiki_id: &str) -> String {

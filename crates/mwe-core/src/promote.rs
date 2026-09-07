@@ -162,13 +162,12 @@ const VARIANT_VALIDITY_CLOSE: &str = "validity_close";
 const VARIANT_VALIDITY_EDIT: &str = "validity_edit";
 const VARIANT_ACL_CHANGE: &str = "acl_change";
 
-/// `wiki_type` label stamped on a wiki born out of the grouping pass. Since the type registry + templates were
-/// dropped, this is a bare string label, not a registered type — no
-/// gate reads it semantically (the smart/standard gates moved to
-/// the `_meta` smart flag). A future emergence redesign will
-/// rework how emerged wikis are labelled; until then a generic
-/// placeholder keeps `WikiMeta.wiki_type` populated.
-const DEFAULT_EMERGED_WIKI_TYPE: &str = "wiki-tech";
+/// `wiki_type` label stamped on a topic wiki born out of the grouping pass.
+///
+/// A bare string label, not a registered type: no gate reads it semantically
+/// (the smart/standard gates read the `_meta` smart flag). It is a generic
+/// placeholder that keeps `WikiMeta.wiki_type` populated.
+const DEFAULT_TOPIC_WIKI_TYPE: &str = "wiki-tech";
 
 // ---------- Variant routers ----------
 
@@ -758,7 +757,7 @@ async fn rehome_after_move(
 
 /// Best-effort plan-sync with an explicit destination seed — the shared
 /// core of [`rehome_after_move`] and the emergence seam, where the
-/// destination is a page carried into the emerged wiki rather than a
+/// destination is a page carried into the topic wiki rather than a
 /// `<slug>.md` concept leaf. Failures are logged loudly, never returned.
 async fn rehome_rows_with_seed(
     pool: &SqlitePool,
@@ -1876,7 +1875,7 @@ async fn apply_pages_to_new_wiki(
 fn root_wiki_meta(wiki_id: &WikiId, slug: &WikiSlug, title: &str, context: &Value) -> WikiMeta {
     WikiMeta {
         wiki_id: wiki_id.clone(),
-        wiki_type: DEFAULT_EMERGED_WIKI_TYPE.to_owned(),
+        wiki_type: DEFAULT_TOPIC_WIKI_TYPE.to_owned(),
         parent_wiki_id: None,
         slug: slug.clone(),
         title: title.to_owned(),

@@ -4655,8 +4655,8 @@ pub(crate) struct AvailableWiki {
     /// one is machine-written and rewritten on every compile of the wiki's
     /// foundation page, so folding it onto `scope` would have the nightly
     /// compile overwrite a human's authored line. It is the field that
-    /// actually carries a description today, and the only description an
-    /// **emerged** wiki has — the case where the wiki id alone says least,
+    /// actually carries a description today, and the only description a
+    /// **topic wiki** has — the case where the wiki id alone says least,
     /// because it names a topic rather than an enrolled principal.
     pub(crate) summary: Option<String>,
     /// Per-wiki `smart` flag read straight from `_meta.md`. A smart
@@ -4766,7 +4766,7 @@ fn is_identity_wiki(meta: &wiki::WikiMeta) -> bool {
 ///    and groups ARE its routing domains: dropping one does not degrade the
 ///    choice, it removes the only correct answer for every fact about that
 ///    person. They are also bounded by enrollment, not by memory growth.
-/// 3. **Only emerged wikis are capped, oldest first.** They are the unbounded
+/// 3. **Only topic wikis are capped, oldest first.** They are the unbounded
 ///    set (REM mints them from page groups), so the cap belongs here. Ordering
 ///    by `created` keeps the settled subject areas — the ones with a history of
 ///    facts landing in them — and drops the newest, which are the most likely to
@@ -4774,11 +4774,11 @@ fn is_identity_wiki(meta: &wiki::WikiMeta) -> bool {
 ///    bounded window must say what it dropped.
 ///
 /// The returned order is identity wikis in tree order, then the surviving
-/// emerged ones oldest-first — deterministic, so the same tree always renders
+/// topic wikis oldest-first — deterministic, so the same tree always renders
 /// the same prompt.
 pub(crate) fn available_wikis(tree: &WikiTree, cap: usize) -> Result<Vec<AvailableWiki>> {
     let mut identity = Vec::new();
-    let mut emerged: Vec<(String, AvailableWiki)> = Vec::new();
+    let mut topic_wikis: Vec<(String, AvailableWiki)> = Vec::new();
     for d in tree.walk()? {
         if d.meta.smart {
             continue;
@@ -4799,24 +4799,24 @@ pub(crate) fn available_wikis(tree: &WikiTree, cap: usize) -> Result<Vec<Availab
             // (hand-authored, or born before the field existed) sorts as the
             // oldest — by every other sign it has been there longest. The
             // `wiki_id` breaks ties so the order never depends on the walk.
-            emerged.push((d.meta.created.clone().unwrap_or_default(), w));
+            topic_wikis.push((d.meta.created.clone().unwrap_or_default(), w));
         }
     }
-    emerged.sort_by(|(a_created, a), (b_created, b)| {
+    topic_wikis.sort_by(|(a_created, a), (b_created, b)| {
         a_created
             .cmp(b_created)
             .then_with(|| a.wiki_id.cmp(&b.wiki_id))
     });
-    if emerged.len() > cap {
+    if topic_wikis.len() > cap {
         tracing::warn!(
-            emerged = emerged.len(),
+            topic_wikis = topic_wikis.len(),
             cap,
-            dropped = emerged.len() - cap,
-            "ingest: emerged-wiki window truncated — the newest wikis are not offered this turn"
+            dropped = topic_wikis.len() - cap,
+            "ingest: topic-wiki window truncated — the newest wikis are not offered this turn"
         );
-        emerged.truncate(cap);
+        topic_wikis.truncate(cap);
     }
-    identity.extend(emerged.into_iter().map(|(_, w)| w));
+    identity.extend(topic_wikis.into_iter().map(|(_, w)| w));
     Ok(identity)
 }
 
@@ -8935,7 +8935,7 @@ mod tests {
     /// Frontmatter for a topic wiki, with a creation stamp so the
     /// oldest-first ordering is testable. It hangs under nothing; what keeps
     /// it out of the identity set is its `wiki_type`.
-    fn emerged_meta_yaml(id: &str, created: &str) -> String {
+    fn topic_wiki_meta_yaml(id: &str, created: &str) -> String {
         format!(
             "---\nwiki_id: {id}\nwiki_type: wiki\nparent_wiki_id: null\n\
              slug: {id}\ntitle: {id}\ncreated: \"{created}\"\n---\n"
@@ -8969,18 +8969,28 @@ mod tests {
     }
 
     #[test]
-    fn available_wikis_caps_only_emerged_oldest_first() {
+    fn available_wikis_caps_only_topic_wikis_oldest_first() {
         let dir = tempfile::tempdir().unwrap();
         let tree = WikiTree::open(dir.path()).expect("tree");
         write_meta(&tree, &identity_meta_yaml("alice", "wiki-user"));
         let tree = WikiTree::open(dir.path()).expect("reopen");
         // Deliberately created in a different order than their timestamps, and
         // named so that alphabetical order would give a different answer.
-        write_meta(&tree, &emerged_meta_yaml("anewest", "2026-03-01T00:00:00Z"));
-        write_meta(&tree, &emerged_meta_yaml("zoldest", "2026-01-01T00:00:00Z"));
-        write_meta(&tree, &emerged_meta_yaml("mmiddle", "2026-02-01T00:00:00Z"));
+        write_meta(
+            &tree,
+            &topic_wiki_meta_yaml("anewest", "2026-03-01T00:00:00Z"),
+        );
+        write_meta(
+            &tree,
+            &topic_wiki_meta_yaml("zoldest", "2026-01-01T00:00:00Z"),
+        );
+        write_meta(
+            &tree,
+            &topic_wiki_meta_yaml("mmiddle", "2026-02-01T00:00:00Z"),
+        );
 
-        // Cap 2: the identity wiki rides free, the two OLDEST emerged survive.
+        // Cap 2: the identity wiki rides free, the two OLDEST topic wikis
+        // survive.
         let avail = available_wikis(&tree, 2).expect("available");
         let ids: Vec<&str> = avail.iter().map(|w| w.wiki_id.as_str()).collect();
         assert_eq!(ids, vec!["alice", "zoldest", "mmiddle"]);
@@ -9003,10 +9013,13 @@ mod tests {
         let smart = "---\nwiki_id: proj\nwiki_type: wiki\nparent_wiki_id: alice\n\
                      slug: proj\ntitle: Proj\nsmart: true\ncreated: \"2026-01-01T00:00:00Z\"\n---\n";
         write_meta(&tree, smart);
-        write_meta(&tree, &emerged_meta_yaml("viaggi", "2026-02-01T00:00:00Z"));
+        write_meta(
+            &tree,
+            &topic_wiki_meta_yaml("viaggi", "2026-02-01T00:00:00Z"),
+        );
 
         // Cap 1. Were the smart wiki counted (it is the older of the two) the
-        // real emerged wiki would be squeezed out.
+        // real topic wiki would be squeezed out.
         let avail = available_wikis(&tree, 1).expect("available");
         let ids: Vec<&str> = avail.iter().map(|w| w.wiki_id.as_str()).collect();
         assert_eq!(ids, vec!["alice", "viaggi"]);

@@ -1058,7 +1058,7 @@ pub async fn emit_proposal(pool: &SqlitePool, params: EmitParams) -> Result<Stri
 // ---------- Born-applied emit (act-first) ----------
 
 /// Relative dashboard path a consumer agent surfaces as a clickable link so the
-/// originating user can review or modify an emerged structure.
+/// originating user can review or modify a proposed change to the structure.
 ///
 /// Points at the real per-proposal **open-in-chat** primer
 /// (`GET /dashboard/proposals/:id/open-in-chat`): it lands the user inside the

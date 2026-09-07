@@ -153,7 +153,7 @@ pub async fn memory_directive_for_wiki_meta(
     // is no principal whose language to read. The memory still has one when
     // every enrolled person shares it, and that is the language its pages are
     // written in — the alternative is what the bench showed on 2026-09-05,
-    // where the two wikis that had emerged held 15 pages of English inside a
+    // where the two topic wikis held 15 pages of English inside a
     // memory whose five people are all `it`, among them a father's clinical
     // record.
     let owner = match tree.resolve_scope_principal(meta) {

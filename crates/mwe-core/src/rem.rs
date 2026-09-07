@@ -4201,7 +4201,7 @@ async fn merge_already_judged(
 
 /// One page's block for the merge prompt: identity + numbered claims.
 /// The `wiki:` line matters on a family-scope pair — the judge sees
-/// where each page lives (parent wiki vs emergent sub-wiki).
+/// which of the two wikis each page lives in.
 fn describe_merge_page(p: &PagePlan) -> String {
     let facts = p
         .primary_facts
@@ -7430,7 +7430,7 @@ async fn run_lease_expirer(
 /// On smart wikis the inbox is drained by the smart consumer at
 /// `smart_bootstrap` via `mark_processed` on the next `wiki_admin_push`.
 /// Narrative families (every non-smart wiki: `wiki-user`, `wiki-group`, and
-/// emerged sub-wikis) have no smart consumer, so REM
+/// topic wikis) have no smart consumer, so REM
 /// fills the gap by calling the **same** core function
 /// ([`briefing_processor::process_briefing_item`]) the dashboard's
 /// "Mark as read" button calls synchronously — one branch, two callers,
@@ -10573,7 +10573,7 @@ mod tests {
                 "{page} must be gone from the parent",
             );
         }
-        // And nothing else: an emerged wiki carries the pages it was founded
+        // And nothing else: a topic wiki carries the pages it was founded
         // on plus its own `_meta.md`, and coins no page of its own.
         let mut born: Vec<String> = std::fs::read_dir(&new_dir)
             .unwrap()
@@ -10583,7 +10583,7 @@ mod tests {
         assert_eq!(
             born,
             vec!["_meta.md", "compost.md", "orto.md", "potatura.md"],
-            "an emerged wiki carries its pages and nothing else"
+            "a topic wiki carries its pages and nothing else"
         );
 
         let rows = fact_index::find_active_in_wiki(&pool, "giardino")

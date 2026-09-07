@@ -3324,7 +3324,7 @@ mod tests {
 
     /// A topic wiki has no principal, and that is a value, not an error.
     ///
-    /// The nightly grouping raises every emerged wiki this way — `wiki-tech`,
+    /// The nightly grouping raises every topic wiki this way — `wiki-tech`,
     /// no parent, standing for nobody — and the whole product reads it: a page
     /// of one opens in the dashboard and over MCP because nothing asks who owns
     /// it. What may be read there is decided per fact.
