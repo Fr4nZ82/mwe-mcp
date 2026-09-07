@@ -20,8 +20,8 @@ The system prompt for the **Conciliatore** (planner stage 1.5,
 - **Model**: tiered per cadence (the `conciliatore` backend `build_wiki_plan`
   receives, selected by `dream::tier_backend`): the **full** cadence uses the
   `rem_dedup_semantic` / revisor slot (the low binary-classifier tier); the
-  **light** dream uses the cheap **ingest tier**, falling back to the revisor
-  slot when no ingest slot is configured. `temperature` low, JSON output.
+  **light** dream uses the cheap **ingest tier**. `temperature` low, JSON
+  output.
 - **Placeholders**: `{existing_pages}` (the **concept** pages of the whole
   memory, the group's wiki first — foundation pages are not merge targets and
   are not listed, see the vetting below. The wiki decides the order and, past

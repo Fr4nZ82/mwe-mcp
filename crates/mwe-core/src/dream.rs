@@ -27,8 +27,8 @@
 //!   2026-08-26).
 //!
 //! The compile step is gated on the `cronista` slot: absent ⇒ it is skipped and
-//! facts stay buffered/promoted but unwritten (the prose is the product of the
-//! strong model, so a deployment without it simply has no narrative output).
+//! facts stay buffered/promoted but unwritten. The prose is the product of the
+//! strong model, so that arm is a half-wired install showing, not a mode.
 
 use std::sync::Arc;
 
@@ -107,9 +107,8 @@ pub enum Cadence {
 /// at all, which is how the dogfood corpus grew three Paris pages. Tier per
 /// cadence as everywhere else: Full = the configured `rem_dedup_semantic`
 /// slot (`llms.revisor` — the low binary-classifier confirmer tier), Light =
-/// the cheap ingest-tier backend (falling back to the revisor slot on a
-/// Flash-less deployment). Factored out so the policy is pinned by a unit
-/// test, not buried in `run_compile`.
+/// the cheap ingest-tier backend. Factored out so the policy is pinned by a
+/// unit test, not buried in `run_compile`.
 fn conciliatore_backend<'a>(
     cadence: Cadence,
     strong: &'a dyn LlmBackend,
@@ -121,9 +120,8 @@ fn conciliatore_backend<'a>(
 /// Pick a compile-stage backend by cadence (the strong model works ONLY at
 /// REM). [`Cadence::Full`] uses the configured strong (Pro)
 /// slot; [`Cadence::Light`] uses the cheap ingest-tier (Flash) backend — the
-/// same one the classifier runs on — falling back to the strong slot only when
-/// no ingest slot is configured (a Flash-less deployment). Factored out so the
-/// tier policy is pinned by a unit test.
+/// same one the classifier runs on. Factored out so the tier policy is pinned
+/// by a unit test.
 fn tier_backend<'a>(
     cadence: Cadence,
     strong: &'a dyn LlmBackend,
@@ -1296,8 +1294,7 @@ mod tests {
     /// The Conciliatore runs at BOTH cadences (placement-time near-synonym
     /// resistance — a light-path page must pass the redirect check before it
     /// materialises), on the cadence's tier: the configured
-    /// `rem_dedup_semantic` (revisor) slot at REM, the ingest tier at light,
-    /// falling back to the revisor slot on a Flash-less deployment.
+    /// `rem_dedup_semantic` (revisor) slot at REM, the ingest tier at light.
     #[test]
     fn conciliatore_runs_at_both_cadences_on_the_cadence_tier() {
         let strong = FakeLlmBackend::new("pro", "x");

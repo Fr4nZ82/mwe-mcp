@@ -18,9 +18,8 @@ The system prompt for **Il Cronista** (compiler stage 3,
   dream alike (cost-guarded — only dirty pages).
 - **Model**: tiered per cadence (the backend `compile_dirty_pages` receives,
   selected by `dream::tier_backend`): the **full** compile uses the `cronista`
-  LLM slot; the **light** dream uses the cheap **ingest tier**, falling back
-  to the `cronista` slot when no ingest slot is configured. The slot's quality
-  is a deployment choice: the API-backed profiles pin a strong model on
+  LLM slot; the **light** dream uses the cheap **ingest tier**. The slot's
+  quality is a deployment choice: the API-backed profiles pin a strong model on
   `cronista`, the all-local profile the local workhorse.
 - **Placeholders**: `{title}`, `{slug}`, `{page_kind}` (`identity_card` when the plan node sits on its wiki's reserved `@profile.md`, `leaf` otherwise — it switches on the IDENTITY CARD section of the brief), `{tone}` (resolved
   by `compiler::resolve_tone` from the wiki's `is_agent` marker first — an
