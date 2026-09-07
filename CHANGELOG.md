@@ -210,10 +210,14 @@ and in the dashboard's session check. Ten migrations, `0068` through `0077`.
   what they *do*. Somebody who is not the admin arrived on a home page of eight
   counters, five of them counting rows on consoles that answer them with a 403,
   and an "Issue a token" link into one of those consoles — with nothing about
-  their own memory anywhere on it. The home page leads with that now (their own
-  wiki, the facts it holds, their standing rules, what was recalled for them),
-  the operator's counts are read for an operator, and a test walks every page a
-  reader passes through and fails on any link that would refuse them.
+  their own memory anywhere on it. The home page **opens** on that now (their
+  own wiki, the facts about them, their standing rules, what was recalled for
+  them), and the operator's view is the operator's: all eight counters and the
+  server address a consumer is pointed at are read and rendered for an admin
+  alone, because they are taken across everybody's memory, past the
+  per-fragment ACL — a reader could not reproduce them and they are not about
+  them. A test walks every page a reader passes through and fails on any link
+  that would refuse them.
 
   Columns and knobs stopped being database fields read aloud. The fact browser
   headed its columns `fact_id`, `wiki_id`, `salience`, `allow_ids`,
