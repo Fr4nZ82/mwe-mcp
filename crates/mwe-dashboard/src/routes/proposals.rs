@@ -195,4 +195,3 @@ fn compose_primer(proposal_id: &str) -> String {
          instruction on the next turn."
     )
 }
-
