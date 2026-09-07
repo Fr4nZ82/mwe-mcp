@@ -136,7 +136,8 @@ from your nanoclaw fork.
    questions — the endpoint, your chat id, your mwe user id — then copies the
    modules in, splices the reach-ins into seven of nanoclaw's own files,
    clears a memory tree an earlier boot left behind, writes `mwe.json`, builds
-   and tests.
+   and tests. Run again later it does the same, and brings every module whose
+   bytes have changed with it.
 
    Without Claude Code, the same steps are in
    [`skills/add-mwe-memory/SKILL.md`](skills/add-mwe-memory/SKILL.md) as
@@ -187,6 +188,39 @@ from your nanoclaw fork.
    send another message. The turn itself shows up as `mwe_request` in the host
    log and as a `system` row in the session's outbound mailbox
    (`data/v2-sessions/<agent group>/<session>/outbound.db`).
+
+## Updating the bridge
+
+The fork holds **copies** of the two directories, so a newer version of the
+bridge reaches it by refreshing them and applying the skill again:
+
+```bash
+cp -R <bridge>/skills/add-mwe-memory/. .claude/skills/add-mwe-memory/
+cp -R <bridge>/templates/mwe/.         templates/mwe/
+```
+
+Then `/add-mwe-memory` from Claude Code, or the steps in
+[`SKILL.md`](skills/add-mwe-memory/SKILL.md) by hand. It copies in every module
+whose bytes have changed and names them, leaves a reach-in that is already
+spliced alone, rebuilds, and restarts both halves.
+
+An agent that already exists keeps the **persona** it was stamped with. It was
+written into the group when the group was created, as
+`groups/<folder>/instructions.prepend.md`, and the stamp refuses to overwrite
+an existing one — so a newer template reaches a live agent only through
+nanoclaw's own in-place update, which finds the group already carrying the
+plugin instead of creating a second one:
+
+```bash
+ncl groups create --template mwe          # the plan, and nothing else
+ncl groups create --template mwe --yes    # apply it
+pnpm exec tsx .claude/skills/add-mwe-memory/restart-mwe-groups.ts
+```
+
+The plan names every surface it would replace — persona, context extras, the
+plugin's own files, its skills and MCP servers, its tasks — and marks the ones
+you have edited locally, which that update overwrites. Memory, wiring, sessions
+and anything the template never shipped are left alone.
 
 ## Configuration — `mwe.json`
 
@@ -329,9 +363,10 @@ python3 ../_harness/run_smokes.py      # every bridge, from agents-bridges/
 
 The offline smoke needs `bun`, `pnpm`, `python3` and `git`, and no network
 beyond the clone. It fetches nanoclaw at the pin, installs the skill and the
-template the way an operator does, and then drives **nanoclaw's own poll loop**
-with the mock provider against a recording stub of the MCP endpoint. What it
-asserts: one ingest per turn and one per reply; the window threaded, trimmed
+template the way an operator does, applies it a second time with a module
+changed — the upgrade case, where the fork must end up on the new bytes — and
+then drives **nanoclaw's own poll loop** with the mock provider against a
+recording stub of the MCP endpoint. What it asserts: one ingest per turn and one per reply; the window threaded, trimmed
 and persisted; act-as per sender and `guest` for the unmapped; the recall block
 ahead of the formatted batch; the disambiguation and its commit; the owed
 forget-request vote and the promoted document reaching the agent, neither
@@ -431,9 +466,10 @@ the response's operational fields never reach the agent.
   turn's critical path and pays it deliberately: better memory over
   first-token latency.
 - **`/update-nanoclaw` does not refresh this skill.** Its refresh pass only
-  discovers channels and providers. After an upgrade, run the skill again; it
-  reports what is already in place, and `src/mwe-wiring.test.ts` goes red if an
-  upgrade moved one of the reach-ins.
+  discovers channels and providers. After an upgrade, run the skill again: it
+  copies in every module whose bytes have changed and names them, each reach-in
+  reports whether it was already in place, and `src/mwe-wiring.test.ts` goes
+  red if an upgrade moved one of them.
 - **`wiki_ingest_external`** — handing the memory a document to read as a unit
   — is not wired. A file sent in chat is filed as an attachment; a paste long
   enough for the server to promote it is what becomes a document.

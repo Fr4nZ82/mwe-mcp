@@ -1,5 +1,5 @@
 {
-  "notes": "Conformance fixtures for scripts/skill-conformance.test.ts: shaped fake values only, never a real endpoint or a real identity. One scenario is enough — the skill has no when: guards and no branching prompts, so a single install path covers every directive. The exec stubs answer the two wiring scripts, the build, the two test runs and the restart; none of them reads stdout, so an empty one is the honest stub. The bearer token is deliberately absent: it is an nc:operator step, never an input.",
+  "notes": "Conformance fixtures for scripts/skill-conformance.test.ts: shaped fake values only, never a real endpoint or a real identity. One scenario is enough — the skill has no when: guards and no branching prompts, so a single install path covers every directive. The exec stubs answer the wiring scripts, the module refresh, the build, the two test runs and the restart; none of them reads stdout, so an empty one is the honest stub. The bearer token is deliberately absent: it is an nc:operator step, never an input.",
   "scenarios": [
     {
       "name": "install",
@@ -10,6 +10,7 @@
       },
       "exec": [
         { "match": "apply-fork-patches.ts", "stdout": "applied: 13 edit(s)" },
+        { "match": "refresh-modules.ts", "stdout": "" },
         { "match": "seed-config.ts", "stdout": "mwe.json written: http://127.0.0.1:8742/mcp, 1 sender(s) mapped" },
         { "match": "pnpm run build", "stdout": "" },
         { "match": "vitest run src/mwe-wiring.test.ts", "stdout": "" },

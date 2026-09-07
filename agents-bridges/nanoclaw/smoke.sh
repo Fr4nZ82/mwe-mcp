@@ -1,7 +1,8 @@
 #!/usr/bin/env bash
 # Offline smoke for the nanoclaw bridge: fetch nanoclaw at BRIDGE_UPSTREAM_REF,
 # install the skill and the template into a scratch fork the way an operator
-# does, then drive the real poll loop against the recording stub endpoint.
+# does, apply it a second time the way an upgrade does, then drive the real poll
+# loop against the recording stub endpoint.
 # No mwe-mcp server, no model, no Docker.
 #
 # Env:
@@ -65,11 +66,11 @@ echo "applying add-mwe-memory"
     bun "$BRIDGE/smoke_apply.ts"
 )
 
-# Applying twice must change nothing, and removing must give nanoclaw's own
-# files back byte for byte. That is what makes the skill safe to re-run after
-# an upgrade — and a replacement usually contains its own anchor, so getting
-# this wrong duplicates every spliced line instead of failing loudly.
-echo "checking the install is idempotent"
+# Splicing the reach-ins twice must change nothing, and removing them must give
+# nanoclaw's own files back byte for byte. That is what makes the wiring safe to
+# re-run after an upgrade — and a replacement usually contains its own anchor,
+# so getting this wrong duplicates every spliced line instead of failing loudly.
+echo "checking the reach-ins are idempotent"
 (
     cd "$FORK"
     PATCHER=.claude/skills/add-mwe-memory/apply-fork-patches.ts
@@ -83,7 +84,34 @@ echo "checking the install is idempotent"
     git diff --quiet -- $UPSTREAM || { echo "FAIL: --remove did not restore nanoclaw's own files"; exit 1; }
     bun "$PATCHER" >/dev/null
     [ "$before" = "$(git status --porcelain | sort)" ] || { echo "FAIL: the round trip left the fork different"; exit 1; }
-    echo "ok   applying twice is a no-op, and --remove restores the originals"
+    echo "ok   splicing them twice is a no-op, and --remove restores the originals"
+)
+
+# An upgrade is a re-apply, and the modules have to come with it. `nc:copy`
+# leaves a destination that already exists, so a skill without its refresh step
+# reports success on every step and leaves the fork on the code it had — which
+# from the outside looks like nothing at all, until a wiring test fails.
+echo "checking a re-apply carries a changed module"
+(
+    cd "$FORK"
+    MARKER='// a module the skill changed since the last apply'
+    echo "$MARKER" >> .claude/skills/add-mwe-memory/host/events.ts
+    export NC_INPUT_MWE_SERVER_URL="http://127.0.0.1:8742/mcp"
+    export NC_INPUT_MWE_ADMIN_SENDER="telegram:1"
+    export NC_INPUT_MWE_ADMIN_USER="alice"
+    bun "$BRIDGE/smoke_apply.ts" >/dev/null
+    grep -qF "$MARKER" src/modules/mwe/events.ts || {
+        echo "FAIL: re-applying the skill left the fork on the old module"
+        exit 1
+    }
+    # Back to what the bridge ships, on both sides of the copy.
+    cp "$BRIDGE/skills/add-mwe-memory/host/events.ts" .claude/skills/add-mwe-memory/host/events.ts
+    pnpm exec tsx .claude/skills/add-mwe-memory/refresh-modules.ts >/dev/null
+    ! grep -qF "$MARKER" src/modules/mwe/events.ts || {
+        echo "FAIL: the refresh step did not put the module back"
+        exit 1
+    }
+    echo "ok   a re-apply carries a changed module into the fork"
 )
 
 # The restart step the harness skips (it owns process lifecycle), run here for

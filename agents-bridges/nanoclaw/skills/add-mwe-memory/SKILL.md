@@ -119,7 +119,20 @@ container/tools.ts -> container/agent-runner/src/mcp-tools/mwe.ts
 mwe-turn.test.ts -> container/agent-runner/src/mwe/mwe-turn.test.ts
 ```
 
-### 3. The reach-ins
+### 3. The modules a re-apply has to carry
+
+The two steps above **install**: they write a file that is missing and leave a
+file that is already there, which is what makes a first install idempotent and
+what the plan means by `present`. After an upgrade — of NanoClaw, or of this
+bridge — that is exactly wrong: every step would report success and the fork
+would keep the modules it already had. This copies the ones whose bytes differ
+from the skill's, and names them.
+
+```nc:run effect:refresh
+pnpm exec tsx .claude/skills/add-mwe-memory/refresh-modules.ts
+```
+
+### 4. The reach-ins
 
 Seven of NanoClaw's own files need a line or two: the poll loop runs the turn's
 memory work and opens a fresh session each time, the memory scaffold and its
@@ -133,7 +146,7 @@ after an upgrade is safe and says so.
 pnpm exec tsx .claude/skills/add-mwe-memory/apply-fork-patches.ts
 ```
 
-### 4. The memory tree an earlier boot left behind
+### 5. The memory tree an earlier boot left behind
 
 If a group was stamped and woken before this skill was applied — the order the
 README recommends — its first container already copied NanoClaw's three memory
@@ -147,7 +160,7 @@ delete.
 pnpm exec tsx .claude/skills/add-mwe-memory/clear-memory-scaffold.ts
 ```
 
-### 5. The configuration
+### 6. The configuration
 
 `mwe.json` at the fork root holds the endpoint and who is who. An existing file
 is merged into, so a senderMap you have been building up survives.
@@ -160,7 +173,7 @@ Add one `senderMap` line per person as they arrive. The key is their
 `<channel>:<platform id>`, the value their mwe user id. Anyone not listed
 speaks as a guest, which is the safe answer — never somebody else's identity.
 
-### 6. The token
+### 7. The token
 
 The bearer token is the one thing this skill will not touch: it is not an
 argument, it is not logged, and it never passes through an installer.
@@ -314,9 +327,21 @@ For somebody this NanoClaw has no chat for at all, list their mwe user id under
 with one line in the log instead of ten minutes of them. The facts stay in that
 person's memory either way.
 
-### After a NanoClaw upgrade
+### After an upgrade
 
-Run this skill again. Every step reports what is already in place and only
-does what is missing; if an upgrade moved one of the reach-ins, the wiring
-step says which one, and `pnpm exec vitest run src/mwe-wiring.test.ts` says the
-same thing from the other side.
+Run this skill again — after NanoClaw is upgraded, and after a newer version of
+the bridge. This directory is the bridge's own, copied in, so a newer bridge
+reaches the fork only if the copy is refreshed first:
+
+```bash
+cp -R <bridge>/skills/add-mwe-memory/. .claude/skills/add-mwe-memory/
+```
+
+The skill then copies in every module whose bytes have changed and names them;
+each reach-in reports whether it was already in place; and if an upgrade moved
+one of the reach-ins, the wiring step says which one, and
+`pnpm exec vitest run src/mwe-wiring.test.ts` says the same thing from the other
+side.
+
+`/update-nanoclaw` does not do this for you: its refresh pass discovers channels
+and providers, and this skill is neither.
