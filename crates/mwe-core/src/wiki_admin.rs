@@ -1922,7 +1922,7 @@ fn write_pages(
         let abs = dir.join(&pb);
         // Byte-exact, not `exists()`: on a case-folding filesystem the
         // latter says `Setup.md` is already there when the file on disk is
-        // `setup.md`, which turned a rejected collision into a silent
+        // `setup.md`, which reads a collision that must be refused as an
         // overwrite of somebody else's page.
         let existed = crate::wiki::page_exists_byte_exact(dir, &pb);
         if existed && !allow_overwrite {

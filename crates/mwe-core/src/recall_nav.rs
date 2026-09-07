@@ -2436,7 +2436,8 @@ mod tests {
             page_within(Path::new("wikis/alice"), "wikis/alice/sub/page.md"),
             Some(PathBuf::from("sub/page.md"))
         );
-        // A path outside the wiki (stale row) falls back to the root.
+        // A path outside the wiki (a stale row after a move) is no candidate
+        // at all — a wiki root is not a landing.
         assert_eq!(
             page_within(Path::new("wikis/alice"), "wikis/bob/x.md"),
             None

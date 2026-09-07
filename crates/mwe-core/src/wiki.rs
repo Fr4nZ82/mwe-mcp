@@ -1748,12 +1748,12 @@ pub fn page_path_case_hazard(rel: &Path) -> Option<String> {
 /// Does `rel` exist under `abs_dir` **with this exact spelling**?
 ///
 /// [`Path::exists`] cannot answer that on a case-folding filesystem: it
-/// says `Intro.md` exists when the file on disk is `intro.md`, because
-/// the two are the same file there. Every caller that branches on "does
-/// this page already exist" is really asking the byte-exact question —
-/// the answer decides whether a write *appends to an existing page* or
-/// *creates a new one*, and getting it wrong on macOS or Windows silently
-/// merged two different pages into one.
+/// says `Intro.md` exists when the file on disk is `intro.md`, because the
+/// two are the same file there. Every caller that branches on "does this
+/// page already exist" is really asking the byte-exact question — the
+/// answer decides whether a write *appends to an existing page* or
+/// *creates a new one*, and the engine's two pages become one file on
+/// macOS or Windows if it comes back wrong.
 ///
 /// Walks the directory listing per component, which reads the same on
 /// every filesystem. One `read_dir` per level, on page-write paths only.
@@ -1779,12 +1779,14 @@ pub fn page_exists_byte_exact(abs_dir: &Path, rel: &Path) -> bool {
 /// case-insensitive filesystem: the first path component matching an
 /// existing sibling ASCII-case-insensitively without being byte-equal.
 ///
-/// The server stores wikis on a case-sensitive filesystem, but smart
-/// consumers replicate them onto Windows/macOS mirrors where `Setup.md`
-/// and `setup.md` are the SAME file — letting both exist server-side
-/// would make the next mirror pull silently clobber one with the other.
-/// Page-creation paths refuse the write and echo the existing spelling
-/// back to the caller instead.
+/// The engine keeps `Setup.md` and `setup.md` as two pages, and a
+/// case-folding filesystem keeps them as one file — the host's own on macOS
+/// and Windows, or a smart consumer's mirror wherever the server runs. Two
+/// server-side pages that collide there lose one to the other at the next
+/// pull. So a path that coins a page name refuses the write and echoes the
+/// existing spelling back to the caller ([`page_creation_refusal`]), and a
+/// path that only moves a page asks this directly about the destination
+/// directory.
 ///
 /// Best-effort: an unreadable directory yields `None` (the write that
 /// follows will surface the real IO error).
@@ -2343,10 +2345,10 @@ pub fn write_wiki_dir(tree: &WikiTree, meta: &WikiMeta, requires_parent: bool) -
 /// skipped there rather than deleted. Nothing is lost by skipping: the
 /// guard those tests exercise ([`page_case_conflict`]) scans for a
 /// sibling matching case-insensitively, and on a folding filesystem the
-/// pair it protects against is unrepresentable in the first place. The
-/// guard exists for the **server**, which stores wikis on a
-/// case-sensitive filesystem and must not hand a mirror two files that
-/// would collapse into one.
+/// pair it protects against is unrepresentable in the first place. What
+/// the guard protects is a server on a case-distinguishing filesystem,
+/// which is the only place the pair can be written and therefore the only
+/// place it can be handed to a mirror that would collapse it.
 ///
 /// Probed at runtime rather than by `cfg!(target_os)`: a Linux box can
 /// mount a case-folding directory and a Mac can mount a case-sensitive
