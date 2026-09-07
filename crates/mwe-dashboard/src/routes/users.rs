@@ -1351,8 +1351,9 @@ fn deliver_invitation(
 
 /// What the operator has to know before leaving the aliases field empty.
 ///
-/// The roster the ingest classifier is shown is ids and these aliases and
-/// nothing else — no surnames, no display names
+/// The roster a model resolving a name is shown — a conversational turn's
+/// classifier and an uploaded document's extractor alike — is ids and these
+/// aliases and nothing else, no surnames and no display names
 /// (`mwe_core::enrollment::list_users` states the resolution contract, and
 /// the match is exact). So this field is the operator's only way to say "she
 /// is also called that", and an empty one means every household name for that
@@ -1365,8 +1366,8 @@ fn aliases_help() -> Markup {
             "and by nothing else — it holds no surnames, and it matches a name "
             "exactly, so a name that merely resembles one belongs to somebody "
             "else. A nickname, a full first name, whatever the household "
-            "actually calls them: put it here, or a message using that name "
-            "reaches nobody."
+            "actually calls them: put it here, or that name reaches nobody — "
+            "in a message, and in a document somebody uploads."
         }
     }
 }

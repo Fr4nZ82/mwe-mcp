@@ -1395,35 +1395,48 @@ fn people_the_turn_names(
     recall::turn_subjects(&words, &request.sender_id, known_users)
 }
 
-/// Is `user_id` a subject the turn's words cannot settle either way?
+/// Is `user_id` a roster entry that no wording was ever going to arbitrate?
 ///
-/// Three roster entries are outside what [`people_the_turn_names`] can
-/// answer, and on each of them the classifier's own call stands:
+/// Two entries are outside what a name check can answer, on every road that
+/// resolves a subject against the roster, and on each of them the model's own
+/// call stands:
 ///
 /// - **the assistant** (`is_agent`) — its id is a principal, not a name
-///   anybody writes in a message, and a fact about the assistant is not a case
-///   of two people being confused for each other;
+///   anybody writes, and a fact about the assistant is not a case of two
+///   people being confused for each other;
 /// - **an id carrying the collision suffix `°N`** ([`enrollment::is_valid_user_id`])
 ///   — two enrolled people share a name there, so the words alone were never
-///   going to tell them apart;
-/// - **a turn carrying media** — the classifier is handed the images
-///   themselves, so it can read a name the words of the turn do not carry.
+///   going to tell them apart.
 ///
-/// A subject the roster does not hold at all belongs to the guard above this
-/// one, which re-owns it for not being an enrolled principal; this one lets
-/// it through untouched.
+/// A subject the roster does not hold at all belongs to the guard that runs
+/// before this one on both roads, which re-owns it for not being an enrolled
+/// principal; this one lets it through untouched.
+///
+/// The document road reads it directly
+/// (`document::subject_the_segment_never_named`); the conversational one
+/// through [`subject_is_beyond_the_words`], which adds the exception only a
+/// turn has.
+pub(crate) fn subject_is_beyond_the_roster(
+    known_users: &[enrollment::EnrolledUserLite],
+    user_id: &str,
+) -> bool {
+    known_users
+        .iter()
+        .find(|u| u.user_id == user_id)
+        .is_none_or(|u| u.is_agent || u.user_id.contains('°'))
+}
+
+/// Is `user_id` a subject the turn's words cannot settle either way?
+///
+/// [`subject_is_beyond_the_roster`], plus the one exception a live turn adds:
+/// **a turn carrying media** — the classifier is handed the images
+/// themselves, so it can read a name the words of the turn do not carry.
 fn subject_is_beyond_the_words(
     request: &IngestRequest,
     known_users: &[enrollment::EnrolledUserLite],
     user_id: &str,
 ) -> bool {
-    if !request.attachments.is_empty() {
-        return true;
-    }
-    known_users
-        .iter()
-        .find(|u| u.user_id == user_id)
-        .is_none_or(|u| u.is_agent || u.user_id.contains('°'))
+    !request.attachments.is_empty() || subject_is_beyond_the_roster(known_users, user_id)
 }
 
 /// Resolve the wiki a capture is filed into, in four descending preferences.

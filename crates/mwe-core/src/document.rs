@@ -1317,10 +1317,6 @@ fn sender_groups_block(groups: &[(String, Option<String>)]) -> String {
     out
 }
 
-/// Render the `known_users` roster the extractor resolves a named subject
-/// against — the enrolment gate that stops `subject_id` minting a `user:<id>`
-/// for a person who is not in the system. Mirrors `ingest::build_prompt`'s
-/// `known_users` section (id + aliases); an empty roster renders `(none)`.
 /// Render the `known_entities` roster the extractor reuses a name from.
 ///
 /// The sibling of [`known_users_block`], and here for the same reason the
@@ -1345,6 +1341,13 @@ fn known_entities_block(entities: &[crate::fact_index::KnownEntity]) -> String {
     out
 }
 
+/// Render the `known_users` roster the extractor resolves a named subject
+/// against — the enrolment gate that stops `subject_id` minting a `user:<id>`
+/// for a person who is not in the system. Mirrors `ingest::build_prompt`'s
+/// `known_users` section (id + aliases); an empty roster renders `(none)`.
+///
+/// A list of bare ids is also an invitation to finish a resemblance, which is
+/// why [`subject_the_segment_never_named`] stands under it.
 fn known_users_block(users: &[crate::enrollment::EnrolledUserLite]) -> String {
     let mut out = String::from("known_users:\n");
     if users.is_empty() {
@@ -1546,7 +1549,8 @@ pub struct CandidateFact {
     /// The fact's SUBJECT principal (`user:<id>` | `group:<id>` | `global`),
     /// decided by the extractor under the ingest rules — independent of the
     /// audience. `None` (absent) defaults to `user:<sender>` (the uploader) at
-    /// the file phase, the same default the `ingest` path uses.
+    /// the file phase, the same default the `ingest` path uses, which is also
+    /// where a subject [`subject_the_segment_never_named`] cleared lands.
     #[serde(default)]
     #[serde(alias = "owner_id")]
     pub subject_id: Option<String>,
@@ -1599,6 +1603,77 @@ const SELECTIVITY_DISSOLVE: &str = "Extract EVERY atomic fact worth remembering:
 has no identity of its own — your extractions are the only trace it leaves in memory. Skip \
 filler and pleasantries; keep facts, preferences, episodes, commitments, decisions, dates.";
 
+/// The enrolled people this segment's own words NAME, by id.
+///
+/// The words are everything the extraction was read with: the document's
+/// identity (its title and the summary as shown, truncation included), the
+/// segment's heading and the segment itself. Nothing else can have carried a
+/// name — this road has no window of earlier turns behind it and hands the
+/// extractor no images, so a name it did not read here it did not read at all.
+/// The `known_users` block is deliberately not among them: it is a list of
+/// ids, and weighing it would let every id name itself.
+///
+/// The match is [`crate::recall::turn_subjects`] — the same whole-token, case-
+/// and accent-folded comparison the conversational road weighs a turn by
+/// ([`crate::ingest`]), so the two roads cannot answer differently about the
+/// same name.
+fn people_the_segment_names(
+    job: &DocumentJob,
+    summary_shown: Option<&str>,
+    seg_heading: Option<&str>,
+    seg_content: &str,
+    known_users: &[crate::enrollment::EnrolledUserLite],
+) -> Vec<String> {
+    let mut words = String::new();
+    for w in [
+        job.resolved_title.as_deref(),
+        summary_shown,
+        seg_heading,
+        Some(seg_content),
+    ]
+    .into_iter()
+    .flatten()
+    {
+        words.push_str(w);
+        words.push('\n');
+    }
+    crate::recall::turn_subjects(&words, job.uploader(), known_users)
+}
+
+/// The subject this candidate claims when it is an enrolled person the
+/// segment's words never named — the one the extraction re-owns.
+///
+/// The engine's floor under the resolution contract stated beside
+/// [`crate::enrollment::list_users`]: a name reaches an enrolled person only
+/// when it IS their id or one of the aliases the operator declared for them.
+/// The extractor is shown a roster of bare ids, and a roster of bare ids
+/// invites it to finish a resemblance itself — a colleague called Roberto onto
+/// an enrolled `robert`, a full name whose surname no entry carries onto the
+/// one entry that shares a first name. The fact then lands on that person's
+/// own card, and everybody who reads the card takes it as being about them.
+///
+/// `named` comes from [`people_the_segment_names`].
+///
+/// Dropping the subject is what re-owns the fact: an absent one falls to the
+/// uploader at the file phase ([`candidate_acl`]), the same landing an
+/// unenrolled subject takes, and the name stays in the body prose where the
+/// sentence still reads correctly.
+fn subject_the_segment_never_named<'a>(
+    cand: &'a CandidateFact,
+    named: &[String],
+    known_users: &[crate::enrollment::EnrolledUserLite],
+    uploader: &str,
+) -> Option<&'a str> {
+    let raw = cand.subject_id.as_deref().map(str::trim)?;
+    let Ok(Principal::User(subject)) = raw.parse::<Principal>() else {
+        return None;
+    };
+    (subject != uploader
+        && !crate::ingest::subject_is_beyond_the_roster(known_users, &subject)
+        && !named.contains(&subject))
+    .then_some(raw)
+}
+
 #[allow(
     clippy::too_many_arguments,
     reason = "mirrors the ingest prompt's input assembly"
@@ -1644,13 +1719,16 @@ async fn extract_segment(
     let current_time = seg_occurred_at
         .or(job.occurred_at.as_deref())
         .unwrap_or(job.created_at.as_str());
+    // Rendered once: the prompt shows this summary and the name check below
+    // weighs it, and a second truncation would let the two diverge.
+    let summary_shown = job.summary.as_deref().map(|s| truncate_chars(s, 600));
     let mut user = String::new();
     user.push_str("document_title: ");
     user.push_str(job.resolved_title.as_deref().unwrap_or("(untitled)"));
     user.push('\n');
-    if let Some(s) = &job.summary {
+    if let Some(s) = &summary_shown {
         user.push_str("document_summary: ");
-        user.push_str(&truncate_chars(s, 600));
+        user.push_str(s);
         user.push('\n');
     }
     user.push_str("current_time: ");
@@ -1685,8 +1763,41 @@ async fn extract_segment(
         )
         .await?;
     let parsed: LlmSegmentFacts = parse_first_json(&resp.text).unwrap_or_default();
+    let named_in_segment = people_the_segment_names(
+        job,
+        summary_shown.as_deref(),
+        seg_heading,
+        seg_content,
+        known_users,
+    );
+    Ok(accept_segment_facts(
+        parsed.facts,
+        tree,
+        job,
+        policy,
+        &named_in_segment,
+        known_users,
+    ))
+}
+
+/// Keep what a segment's answer is allowed to say — the extraction's own
+/// validation of the model's reply, and the list the prompt's runtime contract
+/// states back to whoever edits it.
+///
+/// A fact with no body is skipped, everything past the per-segment cap is
+/// dropped, an unknown routing target falls to the job's anchor wiki rather
+/// than inventing one, and a subject the segment never named re-owns to the
+/// uploader ([`subject_the_segment_never_named`]).
+fn accept_segment_facts(
+    facts: Vec<CandidateFact>,
+    tree: &WikiTree,
+    job: &DocumentJob,
+    policy: &DocumentPolicy,
+    named_in_segment: &[String],
+    known_users: &[crate::enrollment::EnrolledUserLite],
+) -> Vec<CandidateFact> {
     let mut out = Vec::new();
-    for f in parsed.facts {
+    for mut f in facts {
         if f.body.trim().is_empty() {
             continue;
         }
@@ -1698,19 +1809,27 @@ async fn extract_segment(
             );
             break;
         }
-        // Anti-hallucination: an unknown routing target drops to the job's
-        // anchor wiki rather than inventing one.
-        let wiki_ok = f
+        if !f
             .target_wiki_id
             .as_deref()
-            .is_some_and(|w| wiki_exists_standard(tree, w));
-        let mut f = f;
-        if !wiki_ok {
+            .is_some_and(|w| wiki_exists_standard(tree, w))
+        {
             f.target_wiki_id.clone_from(&job.target_wiki_id);
+        }
+        if let Some(raw) =
+            subject_the_segment_never_named(&f, named_in_segment, known_users, job.uploader())
+                .map(str::to_owned)
+        {
+            tracing::warn!(
+                job_id = job.job_id,
+                subject = raw.as_str(),
+                "document: the segment never named this enrolled user — re-owned to the uploader"
+            );
+            f.subject_id = None;
         }
         out.push(f);
     }
-    Ok(out)
+    out
 }
 
 // ---------- Reduce (conciliate) ----------
@@ -2332,8 +2451,10 @@ async fn process_job(
             // path): the extractor prompt carries the `known_users`
             // roster, but nothing enforced that the subject it emits is
             // enrollment-backed. An unknown subject falls back to the
-            // uploader, exactly like an absent or malformed one. Fail-open
-            // on a DB error.
+            // uploader, exactly like an absent or malformed one. A subject who
+            // IS enrolled but whom the segment never named was dropped back at
+            // extraction (`subject_the_segment_never_named`) and arrives here
+            // as an absent one. Fail-open on a DB error.
             let fact_subject = if crate::enrollment::principal_exists(pool, &fact_subject)
                 .await
                 .unwrap_or(true)
@@ -3394,6 +3515,149 @@ mod tests {
             buffered[0].subject,
             "user:alice".parse::<Principal>().unwrap(),
             "an unenrolled extracted subject must fall back to the uploader"
+        );
+        drop(dir);
+    }
+
+    /// The other half of the roster contract, on the document road: a name
+    /// that only RESEMBLES an enrolled id is a different person, so the fact
+    /// is filed under whoever uploaded the document instead of landing on that
+    /// person's own card — and no beneficiary notice tells them a stranger's
+    /// news is their own. The name stays in the prose, where the sentence
+    /// still reads correctly.
+    #[tokio::test]
+    async fn document_look_alike_of_an_enrolled_name_reowns_to_uploader() {
+        let dir = tempfile::tempdir().unwrap();
+        let pool = crate::db::open_or_init(dir.path()).await.expect("db");
+        let wikis = dir.path().join("wikis");
+        std::fs::create_dir_all(&wikis).unwrap();
+        write_wiki(&wikis, "alice", "Alice", "wiki-user");
+        let tree = WikiTree::open(dir.path()).expect("tree");
+        let embedder: Arc<dyn Embedder> = Arc::new(
+            crate::embedder::FakeEmbedder::with_fixed_embedding("fake", vec![0.1, 0.2, 0.3, 0.4]),
+        );
+        // `bob` is enrolled and declares NO alias, so nothing in the roster
+        // answers to "Roberto".
+        sqlx::query(
+            "INSERT INTO enrollment_users (user_id, aliases, is_admin)
+             VALUES ('alice','[]',0), ('bob','[]',0)",
+        )
+        .execute(&pool)
+        .await
+        .unwrap();
+        let llm = ScriptedLlm::new(&[
+            r#"{"disposition":"dossier","format":"prose","title":"Verbale","page_slug":"verbale.md","target_wiki_id":"alice","summary":"Il verbale del consiglio.","page_description":"il verbale","style":"prosa","topics":["lavoro"]}"#,
+            r#"{"facts":[{"body":"Roberto Sackville va in pensione a giugno.","target_wiki_id":"alice","target_page":"lavoro.md","subject_id":"user:bob","allow_ids":[],"fact_type":"bio","topics":["lavoro"]}]}"#,
+        ]);
+        enqueue(
+            &pool,
+            &policy(),
+            EnqueueRequest {
+                source_kind: "inline".into(),
+                source_ref: None,
+                text: "Verbale del consiglio: Roberto Sackville del terzo piano va in pensione a giugno."
+                    .into(),
+                title_hint: None,
+                disposition: None,
+                format: None,
+                occurred_at: Some("2026-06-12T10:00:00Z".into()),
+                subject: "user:alice".parse().unwrap(),
+                allow: Vec::new(),
+                sender: None,
+                force: false,
+            },
+        )
+        .await
+        .expect("enqueue");
+        assert!(
+            run_one_job(&pool, &tree, &embedder, &llm, dir.path(), &policy())
+                .await
+                .expect("run")
+        );
+        let buffered = capture_buffer::find_all_buffered(&pool, 100)
+            .await
+            .expect("buffered");
+        assert_eq!(buffered.len(), 1);
+        assert_eq!(
+            buffered[0].subject,
+            "user:alice".parse::<Principal>().unwrap(),
+            "a look-alike of an enrolled id is a stranger, not that user"
+        );
+        assert!(
+            buffered[0].body.contains("Roberto Sackville"),
+            "the name stays in the prose: {}",
+            buffered[0].body
+        );
+        let notices: Vec<(String,)> =
+            sqlx::query_as("SELECT kind FROM wiki_events WHERE kind = 'fact_minted_for_you'")
+                .fetch_all(&pool)
+                .await
+                .unwrap();
+        assert!(
+            notices.is_empty(),
+            "nobody is told a stranger's news is theirs: {notices:?}"
+        );
+        drop(dir);
+    }
+
+    /// The positive twin of
+    /// [`document_look_alike_of_an_enrolled_name_reowns_to_uploader`], and the
+    /// operator's remedy: declare the name as an alias and it reaches its
+    /// person, from the same document and the same extraction.
+    #[tokio::test]
+    async fn document_keeps_a_subject_the_segment_names_by_a_declared_alias() {
+        let dir = tempfile::tempdir().unwrap();
+        let pool = crate::db::open_or_init(dir.path()).await.expect("db");
+        let wikis = dir.path().join("wikis");
+        std::fs::create_dir_all(&wikis).unwrap();
+        write_wiki(&wikis, "alice", "Alice", "wiki-user");
+        let tree = WikiTree::open(dir.path()).expect("tree");
+        let embedder: Arc<dyn Embedder> = Arc::new(
+            crate::embedder::FakeEmbedder::with_fixed_embedding("fake", vec![0.1, 0.2, 0.3, 0.4]),
+        );
+        sqlx::query(
+            "INSERT INTO enrollment_users (user_id, aliases, is_admin)
+             VALUES ('alice','[]',0), ('bob','[\"Roberto\"]',0)",
+        )
+        .execute(&pool)
+        .await
+        .unwrap();
+        let llm = ScriptedLlm::new(&[
+            r#"{"disposition":"dossier","format":"prose","title":"Verbale","page_slug":"verbale.md","target_wiki_id":"alice","summary":"Il verbale del consiglio.","page_description":"il verbale","style":"prosa","topics":["lavoro"]}"#,
+            r#"{"facts":[{"body":"Roberto va in pensione a giugno.","target_wiki_id":"alice","target_page":"lavoro.md","subject_id":"user:bob","allow_ids":[],"fact_type":"bio","topics":["lavoro"]}]}"#,
+        ]);
+        enqueue(
+            &pool,
+            &policy(),
+            EnqueueRequest {
+                source_kind: "inline".into(),
+                source_ref: None,
+                text: "Verbale del consiglio: Roberto va in pensione a giugno.".into(),
+                title_hint: None,
+                disposition: None,
+                format: None,
+                occurred_at: Some("2026-06-12T10:00:00Z".into()),
+                subject: "user:alice".parse().unwrap(),
+                allow: Vec::new(),
+                sender: None,
+                force: false,
+            },
+        )
+        .await
+        .expect("enqueue");
+        assert!(
+            run_one_job(&pool, &tree, &embedder, &llm, dir.path(), &policy())
+                .await
+                .expect("run")
+        );
+        let buffered = capture_buffer::find_all_buffered(&pool, 100)
+            .await
+            .expect("buffered");
+        assert_eq!(buffered.len(), 1);
+        assert_eq!(
+            buffered[0].subject,
+            "user:bob".parse::<Principal>().unwrap(),
+            "a declared alias is exactly what makes a name reach its person"
         );
         drop(dir);
     }

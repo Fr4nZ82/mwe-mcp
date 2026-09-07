@@ -19,11 +19,11 @@ One account per person. The table lists **User id**, **Email**, **Role**,
   The memory recognises somebody by their user id and by these names, and by
   nothing else: it holds no surnames and no display names, and it matches a
   name exactly. So a nickname, a full first name, whatever the household
-  actually calls them all belong here — leave the field empty and a message
-  using any of those names reaches nobody. The same exactness is what keeps
-  somebody outside the memory from being taken for the person inside it: a
-  name that merely resembles a user id is a different person, and what is said
-  about them is kept under their own name instead.
+  actually calls them all belong here — leave the field empty and any of those
+  names, in a message or in a document somebody uploads, reaches nobody. The
+  same exactness is what keeps somebody outside the memory from being taken for
+  the person inside it: a name that merely resembles a user id is a different
+  person, and what is said about them is kept under their own name instead.
 - **Timezone** (IANA, e.g. `Europe/Rome`) — times they speak, like *"tomorrow
   at 9"*, are read in this zone. Empty falls back to the deployment default on
   the [Settings](settings.md) page.

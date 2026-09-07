@@ -843,7 +843,11 @@ one for whoever the memory is about.
   speaking, so it can never claim somebody else's card. Three cases the words
   cannot settle are left to the classifier — the assistant's own principal,
   two enrolled people sharing a name, and a turn whose photographs the
-  classifier is shown.
+  classifier is shown. **An uploaded document travels the same road**: there
+  the words weighed are the part of the document being read together with its
+  title and summary, since a document carries no earlier conversation behind
+  it and no photographs, so a fact owned by an enrolled person none of them
+  names is filed under whoever uploaded the document.
 
   This makes the **Aliases** field on a user's page load-bearing: it is the
   only way to tell the memory that somebody is also called something, and both

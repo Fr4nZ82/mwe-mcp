@@ -1,7 +1,7 @@
 ---
 name: document-extract
 description: document-ingest map phase — extracts atomic facts from one segment, each with its subject (subject_id) and audience (allow_ids) decided under the ingest rules; the {selectivity} placeholder switches the dossier posture (only what transcends the document) vs the dissolve posture (everything worth remembering)
-version: 1.11
+version: 1.12
 default_version_at_bootstrap: v1.6
 ---
 
@@ -37,9 +37,12 @@ The system prompt for the document-ingest **extraction (map)** phase
 - **Output**: one strict JSON object `{"facts": [...]}` (Rust binding
   `CandidateFact`). In code: an unknown `target_wiki_id` is re-routed to the
   job's anchor wiki, a fact with no body is skipped, everything past
-  `{max_facts}` is dropped, a `target_page` naming a reserved page leaves the
-  claim for the queue to place, and `topics` is cut to the two words every
-  fact carries (`ingest::normalize_fact_topics`).
+  `{max_facts}` is dropped, a `subject_id` owning the fact to an enrolled
+  person the segment's words never named is dropped so the fact re-owns to the
+  uploader (`document::subject_the_segment_never_named` — the floor under the
+  resolution rule in line 1 of `subject_id`), a `target_page` naming a reserved
+  page leaves the claim for the queue to place, and `topics` is cut to the two
+  words every fact carries (`ingest::normalize_fact_topics`).
 
 **`{locale}`** — substituted before the prompt reaches the model with the
 single-line `LANGUAGE` directive `crate::locale::render_memory_language_directive`
@@ -63,7 +66,7 @@ EACH FACT:
 - "target_wiki_id": the wiki from available_wikis where this fact belongs.
 - "target_page": a lowercase_underscore page name for the subject this fact belongs to (e.g. "norway_trip.md"). Group related facts on the same page.
 - "subject_id": WHO ANSWERS FOR the fact — a user or a group, never anything else, and never who may read it. When what the fact is ABOUT is not a user or a group, that goes in "subject_external" and this field still says who answers for it. Work down this list and stop at the first line that fits; the last one is where you land when none of the others do.
-    1. **A person in known_users** (resolve names and aliases to that roster) → "user:<X>".
+    1. **A person in known_users**, and only when the name the document writes IS that entry's "id" or one of its declared "aliases", read as written — case folds, and an accent folds onto the plain letter an id is spelled with (the id "eowyn" IS "Éowyn"); nothing else folds → "user:<X>". **RESEMBLANCE IS NOT IDENTITY**: a longer or a shorter form of an id, a translation of it, a diminutive nobody declared, and a full name whose surname no entry carries are all a DIFFERENT PERSON, and line 2 governs them. Worked pair, uploader alice, roster "id: bob" with NO alias declared: "Roberto Sackville from the third floor is retiring in June" → subject_external "Roberto Sackville", never "user:bob"; declare "Roberto" among bob's aliases and "Roberto is retiring in June" → "user:bob". Reach for the look-alike instead and a stranger's life is written onto an enrolled person's own card, where everyone who reads that card takes it as being about them.
     2. **Anything NOT in known_users that the fact is about** — a relative who does not use the system, a friend, a pet, a car, a company: NEVER mint a "user:<id>" for it, the system has no principal for them. Put its NAME in "subject_external" and set subject_id to **the group whose scope covers this kind of material** — the collective that answers for that subject. Read the scopes under sender_groups and use the one that names it. This is the same read as the audience one and must give the same answer: if you are about to put "group:<id>" in allow_ids because that group's scope names the kind of thing this fact is, THAT group is the subject_id too. Deciding the audience from the scope and leaving the subject on the uploader is the one combination that cannot be right — it says the group may read the fact but nobody in it answers for the subject. Only when NO scope covers the material does this fall to line 5.
     3. **The collective itself** — a list the whole group keeps, its shared calendar → "group:<id>".
     4. **A world fact belonging to nobody** → "global".
