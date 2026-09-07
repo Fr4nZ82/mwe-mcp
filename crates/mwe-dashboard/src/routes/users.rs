@@ -1355,9 +1355,12 @@ fn deliver_invitation(
 /// classifier and an uploaded document's extractor alike — is ids and these
 /// aliases and nothing else, no surnames and no display names
 /// (`mwe_core::enrollment::list_users` states the resolution contract, and
-/// the match is exact). So this field is the operator's only way to say "she
-/// is also called that", and an empty one means every household name for that
-/// person reaches nobody at all.
+/// the match is exact). So this column is the only way to say "she is also
+/// called that", and an empty one means every household name for that person
+/// reaches nobody at all. The person themselves fills the first two entries,
+/// with the full name and the nickname their welcome page asks for
+/// (`mwe_core::enrollment::add_aliases`); this field is where those are
+/// corrected, and where every other name is added.
 fn aliases_help() -> Markup {
     html! {
         p.help.muted {
@@ -1367,7 +1370,11 @@ fn aliases_help() -> Markup {
             "exactly, so a name that merely resembles one belongs to somebody "
             "else. A nickname, a full first name, whatever the household "
             "actually calls them: put it here, or that name reaches nobody — "
-            "in a message, and in a document somebody uploads."
+            "in a message, and in a document somebody uploads. The full name "
+            "and the nickname somebody typed on their welcome page, at their "
+            "first sign-in, are already in this list. A name written in "
+            "several words counts as one name and is matched whole: half of "
+            "it reaches nobody."
         }
     }
 }

@@ -51,6 +51,18 @@ fn wiki_carries_a_marker(tree: &mwe_core::wiki::WikiTree, wiki_id: &str) -> bool
     })
 }
 
+/// The names the memory can reach this user by, straight out of the
+/// enrolment row the roster is built from.
+async fn aliases_of(pool: &sqlx::SqlitePool, user_id: &str) -> Vec<String> {
+    let (json,): (Option<String>,) =
+        sqlx::query_as("SELECT aliases FROM enrollment_users WHERE user_id = ?")
+            .bind(user_id)
+            .fetch_one(pool)
+            .await
+            .expect("enrolment row");
+    serde_json::from_str(json.as_deref().unwrap_or("[]")).expect("aliases json")
+}
+
 #[tokio::test]
 async fn welcome_get_renders_form_with_email_pre_filled() {
     let (app, _pool, _tree, _dir) = make_app_with_memory().await;
@@ -224,5 +236,81 @@ async fn second_login_after_wizard_skip_lands_on_home() {
             .get(header::LOCATION)
             .and_then(|v| v.to_str().ok()),
         Some("/dashboard/home")
+    );
+}
+
+/// Step 1 asks the person their full name and their nickname, and those are
+/// the names everybody else will use for them. They land in the enrolment
+/// row's `aliases` — the only list a model resolving a name is shown — so a
+/// sentence somebody else writes about "Ali" is filed as being about her.
+///
+/// They are written before the primer is captured, which is why this test can
+/// read them back from a deployment with no model on the `ingest` slot, where
+/// the capture itself refuses.
+#[tokio::test]
+async fn welcome_post_save_declares_the_typed_names_as_aliases() {
+    let (app, pool, _tree, _dir) = make_app_with_memory().await;
+    let cookie = setup_admin(&app).await;
+
+    let post = || {
+        send(
+            &app,
+            Request::builder()
+                .method("POST")
+                .uri("/welcome")
+                .header(header::COOKIE, &cookie)
+                .header(header::CONTENT_TYPE, "application/x-www-form-urlencoded")
+                .body(Body::from(
+                    "action=save&display_name=Alice+Liddell&nickname=Ali",
+                ))
+                .unwrap(),
+        )
+    };
+    let response = post().await;
+    assert_eq!(response.status(), StatusCode::UNPROCESSABLE_ENTITY);
+    assert_eq!(
+        aliases_of(&pool, "alice").await,
+        vec!["Alice Liddell", "Ali"],
+        "both names, as typed"
+    );
+
+    // The wizard is still pending after the refusal, so the person fills it
+    // again: the same two names must not pile up, and the id is not a name to
+    // declare in the first place.
+    let response = post().await;
+    assert_eq!(response.status(), StatusCode::UNPROCESSABLE_ENTITY);
+    let aliases = aliases_of(&pool, "alice").await;
+    assert_eq!(aliases, vec!["Alice Liddell", "Ali"], "{aliases:?}");
+    assert!(
+        !aliases.iter().any(|a| a.eq_ignore_ascii_case("alice")),
+        "the user id is already a name of theirs: {aliases:?}"
+    );
+}
+
+/// **Skip all** is the answer "do not use what I typed": the names go
+/// nowhere, and the person stays reachable by their user id alone until
+/// somebody declares otherwise on the Users page.
+#[tokio::test]
+async fn welcome_post_skip_declares_no_aliases() {
+    let (app, pool, _tree, _dir) = make_app_with_memory().await;
+    let cookie = setup_admin(&app).await;
+
+    let response = send(
+        &app,
+        Request::builder()
+            .method("POST")
+            .uri("/welcome")
+            .header(header::COOKIE, &cookie)
+            .header(header::CONTENT_TYPE, "application/x-www-form-urlencoded")
+            .body(Body::from(
+                "action=skip&display_name=Alice+Liddell&nickname=Ali",
+            ))
+            .unwrap(),
+    )
+    .await;
+    assert!(response.status().is_redirection(), "{}", response.status());
+    assert!(
+        aliases_of(&pool, "alice").await.is_empty(),
+        "a skipped wizard declares nothing"
     );
 }

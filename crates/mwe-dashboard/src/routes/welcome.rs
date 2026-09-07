@@ -47,16 +47,21 @@
 //! is to keep `salience: "high"` scarce. Telling it what it is reading is a
 //! framing; telling it where to put things would be the override above.
 //!
-//! The routing itself is the ingest prompt's job (universal).
-//! The wizard only organises the collection and adds reinforcing section
-//! markers to the composed message — it is *just the collection UI*. The
-//! mechanism is unchanged from the old single-step wizard: one composed
+//! The routing itself is the ingest prompt's job (universal). Where the
+//! memory is concerned the wizard only organises the collection and adds
+//! reinforcing section markers to the composed message: one composed
 //! first-person message (e.g. `favorite_color=red` becomes
 //! "my favourite colour is red"), one ingest call through the
 //! chat chokepoint (`chat::process_submission`). The LLM `ingest`
 //! slot classifies the message and emits N `wiki_capture` / engine-rule
 //! routings so each piece lands at its destination, indistinguishable
 //! from a chat turn.
+//!
+//! **Four answers also land straight in the person's `enrollment_users`
+//! row**, because they are settings of the account rather than things to
+//! remember: the language and the time zone, and the full name and the
+//! nickname of step 1, which become the `aliases` every model resolving a
+//! name is shown (`enrollment::add_aliases`).
 //!
 //! **No fallback.** If `llm.ingest` is not configured in
 //! `mwe-mcp.config.yaml`, the `Save` action returns 422 with an
@@ -73,6 +78,7 @@ use axum::response::{Html, IntoResponse, Redirect, Response};
 use axum::routing::get;
 use maud::{Markup, PreEscaped, html};
 use mwe_core::config::LlmFunction;
+use mwe_core::enrollment;
 use serde::Deserialize;
 
 use crate::auth::SessionUser;
@@ -129,8 +135,14 @@ pub fn router() -> Router<DashboardState> {
 #[derive(Debug, Default, Deserialize)]
 pub struct ProfileSubmission {
     // ── Step 1 → the identity card (identity + always-on) ──
+    /// Full name. Goes into the primer prose like every other field of step
+    /// 1, and — with [`ProfileSubmission::nickname`] — into the person's
+    /// `enrollment_users.aliases`, which is what makes the name reach them
+    /// when somebody else says it (see `submit`).
     #[serde(default)]
     pub display_name: String,
+    /// What they are called. Declared as one of their aliases beside
+    /// [`ProfileSubmission::display_name`].
     #[serde(default)]
     pub nickname: String,
     #[serde(default)]
@@ -255,6 +267,32 @@ async fn submit(
         .execute(&state.pool)
         .await?;
 
+    // The two names step 1 asks for become the names the memory can reach this
+    // person by — their `enrollment_users.aliases`, the only list a model
+    // resolving a name is shown (`enrollment::add_aliases`, and the resolution
+    // contract beside `enrollment::list_users`). Without this the person who
+    // introduced themself as "Frodo Baggins, called Fro" stays reachable only
+    // as `frodo`: somebody else writing "Fro is away on Monday" names a
+    // stranger, which is the opposite of what the form just promised them.
+    //
+    // Written **before** the primer is ingested, for the same reason the
+    // locale is: the primer is itself a turn, classified against this roster,
+    // and it is the one turn that says the person's full name out loud.
+    //
+    // On **Skip all** nothing is written. Skipping is the answer "do not use
+    // what I typed", and these two names are the only fields here read as
+    // content rather than as a setting of the account.
+    let declared_names = if want_skip {
+        Vec::new()
+    } else {
+        enrollment::add_aliases(
+            &state.pool,
+            &user.sender_id,
+            &[form.display_name.trim(), form.nickname.trim()],
+        )
+        .await?
+    };
+
     let primer_turn = if want_skip {
         None
     } else {
@@ -294,6 +332,7 @@ async fn submit(
         user = %user.sender_id,
         skipped = want_skip,
         has_primer = primer_turn.is_some(),
+        names_declared = declared_names.len(),
         "profile wizard completed"
     );
 
@@ -772,6 +811,12 @@ fn step1_identity_fieldset(email_value: &str, locale_default: &str) -> Markup {
             div.field-grid {
                 (components::text_field("display_name", "Full name", "text", "", false))
                 (components::text_field("nickname", "Nickname", "text", "", false))
+            }
+            p.help.muted {
+                "These two become the names the memory recognises you by, beside your "
+                "user id: when somebody else mentions you by name, what they say is "
+                "filed as being about you. Your admin can change them later from your row "
+                "on the Users page."
             }
 
             label for="presentati" { "Introduce yourself freely" }

@@ -1344,7 +1344,8 @@ fn known_entities_block(entities: &[crate::fact_index::KnownEntity]) -> String {
 /// Render the `known_users` roster the extractor resolves a named subject
 /// against — the enrolment gate that stops `subject_id` minting a `user:<id>`
 /// for a person who is not in the system. Mirrors `ingest::build_prompt`'s
-/// `known_users` section (id + aliases); an empty roster renders `(none)`.
+/// `known_users` section, down to the shared renderer for the alias list
+/// ([`crate::ingest::roster_aliases`]); an empty roster renders `(none)`.
 ///
 /// A list of bare ids is also an invitation to finish a resemblance, which is
 /// why [`subject_the_segment_never_named`] stands under it.
@@ -1359,7 +1360,7 @@ fn known_users_block(users: &[crate::enrollment::EnrolledUserLite]) -> String {
         out.push_str(&u.user_id);
         if !u.aliases.is_empty() {
             out.push_str("\n    aliases: ");
-            out.push_str(&u.aliases.join(", "));
+            out.push_str(&crate::ingest::roster_aliases(&u.aliases));
         }
         out.push('\n');
     }
@@ -1645,7 +1646,7 @@ fn people_the_segment_names(
 ///
 /// The engine's floor under the resolution contract stated beside
 /// [`crate::enrollment::list_users`]: a name reaches an enrolled person only
-/// when it IS their id or one of the aliases the operator declared for them.
+/// when it IS their id or one of the aliases declared for them.
 /// The extractor is shown a roster of bare ids, and a roster of bare ids
 /// invites it to finish a resemblance itself — a colleague called Roberto onto
 /// an enrolled `robert`, a full name whose surname no entry carries onto the

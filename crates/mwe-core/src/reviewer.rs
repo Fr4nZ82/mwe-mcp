@@ -89,7 +89,7 @@ pub struct IdentityContext {
     /// User id → the groups the user belongs to (enrollment membership).
     pub memberships: BTreeMap<String, BTreeSet<String>>,
     /// User id → every name that user answers to: the id itself plus the
-    /// aliases the operator declared. Read by the card check to tell a fact
+    /// declared aliases. Read by the card check to tell a fact
     /// about the card's person from a fact about somebody else.
     pub aliases: BTreeMap<String, BTreeSet<String>>,
 }

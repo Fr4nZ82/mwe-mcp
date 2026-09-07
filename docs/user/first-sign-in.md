@@ -29,6 +29,13 @@ first of them marked *Required* on the page:
   change it if it is wrong.
 - **Time zone.** Times you speak — *"tomorrow at 9"* — are read in it.
 
+Your **name** and your **nickname** do one more thing besides going into your
+memory: they become the names the memory recognises you by, beside your user
+id. From then on, when somebody else mentions you by either of them, what they
+say is filed as being about you — and a name nobody has given it, however close
+to yours, belongs to somebody else. Leave both blank and only your user id
+reaches you, until your admin adds a name on your behalf.
+
 There is also **Health & safety (always relevant)**: things an assistant should
 keep in mind in every exchange, whatever the topic.
 

@@ -431,14 +431,14 @@ pub async fn groups_with_scope_for(
 
 /// A known user reduced to what the ingest classifier needs.
 ///
-/// Just the canonical `user_id` and the operator-declared `aliases` (other
-/// names the person is referred to by) for cross-user attribution. See
-/// [`list_users`].
+/// Just the canonical `user_id` and the declared `aliases` (the other names
+/// the person is referred to by, [`add_aliases`]) for cross-user attribution.
+/// See [`list_users`].
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct EnrolledUserLite {
     /// Canonical user id (the `Principal::User` payload).
     pub user_id: String,
-    /// Alternate names/spellings the operator declared for this person.
+    /// Alternate names/spellings declared for this person ([`add_aliases`]).
     pub aliases: Vec<String>,
     /// This principal is an **AI agent**, not a person (migration 0050, the
     /// diagonal identity model: a standard consumer authenticates as its own
@@ -469,11 +469,19 @@ pub struct EnrolledUserLite {
 /// whose surname no entry carries are all a **different person**: their name
 /// belongs in a fact's `subject_external`, never under a `user:` principal.
 ///
+/// An alias of several words is one name, matched as that whole phrase in that
+/// order: declare "Roberto Sackville" among `bob`'s aliases and a sentence
+/// writing both words reaches him, while "Roberto" on its own does not — a
+/// first name alone is a shorter form, which the paragraph above already sends
+/// elsewhere.
+///
 /// Two things make the rule load-bearing rather than pedantic. This roster is
 /// the *only* thing a model can tell people apart by — it carries no surnames
-/// and no display names — and the `aliases` column is therefore the operator's
-/// one way to say "she is also called that"; leave it empty and a household
-/// name reaches nobody. And the cost of a model finishing a resemblance on its
+/// and no display names — and the `aliases` column is therefore the one place
+/// a name can come from. Two hands fill it ([`add_aliases`]): the operator, on
+/// the user form, and the person themselves, with the full name and the
+/// nickname they type at their first sign-in. Empty, it leaves a household
+/// name reaching nobody. And the cost of a model finishing a resemblance on its
 /// own is not a missed fact but a false one: a stranger's life written onto an
 /// enrolled person's own card, where every later reader takes it as being
 /// about them.
@@ -502,6 +510,75 @@ pub async fn list_users(pool: &SqlitePool) -> Result<Vec<EnrolledUserLite>, sqlx
             is_agent,
         })
         .collect())
+}
+
+/// Add names to a user's declared `aliases`, keeping the ones already there.
+///
+/// The write behind the roster [`list_users`] hands to a model: a name reaches
+/// an enrolled person only once it is in this column, so both places a name is
+/// declared land it here — the operator's user form, and the person's own
+/// first-login primer, where the full name and the nickname they type are the
+/// names everybody else will use for them.
+///
+/// A name already carried is not carried twice, and neither is the id itself.
+/// The comparison is [`crate::recall::folded_words`] — the same fold the match
+/// uses — so what counts as one name here is exactly what would have been one
+/// name at recall time, and «Éowyn» does not join an `eowyn` who is already
+/// there. Blank names are dropped. What survives is stored **as the person
+/// typed it**, because the roster shows these names to a model and the
+/// spelling they chose is the one to show.
+///
+/// Returns the names actually added, in the order given; an empty list when
+/// there is no such user.
+///
+/// # Errors
+///
+/// [`EnrollmentError::Db`] for a SQL failure, [`EnrollmentError::JsonEncode`]
+/// if the column cannot be written back.
+pub async fn add_aliases(
+    pool: &SqlitePool,
+    user_id: &str,
+    names: &[&str],
+) -> Result<Vec<String>, EnrollmentError> {
+    let fold = crate::recall::folded_words;
+    // IMMEDIATE: the row is read and written back in one go, and a deferred
+    // transaction would have to upgrade its snapshot mid-way.
+    let mut tx = crate::db::begin_immediate(pool).await?;
+    let Some((current_json,)): Option<(Option<String>,)> =
+        sqlx::query_as("SELECT aliases FROM enrollment_users WHERE user_id = ?")
+            .bind(user_id)
+            .fetch_optional(&mut *tx)
+            .await?
+    else {
+        return Ok(Vec::new());
+    };
+    let mut aliases: Vec<String> = current_json
+        .as_deref()
+        .and_then(|j| serde_json::from_str(j).ok())
+        .unwrap_or_default();
+    let mut taken: Vec<Vec<String>> = vec![fold(user_id)];
+    taken.extend(aliases.iter().map(|a| fold(a)));
+    let mut added = Vec::new();
+    for name in names {
+        let name = name.trim();
+        let words = fold(name);
+        if words.is_empty() || taken.contains(&words) {
+            continue;
+        }
+        taken.push(words);
+        aliases.push(name.to_owned());
+        added.push(name.to_owned());
+    }
+    if added.is_empty() {
+        return Ok(added);
+    }
+    sqlx::query("UPDATE enrollment_users SET aliases = ? WHERE user_id = ?")
+        .bind(serde_json::to_string(&aliases)?)
+        .bind(user_id)
+        .execute(&mut *tx)
+        .await?;
+    tx.commit().await?;
+    Ok(added)
 }
 
 /// A group reduced to what the planner's Fonditore needs.
@@ -2291,6 +2368,66 @@ mod tests {
         assert!(
             !is_agent(&pool, "alice").await.unwrap(),
             "a non-agent stays a non-agent"
+        );
+    }
+
+    /// What the first-login primer hands over: a full name and a nickname,
+    /// stored as typed and reaching the roster as two more names.
+    #[tokio::test]
+    async fn add_aliases_stores_the_names_as_typed() {
+        let (_workdir, pool) = crate::test_db::TestWorkdir::with_db().await;
+        sqlx::query("INSERT INTO enrollment_users (user_id, is_admin) VALUES ('frodo', 0)")
+            .execute(&pool)
+            .await
+            .unwrap();
+
+        let added = add_aliases(&pool, "frodo", &["Frodo Baggins", "Fro"])
+            .await
+            .expect("add");
+        assert_eq!(added, vec!["Frodo Baggins", "Fro"]);
+        let stored = list_users(&pool).await.expect("roster");
+        assert_eq!(stored[0].aliases, vec!["Frodo Baggins", "Fro"]);
+    }
+
+    /// The three names that must not pile up: the id itself (a person called
+    /// exactly their user id declares nothing new), one already carried under
+    /// another spelling, and a second run of the same submit.
+    #[tokio::test]
+    async fn add_aliases_never_carries_the_same_name_twice() {
+        let (_workdir, pool) = crate::test_db::TestWorkdir::with_db().await;
+        sqlx::query("INSERT INTO enrollment_users (user_id, aliases, is_admin) VALUES ('eowyn', '[\"Eowyn\"]', 0)")
+            .execute(&pool)
+            .await
+            .unwrap();
+
+        let added = add_aliases(&pool, "eowyn", &["EOWYN", "Éowyn", "  ", "Lady of Rohan"])
+            .await
+            .expect("add");
+        assert_eq!(
+            added,
+            vec!["Lady of Rohan"],
+            "the id, the accented spelling of a name already there, and a blank \
+             field all add nothing"
+        );
+
+        add_aliases(&pool, "eowyn", &["Lady of Rohan"])
+            .await
+            .expect("again");
+        let stored = list_users(&pool).await.expect("roster");
+        assert_eq!(stored[0].aliases, vec!["Eowyn", "Lady of Rohan"]);
+    }
+
+    /// No such row, nothing written and no error: the caller is a form that
+    /// has just been through the auth layer, and a missing user there means
+    /// the account went away mid-request.
+    #[tokio::test]
+    async fn add_aliases_on_an_absent_user_writes_nothing() {
+        let (_workdir, pool) = crate::test_db::TestWorkdir::with_db().await;
+        assert!(
+            add_aliases(&pool, "ghost", &["Ghost"])
+                .await
+                .expect("no error")
+                .is_empty()
         );
     }
 }

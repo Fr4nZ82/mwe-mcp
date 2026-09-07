@@ -1365,7 +1365,7 @@ fn subject_is_the_wikis_own_principal(subject: &Principal, wiki_id: &str) -> boo
 ///
 /// The engine's floor under the resolution contract stated beside
 /// [`enrollment::list_users`]: a name resolves to an enrolled user only when
-/// it IS that user's id or one of the aliases the operator declared for them.
+/// it IS that user's id or one of the aliases declared for them.
 /// The classifier is shown the roster, and a roster of bare ids invites it to
 /// finish a resemblance itself — a colleague called Roberto onto an enrolled
 /// `robert`, a full name whose surname the roster does not carry onto the one
@@ -1393,6 +1393,27 @@ fn people_the_turn_names(
         words.push_str(&m.text);
     }
     recall::turn_subjects(&words, &request.sender_id, known_users)
+}
+
+/// The declared aliases as the roster shows them to a model: each name in its
+/// own quotes.
+///
+/// A bare comma-separated line is unambiguous only while every alias is one
+/// word, and one of them is the person's full name: the first-login primer
+/// declares it ([`enrollment::add_aliases`]), and «Frodo Baggins, Fro» reads
+/// as three names as easily as two. Quoted, the list reads as what it is,
+/// which matters because that whole phrase is what has to be matched
+/// (`recall::turn_subjects`).
+///
+/// Only the quote and the backslash are escaped. A name is shown to a model
+/// as the person spells it, accents and alphabet included, so nothing here
+/// may turn a letter into an escape sequence.
+pub(crate) fn roster_aliases(aliases: &[String]) -> String {
+    aliases
+        .iter()
+        .map(|a| format!("\"{}\"", a.replace('\\', "\\\\").replace('"', "\\\"")))
+        .collect::<Vec<_>>()
+        .join(", ")
 }
 
 /// Is `user_id` a roster entry that no wording was ever going to arbitrate?
@@ -4371,7 +4392,7 @@ fn build_prompt(
             out.push_str(&u.user_id);
             if !u.aliases.is_empty() {
                 out.push_str("\n    aliases: ");
-                out.push_str(&u.aliases.join(", "));
+                out.push_str(&roster_aliases(&u.aliases));
             }
             if u.is_agent {
                 out.push_str("\n    is_agent: true");
@@ -10622,6 +10643,22 @@ mod tests {
         assert!(!whole.contains('…'), "and nothing is cut mid-word: {whole}");
     }
 
+    /// A name of several words is one entry of the list, and the quotes are
+    /// what say so. Accents are not escaped: the roster shows a name as its
+    /// person spells it.
+    #[test]
+    fn roster_aliases_quotes_each_name_and_leaves_the_letters_alone() {
+        let names = vec![
+            "Frodo Baggins".to_owned(),
+            "Éowyn".to_owned(),
+            "the \"boss\"".to_owned(),
+        ];
+        assert_eq!(
+            roster_aliases(&names),
+            r#""Frodo Baggins", "Éowyn", "the \"boss\"""#
+        );
+    }
+
     /// The known-users roster is injected with id + aliases so the
     /// classifier can attribute a fact to the right person by canonical name.
     #[test]
@@ -10656,7 +10693,11 @@ mod tests {
         );
         assert!(prompt.contains("known_users:"));
         assert!(prompt.contains("- id: bob"));
-        assert!(prompt.contains("aliases: Bob, Bobby"));
+        assert!(
+            prompt.contains(r#"aliases: "Bob", "Bobby""#),
+            "each name in its own quotes, so one of several words reads as one \
+             name: {prompt}"
+        );
         assert!(prompt.contains("- id: alice"));
         assert!(
             !prompt.contains("is_agent"),
@@ -10697,7 +10738,7 @@ mod tests {
             &policy,
         );
         assert!(
-            prompt.contains("- id: hermes1\n    aliases: Gandalf\n    is_agent: true"),
+            prompt.contains("- id: hermes1\n    aliases: \"Gandalf\"\n    is_agent: true"),
             "the agent's own roster entry carries the flag: {prompt}"
         );
         let alice_line = prompt
@@ -12769,8 +12810,8 @@ mod tests {
     }
 
     /// The positive twin of [`ingest_look_alike_of_an_enrolled_name_reowns_to_sender`],
-    /// and the operator's remedy: declare the name as an alias and it reaches
-    /// its person, from the same turn and the same plan.
+    /// and the remedy: declare the name as an alias and it reaches its
+    /// person, from the same turn and the same plan.
     #[tokio::test]
     async fn ingest_keeps_a_subject_the_turn_names_by_a_declared_alias() {
         let (dir, tree, pool) = setup_workdir().await;

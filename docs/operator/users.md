@@ -24,6 +24,12 @@ One account per person. The table lists **User id**, **Email**, **Role**,
   same exactness is what keeps somebody outside the memory from being taken for
   the person inside it: a name that merely resembles a user id is a different
   person, and what is said about them is kept under their own name instead.
+
+  You are not the only one who fills this in. At their first sign-in the person
+  is asked their full name and their nickname, and both are added to this list
+  as they typed them — this field is where you correct them and add the rest. A
+  name of several words counts as one name and is matched whole: "Frodo
+  Baggins" reaches him, "Baggins" on its own does not.
 - **Timezone** (IANA, e.g. `Europe/Rome`) — times they speak, like *"tomorrow
   at 9"*, are read in this zone. Empty falls back to the deployment default on
   the [Settings](settings.md) page.

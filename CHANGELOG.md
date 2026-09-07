@@ -849,9 +849,14 @@ one for whoever the memory is about.
   it and no photographs, so a fact owned by an enrolled person none of them
   names is filed under whoever uploaded the document.
 
-  This makes the **Aliases** field on a user's page load-bearing: it is the
-  only way to tell the memory that somebody is also called something, and both
-  the field and [the guide](docs/operator/users.md) now say so.
+  This makes a person's **Aliases** load-bearing: they are the only place a
+  name the memory answers to can come from, and the field, the welcome page and
+  [the guide](docs/operator/users.md) all say so. Two hands fill them — the
+  operator's, on that field, and the person's own: the full name and the
+  nickname they type at their first sign-in are added to their aliases, so
+  somebody who introduces themself as "Frodo Baggins, called Fro" is reachable
+  by both names from that moment on. A name of several words is one name,
+  matched whole and in the order it was declared.
 
 ### Security
 

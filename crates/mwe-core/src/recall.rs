@@ -360,24 +360,48 @@ fn fold_name(word: &str) -> String {
         .collect()
 }
 
-/// Word tokens, each folded by [`fold_name`] — the unit every name match
-/// works on, so none ever fires on a substring (`bobby` must not answer for
-/// `bob`).
-fn word_set(s: &str) -> std::collections::BTreeSet<String> {
+/// Word tokens **in order**, each folded by [`fold_name`] — the unit every
+/// name match works on, so none ever fires on a substring (`bobby` must not
+/// answer for `bob`), and in order because a name of more than one word is the
+/// run of tokens it is written with ([`names_of`]).
+pub(crate) fn folded_words(s: &str) -> Vec<String> {
     s.split(|c: char| !c.is_alphanumeric())
         .filter(|w| !w.is_empty())
         .map(fold_name)
         .collect()
 }
 
-/// Every name a person answers to: their id and the aliases the operator
-/// declared for them, folded for comparison. Nothing else — a name that is
-/// neither is somebody else (`crates/mwe-core/prompts/ingest.md`, the
-/// `subject_id` section).
-fn names_of(user: &EnrolledUserLite) -> Vec<String> {
-    let mut v = vec![fold_name(&user.user_id)];
-    v.extend(user.aliases.iter().map(|a| fold_name(a)));
+/// Every name a person answers to — their id and the aliases declared for
+/// them — each as the run of folded tokens it is written with.
+/// Nothing else is a name of theirs: a word that is neither belongs to
+/// somebody else (`crates/mwe-core/prompts/ingest.md`, the `subject_id`
+/// section).
+///
+/// **A name of several words matches that phrase and only that phrase.** An
+/// alias «Roberto Sackville» reaches its person from a sentence that writes
+/// those two words in that order, and a lone «Roberto» reaches nobody through
+/// it. That is the resolution contract rather than a limit of the scan: a
+/// first name alone is a shorter form of the declared name, which is exactly
+/// the resemblance the contract refuses — and where that first word IS the
+/// person's id, the id is already a name of its own in this list and matches
+/// on its own.
+fn names_of(user: &EnrolledUserLite) -> Vec<Vec<String>> {
+    let mut v = vec![folded_words(&user.user_id)];
+    v.extend(user.aliases.iter().map(|a| folded_words(a)));
     v
+}
+
+/// Where `name`'s run of tokens starts inside `tokens` — the whole of the
+/// name, bounded at both ends, because both sides were split on word
+/// boundaries before they got here.
+///
+/// A name with no tokens at all matches nothing: an alias written in
+/// punctuation alone would otherwise answer for every sentence, at position 0.
+fn name_at(tokens: &[String], name: &[String]) -> Option<usize> {
+    if name.is_empty() || name.len() > tokens.len() {
+        return None;
+    }
+    (0..=tokens.len() - name.len()).find(|i| tokens[*i..*i + name.len()] == *name)
 }
 
 /// The people a turn is **about**: the speaker when the first person puts
@@ -416,7 +440,7 @@ pub fn turn_subjects(query: &str, sender_id: &str, roster: &[EnrolledUserLite]) 
         found.push((pos, sender_id.to_lowercase()));
     }
     for u in roster {
-        if let Some(pos) = names_of(u).iter().filter_map(|n| at(n)).min() {
+        if let Some(pos) = names_of(u).iter().filter_map(|n| name_at(&folded, n)).min() {
             found.push((pos, u.user_id.to_lowercase()));
         }
     }
@@ -454,12 +478,16 @@ fn fact_mentions(
     if let Some(s) = row.sender_id.as_ref() {
         push(s);
     }
-    let mut hay = word_set(&row.text);
-    for t in &row.topics {
-        hay.extend(word_set(t));
-    }
+    // The text and each topic are scanned as their own run of words: a name of
+    // several words is a phrase, and a phrase straddling the end of one and
+    // the start of the next was never written anywhere.
+    let mut hay = vec![folded_words(&row.text)];
+    hay.extend(row.topics.iter().map(|t| folded_words(t)));
     for u in roster {
-        if names_of(u).iter().any(|n| hay.contains(n)) {
+        if names_of(u)
+            .iter()
+            .any(|n| hay.iter().any(|h| name_at(h, n).is_some()))
+        {
             out.insert(u.user_id.to_lowercase());
         }
     }
@@ -3580,6 +3608,68 @@ mod tests {
             turn_subjects("Roberto is retiring in June", "alice", &declared),
             vec!["bob"],
             "the declared alias is what makes the name reach him"
+        );
+    }
+
+    /// A name of several words is one name, and the whole of it has to be
+    /// written for it to reach its person. The first-login primer declares a
+    /// person's full name among their aliases, so this is the ordinary case
+    /// now, not an exotic one.
+    #[test]
+    fn turn_subjects_matches_a_multi_word_alias_as_a_phrase() {
+        let roster = vec![person("bob", &["Roberto Sackville", "Robi"])];
+        assert_eq!(
+            turn_subjects("Roberto Sackville parte lunedì", "alice", &roster),
+            vec!["bob"],
+            "the two words together are the declared name"
+        );
+        assert_eq!(
+            turn_subjects("Robi parte lunedì", "alice", &roster),
+            vec!["bob"],
+            "and a one-word alias still matches on its own"
+        );
+    }
+
+    /// The negative twin of the phrase match, and the reason the phrase is
+    /// matched whole: half of a declared name is a shorter form of it, which
+    /// is the resemblance the resolution contract sends to `subject_external`.
+    /// (Where that half IS the person's id it reaches them anyway — as the
+    /// id, which is a name of its own.)
+    #[test]
+    fn turn_subjects_refuses_the_first_word_of_a_multi_word_alias() {
+        let roster = vec![person("bob", &["Roberto Sackville"])];
+        let half = turn_subjects("Roberto is retiring in June", "alice", &roster);
+        assert!(half.is_empty(), "half a name names nobody: {half:?}");
+        let both = turn_subjects("Roberto Sackville is retiring", "alice", &roster);
+        assert_eq!(both, vec!["bob"]);
+        let reversed = turn_subjects("Sackville, Roberto is retiring", "alice", &roster);
+        assert!(
+            reversed.is_empty(),
+            "the words of a name are matched in the order it was declared: {reversed:?}"
+        );
+    }
+
+    /// The mention scan reads the same names as the turn does — so a fact
+    /// whose prose writes somebody's full name counts as being about them.
+    #[test]
+    fn a_fact_naming_a_multi_word_alias_mentions_that_person() {
+        let roster = vec![person("bob", &["Roberto Sackville"])];
+        let named = sample_row(
+            "018f1234-5678-7abc-9def-00000000c010",
+            "user:alice",
+            None,
+            "Roberto Sackville is retiring in June",
+        );
+        assert!(fact_mentions(&named, &roster).contains("bob"));
+        let half = sample_row(
+            "018f1234-5678-7abc-9def-00000000c011",
+            "user:alice",
+            None,
+            "Roberto is retiring in June",
+        );
+        assert!(
+            !fact_mentions(&half, &roster).contains("bob"),
+            "and half a name still names nobody"
         );
     }
 
