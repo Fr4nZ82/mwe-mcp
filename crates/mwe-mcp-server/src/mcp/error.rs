@@ -44,18 +44,14 @@ pub enum ToolErrorClass {
     /// match `token.owner_user`. Invariant: a smart consumer is
     /// custodian of writes only for wikis its owner owns.
     WikiOwnedByOtherUser,
-    /// `400 wiki_not_smart` — `wiki_admin_push` / `_pull` targeted a wiki
-    /// whose `_meta` smart flag is `false`. That flag is what the gate
-    /// reads: a wiki's `wiki_type` is a free-form tone label and decides
-    /// nothing here. Standard wikis are written via `wiki_ingest_message`.
+    /// `400 wiki_not_smart` — a tool that only smart wikis can answer
+    /// targeted a wiki whose `_meta` smart flag is `false`: an admin write
+    /// (`wiki_admin_push` / `_pull`), or a briefing write, whose
+    /// `_briefing.md` is a smart-wiki file. That flag is what both gates
+    /// read — a wiki's `wiki_type` is a free-form tone label and decides
+    /// nothing here — so it is one code and one string to match on.
+    /// Standard wikis are written via `wiki_ingest_message`.
     WikiNotSmart,
-    /// `400 wiki_type_not_briefing_capable` — `wiki_admin_notify`
-    /// targeted a wiki whose smart flag is `false`.
-    /// `_briefing.md` only exists in smart-wikis.
-    ///
-    /// Preserved for REM-internal callers (`notify_as_rem`); the
-    /// public MCP path uses the matrix variants below instead.
-    WikiTypeNotBriefingCapable,
     /// `403 smart_does_not_notify_own_wiki` — matrix
     /// cell `smart consumer × smart wiki`: the smart consumer administers the
     /// smart-wiki directly via `wiki_admin_push`, so notifying
@@ -126,7 +122,6 @@ impl ToolErrorClass {
             Self::RequiresConsumerClassSmart => "requires_consumer_class_smart",
             Self::WikiOwnedByOtherUser => "wiki_owned_by_other_user",
             Self::WikiNotSmart => "wiki_not_smart",
-            Self::WikiTypeNotBriefingCapable => "wiki_type_not_briefing_capable",
             Self::SmartDoesNotNotifyOwnWiki => "smart_does_not_notify_own_wiki",
             Self::StandardUsesIngestForMemory => "standard_uses_ingest_for_memory",
             Self::ConsumerClassWikiFamilyMismatch => "consumer_class_wiki_family_mismatch",

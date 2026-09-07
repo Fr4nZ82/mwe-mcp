@@ -3052,9 +3052,7 @@ pub(super) async fn call_wiki_admin_notify(
 fn briefing_error_to_tool_error(err: &mwe_core::briefing::BriefingError) -> ToolError {
     use mwe_core::briefing::BriefingError as E;
     let (class, msg) = match err {
-        E::WikiTypeNotBriefingCapable { .. } => {
-            (ToolErrorClass::WikiTypeNotBriefingCapable, err.to_string())
-        },
+        E::WikiNotSmart { .. } => (ToolErrorClass::WikiNotSmart, err.to_string()),
         E::SmartDoesNotNotifyOwnWiki { .. } => {
             (ToolErrorClass::SmartDoesNotNotifyOwnWiki, err.to_string())
         },
@@ -3662,6 +3660,32 @@ fn urlencode(s: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A wiki that is not smart is **one** refusal on the wire, not one per
+    /// tool family: the admin write, the signpost and the briefing all read
+    /// the same `_meta` smart flag, so a consumer matches a single string.
+    /// The message is where the caller learns what that cost them here.
+    #[test]
+    fn a_wiki_that_is_not_smart_is_one_wire_code() {
+        let briefing =
+            briefing_error_to_tool_error(&mwe_core::briefing::BriefingError::WikiNotSmart {
+                wiki_type: "wiki-user".to_owned(),
+            });
+        let admin = admin_error_to_tool_error(&mwe_core::wiki_admin::AdminError::WikiNotSmart {
+            wiki_type: "wiki-user".to_owned(),
+        });
+        assert_eq!(briefing.class.as_str(), "wiki_not_smart");
+        assert_eq!(
+            admin.class.as_str(),
+            briefing.class.as_str(),
+            "the same flag answers with the same code, whichever tool asked"
+        );
+        assert!(
+            briefing.message.contains("_briefing.md"),
+            "one code, but the message still says what a briefing needs: {}",
+            briefing.message
+        );
+    }
 
     /// The one dashboard address the engine hands out **without** minting a
     /// link — the nudge in the `pending_votes` block — has to be a page too.

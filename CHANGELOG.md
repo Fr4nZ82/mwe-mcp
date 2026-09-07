@@ -258,15 +258,18 @@ and in the dashboard's session check. Ten migrations, `0068` through `0077`.
   a deadline the bridge cannot parse counts as due: raising a vote early costs
   a sentence, missing it costs the fact, because silence is consent.
 
-- **BREAKING — the error code for "this wiki is not smart" says so.** A
-  `wiki_admin_push` or `wiki_admin_pull` at a wiki that is not smart came back
-  `400 wiki_type_not_admin_writable`, and a consumer reading that went looking
-  at the wiki's **type** — which is a free-form tone label and decides nothing
-  here. The gate reads the wiki's `_meta` smart flag, so the code is now
-  `wiki_not_smart` and the message says the flag rather than the label, with
-  the label carried along as context. Nothing about which wikis are writable
-  has changed; a consumer matching on the old string has to match on the new
-  one.
+- **BREAKING — the error code for "this wiki is not smart" says so, and there
+  is one of it.** A `wiki_admin_push` or `wiki_admin_pull` at a wiki that is
+  not smart came back `400 wiki_type_not_admin_writable`, and a briefing write
+  at the same wiki came back `400 wiki_type_not_briefing_capable`: two codes,
+  both sending a consumer to look at the wiki's **type** — a free-form tone
+  label that decides nothing here — for what is one `_meta` smart flag, read
+  by both gates. Both are now `wiki_not_smart`, the message says the flag
+  rather than the label, and each keeps its own sentence for what the caller
+  was refused (a standard wiki is written through `wiki_ingest_message`; a
+  briefing board is a smart-wiki file). Nothing about which wikis accept which
+  write has changed; a consumer matching on either old string has to match on
+  the new one.
 
 - **BREAKING — the per-fragment ACL axis is named `subject`, after what it
   actually holds.** The field saying *who or what a fact is about* had been

@@ -62,18 +62,23 @@ pub enum BriefingError {
     /// Target wiki not found.
     #[error("wiki {0} not found")]
     NotFound(WikiId),
-    /// Target wiki's `wiki_type` is not in the smart family.
-    /// Maps to `400 wiki_type_not_briefing_capable` — `_briefing.md`
-    /// only exists for smart-wikis.
+    /// The target wiki's `_meta` smart flag is `false`.
+    ///
+    /// Named after the flag the gate reads, and the same `400
+    /// wiki_not_smart` the admin-write gate answers with, because it is
+    /// the same one bool: `wiki_type` is a free-form tone label and
+    /// decides nothing. The message carries what that costs here — a
+    /// briefing board is a smart-wiki file.
     ///
     /// This is the REM-internal path's refusal (`notify_as_rem`). The
     /// public MCP `wiki_admin_notify` surface uses the matrix-aware
     /// variants below instead.
     #[error(
-        "wiki_type {wiki_type:?} is not in the smart family (only smart-wikis have a _briefing.md)"
+        "wiki is not smart (its type label is {wiki_type:?}); \
+         only smart wikis have a _briefing.md"
     )]
-    WikiTypeNotBriefingCapable {
-        /// The non-smart `wiki_type` that was targeted.
+    WikiNotSmart {
+        /// The targeted wiki's type label, for the message.
         wiki_type: String,
     },
     /// A smart consumer tried to notify a smart-wiki it administers
@@ -920,8 +925,8 @@ struct KindCountsRow {
 /// Resolve the target wiki handle and enforce the smart-wiki-only gate.
 ///
 /// Used by the REM-internal path ([`notify_as_rem`]): REM only writes
-/// to smart-wikis (per the Briefing dispatcher sub-job), so the simple
-/// smart-wiki-only check stays.
+/// to smart-wikis (per the Briefing dispatcher sub-job), so the gate is
+/// the one `_meta` smart flag and nothing else.
 ///
 /// The public MCP path goes through [`gate_notify_target_matrix`]
 /// instead, which carries the consumer-class × wiki-family matrix.
@@ -934,7 +939,7 @@ fn locate_smart_wiki_target(
         .map_err(|_| BriefingError::NotFound(wiki_id.clone()))?;
     // Smart-wiki-only gate, read per-wiki from the `_meta` smart flag.
     if !handle.meta().smart {
-        return Err(BriefingError::WikiTypeNotBriefingCapable {
+        return Err(BriefingError::WikiNotSmart {
             wiki_type: handle.meta().wiki_type.clone(),
         });
     }
@@ -1611,7 +1616,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn notify_as_rem_still_rejects_non_smart() {
+    async fn notify_as_rem_rejects_a_wiki_that_is_not_smart() {
         let dir = tempdir().unwrap();
         let tree = WikiTree::open(dir.path()).unwrap();
         let pool = make_pool().await;
@@ -1629,11 +1634,8 @@ mod tests {
         };
         let err = notify_as_rem(&pool, &tree, req)
             .await
-            .expect_err("rem path still gates on the smart family");
-        assert!(matches!(
-            err,
-            BriefingError::WikiTypeNotBriefingCapable { .. }
-        ));
+            .expect_err("the rem path gates on the wiki's smart flag");
+        assert!(matches!(err, BriefingError::WikiNotSmart { .. }));
     }
 
     #[tokio::test]
