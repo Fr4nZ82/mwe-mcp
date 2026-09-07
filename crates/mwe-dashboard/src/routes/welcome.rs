@@ -852,7 +852,7 @@ fn render_form(
 }
 
 /// Step 1 fieldset → the identity card: its own fields plus the always-on
-/// health/safety slot. A "Salta tutto" submit is repeated on every step
+/// health/safety slot. A "Skip all" submit is repeated on every step
 /// so the user can bail out at any point.
 fn step1_identity_fieldset(
     email_value: &str,

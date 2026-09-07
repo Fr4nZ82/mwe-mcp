@@ -96,7 +96,7 @@ claude mcp add --transport http mwe-mcp http://127.0.0.1:8742/mcp --scope user
 
 Those two and [Hermes](https://github.com/NousResearch/hermes-agent) are what the `/bridges` catalog on your own server covers today, each with a page for you and an `install.md` a capable agent can follow itself.
 
-**5. Read the guide.** [`docs/`](docs/) walks the dashboard screen by screen — one half for the operator who runs the server, one half for everybody whose memory it holds.
+**5. Read the guide.** [`docs/`](docs/) walks the dashboard screen by screen — one half for the operator who runs the server, one half for everybody whose memory it holds. The same pages are inside the dashboard, under **Guide** in the top bar: the binary carries them, so there is one copy.
 
 mwe-mcp ships as a **single self-contained binary** with the embedder bundled in, a vendored SQLite and `rustls` (no OpenSSL), serving both the MCP endpoint and the dashboard on one port. Building from source is deliberately boring: `cargo build --release` needs no running database and no prepared query cache. For a binary you will actually deploy use **`cargo prod`** (aliased in `.cargo/config.toml` to `build --release --features local-embedder`): it compiles the Candle embedder in, which is what the prebuilt releases ship with and what a `embedding.backend: bundled` config needs at runtime.
 
