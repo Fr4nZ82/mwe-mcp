@@ -444,6 +444,7 @@ it is never dropped. See the `smart-consumer` skill, "Onboarding an existing wik
 | Token / identity flow (admin invites → user → consumer) | [`INSTALL.md`](INSTALL.md) §3 and the dashboard's Users / Tokens consoles |
 | The tool surface and per-tool I/O contract | `tools/list` on the running server (every tool carries its full schema); families in [`AGENT_INSTRUCTIONS.md`](AGENT_INSTRUCTIONS.md) §6 |
 | Server config + LLM profiles + secrets | the commented `mwe-mcp.config.yaml` that `mwe-mcp init` seeds, and the dashboard's Admin panels |
+| What a person sees on the dashboard, screen by screen | [`docs/`](docs/) — the guide for the operator and for whoever the memory is about |
 | Deployment topology (server and consumer on separate hosts, remote HTTP) | this document, [Deployment security](#deployment-security--where-to-run-the-consumer) |
 | Consumer-agent runtime behaviour (what *your agent* must do) | [`AGENT_INSTRUCTIONS.md`](AGENT_INSTRUCTIONS.md) |
 | Ready-made host bridges + the bridge-authoring guide | [`agents-bridges/README.md`](agents-bridges/README.md) |

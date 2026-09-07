@@ -336,6 +336,8 @@ The running server is the reference for what the system is and does:
   contract (input, output, errors, paging).
 - `skill_list` / `skill_fetch` — the operational skills, the same bodies
   served at `/skills`.
+- [`docs/`](docs/) — the guide for people: every dashboard screen, for the
+  operator and for whoever the memory is about.
 - [`INSTALL.md`](INSTALL.md) — standing the server up, its config, tokens.
 - [`INTEGRATING.md`](INTEGRATING.md) — the per-turn contract for a host
   bridge and the deployment-security rules.
