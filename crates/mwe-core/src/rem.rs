@@ -148,8 +148,8 @@ pub struct RemPolicy {
     /// subject area before any of them moves (`pages_to_new_wiki`).
     ///
     /// This is the page→folder rung of the forma fisica scale, above
-    /// [`Self::auto_promote_min_page_facts`] (line→page), and the two no
-    /// longer compete: a page that has accumulated mass is *split into
+    /// [`Self::auto_promote_min_page_facts`] (line→page), and the two do
+    /// not compete: a page that has accumulated mass is *split into
     /// pages*, and only a **set** of pages that already exist becomes a
     /// wiki. A wiki is therefore never born with a single page, and the
     /// trigger is evidence on disk rather than a bet on future
@@ -3028,10 +3028,10 @@ pub const BUNDLED_REM_RAILS_MD: &str = include_str!("../prompts/rem-rails.md");
 /// 2026-08-22: *«se su una pagina ci son già tanti collegamenti può decidere
 /// di rimuoverne uno per far spazio ad un altro migliore»*).
 ///
-/// Six, and where it comes from: a prose page is split once it carries eight
-/// facts ([`RemPolicy::auto_promote_min_page_facts`]), so a page holds a
-/// handful of facts, and the Cronista's own rule asks for *«a handful, chosen;
-/// not a sweep»*. A page with more links than facts is not a page with good
+/// Six, and where it comes from: the split pass only looks at a prose page
+/// from eight facts up ([`RemPolicy::auto_promote_min_page_facts`]), so a page
+/// holds a handful of facts, and the Cronista's own rule asks for *«a handful,
+/// chosen; not a sweep»*. A page with more links than facts is not a page with good
 /// links, it is a page of addresses.
 ///
 /// Approved by the founder on 2026-08-23. It is still a number derived from
