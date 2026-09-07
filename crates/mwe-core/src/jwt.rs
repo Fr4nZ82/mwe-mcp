@@ -60,13 +60,13 @@ pub const BLACKLIST_REFRESH_INTERVAL: Duration = Duration::from_secs(60);
 
 /// Class of consumer holding the token.
 ///
-/// - `Smart`: consumer with its own LLM subscription (Claude Code,
-///   Cowork, any MCP-compatible agent). Authorized for the
-///   smart-wiki tool family (`wiki_admin_*`).
+/// - `Smart`: consumer with its own LLM subscription (Claude Code, or
+///   any MCP-compatible agent). Authorized for the smart-wiki tool
+///   family (`wiki_admin_*`).
 /// - `Standard`: conversational consumer that uses the server-side LLM
-///   (openclaw, hermes, nanoclaw). Tool surface unchanged from the
-///   earlier behavior; plus the read-only `wiki_admin_notify` to
-///   append items to a smart-wiki `_briefing.md`.
+///   (nanoclaw, hermes). Carries the read-only `wiki_admin_notify` on
+///   top of the ordinary surface, to append items to a smart-wiki
+///   `_briefing.md`.
 ///
 /// Defaults to `Standard` when the claim is **absent** from a JWT, so
 /// every token issued before the consumer-class field existed continues
@@ -76,7 +76,7 @@ pub const BLACKLIST_REFRESH_INTERVAL: Duration = Duration::from_secs(60);
 #[serde(rename_all = "lowercase")]
 pub enum ConsumerClass {
     /// Conversational consumer that uses the server-side LLM via
-    /// `wiki_ingest_message` (openclaw, hermes, nanoclaw). Default for
+    /// `wiki_ingest_message` (nanoclaw, hermes). Default for
     /// tokens that omit the `consumer_class` claim.
     #[default]
     Standard,
@@ -721,7 +721,7 @@ mod tests {
         // Newly-issued standard tokens must remain wire-identical (in
         // the JSON payload shape) to earlier tokens so existing
         // decoders and audit tooling do not see a spurious new field.
-        let claims = TokenClaims::new("user:alice", "openclaw", "default", DEFAULT_INTERNAL_TTL);
+        let claims = TokenClaims::new("user:alice", "nanoclaw", "default", DEFAULT_INTERNAL_TTL);
         assert_eq!(claims.consumer_class, ConsumerClass::Standard);
         let json = serde_json::to_string(&claims).expect("serialize");
         assert!(

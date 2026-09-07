@@ -1,19 +1,18 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 //! Smart-wiki briefing inbox (`wiki_admin_notify` core).
 //!
-//! `_briefing.md` is a markdown file at the root of every
-//! smart-wiki. REM (the Briefing dispatcher sub-job), other consumers
-//! (openclaw, hermes, etc. via this tool), and the dashboard append
-//! items to it; the
-//! smart consumer reads them at `smart_bootstrap` time and rotates
-//! the file to `_briefing.archive.md` after triage. See
+//! `_briefing.md` is a markdown file at the root of every smart-wiki.
+//! REM (the Briefing dispatcher sub-job), other consumers (nanoclaw,
+//! hermes, via this tool), and the dashboard append items to it; the
+//! smart consumer reads them at `smart_bootstrap` time and rotates the
+//! file to `_briefing.archive.md` after triage. See
 //! [`crate::wiki_admin`] for the lifecycle.
 //!
 //! ## Authorisation
 //!
 //! Open to **any token with read access to the target wiki** — not
-//! restricted to `consumer_class=smart`: an openclaw standard consumer
-//! must be able to notify when the user, talking on Telegram, leaves an
+//! restricted to `consumer_class=smart`: a standard consumer must be
+//! able to notify when the user, talking on Telegram, leaves an
 //! observation that the smart consumer should pick up next session. The
 //! rate limit below is what keeps that door narrow.
 //!
@@ -989,7 +988,7 @@ fn gate_notify_target_matrix(
         // smart consumer × standard wiki: append to the DB queue; the REM briefing processor
         // drains it at the next cycle.
         (crate::jwt::ConsumerClass::Smart, false) => NotifyOutcome::NarrativeDbOnly,
-        // standard consumer × smart wiki: classic openclaw-style relay onto the
+        // standard consumer × smart wiki: the classic relay onto the
         // smart consumer's briefing inbox.
         (crate::jwt::ConsumerClass::Standard, true) => NotifyOutcome::FullSmartWiki,
         // standard consumer × standard wiki: canonical channel is `wiki_ingest_message`.
@@ -1306,8 +1305,9 @@ mod tests {
 
     fn alice_caller() -> NotifyCaller {
         // Default helper: standard consumer relaying onto a smart-wiki-
-        // wiki (the canonical use case for this surface — openclaw
-        // notifying the user's smart consumer, per the module docstring).
+        // wiki (the canonical use case for this surface — a standard
+        // consumer notifying the user's smart consumer, per the module
+        // docstring).
         NotifyCaller {
             sender_id: "alice".into(),
             consumer_class: crate::jwt::ConsumerClass::Standard,

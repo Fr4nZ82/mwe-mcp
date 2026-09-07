@@ -575,7 +575,7 @@ fn wiki_admin_lease_release() -> Tool {
 fn wiki_admin_notify() -> Tool {
     materialize(
         "wiki_admin_notify",
-        "Append an item to a smart-wiki `_briefing.md` (H family). **Open to any token with read access to the target wiki** (NOT restricted to smart consumers): a standard consumer like openclaw must be able to relay user observations into the briefing for the smart consumer to triage at next session. Rate-limited 50 notify/wiki/h.",
+        "Append an item to a smart-wiki `_briefing.md` (H family). **Open to any token with read access to the target wiki** (NOT restricted to smart consumers): a standard consumer like nanoclaw must be able to relay user observations into the briefing for the smart consumer to triage at next session. Rate-limited 50 notify/wiki/h.",
         json!({
             "type": "object",
             "required": ["wiki_id", "topic", "body", "source"],

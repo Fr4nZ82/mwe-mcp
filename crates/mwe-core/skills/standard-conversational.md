@@ -1,7 +1,7 @@
 ---
 name: standard-conversational
 version: 1.8.0
-description: "Default conversational pattern for standard consumers (openclaw, hermes, nanoclaw): wiki_ingest_message passthrough, recent_messages window, disambiguation, locale plumbing, events_poll cadence, on-the-fly date corrections + sharing changes on stored facts, no wiki_admin_* writes."
+description: "Default conversational pattern for standard consumers (nanoclaw, hermes): wiki_ingest_message passthrough, recent_messages window, disambiguation, locale plumbing, events_poll cadence, on-the-fly date corrections + sharing changes on stored facts, no wiki_admin_* writes."
 depends_on: ["core"]
 applies_to:
   consumer_class: standard

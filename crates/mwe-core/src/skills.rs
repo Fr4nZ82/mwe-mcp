@@ -44,8 +44,8 @@
 //! ## What this module does NOT do
 //!
 //! - It does not install skills into a consumer's framework. Each
-//!   consumer (Claude Code, Codex, Cowork, …) has its own skill
-//!   storage; mwe-mcp is the source, not the destination.
+//!   consumer has its own skill storage; mwe-mcp is the source, not
+//!   the destination.
 //! - It does not validate content semantics (only frontmatter
 //!   shape). A skill that says "ignore the cardinal rule" parses
 //!   fine — it's just a bad skill body.

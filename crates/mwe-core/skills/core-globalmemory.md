@@ -161,9 +161,9 @@ Concretely:
   `wiki://<wiki_id>/<path>` for each fact). Use the distillate
   verbatim in your reply; do **not** re-issue `wiki_search` in the
   main thread.
-- **Codex / Cursor / Cowork / other consumers**: use the equivalent
-  subagent / sub-task mechanism your framework provides. Most
-  modern agent frameworks ship one — if yours does not, fall back
+- **Any other consumer**: use the equivalent subagent / sub-task
+  mechanism your framework provides. Most modern agent frameworks
+  ship one — if yours does not, fall back
   to a single `wiki_search` call with a tight result limit (5-8
   hits) and immediately summarise the hits in your own words before
   composing the user-facing reply, so the raw excerpts do not
@@ -222,8 +222,8 @@ persistent-memory layer for smart consumers.
 
 Every smart consumer ships its own auto-memory mechanism — Claude
 Code keeps per-project notes in `~/.claude/projects/<hash>/memory/`,
-Codex has its own schema, Cowork another. **mwe-mcp does not replace
-these auto-memories**. The convention is:
+and another consumer keeps its own somewhere else. **mwe-mcp does not
+replace these auto-memories**. The convention is:
 
 | Layer | Scope | Lifetime | Use for |
 |---|---|---|---|

@@ -288,7 +288,7 @@ fn render_issue_form(users: &[String], form: &IssueFormState) -> Markup {
                 label { "Consumer class" }
                 label.radio {
                     input type="radio" name="consumer_class" value="smart" checked[smart];
-                    " Smart — one human owner, brings its own LLM (Claude Code, Cowork). "
+                    " Smart — one human owner, brings its own LLM (Claude Code). "
                     "Unlocks the " code { "wiki_admin_*" } " tools."
                 }
                 label.radio {

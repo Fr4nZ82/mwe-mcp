@@ -321,7 +321,7 @@ pub async fn dispatch(
         // standard memory that this project exists.
         "wiki_admin_signpost" => tools::call_wiki_admin_signpost(state, identity, args).await,
         // Open to any read-access token (NOT gated on smart),
-        // so a standard openclaw can relay user observations into the
+        // so a standard consumer can relay user observations into the
         // smart consumer's briefing.
         "wiki_admin_notify" => tools::call_wiki_admin_notify(state, identity, args).await,
         // Optional cooperative lease for `wiki_admin_push`

@@ -1,7 +1,7 @@
 # agents-bridges — host adapters for mwe-mcp
 
 This directory is the home of the **agent bridges**: thin adapters that wire a
-host agent framework (hermes-agent, nanoclaw, OpenClaw, …) to a running
+host agent framework (nanoclaw, hermes-agent, …) to a running
 mwe-mcp server at full fidelity. A bridge implements the **per-turn contract
 (v1)** specified in
 [`INTEGRATING.md` §"The per-turn contract"](../INTEGRATING.md#the-per-turn-contract-v1--wiring-a-host-bridge);

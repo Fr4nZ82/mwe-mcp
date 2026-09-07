@@ -2,7 +2,7 @@
 //! Smart-wiki authoritative writes (H family of MCP tools).
 //!
 //! This module is the headless core of `wiki_admin_push` /
-//! `wiki_admin_pull`: a smart consumer (Claude Code, Cowork, any
+//! `wiki_admin_pull`: a smart consumer (Claude Code, or any
 //! MCP-compatible agent with its own LLM subscription) takes
 //! ownership of a smart-family wiki and writes pre-rendered
 //! pages to it without invoking the server-side LLM.
@@ -519,8 +519,8 @@ pub struct AdminCaller {
     /// `token.sender_id` (the user id, bare slug — `"alice"`, not
     /// `"user:alice"`).
     pub sender_id: String,
-    /// `token.consumer_id` (the device id — `"cc-laptop"`,
-    /// `"cowork-aws"`). Stamped into the `op_log` row for audit.
+    /// `token.consumer_id` (the device id — `"cc-laptop"`).
+    /// Stamped into the `op_log` row for audit.
     pub consumer_id: Option<String>,
     /// `token.consumer_class`.
     pub consumer_class: ConsumerClass,

@@ -339,10 +339,11 @@ enum RemCommand {
 /// directly.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, ValueEnum)]
 enum ConsumerClassArg {
-    /// Conversational consumer (openclaw, hermes, nanoclaw). Default.
+    /// Conversational consumer (nanoclaw, hermes). Default.
     Standard,
-    /// Consumer with its own LLM subscription (Claude Code, Cowork, …).
-    /// Required to call the `wiki_admin_*` tool family.
+    /// Consumer with its own LLM subscription (Claude Code, or any
+    /// MCP-compatible agent). Required to call the `wiki_admin_*` tool
+    /// family.
     Smart,
 }
 

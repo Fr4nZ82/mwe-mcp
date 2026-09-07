@@ -11,9 +11,9 @@ status: implemented
 
 # mwe-mcp / smart-consumer skill
 
-This skill is for **smart consumers** (Claude Code, Cowork, Codex —
-agents that bring their own subscription LLM) working inside a
-project directory that has, or will get, a `.mwe/state.json` marker.
+This skill is for **smart consumers** (Claude Code, or any MCP client
+that brings its own subscription LLM) working inside a project
+directory that has, or will get, a `.mwe/state.json` marker.
 It defines how to manage the project's smart wiki authoritatively
 without going through mwe-mcp's server-side LLM (the "double-bill"
 that motivated the entire smart wiki design).

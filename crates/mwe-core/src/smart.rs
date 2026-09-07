@@ -1006,9 +1006,9 @@ mod tests {
     async fn bootstrap_surfaces_pending_briefing_items() {
         let (_dir, tree, pool) = seeded_tree().await;
         let wiki = create_smart_wiki_for(&pool, &tree, &alice_smart(), "acme", "Acme", None).await;
-        // Standard consumer relaying onto a smart-wiki — the
-        // canonical openclaw-style use case, and the only matrix cell
-        // that writes both the DB row and `_briefing.md`.
+        // Standard consumer relaying onto a smart-wiki — the canonical
+        // use case for this surface, and the only matrix cell that writes
+        // both the DB row and `_briefing.md`.
         let notify_caller = NotifyCaller {
             sender_id: "alice".to_owned(),
             consumer_class: crate::jwt::ConsumerClass::Standard,

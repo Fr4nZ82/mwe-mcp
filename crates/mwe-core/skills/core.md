@@ -25,15 +25,15 @@ mwe-mcp is the persistent memory layer of an LLM agent. Use it to
 to **recall** what was stored when the user references prior context.
 The mechanics differ by consumer class:
 
-- **Standard consumers** (openclaw, hermes, nanoclaw — anything that
-  uses mwe-mcp's own LLM budget for routing) pass every user turn
-  through `wiki_ingest_message`. mwe-mcp's server-side `ingest` slot
+- **Standard consumers** (nanoclaw, hermes — anything that uses
+  mwe-mcp's own LLM budget for routing) pass every user turn through
+  `wiki_ingest_message`. mwe-mcp's server-side `ingest` slot
   does intent classification, recall and capture.
   The consumer is a thin passthrough. See skill
   `standard-conversational` for the full per-turn loop.
-- **Smart consumers** (Claude Code, Cowork, Codex — agents with their
-  own subscription LLM) bring their own classification budget. They
-  use `wiki_search` directly for recall and `wiki_admin_push/pull` to
+- **Smart consumers** (Claude Code, or any MCP client with its own
+  subscription LLM) bring their own classification budget. They use
+  `wiki_search` directly for recall and `wiki_admin_push/pull` to
   author wikis themselves. A smart consumer is a **superset** of a
   standard one and writes to up to **three** places — see the routing
   below. See skill `smart-consumer` for cwd-bound project mode (it
