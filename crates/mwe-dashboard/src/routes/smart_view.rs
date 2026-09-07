@@ -635,18 +635,23 @@ fn load_sharing(state: &DashboardState, user: &SessionUser, id: &str) -> Result<
         return Err(DashboardError::NotFound);
     }
     // The owner is derived from topology (the root identity wiki's type).
-    // Sharing is owner-only and the UI is keyed on a single user, so a
-    // group-owned wiki is refused here.
+    // Sharing is owner-only and the UI is keyed on a single user, so anything
+    // other than a single user above this wiki is refused here.
     let owner_user = match memory
         .tree
         .resolve_scope_principal(&meta)
         .map_err(map_wiki_err)?
     {
-        Principal::User(u) => u,
-        Principal::Group(g) => {
+        Some(Principal::User(u)) => u,
+        Some(Principal::Group(g)) => {
             return Err(DashboardError::BadRequest(format!(
                 "Wiki owner derives to group:{g} — sharing UI is owner-only (user:<id>)."
             )));
+        },
+        None => {
+            return Err(DashboardError::BadRequest(
+                "This wiki answers to nobody — the sharing roster is keyed on an owner.".to_owned(),
+            ));
         },
     };
     if owner_user != user.sender_id && !user.is_admin {
@@ -785,7 +790,17 @@ fn update_shared_with(
         .render(&body)
         .map_err(|e| DashboardError::Internal(format!("re-serialize _meta.md: {e}")))?;
     atomic_write(&meta_path, new_content.as_bytes()).map_err(map_wiki_err)?;
-    tree.resolve_scope_principal(&meta).map_err(map_wiki_err)
+    // A smart wiki sits under the wiki of the user it belongs to, and this
+    // route is reached only for a smart wiki whose owner is a single user, so
+    // there is always a principal to stamp on the row. `load_sharing` is what
+    // established that, and both the form and its submission pass through it.
+    tree.resolve_scope_principal(&meta)
+        .map_err(map_wiki_err)?
+        .ok_or_else(|| {
+            DashboardError::Internal(format!(
+                "wiki {wiki_id} answers to nobody — its registry row has no reader to name"
+            ))
+        })
 }
 
 fn render_sharing(

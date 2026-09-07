@@ -924,10 +924,16 @@ pub(super) async fn call_wiki_read(
     // legitimately needs (title, wiki_type, owner) are returned separately in
     // the JSON below. A page without a testata is body-only already.
     let body = mwe_core::wiki::MarkdownDoc::parse(&raw).map_or(raw, |doc| doc.body);
+    // Whose category this wiki is, derived from where it sits in the tree. A
+    // topic wiki — one named for its subject, standing for nobody, which is
+    // what the nightly grouping raises — answers to no principal, so the field
+    // is `null` rather than a name: what may be read on its pages was decided
+    // per fact above, and no principal owns them.
     let owner = state
         .tree
         .resolve_scope_principal(meta)
-        .map_err(|e| ToolError::new(ToolErrorClass::InternalError, e.to_string()))?;
+        .map_err(|e| ToolError::new(ToolErrorClass::InternalError, e.to_string()))?
+        .map(|p| p.to_string());
     // Authoritative per-fact ACL from the engine DB — enforcement reads
     // it by fact key, the inline attributes only cover unindexed
     // regions. A failed load is a hard error: serving the page on
@@ -945,7 +951,7 @@ pub(super) async fn call_wiki_read(
         "page": page_rel,
         "title": meta.title,
         "wiki_type": meta.wiki_type,
-        "owner": owner.to_string(),
+        "owner": owner,
         "content_rendered_for_sender": rendered.text,
         // There is no `fully_redacted` boolean. A caller that
         // needs to distinguish "page is entirely private" from "page
@@ -2965,7 +2971,7 @@ pub(super) async fn call_wiki_admin_signpost(
 fn signpost_error_to_tool_error(err: &mwe_core::signposts::SignpostError) -> ToolError {
     use mwe_core::signposts::SignpostError as E;
     let (class, msg) = match err {
-        E::NotOwner { .. } | E::GroupOwned { .. } => {
+        E::NotOwner { .. } | E::NoOwningUser { .. } => {
             (ToolErrorClass::WikiOwnedByOtherUser, err.to_string())
         },
         E::NotSmart { .. } => (ToolErrorClass::WikiNotSmart, err.to_string()),

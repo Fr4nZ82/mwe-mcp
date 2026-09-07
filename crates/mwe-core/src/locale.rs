@@ -156,18 +156,25 @@ pub async fn memory_directive_for_wiki_meta(
     // where the two wikis that had emerged held 15 pages of English inside a
     // memory whose five people are all `it`, among them a father's clinical
     // record.
-    let principal = match tree.resolve_scope_principal(meta) {
+    let owner = match tree.resolve_scope_principal(meta) {
         Ok(p) => p,
         Err(e) => {
-            let shared = memory_wide_locale(pool).await;
-            tracing::debug!(
+            tracing::warn!(
                 wiki_id = %meta.wiki_id,
                 error = %e,
-                locale = shared.as_deref().unwrap_or("(nessuna)"),
-                "locale: wiki answers to nobody — the memory's own language is used"
+                "locale: scope chain unresolved — no principal names a language"
             );
-            return render_memory_language_directive(shared.as_deref());
+            None
         },
+    };
+    let Some(principal) = owner else {
+        let shared = memory_wide_locale(pool).await;
+        tracing::debug!(
+            wiki_id = %meta.wiki_id,
+            locale = shared.as_deref().unwrap_or("(none)"),
+            "locale: wiki answers to nobody — the memory's own language is used"
+        );
+        return render_memory_language_directive(shared.as_deref());
     };
     let resolved = match crate::enrollment::locale_for_principal(pool, &principal).await {
         Ok(loc) => loc,
@@ -292,8 +299,9 @@ mod tests {
             .meta()
             .clone();
         // The premise: nobody answers for this wiki.
-        assert!(
-            tree.resolve_scope_principal(&meta).is_err(),
+        assert_eq!(
+            tree.resolve_scope_principal(&meta).expect("resolve"),
+            None,
             "a wiki born at the top level has no principal"
         );
 

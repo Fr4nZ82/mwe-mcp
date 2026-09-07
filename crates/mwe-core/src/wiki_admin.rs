@@ -73,7 +73,7 @@ use crate::wiki::{META_FILENAME, WikiError, WikiHandle, WikiMeta, WikiTree, atom
 /// | `actor_kind`      | `consumer_class=smart` required? | smart-family wiki required? | owner-match required? |
 /// |-------------------|----------------------------------|----------------------------------------|-----------------------|
 /// | `SmartConsumer`   | yes (`AdminError::RequiresSmart`) | yes (`AdminError::WikiNotSmart`) | yes |
-/// | `Dashboard`       | no                               | **relaxed** — any wiki     | yes                   |
+/// | `Dashboard`       | no                               | **relaxed** — any wiki     | yes, where a wiki has an owner |
 /// | `System`          | no                               | no — reserved for the revert handler | n/a (handler-driven)  |
 ///
 /// `System` is threaded through the API but its write logic lives in
@@ -86,7 +86,8 @@ pub enum ActorKind {
     SmartConsumer,
     /// Dashboard-side write from the textual page editor. The
     /// smart-family gate is relaxed: any wiki the
-    /// operator owns can be edited from the dashboard.
+    /// operator owns can be edited from the dashboard, and so can a topic
+    /// wiki, which nobody owns and whose editor is admin-only.
     Dashboard,
     /// System-generated compensation row produced by the revert
     /// handler. Threaded through `record_op_log` only — no
@@ -1601,7 +1602,7 @@ async fn enforce_admin_auth(
 ) -> Result<(), AdminError> {
     match resolve_owner_user(tree, handle) {
         // User-owned wiki: only its single owner may write.
-        Ok(owner) => {
+        Ok(Some(owner)) => {
             if owner != caller.sender_id {
                 return Err(AdminError::WikiOwnedByOtherUser {
                     wiki_id: handle.meta().wiki_id.clone(),
@@ -1610,10 +1611,22 @@ async fn enforce_admin_auth(
                 });
             }
         },
-        // Group-owned wiki: a MEMBER of the owning group is owner-equivalent and
-        // may write (the group-ownership model — :
-        // members are owner-equivalent on the group's wiki). The public `global`
-        // group has no individual owner, so it stays write-refused.
+        // A topic wiki — named for its subject, standing for nobody: there is
+        // no owner to compare the caller against and no group whose membership
+        // stands in for one. What may be written there is decided per fact, and
+        // the channel that writes a fact is `wiki_ingest_message`. The one
+        // actor that passes here is the human admin at the dashboard raw
+        // editor, which admits nobody else — for everybody else "nobody owns
+        // it" is not "anybody may write it".
+        Ok(None) if actor_kind == ActorKind::Dashboard => {},
+        Ok(None) => {
+            return Err(AdminError::WikiNotSmart {
+                wiki_type: handle.meta().wiki_type.clone(),
+            });
+        },
+        // Group-owned wiki: a MEMBER of the owning group is owner-equivalent
+        // and may write — that is the group-ownership model. The public
+        // `global` group has no individual owner, so it stays write-refused.
         Err(AdminError::AmbiguousOwner {
             wiki_id,
             acl_default,
@@ -1652,20 +1665,24 @@ async fn enforce_admin_auth(
     Ok(())
 }
 
-/// Resolve a smart-wiki's owner user id, following `inherit`
-/// chains. Returns the bare user id (`"alice"`, not `"user:alice"`).
-fn resolve_owner_user(tree: &WikiTree, handle: &WikiHandle) -> Result<String, AdminError> {
+/// The single user a wiki belongs to, as a bare id (`"alice"`, not
+/// `"user:alice"`), derived from where the wiki sits in the tree.
+///
+/// `Ok(None)` is a **topic wiki** — named for its subject, standing for
+/// nobody, so no principal answers for it. [`AdminError::AmbiguousOwner`] is
+/// the other shape of "no single user": a wiki a group answers for, whose
+/// members are owner-equivalent and are checked by the caller.
+fn resolve_owner_user(tree: &WikiTree, handle: &WikiHandle) -> Result<Option<String>, AdminError> {
     let principal = tree
         .resolve_scope_principal(handle.meta())
         .map_err(AdminError::Wiki)?;
     match principal {
-        Principal::User(id) => Ok(id),
-        // A group acl_default (including the builtin global group) has no
-        // single owning user.
-        Principal::Group(_) => Err(AdminError::AmbiguousOwner {
+        Some(Principal::User(id)) => Ok(Some(id)),
+        Some(p @ Principal::Group(_)) => Err(AdminError::AmbiguousOwner {
             wiki_id: handle.meta().wiki_id.clone(),
-            acl_default: principal.to_string(),
+            acl_default: p.to_string(),
         }),
+        None => Ok(None),
     }
 }
 
@@ -1719,36 +1736,38 @@ pub async fn wiki_readable_by(
 
 /// Outcome of [`resolve_read_access`].
 ///
-/// Encodes *why* the caller has (or doesn't have) read access to a
-/// smart-wiki — the dashboard audit view renders this
-/// verbatim, and the per-call tracing prefers a tagged enum over a
-/// raw boolean so the access-via-group path stays distinguishable
-/// from owner / direct-user / global.
+/// Encodes *why* the caller has (or has not) read access to a smart wiki
+/// rather than answering with a bare boolean, because two different questions
+/// are asked of it: [`Self::is_granted`] gates a read, and
+/// [`Self::is_owner_equivalent`] gates a write, which sharing never grants.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum ReadAccessOutcome {
-    /// `caller.sender_id` matches the resolved `acl_default` owner.
+    /// `caller.sender_id` matches the wiki's resolved scope principal.
     Owner,
-    /// `caller.sender_id` is a member of the group that **owns** this
-    /// wiki (`acl_default` resolves to `Principal::Group(_)`). A member of
-    /// the owning group is **owner-equivalent** (read / comment / edit /
-    /// push) per the group-ownership rules; the owning group id is kept
-    /// for the audit log.
+    /// `caller.sender_id` is a member of the group that **owns** this wiki
+    /// (its scope principal is a `Principal::Group(_)`). A member of the
+    /// owning group is **owner-equivalent** (read / comment / edit / push) per
+    /// the group-ownership rules; the variant carries the owning group id.
     OwnerGroupMember(String),
     /// `caller.sender_id` matches a `Principal::User(_)` entry inside
     /// `_meta.md.shared_with`.
     SharedUser,
     /// `caller.sender_id` is a member of the named group, which appears
     /// as a `Principal::Group(_)` entry inside `_meta.md.shared_with`.
-    /// The group id is preserved for the audit log.
+    /// The variant carries that group id.
     SharedGroup(String),
     /// `_meta.md.shared_with` names the builtin `global` group — anyone
     /// authenticated can read.
     Global,
-    /// Caller cannot read. `owner` is the resolved owner user id, kept
-    /// for diagnostic messages on the 403 path.
+    /// Caller cannot read. `owner` is kept for diagnostic messages on the
+    /// 403 path.
     Denied {
-        /// Resolved owner user id (bare form, no `user:` prefix).
-        owner: String,
+        /// The wiki's scope principal, as the audit text prints it: a bare
+        /// user id (no `user:` prefix), or `group:<id>` for a wiki a group
+        /// answers for. `None` on a **topic wiki** — one that stands for
+        /// nobody, so nobody owns it — and a message built from it says that
+        /// instead of naming somebody.
+        owner: Option<String>,
     },
 }
 
@@ -1771,6 +1790,10 @@ impl ReadAccessOutcome {
 
 /// Decide whether `caller_sender_id` can read this wiki, and *why*.
 ///
+/// This is the **smart-wiki** question: a smart wiki holds no facts, so its
+/// own roster is what governs it. [`wiki_readable_by`] is the gate that picks
+/// this question or the derived per-fact one, per family.
+///
 /// Resolution order (first match wins, so the dashboard audit always
 /// shows the most-specific grant):
 ///
@@ -1788,15 +1811,20 @@ impl ReadAccessOutcome {
 ///    `shared_with` → [`ReadAccessOutcome::SharedGroup`].
 /// 5. `shared_with` names the builtin `global` group → every
 ///    authenticated token reads ([`ReadAccessOutcome::Global`]).
-/// 6. Else [`ReadAccessOutcome::Denied`] with the resolved owner
-///    principal (bare user id, or `group:<id>` for a group-owned wiki).
+/// 6. Else [`ReadAccessOutcome::Denied`], carrying the resolved owner.
+///
+/// A **topic wiki** — one that stands for nobody — has no scope principal
+/// ([`WikiTree::resolve_scope_principal`] answers `None`), so steps 1 and 2
+/// have nothing to match: nobody is its owner, and nobody is a member of an
+/// owning group. Its `shared_with` roster still grants exactly what it names,
+/// and a denial names no owner.
 ///
 /// Group lookups run only when needed. The scope principal is derived
 /// from the parent chain via [`WikiTree::resolve_scope_principal`].
 ///
 /// # Errors
 ///
-/// - [`AdminError::Wiki`] if the inherit chain cannot be resolved;
+/// - [`AdminError::Wiki`] if the parent chain cannot be resolved;
 /// - [`AdminError::Db`] from the enrollment lookup.
 pub async fn resolve_read_access(
     pool: &SqlitePool,
@@ -1808,24 +1836,26 @@ pub async fn resolve_read_access(
         .resolve_scope_principal(handle.meta())
         .map_err(AdminError::Wiki)?;
     match &principal {
-        Principal::User(owner_id) => {
-            if caller_sender_id == owner_id {
-                return Ok(ReadAccessOutcome::Owner);
-            }
+        Some(Principal::User(owner_id)) if caller_sender_id == owner_id => {
+            return Ok(ReadAccessOutcome::Owner);
         },
         // The builtin everyone-group as owner = a public wiki: anyone
         // authenticated reads, but nobody is its individual owner.
-        Principal::Group(g) if g == "global" => {
+        Some(Principal::Group(g)) if g == "global" => {
             return Ok(ReadAccessOutcome::Global);
         },
         // A real group as owner: every member is owner-equivalent
         // (read / comment / edit / push). One SQL round-trip.
-        Principal::Group(g) => {
+        Some(Principal::Group(g)) => {
             let memberships = crate::enrollment::groups_for(pool, caller_sender_id).await?;
             if memberships.iter().any(|m| m == g) {
                 return Ok(ReadAccessOutcome::OwnerGroupMember(g.clone()));
             }
         },
+        // Nothing at wiki level grants: the wiki's owner is somebody else, or
+        // — on a topic wiki — there is no owner to be. What the roster names
+        // below is all that is left.
+        Some(Principal::User(_)) | None => {},
     }
     // shared_with cheap-passes first: user-direct + global don't need
     // any DB round-trip.
@@ -1853,10 +1883,10 @@ pub async fn resolve_read_access(
     if saw_global {
         return Ok(ReadAccessOutcome::Global);
     }
-    let owner = match &principal {
+    let owner = principal.as_ref().map(|p| match p {
         Principal::User(id) => id.clone(),
         Principal::Group(g) => format!("group:{g}"),
-    };
+    });
     Ok(ReadAccessOutcome::Denied { owner })
 }
 
@@ -2327,7 +2357,7 @@ mod tests {
         assert_eq!(handle.meta().wiki_type, "wiki-companion");
         assert_eq!(handle.meta().title, "Alice's lnprint smart wiki");
         let owner = resolve_owner_user(&tree, &handle).expect("owner");
-        assert_eq!(owner, "alice");
+        assert_eq!(owner.as_deref(), Some("alice"));
         // project_id round-trips into extra.
         let pid = handle
             .meta()
@@ -3212,7 +3242,9 @@ mod tests {
         let mallory = resolve_read_access(&pool, &tree, &handle, "mallory")
             .await
             .expect("resolve mallory");
-        assert!(matches!(mallory, ReadAccessOutcome::Denied { ref owner } if owner == "alice"));
+        assert!(
+            matches!(mallory, ReadAccessOutcome::Denied { ref owner } if owner.as_deref() == Some("alice"))
+        );
         assert!(!mallory.is_granted());
     }
 

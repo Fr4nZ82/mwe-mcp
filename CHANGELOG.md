@@ -488,6 +488,31 @@ and in the dashboard's session check. Ten migrations, `0068` through `0077`.
 
 ### Fixed
 
+- **The pages of a wiki that emerged from the nightly grouping open again.** A
+  wiki the nightly grouping raises is named for its subject and stands on its
+  own, so nobody owns it — and every gate that opened a page by first asking
+  *who owns this wiki* read that as a broken wiki file and refused. In the
+  dashboard every page view of such a wiki was a server error; over MCP the
+  page-reading tool failed the same way, and so did leaving a comment on one of
+  those pages. A wiki nobody owns is now an ordinary answer rather than a fault:
+  what may be read there is decided fact by fact, exactly as it already was
+  everywhere else. Three consequences you can see: the `owner` field the
+  page-reading tool returns is `null` for such a wiki instead of naming
+  somebody; its pages are editable by hand from the dashboard by an
+  administrator, since there is no owner to be; and the nightly structural
+  review is shown these wikis in the forest it weighs, where before they were
+  missing from it altogether.
+
+- **Commenting on a page now follows the same rule as reading it.** The
+  dashboard asked two different questions about the same page: whether you may
+  read it, which on a standard wiki is decided fact by fact, and whether you may
+  comment on it, which asked who owns the wiki. On a wiki nobody owns the second
+  question had no answer at all — that is where the failure above came from —
+  and on a person's wiki the two could disagree, so the page could show a
+  "+ Comment" link the endpoint then refused. There is one question now: you may
+  comment where you may read. The administrator's reveal switch still grants
+  nothing on its own — it opens a page to be looked at, not written on.
+
 - **On Windows the downloaded model stays where it was put.** The 2.2 GB of
   bge-m3 weights are fetched once and kept in a cache directory. Linux and
   macOS name that directory after the account the server runs as; Windows has

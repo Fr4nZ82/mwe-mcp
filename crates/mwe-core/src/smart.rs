@@ -307,8 +307,11 @@ pub async fn bootstrap(
         if !d.meta.smart {
             continue;
         }
+        // A smart wiki sits under the wiki of the user it belongs to, so the
+        // principal above it is that user. A wiki with none above it belongs
+        // to nobody, and so is nobody's to list here.
         let owner = tree.resolve_scope_principal(&d.meta)?;
-        if owner != caller_principal {
+        if owner.as_ref() != Some(&caller_principal) {
             continue;
         }
 

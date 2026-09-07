@@ -43,8 +43,10 @@
 //!   forbidden on smart wikis** (the smart consumer is the sole
 //!   writer — surfaced as a `404` so the editor is not even
 //!   discoverable), **admin-only on standard wikis** (non-admins get
-//!   a `403`). The owner check still applies on top
-//!   ([`mwe_core::wiki_admin`]'s gate; non-owners get a `404`). There
+//!   a `403`). On a wiki that has an owner the owner check still applies
+//!   on top ([`mwe_core::wiki_admin`]'s gate; non-owners get a `404`); a
+//!   **topic wiki** — one named for its subject, standing for nobody — has
+//!   no owner, and there the admin is who may save. There
 //!   is no discoverable link to this route from the normal page view —
 //!   the write channels a reader is offered are the inline **comments**,
 //!   the **chat**, and the **fact actions** (who may read a fact, and
@@ -58,11 +60,11 @@
 //!   audit machinery, same receipt downstream.
 //! - GET `/dashboard/wiki/:id/comment/*path?anchor=<slug>` — render
 //!   the small "leave a comment" form for the heading addressed by
-//!   `?anchor=`. Read-access required on the wiki —
-//!   anyone who can read the page can leave a comment (owner +
-//!   `shared_with` users / groups / global) so a team member with a
-//!   shared smart-wiki can feed feedback to the smart consumer
-//!   without owning the wiki.
+//!   `?anchor=`. Read-access required on the wiki, asked per family:
+//!   on a standard wiki anyone who can read at least one fact in it, on
+//!   a smart wiki its owner plus the `shared_with` users / groups /
+//!   global — so a team member with a shared smart wiki can feed
+//!   feedback to the smart consumer without owning it.
 //! - POST `/dashboard/wiki/:id/comment/*path?anchor=<slug>` — persist
 //!   the comment as a row in `wiki_briefing_items` with
 //!   `source_kind='dashboard_comment'`, `kind='external'`,
@@ -1067,8 +1069,7 @@ async fn view_page(
     // visitor they lack write access, when in truth nobody has any,
     // would be a wrong explanation of a correct refusal.
     let frozen = crate::read_only::hides_writes(&state);
-    let can_comment =
-        !frozen && can_comment_on(&state.pool, memory, &wiki_id, &user.sender_id).await?;
+    let can_comment = !frozen && can_comment_on(&state, memory, &wiki_id, &user.sender_id).await?;
     // Whether to offer the "✎ page description" affordance: standard wiki +
     // owner-or-admin. A non-owner reader never sees a link that would 404.
     let can_edit_meta = !frozen && may_edit_page_meta(&state.pool, memory, &wiki_id, &user).await?;
@@ -1578,8 +1579,9 @@ fn comment_from_row(row: &BriefingCommentRow) -> PageComment {
 struct PageViewFlags {
     /// `?mode=comment` is on — interleave the per-heading "+ Comment" CTA.
     comment_mode: bool,
-    /// The viewer may leave a comment (owner / shared / global read-access);
-    /// gates the whole comment affordance vs the "can't comment" notice.
+    /// The viewer may leave a comment — they can read the wiki, asked per
+    /// family (per fact on a standard wiki, per its roster on a smart one).
+    /// Gates the whole comment affordance vs the "can't comment" notice.
     can_comment: bool,
     /// The viewer may edit the page description (testata `description`) —
     /// owner of the (standard) wiki, or an admin. Gates the
@@ -1723,7 +1725,8 @@ fn render_view_page_body(
             }
         } @else if !frozen {
             p.comment-mode-toggle.muted {
-                "You can't comment on this page — you don't have write access to it."
+                "You can't comment on this page — a comment is for the people who "
+                "can read what is on it."
             }
         }
 
@@ -1936,12 +1939,10 @@ async fn comment_form(
     }
     let anchor = validate_anchor_shape(&q.anchor)?;
 
-    // Read-access check on the wiki — anyone who can read the page
-    // can leave a comment. The owner clearly passes; `shared_with`
-    // members (user, group, global) also pass per the sharing
-    // model — feedback from a teammate is the whole point of the
-    // smart-wiki sharing surface.
-    enforce_read_access_or_not_found(&state.pool, memory, &wiki_id, &user).await?;
+    // Read-access check on the wiki — anyone who can read it may comment on
+    // it, which on a shared smart wiki is how a teammate feeds feedback to the
+    // consumer that writes it without owning the wiki.
+    enforce_read_access_or_not_found(&state, memory, &wiki_id, &user).await?;
 
     // Surface the heading text so the operator knows what they are
     // commenting on. The lookup is best-effort — a missing heading
@@ -1984,7 +1985,7 @@ async fn submit_comment(
     }
     let anchor = validate_anchor_shape(&q.anchor)?;
 
-    enforce_read_access_or_not_found(&state.pool, memory, &wiki_id, &user).await?;
+    enforce_read_access_or_not_found(&state, memory, &wiki_id, &user).await?;
 
     let body = form.body.trim();
     if body.is_empty() {
@@ -2230,32 +2231,27 @@ fn render_comment_form(
     layout::authenticated_reading_page(chrome, &title, user, &html_body)
 }
 
-/// Whether `sender_id` may leave a dashboard comment on `wiki_id`:
-/// anyone who can read the page (owner + `shared_with` matches — direct
-/// user, group via enrollment, or global). The bool sibling of
+/// Whether `sender_id` may leave a dashboard comment on `wiki_id`: anyone who
+/// can read the wiki. The bool sibling of
 /// [`enforce_read_access_or_not_found`], used by [`view_page`] to decide
 /// whether to render the comment affordance at all (vs a "you can't
 /// comment" notice) — so the UI never shows a link the endpoint would
-/// then 403. Admin reveal deliberately does **not** unlock commenting:
-/// reveal is a read lens, while a comment is a write REM later turns into
-/// fact ops on the facts of the page it is anchored to, so it stays scoped
-/// to the **wiki's** read-set — this gate calls `resolve_read_access`, which
-/// answers per wiki, not per page.
+/// then 403.
+///
+/// A comment is a write REM later turns into fact ops on the facts of the page
+/// it is anchored to, so it is scoped to the **wiki's** read-set, and that
+/// question is asked per family through [`wiki_readable`]: on a standard wiki
+/// you may comment where you can read at least one fact, on a smart wiki where
+/// its own roster names you. Admin reveal deliberately does **not** unlock
+/// commenting: reveal is a read lens over one page, and this gate answers per
+/// wiki.
 async fn can_comment_on(
-    pool: &sqlx::SqlitePool,
+    state: &DashboardState,
     memory: &crate::state::MemoryHandles,
     wiki_id: &WikiId,
     sender_id: &str,
 ) -> Result<bool> {
-    let Ok(handle) = memory.tree.locate(wiki_id) else {
-        return Ok(false);
-    };
-    let outcome = resolve_read_access(pool, &memory.tree, &handle, sender_id)
-        .await
-        .map_err(|e| DashboardError::Internal(format!("resolve_read_access: {e}")))?;
-    // Anyone who can read may comment — owner, owning-group member, shared
-    // user/group, or global. A non-member of a group-owned wiki is Denied.
-    Ok(outcome.is_granted())
+    wiki_readable(state, memory, wiki_id, sender_id).await
 }
 
 /// The wiki-level read gate, for either family.
@@ -2289,28 +2285,23 @@ pub(super) async fn wiki_readable(
     .map_err(|e| DashboardError::Internal(format!("wiki_readable_by: {e}")))
 }
 
-/// Read-access check for the comment write path. Anyone who can read
-/// the wiki can comment on it — owner + `shared_with` matches (direct
-/// user, group via enrollment, or global). Non-matching callers get
-/// a 403, mirroring the `wiki_admin_notify` semantics for cross-user
-/// briefing items.
+/// Read-access check for the comment write path: the endpoint enforces exactly
+/// what [`can_comment_on`] offers, so a visitor never meets a refusal where the
+/// page showed them a link.
 async fn enforce_read_access_or_not_found(
-    pool: &sqlx::SqlitePool,
+    state: &DashboardState,
     memory: &crate::state::MemoryHandles,
     wiki_id: &WikiId,
     user: &SessionUser,
 ) -> Result<()> {
-    let Ok(handle) = memory.tree.locate(wiki_id) else {
+    if memory.tree.locate(wiki_id).is_err() {
         return Err(DashboardError::NotFound);
-    };
-    let outcome = resolve_read_access(pool, &memory.tree, &handle, &user.sender_id)
-        .await
-        .map_err(|e| DashboardError::Internal(format!("resolve_read_access: {e}")))?;
-    if outcome.is_granted() {
+    }
+    if can_comment_on(state, memory, wiki_id, &user.sender_id).await? {
         Ok(())
     } else {
-        // `resolve_read_access` has no admin bypass, so this is a content ACL
-        // denial, not an admin gate: `NoAccess` keeps the copy honest ("you
+        // There is no admin bypass on this gate, so a refusal is a content ACL
+        // denial, not an admin one: `NoAccess` keeps the copy honest ("you
         // don't have access" rather than "admin rights required").
         Err(DashboardError::NoAccess)
     }
@@ -2548,11 +2539,20 @@ fn render_edit_form(
     layout::authenticated_reading_page(chrome, &title, user, &html_body)
 }
 
-/// Returns `Ok(())` if the caller owns the wiki, `Err(NotFound)`
+/// Returns `Ok(())` if the caller may save into this wiki, `Err(NotFound)`
 /// otherwise. The shared write path of `wiki_admin::push` enforces
 /// the same gate at write time; this pre-check is for the GET form
 /// page so we don't render an editor for a wiki the operator can't
 /// save into.
+///
+/// A wiki with an owner takes owner-equivalence: its user owner, or a member
+/// of the owning group. Sharing grants reads and notify but not writes.
+///
+/// A **topic wiki** — one named for its subject, standing for nobody, which is
+/// what the nightly grouping raises — has no owner, so there is no equivalence
+/// to test and an admin is who may save. That is the same person
+/// [`enforce_raw_editor_allowed`] admits one gate earlier, and it is asked
+/// again here so this check stands on its own.
 async fn enforce_owner_or_not_found(
     pool: &sqlx::SqlitePool,
     memory: &crate::state::MemoryHandles,
@@ -2562,11 +2562,21 @@ async fn enforce_owner_or_not_found(
     let Ok(handle) = memory.tree.locate(wiki_id) else {
         return Err(DashboardError::NotFound);
     };
+    if memory
+        .tree
+        .resolve_scope_principal(handle.meta())
+        .map_err(map_wiki_err)?
+        .is_none()
+    {
+        return if user.is_admin {
+            Ok(())
+        } else {
+            Err(DashboardError::NotFound)
+        };
+    }
     let outcome = resolve_read_access(pool, &memory.tree, &handle, &user.sender_id)
         .await
         .map_err(|e| DashboardError::Internal(format!("resolve_read_access: {e}")))?;
-    // Owner-equivalent (the user owner, or a member of the owning group) may
-    // edit; sharing grants reads/notify but NOT writes — non-equivalents 404.
     if !outcome.is_owner_equivalent() {
         return Err(DashboardError::NotFound);
     }
@@ -2615,6 +2625,11 @@ pub struct DescribeSubmission {
 /// wiki only (smart pages are consumer-authored), and the caller must own the
 /// wiki OR be an admin. Drives both the gate and the view-page affordance, so
 /// the link never shows where the POST would 404.
+///
+/// On a topic wiki — one standing for nobody — there is no owner, so an admin
+/// is the only one who passes: the description is a placement hint the whole
+/// memory reads, and a reader of one fact on the page is not thereby its
+/// curator.
 async fn may_edit_page_meta(
     pool: &sqlx::SqlitePool,
     memory: &crate::state::MemoryHandles,

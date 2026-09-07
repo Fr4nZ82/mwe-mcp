@@ -70,7 +70,7 @@ async fn group_owned_wiki_page_view_renders_instead_of_500() {
             .expect("get meta");
     assert_eq!(
         tree.resolve_scope_principal(&parsed).expect("resolve"),
-        mwe_core::types::Principal::Group("famiglia".into())
+        Some(mwe_core::types::Principal::Group("famiglia".into()))
     );
 
     // The leaf-page view (`view_page`, not the wiki overview) is the handler

@@ -402,6 +402,58 @@ async fn wiki_read_returns_not_found_for_unknown_wiki() {
     assert!(err.contains("not_found"), "{err}");
 }
 
+/// A topic wiki — `wiki-tech`, no parent, named for its subject and standing
+/// for nobody, which is what the nightly grouping raises — belongs to nobody,
+/// and `wiki_read` opens its pages and says so: `owner` comes back `null`
+/// rather than naming a principal.
+///
+/// Asking who owns it instead is the other behaviour, and it has no answer
+/// here: it failed the call outright, so no consumer could open any page of
+/// any wiki the grouping had raised.
+#[tokio::test]
+async fn wiki_read_opens_a_wiki_nobody_owns_and_names_no_owner() {
+    let (state, identity, dir) = fixture(false, None).await;
+
+    let wiki_dir = dir.path().join("wikis").join("giardinaggio");
+    std::fs::create_dir_all(&wiki_dir).expect("mkdir giardinaggio");
+    std::fs::write(
+        wiki_dir.join("_meta.md"),
+        "---\nwiki_id: giardinaggio\nwiki_type: wiki-tech\nparent_wiki_id: null\n\
+         slug: giardinaggio\ntitle: Giardinaggio\n---\n",
+    )
+    .expect("write _meta.md");
+    std::fs::write(
+        wiki_dir.join("rose.md"),
+        "# Rose\n\nThe roses are pruned in February.\n",
+    )
+    .expect("write rose.md");
+
+    let tree = WikiTree::open(dir.path()).expect("reopen");
+    let state = McpState { tree, ..state };
+
+    let out = call(
+        &state,
+        &identity,
+        "wiki_read",
+        json!({"wiki_id": "giardinaggio", "path": "rose.md"}),
+    )
+    .await
+    .expect("a page of a wiki nobody owns opens");
+    assert_eq!(
+        out["owner"],
+        Value::Null,
+        "a wiki nobody owns names no owner: {out}"
+    );
+    assert_eq!(out["wiki_type"], json!("wiki-tech"));
+    assert!(
+        out["content_rendered_for_sender"]
+            .as_str()
+            .unwrap()
+            .contains("pruned in February"),
+        "the page body must come back: {out}"
+    );
+}
+
 /// End-to-end ACL projection through `wiki_read`. Three-region page on
 /// `wikis/alice/salute.md`: global → subject=user:alice → allow=group:famiglia.
 /// `alice` (member of `famiglia`) sees everything; `bob` (also in

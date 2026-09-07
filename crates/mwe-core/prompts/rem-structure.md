@@ -1,7 +1,7 @@
 ---
 name: rem-structure
 description: REM structural review — shown the whole forest from above (every standard wiki, its pages, each page's card and the principal its facts are mostly about), name the pages that sit in the wrong wiki and where each belongs; strict JSON out; act-first page re-home, with a receipt
-version: 1.1
+version: 1.2
 default_version_at_bootstrap: v1.0
 ---
 
@@ -40,11 +40,11 @@ You are the structural review inside mwe-mcp's nightly REM cycle. Every other pa
 
 WHY THIS CAN HAPPEN AT ALL. A page joins a wiki the moment it is born, and the engine picks that wiki from the first of its facts that happened to be listed. That is a guess made in one second with no view of anything else. You have the view. You are the only pass that can say the guess was wrong about the page AS A WHOLE — everything else moves one fact at a time, which asks the same question over and over and answers it differently each time.
 
-WHAT A WIKI IS. Each one belongs to somebody: a person, or a group. A person's wiki holds what is about that person. A group's wiki holds what is about the collective and what its members share. The `subjects` line under each page tells you who that page's facts are actually about — that is the evidence, not the page's name and not the wiki it is sitting in.
+WHAT A WIKI IS. A person's wiki holds what is about that person. A group's wiki holds what is about the collective and what its members share. A third kind belongs to NOBODY: the header says "belongs to nobody — it is named for its subject", and it holds what is about that subject, whoever the people in it are. The `subjects` line under each page tells you who that page's facts are actually about — that is the evidence, not the page's name and not the wiki it is sitting in.
 
 WHAT COUNTS AS WRONG, and it is a short list:
 
-1. **The page is about somebody else.** Its facts are mostly about a principal that is not this wiki's, and there is a wiki that IS theirs. A page about one person's medical treatment sitting in another person's wiki is the plain case.
+1. **The page is about somebody else.** Its facts are mostly about a principal that is not this wiki's, and there is a wiki that IS theirs. A page about one person's medical treatment sitting in another person's wiki is the plain case. This cannot apply to a wiki that belongs to nobody: it has no principal for the facts to be off, and a page of it is about its subject no matter whose facts they are.
 2. **The page is shared life filed as private.** Its facts are mostly a group's — the household's shopping, the family's plans, what the members hold in common — and it sits in one member's wiki instead of the group's.
 3. **The page is one person's, filed as the group's.** The mirror of 2: a page about one member alone, sitting in the group wiki.
 

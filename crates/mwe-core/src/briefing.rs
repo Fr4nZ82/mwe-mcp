@@ -116,15 +116,15 @@ pub enum BriefingError {
         /// Human-readable description of which combination was rejected.
         detail: String,
     },
-    /// Caller does not have read access to the target wiki. The
-    /// MVP enforces "caller is the `owner_user`"; cross-user notify
-    /// via `shared_with` lands later.
-    #[error("wiki {wiki_id} is owned by user:{owner}; cross-user notify is deferred")]
+    /// The caller is on none of the target wiki's read rosters: not its
+    /// owner, not a member of an owning group, not named in `shared_with`.
+    #[error("wiki {wiki_id} answers to {owner} and is not readable by {caller_owner}")]
     ReadAccessDenied {
         /// Target wiki id.
         wiki_id: WikiId,
-        /// The wiki's owning user id — the scope principal derived from its
-        /// path to the root identity wiki.
+        /// The wiki's scope principal as the audit text prints it (`alice`,
+        /// `group:famiglia`), or `nobody` for a topic wiki — one named for
+        /// its subject, which no principal answers for.
         owner: String,
         /// User id derived from `token.sender_id`.
         caller_owner: String,
@@ -675,7 +675,8 @@ pub async fn notify(
     // Owner always passes; otherwise resolve_read_access
     // checks the `shared_with` roster (direct user → SharedUser,
     // group via enrollment::groups_for → SharedGroup, Global →
-    // Global). Denial surfaces the canonical 403 with the resolved
+    // Global). A topic wiki has no owner to pass as, so only its roster
+    // grants. Denial surfaces the canonical 403 with the resolved
     // owner for diagnostics.
     let access = crate::wiki_admin::resolve_read_access(pool, tree, &handle, &caller.sender_id)
         .await
@@ -683,7 +684,7 @@ pub async fn notify(
     if let crate::wiki_admin::ReadAccessOutcome::Denied { owner } = access {
         return Err(BriefingError::ReadAccessDenied {
             wiki_id: req.wiki_id.clone(),
-            owner,
+            owner: owner.unwrap_or_else(|| "nobody".to_owned()),
             caller_owner: caller.sender_id.clone(),
         });
     }

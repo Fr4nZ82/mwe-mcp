@@ -4266,15 +4266,21 @@ const STRUCTURE_INVENTORY_PAGES: usize = 120;
 /// facts it carries, and — the part that matters — the principals those facts
 /// are actually ABOUT. A page's name and its wiki are what the engine decided;
 /// the subjects are what the page IS.
+///
+/// A **topic wiki** — named for its subject, standing for nobody, which is
+/// what the nightly grouping raises — answers to no principal, so its entry
+/// carries `None`. Its pages are in the inventory like any other: they are the
+/// ones the grouping just placed, and a review that cannot see them cannot
+/// weigh the forest it is being asked about.
 fn forest_inventory(tree: &WikiTree, plan: &crate::planner::CompilationPlan) -> Vec<ForestPage> {
-    let principals: BTreeMap<String, String> = tree
+    let principals: BTreeMap<String, Option<String>> = tree
         .walk()
         .unwrap_or_default()
         .into_iter()
         .filter(|d| !d.meta.smart)
         .filter_map(|d| {
             let p = tree.resolve_scope_principal(&d.meta).ok()?;
-            Some((d.meta.wiki_id.as_str().to_owned(), p.to_string()))
+            Some((d.meta.wiki_id.as_str().to_owned(), p.map(|p| p.to_string())))
         })
         .collect();
     let mut out = Vec::new();
@@ -4298,7 +4304,12 @@ fn forest_inventory(tree: &WikiTree, plan: &crate::planner::CompilationPlan) -> 
         }
         let mut subjects: Vec<(String, usize)> = tally.into_iter().collect();
         subjects.sort_by(|a, b| b.1.cmp(&a.1).then_with(|| a.0.cmp(&b.0)));
-        let off_principal = subjects.first().is_some_and(|(s, _)| s != own);
+        // "Off principal" is a comparison against the wiki's own principal, so
+        // no page of a topic wiki is off one: which facts belong there is a
+        // question about the wiki's subject, not about who owns it.
+        let off_principal = own
+            .as_ref()
+            .is_some_and(|own| subjects.first().is_some_and(|(s, _)| s != own));
         out.push(ForestPage {
             address: format!("{}/{}", page.wiki_id, page.page_path),
             wiki_id: page.wiki_id.clone(),
@@ -4328,21 +4339,27 @@ fn render_forest(tree: &WikiTree, pages: &[ForestPage]) -> String {
     for p in pages {
         by_wiki.entry(p.wiki_id.as_str()).or_default().push(p);
     }
-    let principals: BTreeMap<String, String> = tree
+    let principals: BTreeMap<String, Option<String>> = tree
         .walk()
         .unwrap_or_default()
         .into_iter()
         .filter(|d| !d.meta.smart)
         .filter_map(|d| {
             let p = tree.resolve_scope_principal(&d.meta).ok()?;
-            Some((d.meta.wiki_id.as_str().to_owned(), p.to_string()))
+            Some((d.meta.wiki_id.as_str().to_owned(), p.map(|p| p.to_string())))
         })
         .collect();
     let mut out = String::new();
     for (wiki, ps) in by_wiki {
-        let whose = principals
-            .get(wiki)
-            .map_or_else(|| "?".to_owned(), Clone::clone);
+        // The judge is told whose a wiki is because rule 1 of its prompt is a
+        // comparison against that. A topic wiki is nobody's, and saying so is
+        // what stops the rule from firing on every page the grouping just
+        // placed.
+        let whose = match principals.get(wiki) {
+            Some(Some(p)) => p.clone(),
+            Some(None) => "nobody — it is named for its subject".to_owned(),
+            None => "?".to_owned(),
+        };
         let _ = writeln!(out, "\nwiki {wiki} — belongs to {whose}");
         for p in ps {
             let subjects = p

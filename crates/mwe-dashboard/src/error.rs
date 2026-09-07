@@ -50,10 +50,10 @@ pub enum DashboardError {
     Forbidden,
 
     /// Authenticated, but outside the read set of the requested content
-    /// (per-fragment ACL on media, wiki-level ACL on a smart wiki).
+    /// (per-fragment ACL on media; on a wiki, whichever question its family
+    /// asks — [`mwe_core::wiki_admin::wiki_readable_by`]).
     /// Distinct from [`Self::Forbidden`] because **admin does not bypass**
-    /// a content read ACL — see the media route and
-    /// [`mwe_core::wiki_admin::resolve_read_access`] — so the
+    /// a content read ACL — see the media route and that gate — so the
     /// "Admin rights required." copy would be an actively misleading hint.
     #[error("no read access")]
     NoAccess,

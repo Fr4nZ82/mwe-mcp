@@ -1283,28 +1283,46 @@ impl WikiTree {
     }
 
     /// Resolve the **scope principal** of a wiki — the principal whose
-    /// category this wiki is — from topology.
+    /// category this wiki is — from topology, when it has one.
     ///
-    /// A wiki is a *category*, not an owner: its principal is never declared
-    /// in `_meta.md`, it is **derived** by following `parent_wiki_id` up to
-    /// the root wiki (`parent_wiki_id == None`). The root is an
-    /// identity wiki, so its `wiki_type` and id give the principal:
-    /// [`IDENTITY_WIKI_TYPE`] (`wiki-user`) → `Principal::User(root_id)`,
-    /// [`GROUP_IDENTITY_WIKI_TYPE`] (`wiki-group`) → `Principal::Group(root_id)`.
-    /// Any other root type (or a tree whose root is not an identity wiki)
-    /// surfaces a [`WikiError::InvalidFrontmatter`].
+    /// A wiki is a *category*, not an owner: a principal is never declared in
+    /// `_meta.md`, it is **derived** by following `parent_wiki_id` up to the
+    /// root wiki (`parent_wiki_id == None`) and reading what the root is.
     ///
-    /// A [`WikiError::ScopeChainUnresolved`] is raised if the parent chain
-    /// exceeds [`MAX_ACL_DEFAULT_HOPS`] hops or forms a cycle (defensive
-    /// against a hand-edited `_meta.md`).
-    pub fn resolve_scope_principal(&self, meta: &WikiMeta) -> Result<Principal> {
+    /// * An **identity root** names one: [`IDENTITY_WIKI_TYPE`] (`wiki-user`)
+    ///   → `Principal::User(root_id)`, [`GROUP_IDENTITY_WIKI_TYPE`]
+    ///   (`wiki-group`) → `Principal::Group(root_id)`.
+    /// * A root of any other type is a **topic wiki** — named for its subject,
+    ///   standing for nobody, which is what the nightly grouping raises — and
+    ///   it has **none**: `Ok(None)`. What may be read there, and who answers
+    ///   for it, is decided per fact by `subject_id` and `allow_ids`; nothing
+    ///   stands in for them at wiki level.
+    ///
+    /// The walk up the chain is there for the one shape that has a parent — a
+    /// smart wiki sits under the wiki of the user it belongs to, which is
+    /// where its wiki-level read audience comes from.
+    ///
+    /// # Errors
+    ///
+    /// [`WikiError::ScopeChainUnresolved`] if the parent chain exceeds
+    /// [`MAX_ACL_DEFAULT_HOPS`] hops or forms a cycle (defensive against a
+    /// hand-edited `_meta.md`); a parent that cannot be located surfaces as
+    /// during [`Self::locate`].
+    pub fn resolve_scope_principal(&self, meta: &WikiMeta) -> Result<Option<Principal>> {
         let mut current = meta.clone();
         let mut seen = std::collections::HashSet::new();
         seen.insert(current.wiki_id.clone());
         for _ in 0..MAX_ACL_DEFAULT_HOPS {
             let Some(parent_id) = current.parent_wiki_id.clone() else {
-                // Reached the root: its type + id name the principal.
-                return scope_principal_of_root(&current);
+                // Reached the root: an identity root names a principal by its
+                // type and id, and a root of any other type is a topic wiki,
+                // which names none.
+                let id = current.wiki_id.as_str().to_owned();
+                return Ok(match current.wiki_type.as_str() {
+                    IDENTITY_WIKI_TYPE => Some(Principal::User(id)),
+                    GROUP_IDENTITY_WIKI_TYPE => Some(Principal::Group(id)),
+                    _ => None,
+                });
             };
             if !seen.insert(parent_id.clone()) {
                 return Err(WikiError::ScopeChainUnresolved {
@@ -1319,27 +1337,6 @@ impl WikiTree {
             wiki: meta.wiki_id.clone(),
             cap: MAX_ACL_DEFAULT_HOPS,
         })
-    }
-}
-
-/// Map a **root** wiki's identity type to its scope principal.
-///
-/// `wiki-user` → `Principal::User(id)`, `wiki-group` → `Principal::Group(id)`.
-/// A root of any other type cannot name a principal — the caller's tree is
-/// malformed (a non-identity wiki sitting at the top).
-fn scope_principal_of_root(root: &WikiMeta) -> Result<Principal> {
-    let id = root.wiki_id.as_str().to_owned();
-    match root.wiki_type.as_str() {
-        IDENTITY_WIKI_TYPE => Ok(Principal::User(id)),
-        GROUP_IDENTITY_WIKI_TYPE => Ok(Principal::Group(id)),
-        other => Err(WikiError::InvalidFrontmatter {
-            path: PathBuf::from(format!("{id}/{META_FILENAME}")),
-            detail: format!(
-                "root wiki `{id}` has wiki_type `{other}`, not an identity \
-                 type ({IDENTITY_WIKI_TYPE} / {GROUP_IDENTITY_WIKI_TYPE}); \
-                 cannot derive a scope principal"
-            ),
-        }),
     }
 }
 
@@ -2675,7 +2672,7 @@ mod tests {
         let parsed = wiki_get_meta(&tree, &id).expect("get meta");
         assert_eq!(
             tree.resolve_scope_principal(&parsed).expect("resolve"),
-            Principal::User("franz".into())
+            Some(Principal::User("franz".into()))
         );
         // A wiki is born with its metadata and its rules page,
         // and gets its pages from what is written into it (2026-08-15).
@@ -2798,7 +2795,7 @@ mod tests {
         let parsed = wiki_get_meta(&tree, &id).expect("get meta");
         assert_eq!(
             tree.resolve_scope_principal(&parsed).expect("resolve"),
-            Principal::Group("famiglia".into())
+            Some(Principal::Group("famiglia".into()))
         );
         // A group identity wiki is typed `wiki-group`, not the
         // user default — distinct type, not just a different ACL.
@@ -3285,7 +3282,7 @@ mod tests {
             .locate(&WikiId::parse("alice").unwrap())
             .expect("locate");
         let p = tree.resolve_scope_principal(h.meta()).expect("resolve");
-        assert_eq!(p, Principal::User("alice".into()));
+        assert_eq!(p, Some(Principal::User("alice".into())));
     }
 
     #[test]
@@ -3301,7 +3298,7 @@ mod tests {
             .locate(&WikiId::parse("alice-acmecorp").unwrap())
             .expect("locate");
         let p = tree.resolve_scope_principal(h.meta()).expect("resolve");
-        assert_eq!(p, Principal::User("alice".into()));
+        assert_eq!(p, Some(Principal::User("alice".into())));
     }
 
     #[test]
@@ -3322,7 +3319,36 @@ mod tests {
             .locate(&WikiId::parse("alice-acmecorp-widget").unwrap())
             .expect("locate");
         let p = tree.resolve_scope_principal(h.meta()).expect("resolve");
-        assert_eq!(p, Principal::User("alice".into()));
+        assert_eq!(p, Some(Principal::User("alice".into())));
+    }
+
+    /// A topic wiki has no principal, and that is a value, not an error.
+    ///
+    /// The nightly grouping raises every emerged wiki this way — `wiki-tech`,
+    /// no parent, standing for nobody — and the whole product reads it: a page
+    /// of one opens in the dashboard and over MCP because nothing asks who owns
+    /// it. What may be read there is decided per fact.
+    #[test]
+    fn resolve_scope_principal_of_a_topic_wiki_is_none() {
+        let dir = tempdir().unwrap();
+        let tree = WikiTree::open(dir.path()).expect("open");
+        write_meta(
+            &tree.wikis_dir().join("giardinaggio"),
+            "---\n\
+             wiki_id: giardinaggio\n\
+             wiki_type: wiki-tech\n\
+             parent_wiki_id: null\n\
+             slug: giardinaggio\n\
+             title: Giardinaggio\n\
+             ---\n",
+        );
+        let h = tree
+            .locate(&WikiId::parse("giardinaggio").unwrap())
+            .expect("locate");
+        let p = tree
+            .resolve_scope_principal(h.meta())
+            .expect("a topic wiki resolves, it does not fail");
+        assert_eq!(p, None, "a wiki that stands for nobody answers to nobody");
     }
 
     /// A **group** identity root derives a group principal.
@@ -3335,7 +3361,7 @@ mod tests {
         let tree = WikiTree::open(dir.path()).expect("reopen");
         let h = tree.locate(&famiglia).expect("locate");
         let p = tree.resolve_scope_principal(h.meta()).expect("resolve");
-        assert_eq!(p, Principal::Group("famiglia".into()));
+        assert_eq!(p, Some(Principal::Group("famiglia".into())));
     }
 
     #[test]

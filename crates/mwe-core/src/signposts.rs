@@ -168,10 +168,10 @@ pub enum SignpostError {
         caller: String,
     },
 
-    /// The project wiki resolves to a group, which has no single personal
-    /// wiki to signpost into.
-    #[error("wiki {wiki_id} is group-owned — no personal wiki to signpost into")]
-    GroupOwned {
+    /// No single user stands above the project wiki — a group answers for
+    /// it, or nothing does — so there is no personal wiki to signpost into.
+    #[error("wiki {wiki_id} has no owning user — no personal wiki to signpost into")]
+    NoOwningUser {
         /// The offending wiki.
         wiki_id: String,
     },
@@ -702,7 +702,9 @@ pub async fn status(
     if project.meta().is_agent || project.meta().wiki_type == crate::wiki::AGENT_WIKI_TYPE {
         return Ok(None);
     }
-    let Principal::User(owner) = tree.resolve_scope_principal(project.meta())? else {
+    // Signposts are filed on their owner's own pages, so a project wiki with
+    // no single user above it has no status to report.
+    let Some(Principal::User(owner)) = tree.resolve_scope_principal(project.meta())? else {
         return Ok(None);
     };
     let (Ok(page), Ok(diary)) = (page_path(tree, &owner), diary_page_path(tree, &owner)) else {
@@ -818,8 +820,11 @@ fn target_owner(tree: &WikiTree, project_wiki_id: &WikiId) -> Result<String> {
         });
     }
     match tree.resolve_scope_principal(project.meta())? {
-        Principal::User(owner) => Ok(owner),
-        Principal::Group(_) => Err(SignpostError::GroupOwned {
+        Some(Principal::User(owner)) => Ok(owner),
+        // A smart wiki is created under the wiki of the user it belongs to, so
+        // that user is the principal above it. A group above it, or nothing at
+        // all, leaves no personal pages to file signposts on.
+        Some(Principal::Group(_)) | None => Err(SignpostError::NoOwningUser {
             wiki_id: project_wiki_id.as_str().to_owned(),
         }),
     }

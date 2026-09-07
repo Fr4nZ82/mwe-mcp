@@ -87,15 +87,16 @@ const SUMMARY_KEY: &str = "summary";
 pub async fn sync_wiki_keywords(pool: &SqlitePool, tree: &WikiTree) -> Result<usize> {
     let mut updated = 0usize;
     for d in tree.walk().context("walk wiki tree")? {
-        // A wiki nobody answers for — an emergent one, named for its subject
-        // rather than a person — has no principal to derive, and that is not
-        // an error: it is a shelf. Skipped rather than propagated, or one
-        // such wiki in the forest would abort the sweep for every other.
+        // A topic wiki — named for its subject, standing for nobody — answers
+        // to no principal, and what follows is a comparison against one: with
+        // nothing to compare to, the wiki takes no part. An unresolvable chain
+        // drops out the same way rather than propagating, or one such wiki
+        // would abort the sweep for every other.
         //
         // ⚠️ The filter this principal feeds is itself the wider question
         // (a wiki's principal deciding which facts advertise keywords, and
         // which summaries a reader is shown); that is the sweep, not this.
-        let Ok(default) = tree.resolve_scope_principal(&d.meta) else {
+        let Ok(Some(default)) = tree.resolve_scope_principal(&d.meta) else {
             continue;
         };
         let topics = collect_wiki_topics(pool, d.meta.wiki_id.as_str(), &default).await?;
@@ -177,15 +178,16 @@ fn sync_meta_topics(abs_dir: &Path, topics: &[String]) -> Result<bool> {
 pub async fn sync_page_keywords(pool: &SqlitePool, tree: &WikiTree) -> Result<usize> {
     let mut updated = 0usize;
     for d in tree.walk().context("walk wiki tree")? {
-        // A wiki nobody answers for — an emergent one, named for its subject
-        // rather than a person — has no principal to derive, and that is not
-        // an error: it is a shelf. Skipped rather than propagated, or one
-        // such wiki in the forest would abort the sweep for every other.
+        // A topic wiki — named for its subject, standing for nobody — answers
+        // to no principal, and what follows is a comparison against one: with
+        // nothing to compare to, the wiki takes no part. An unresolvable chain
+        // drops out the same way rather than propagating, or one such wiki
+        // would abort the sweep for every other.
         //
         // ⚠️ The filter this principal feeds is itself the wider question
         // (a wiki's principal deciding which facts advertise keywords, and
         // which summaries a reader is shown); that is the sweep, not this.
-        let Ok(default) = tree.resolve_scope_principal(&d.meta) else {
+        let Ok(Some(default)) = tree.resolve_scope_principal(&d.meta) else {
             continue;
         };
         let by_page = collect_page_topics(pool, d.meta.wiki_id.as_str(), &default).await?;
@@ -414,15 +416,16 @@ pub async fn build_reader_card(
 
     let mut summary_wikis = BTreeSet::new();
     for d in tree.walk().context("walk wiki tree")? {
-        // A wiki nobody answers for — an emergent one, named for its subject
-        // rather than a person — has no principal to derive, and that is not
-        // an error: it is a shelf. Skipped rather than propagated, or one
-        // such wiki in the forest would abort the sweep for every other.
+        // A topic wiki — named for its subject, standing for nobody — answers
+        // to no principal, and what follows is a comparison against one: with
+        // nothing to compare to, the wiki takes no part. An unresolvable chain
+        // drops out the same way rather than propagating, or one such wiki
+        // would abort the sweep for every other.
         //
         // ⚠️ The filter this principal feeds is itself the wider question
         // (a wiki's principal deciding which facts advertise keywords, and
         // which summaries a reader is shown); that is the sweep, not this.
-        let Ok(default) = tree.resolve_scope_principal(&d.meta) else {
+        let Ok(Some(default)) = tree.resolve_scope_principal(&d.meta) else {
             continue;
         };
         if crate::acl::principal_matches(&default, reader_id, reader_groups) {

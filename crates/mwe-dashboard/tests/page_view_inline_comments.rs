@@ -686,11 +686,15 @@ async fn comment_anonymous_redirects_to_login() {
     );
 }
 
+/// A comment on a standard wiki is refused to somebody who can read nothing in
+/// it — the wiki holds one fact and it is Bob's, so Alice, admin though she is,
+/// has nothing there to comment on.
 #[tokio::test]
 async fn comment_no_read_access_returns_403() {
-    let (app, _pool, tree, _dir) = make_app_with_memory().await;
+    let (app, pool, tree, _dir) = make_app_with_memory().await;
     let cookie = login_as_admin(&app).await; // Alice (admin, owns "alice")
     seed_bob_with_page(&tree, "modules/private.md", TWO_HEADING_BODY);
+    seed_fact_about(&pool, "bob", "modules/private.md", "user:bob", "03").await;
 
     let response = send(
         &app,
@@ -710,10 +714,10 @@ async fn comment_no_read_access_returns_403() {
         StatusCode::FORBIDDEN,
         "cross-user comment must be refused; got {status} body={html}",
     );
-    // Alice is admin yet denied: `resolve_read_access` has no admin
-    // bypass, so the 403 must carry the content-ACL copy and never the
-    // "Admin rights required." admin-gate copy (which would wrongly imply
-    // becoming/being admin unlocks another user's private wiki).
+    // Alice is admin yet denied: this gate has no admin bypass, so the 403
+    // must carry the content-ACL copy and never the "Admin rights required."
+    // admin-gate copy (which would wrongly imply that becoming, or being,
+    // admin unlocks another user's private wiki).
     assert!(
         html.contains("don't have access"),
         "403 must carry the content-ACL copy, got: {html}"
@@ -724,23 +728,23 @@ async fn comment_no_read_access_returns_403() {
     );
 }
 
-/// The comment affordance is gated on write access: an admin can VIEW
-/// another user's page (declassified) but cannot comment on it (reveal is
-/// a read lens, not a write grant), so the page shows the "can't comment"
-/// notice instead of a dead "Add comments" / "+ Comment" link — even in
-/// `?mode=comment`.
+/// Reveal is a read lens, not a grant. An admin with reveal on sees another
+/// user's page whole, and is still shown the "can't comment" notice instead of
+/// a dead "Add comments" / "+ Comment" link — even in `?mode=comment`, because
+/// the comment gate never consults reveal.
 #[tokio::test]
-async fn comment_affordance_hidden_without_write_access() {
-    let (app, _pool, tree, _dir) = make_app_with_memory().await;
+async fn comment_affordance_hidden_when_only_reveal_opened_the_page() {
+    let (app, pool, tree, _dir) = make_app_with_memory().await;
     let cookie = login_as_admin(&app).await; // alice (admin), not bob
     seed_bob_with_page(&tree, "modules/private.md", TWO_HEADING_BODY);
+    seed_fact_about(&pool, "bob", "modules/private.md", "user:bob", "04").await;
 
     let response = send(
         &app,
         Request::builder()
             .method("GET")
             .uri("/wiki/bob/view/modules/private.md?mode=comment")
-            .header(header::COOKIE, &cookie)
+            .header(header::COOKIE, format!("{cookie}; mwe_admin_reveal=1"))
             .body(Body::empty())
             .unwrap(),
     )
@@ -1615,4 +1619,218 @@ async fn the_comment_form_says_who_will_read_it() {
             "{uri} also claims `{refused}`, which is the other family's promise"
         );
     }
+}
+
+// ---------- a topic wiki, which belongs to nobody ----------
+
+/// Drop the shape the nightly grouping raises: a `wiki-tech` wiki with no
+/// parent, named for its subject, so no principal answers for it.
+fn seed_giardinaggio_with_page(tree: &WikiTree, page: &str, body: &str) {
+    let dir = tree.wikis_dir().join("giardinaggio");
+    std::fs::create_dir_all(&dir).unwrap();
+    let meta = "---\n\
+                wiki_id: giardinaggio\n\
+                wiki_type: wiki-tech\n\
+                parent_wiki_id: null\n\
+                slug: giardinaggio\n\
+                title: Giardinaggio\n\
+                ---\n";
+    std::fs::write(dir.join("_meta.md"), meta).unwrap();
+    std::fs::write(dir.join(page), body).unwrap();
+}
+
+/// One indexed fact about `subject`, so the wiki's derived visibility has
+/// something to answer with.
+async fn seed_fact_about(pool: &SqlitePool, wiki_id: &str, page: &str, subject: &str, tail: &str) {
+    use mwe_core::fact_index::{self, NewFact};
+    use mwe_core::types::FactId;
+
+    fact_index::insert(
+        pool,
+        &NewFact {
+            subject_external: None,
+            authored_refs: Vec::new(),
+            fact_id: FactId::parse(&format!("018f1234-5678-7abc-9def-0000000005{tail}")).unwrap(),
+            wiki_id: wiki_id.to_owned(),
+            source_path: format!("wikis/{wiki_id}/{page}"),
+            region_start: None,
+            region_end: None,
+            text: "The roses are pruned in February.".to_owned(),
+            embedding: vec![0.0; 8],
+            subject_id: subject.parse().unwrap(),
+            allow_ids: Vec::new(),
+            sender_id: Some(subject.parse().unwrap()),
+            fact_type: None,
+            topics: Vec::new(),
+            valid_from: None,
+            valid_to: None,
+            target_page: None,
+            style: None,
+            salience: None,
+            source_ref: None,
+        },
+    )
+    .await
+    .expect("seed fact");
+}
+
+/// Sign a fresh non-admin in, through the invite the admin issues.
+async fn login_as_user(app: &Router, admin_cookie: &str, user_id: &str) -> String {
+    let create = send(
+        app,
+        Request::builder()
+            .method("POST")
+            .uri("/users/new")
+            .header(header::CONTENT_TYPE, "application/x-www-form-urlencoded")
+            .header(header::COOKIE, admin_cookie)
+            .body(Body::from(format!(
+                "user_id={user_id}&email={user_id}@example.com&aliases="
+            )))
+            .unwrap(),
+    )
+    .await;
+    assert_eq!(create.status(), StatusCode::OK);
+    let html = body_string(create).await;
+    let prefix = "/dashboard/accept-invite/";
+    let start = html.find(prefix).expect("invitation link");
+    let after = &html[start + prefix.len()..];
+    let end = after
+        .find(|c: char| c.is_whitespace() || matches!(c, '"' | '<' | '\'' | ')' | ','))
+        .unwrap();
+    let invitation_id = &after[..end];
+    let accept = send(
+        app,
+        Request::builder()
+            .method("POST")
+            .uri(format!("/accept-invite/{invitation_id}"))
+            .header(header::CONTENT_TYPE, "application/x-www-form-urlencoded")
+            .body(Body::from(format!(
+                "password={user_id}-pw-secret-12&password_confirm={user_id}-pw-secret-12"
+            )))
+            .unwrap(),
+    )
+    .await;
+    extract_cookie_value(&extract_set_cookie(&accept, "mwe_session").expect("cookie"))
+}
+
+/// A wiki nobody owns is read the way every standard wiki is read: per fact.
+/// The reader of one of its facts opens the page and is offered the comment
+/// affordance; a stranger does not find it at all.
+///
+/// Asking who owns the wiki instead is the other behaviour, and it cannot be
+/// answered here: nobody does. That question was a server error on every page
+/// view of every wiki the nightly grouping had raised.
+#[tokio::test]
+async fn a_page_of_a_wiki_nobody_owns_opens_for_the_reader_of_one_of_its_facts() {
+    let (app, pool, tree, _dir) = make_app_with_memory().await;
+    let admin = login_as_admin(&app).await;
+    let bob = login_as_user(&app, &admin, "bob").await;
+    let carol = login_as_user(&app, &admin, "carol").await;
+
+    seed_giardinaggio_with_page(&tree, "rose.md", TWO_HEADING_BODY);
+    seed_fact_about(&pool, "giardinaggio", "rose.md", "user:bob", "01").await;
+
+    let seen = send(
+        &app,
+        Request::builder()
+            .uri("/wiki/giardinaggio/view/rose.md")
+            .header(header::COOKIE, &bob)
+            .body(Body::empty())
+            .unwrap(),
+    )
+    .await;
+    assert_eq!(
+        seen.status(),
+        StatusCode::OK,
+        "the reader of a fact in this wiki opens its page"
+    );
+    let html = body_string(seen).await;
+    assert!(
+        html.contains("Add comments"),
+        "a reader who may read here may comment here: {html}"
+    );
+
+    let hidden = send(
+        &app,
+        Request::builder()
+            .uri("/wiki/giardinaggio/view/rose.md")
+            .header(header::COOKIE, &carol)
+            .body(Body::empty())
+            .unwrap(),
+    )
+    .await;
+    assert_eq!(
+        hidden.status(),
+        StatusCode::NOT_FOUND,
+        "a reader who can read nothing in this wiki does not find it"
+    );
+}
+
+/// The raw editor on a wiki nobody owns belongs to the admin: there is no owner
+/// to be, so the admin-only gate the editor already carries is the whole of it.
+/// A non-admin who can read the page still cannot open it, and the save goes
+/// through to disk rather than being refused by the write gate underneath.
+#[tokio::test]
+async fn the_raw_editor_of_a_wiki_nobody_owns_is_the_admins() {
+    let (app, pool, tree, _dir) = make_app_with_memory().await;
+    let admin = login_as_admin(&app).await;
+    let bob = login_as_user(&app, &admin, "bob").await;
+
+    seed_giardinaggio_with_page(&tree, "rose.md", TWO_HEADING_BODY);
+    seed_fact_about(&pool, "giardinaggio", "rose.md", "user:bob", "02").await;
+
+    let refused = send(
+        &app,
+        Request::builder()
+            .uri("/wiki/giardinaggio/edit/rose.md")
+            .header(header::COOKIE, &bob)
+            .body(Body::empty())
+            .unwrap(),
+    )
+    .await;
+    assert_eq!(
+        refused.status(),
+        StatusCode::FORBIDDEN,
+        "the raw editor stays admin-only on a standard wiki"
+    );
+
+    let form = send(
+        &app,
+        Request::builder()
+            .uri("/wiki/giardinaggio/edit/rose.md")
+            .header(header::COOKIE, &admin)
+            .body(Body::empty())
+            .unwrap(),
+    )
+    .await;
+    assert_eq!(
+        form.status(),
+        StatusCode::OK,
+        "the admin opens the editor on a wiki nobody owns"
+    );
+
+    let saved = send(
+        &app,
+        Request::builder()
+            .method("POST")
+            .uri("/wiki/giardinaggio/edit/rose.md")
+            .header(header::COOKIE, &admin)
+            .header(header::CONTENT_TYPE, "application/x-www-form-urlencoded")
+            .body(Body::from(
+                "body=%23%20Rose%0A%0APruned%20in%20February.%0A",
+            ))
+            .unwrap(),
+    )
+    .await;
+    assert!(
+        saved.status().is_redirection(),
+        "the save must land, not bounce back with an error: {}",
+        saved.status()
+    );
+    let on_disk =
+        std::fs::read_to_string(tree.wikis_dir().join("giardinaggio").join("rose.md")).unwrap();
+    assert!(
+        on_disk.contains("Pruned in February."),
+        "the editor wrote the page: {on_disk}"
+    );
 }

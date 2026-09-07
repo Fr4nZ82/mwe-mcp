@@ -847,12 +847,21 @@ pub async fn project_smart_wiki_registry(
             continue;
         }
         let wiki_id = d.meta.wiki_id.as_str().to_owned();
+        // The registry row says who may read the wiki, so a wiki whose
+        // principal cannot be named has no row: fail-closed, recall simply
+        // will not offer its sections. A smart wiki is created under the wiki
+        // of the user it belongs to, so `None` here means the chain does not
+        // lead to one.
         let owner_id = match tree.resolve_scope_principal(&d.meta) {
-            Ok(p) => p,
+            Ok(Some(p)) => p,
+            Ok(None) => {
+                tracing::warn!(
+                    wiki_id = %wiki_id,
+                    "smart registry: no principal above this wiki — left out of the registry"
+                );
+                continue;
+            },
             Err(e) => {
-                // An unresolvable scope means we cannot say who may read
-                // the wiki. Leaving the row out is fail-closed: recall
-                // simply will not offer its sections.
                 tracing::warn!(
                     wiki_id = %wiki_id,
                     error = %e,

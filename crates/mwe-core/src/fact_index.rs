@@ -979,6 +979,9 @@ pub async fn mark_forgotten_in_wiki(pool: &SqlitePool, wiki_id: &str, reason: &s
 /// Facts are grouped by wiki and each wiki's scope is resolved from topology
 /// ([`crate::wiki::WikiTree::resolve_scope_principal`]). A wiki whose scope is
 /// *itself* `gone` is **skipped** — the substitute would not lift the dangle.
+/// So is a **topic wiki** — one named for its subject, standing for nobody —
+/// which has no scope for a contribution to pass to: its rows keep the sender
+/// they carry.
 /// A wiki that fails to locate or resolve is logged and skipped, never
 /// aborting the removal. Only active (non-tombstoned) rows are touched.
 /// Returns the number reassigned.
@@ -1010,7 +1013,16 @@ pub async fn reassign_sender_to_scope(
             .locate(&id)
             .and_then(|h| tree.resolve_scope_principal(h.meta()))
         {
-            Ok(scope) => scope,
+            Ok(Some(scope)) => scope,
+            // A topic wiki answers to no principal, so there is nothing for
+            // the contribution to pass to.
+            Ok(None) => {
+                tracing::warn!(
+                    wiki_id = %wiki_id,
+                    "wiki answers to no principal — sender left as it is"
+                );
+                continue;
+            },
             Err(e) => {
                 tracing::warn!(
                     wiki_id = %wiki_id, error = %e,

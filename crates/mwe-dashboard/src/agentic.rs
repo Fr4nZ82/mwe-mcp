@@ -863,11 +863,18 @@ fn dispatch_wiki_get_meta(
         }
     })?;
     // The owning principal is derived from topology (the root identity
-    // wiki's type), not declared in `_meta.md`.
+    // wiki's type), not declared in `_meta.md`. A topic wiki — one named for
+    // its subject, standing for nobody — answers to no principal, so `owner`
+    // is `null`: a name in that slot is a claim about who the wiki's content
+    // belongs to, and there is nobody to name.
     let owner = ctx
         .tree
         .resolve_scope_principal(&meta)
-        .map_or_else(|e| format!("(unresolved: {e})"), |p| p.to_string());
+        .map_err(|e| AgenticToolError::InternalFailure {
+            tool,
+            detail: e.to_string(),
+        })?
+        .map(|p| p.to_string());
     let payload = json!({
         "wiki_id": meta.wiki_id.as_str(),
         "title": meta.title,
