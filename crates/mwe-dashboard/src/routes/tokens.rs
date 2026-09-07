@@ -23,7 +23,7 @@
 //! The `is_admin` JWT claim is **derived, never toggled in the form**: for a
 //! smart token it inherits the chosen owner's `enrollment_users.is_admin`;
 //! a standard token is always non-admin (its sender is a credential-less
-//! bot identity). There is at most one admin per deployment, so the
+//! consumer identity). There is at most one admin per deployment, so the
 //! dashboard exposes no "issue as admin" knob.
 
 use crate::auth::AdminUser;
@@ -170,7 +170,7 @@ struct IssueFormState {
     consumer_class: String,
     /// Smart only: the human owner who is the token's sender.
     owner_id: String,
-    /// Device id (smart) or bot id (standard).
+    /// Device id (smart) or consumer id (standard).
     consumer_id: String,
     /// Free audit label; blank ⇒ server fills it from `consumer_id`.
     device_label: String,
@@ -502,7 +502,7 @@ pub struct IssueSubmission {
     /// Smart only: the human owner who becomes the token's sender.
     #[serde(default)]
     pub owner_id: String,
-    /// Device id (smart) or bot id (standard).
+    /// Device id (smart) or consumer id (standard).
     #[serde(default)]
     pub consumer_id: String,
     /// Free audit label. Blank ⇒ the server fills it from `consumer_id`.
@@ -542,7 +542,7 @@ async fn issue_submit(
 
     // Resolve the sender and apply the per-class side effects: a smart
     // token binds the chosen human owner; a standard token derives its
-    // sender from the bot id (a system user it creates) and records the
+    // sender from the consumer id (a system user it creates) and records the
     // act-as delegation.
     let resolution = if smart {
         resolve_smart_sender(&state, &submission.owner_id).await?
@@ -649,7 +649,7 @@ async fn resolve_smart_sender(
     Ok(Ok((owner.to_owned(), is_admin_raw != 0)))
 }
 
-/// Resolve a *standard* token's sender: the bot id *is* the sender — a
+/// Resolve a *standard* token's sender: the consumer id *is* the sender — a
 /// credential-less system user created on first use. The act-as list is
 /// validated first so a bad request never leaves an orphan system user;
 /// then the delegation is recorded. A standard token is never admin.

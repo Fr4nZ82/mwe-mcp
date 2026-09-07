@@ -1888,10 +1888,10 @@ mod tests {
         }
     }
 
-    /// The public guide, the installer and the agent instructions all
-    /// answer for nanoclaw. The authenticated tab is gated by the same
-    /// [`bridge_label`] lookup, so a label is what decides 200 vs 404
-    /// there too.
+    /// The public guide, the installer and the machine-readable
+    /// instructions all answer for nanoclaw. The authenticated tab is
+    /// gated by the same [`bridge_label`] lookup, so a label is what
+    /// decides 200 vs 404 there too.
     #[tokio::test]
     async fn nanoclaw_public_endpoints_serve() {
         for (uri, needle) in [
