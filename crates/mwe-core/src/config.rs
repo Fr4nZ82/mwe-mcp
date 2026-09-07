@@ -743,13 +743,14 @@ pub enum LlmProfile {
     /// privacy-first deployments; matches the workhorse runtime
     /// baseline in the `project-workhorse-runtime-baseline` memory.
     AllLocal,
-    /// `ingest` and `operator_chat` stay local; the strong nightly slots
-    /// (`rem_promotions`, `cronista`) and the navigator go to an API
-    /// (Anthropic by default). Local chat latency, API-quality
+    /// `ingest`, `operator_chat` and `rem_dedup_semantic` stay local; the
+    /// strong nightly slots (`rem_promotions`, `cronista`) and the navigator
+    /// go to an API (Anthropic by default). Local chat latency, API-quality
     /// maintenance.
     Hybrid,
-    /// Every slot goes to an API. Anthropic by default for the
-    /// quality-sensitive slots, `OpenAI` for the cheap dedup pass.
+    /// Every slot goes to an API, all six on Anthropic: Opus for the
+    /// strong slots, Sonnet for `ingest` and `operator_chat`, Haiku for
+    /// `rem_dedup_semantic` and `navigator`.
     AllApi,
     /// Empty skeleton — operator wires every slot manually.
     Custom,
@@ -801,16 +802,14 @@ impl LlmProfile {
     ///   on the API profiles; the local workhorse on all-local (a
     ///   dedicated local navigator tune is a tracked extension).
     ///
-    /// NOTE: `hybrid` and `all-api` reference the `anthropic` backend.
-    /// [`LlmFunctionConfig::build_backend`] now materialises it
-    /// provided the env-var named in `api_key_env` (default
-    /// `ANTHROPIC_API_KEY`) is set in the process environment. The
-    /// `gemini` backend is also materialisable (with `GEMINI_API_KEY`
-    /// by convention) but no canned profile pins it yet — operators
-    /// who want a Gemini-based deployment wire it slot-by-slot via
-    /// the dashboard editor or YAML. The `openai` backend remains
-    /// gated by `ConfigError::UnsupportedLlmBackend` until its
-    /// adapter milestone lands.
+    /// NOTE: the canned profiles reach for two backends only, `ollama`
+    /// and `anthropic`, the latter provided the env-var named in
+    /// `api_key_env` (default `ANTHROPIC_API_KEY`) is set in the process
+    /// environment. [`LlmFunctionConfig::build_backend`] also materialises
+    /// `gemini`, `openai` and `openrouter` on the same terms; an operator
+    /// who wants one of those wires it slot-by-slot via the dashboard
+    /// editor or YAML. Any other `backend` string is
+    /// [`ConfigError::UnsupportedLlmBackend`].
     #[must_use]
     pub fn build(self) -> LlmConfig {
         match self {
@@ -1513,7 +1512,7 @@ impl DocumentConfig {
 ///
 /// `cron` (wall-clock "nightly at 03:00") is a future enhancement —
 /// the cap on engineering complexity for this milestone is the
-/// interval ticker, which covers the standard PWA-as-permanent-daemon
+/// interval ticker, which covers the standard long-lived-server
 /// deployment.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub struct RemScheduleConfig {

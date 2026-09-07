@@ -124,8 +124,8 @@ pub enum ProposalsError {
 }
 
 /// Errors raised by [`apply_proposal`] and the state-flip helper
-/// [`mark_applied`]. The variants double as the wire error classes
-/// surfaced by the MCP dispatcher for `structure_proposal_apply`.
+/// [`mark_applied`]. The variants are what the dashboard renders when an
+/// operator applies a proposal; nothing here reaches the MCP surface.
 #[derive(Debug, Error)]
 pub enum ApplyError {
     /// Underlying SQL failure.

@@ -47,10 +47,10 @@ use super::state::{IdentityProfile, McpState};
 
 /// Canonical name of the act-as header.
 ///
-/// Spelled `X-MWE-Act-As` in `AGENT_INSTRUCTIONS.md §3.1`. HTTP
-/// header names are
-/// case-insensitive; we keep the lowercase form here because that is
-/// what `axum::http::HeaderName::from_static` requires.
+/// Spelled `X-MWE-Act-As` in `AGENT_INSTRUCTIONS.md` §3, which is where
+/// a standard consumer reads how to act on behalf of a real user. HTTP
+/// header names are case-insensitive; we keep the lowercase form here
+/// because that is what `axum::http::HeaderName::from_static` requires.
 pub const ACT_AS_HEADER: HeaderName = HeaderName::from_static("x-mwe-act-as");
 
 /// Axum tower middleware in front of `/mcp`.

@@ -29,12 +29,12 @@ pub enum ToolErrorClass {
     NotFound,
     /// `500 internal_error` — unexpected bug, surface generic message.
     InternalError,
-    /// `503 service_unavailable` — backing infra down or feature not
-    /// yet fully implemented.
+    /// `503 service_unavailable` — the backing model call failed, or a
+    /// mandatory LLM slot is unwired so nothing could run the job.
     ServiceUnavailable,
-    /// `501 not_implemented_phase_c` — the tool exists but its full
-    /// implementation lands later. Used by `structure_proposal_apply` /
-    /// `_revert` and `wiki_ingest_external` non-inline sources.
+    /// `501 not_implemented_phase_c` — the tool exists but the branch
+    /// asked for does not. Raised by `wiki_ingest_external` for a `file`,
+    /// `git` or `url` source.
     NotImplementedPhaseC,
     /// `403 requires_consumer_class_smart` — token has
     /// `consumer_class != smart`; tool is in the smart-wiki

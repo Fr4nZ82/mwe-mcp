@@ -238,12 +238,12 @@ fn events_ack() -> Tool {
     )
 }
 
-// The structure_proposal_* tools (the `_apply` write and the `_list`
-// read) were removed from the MCP surface. Structural changes apply
-// directly in REM, silently — there is no proposal queue for an agent to
-// read or act on. Changing an applied structure requires the full context
-// of the dashboard, whose handlers call `mwe-core::proposals` directly; the
-// notice payload carries the `dashboard_path` to hand the user.
+// There is no `structure_proposal_*` family on the MCP surface. Structural
+// changes apply directly in REM, silently — there is no proposal queue for
+// an agent to read or act on. Changing an applied structure requires the
+// full context of the dashboard, whose handlers call `mwe-core::proposals`
+// directly; the notice payload carries the `dashboard_path` to hand the
+// user.
 
 fn wiki_read() -> Tool {
     read_only(materialize(
@@ -799,14 +799,15 @@ mod tests {
         ] {
             assert!(names.contains(expected), "missing tool: {expected}");
         }
-        // Conversely, the dropped tools must NOT be present.
-        for dropped in [
+        // Conversely, the structure-proposal names belong to the dashboard
+        // operator surface and must never appear here.
+        for absent in [
             "structure_proposal_list",
             "structure_proposal_apply",
             "structure_proposal_confirm",
             "structure_proposal_revert",
         ] {
-            assert!(!names.contains(dropped), "tool {dropped} must be removed");
+            assert!(!names.contains(absent), "tool {absent} is not an MCP tool");
         }
     }
 

@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
-//! `mwe-dashboard` — built-in PWA for `mwe-mcp`.
+//! `mwe-dashboard` — the built-in web dashboard for `mwe-mcp`.
 //!
 //! The dashboard is the whole operator-facing surface of mwe-mcp: it
 //! bootstraps the single admin, invites regular users over single-use

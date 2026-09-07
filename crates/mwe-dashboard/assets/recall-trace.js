@@ -19,7 +19,7 @@
  *
  * ES module by design — it imports the vendored Three.js (pinned, MIT,
  * three.LICENSE.txt) relative to its own URL, so everything stays
- * self-hosted (PWA / air-gapped friendly, no CDN).
+ * self-hosted (air-gapped friendly, no CDN).
  */
 
 import * as THREE from './three.module.min.js';

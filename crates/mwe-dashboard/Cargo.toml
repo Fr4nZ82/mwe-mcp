@@ -6,7 +6,7 @@ rust-version.workspace = true
 license.workspace = true
 repository.workspace = true
 authors.workspace = true
-description = "Built-in PWA dashboard for mwe-mcp: Axum routes /dashboard/*, Maud templating, HTMX, embedded static assets"
+description = "Built-in web dashboard for mwe-mcp: Axum routes /dashboard/*, Maud templating, HTMX, embedded static assets"
 
 [lib]
 name = "mwe_dashboard"

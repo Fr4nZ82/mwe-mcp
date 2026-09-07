@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 //! REM cycle scheduler for the long-lived HTTP server.
 //!
-//! The HTTP transport is the standard PWA-as-permanent-daemon deployment,
+//! The HTTP transport is the standard permanent-daemon deployment,
 //! so a tokio interval ticker inside `cmd_serve_http` is the home of the
 //! recurring [`mwe_core::rem::run_cycle`] invocation. `mwe-mcp rem
 //! run-cycle` exists for a stopped server (it takes the workdir lock that

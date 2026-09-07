@@ -334,8 +334,9 @@ pub async fn dispatch(
             tools::call_wiki_admin_lease_release(state, identity, args).await
         },
         // Skill catalog (I family). Open to every authenticated
-        // token — bundled skills are public documentation. (Custom
-        // skills were removed in the `wiki_type` teardown.)
+        // token — the skills are public documentation, and every one of
+        // them is compiled into the binary: there is no per-deployment
+        // skill store to gate.
         "skill_list" => tools::call_skill_list(state, identity, args).await,
         "skill_fetch" => tools::call_skill_fetch(state, identity, args).await,
         // K family — atomic primitives the Claude Code hook bundle leans

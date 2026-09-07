@@ -169,7 +169,7 @@ fs2 = "0.4"
 # tar — memory-wiki prose is small, no compression dep needed.
 tar = "0.4"
 
-# Static asset embedding (dashboard PWA)
+# Static asset embedding (dashboard assets)
 rust-embed = { version = "8", features = ["interpolate-folder-path"] }
 
 # Error / utility
