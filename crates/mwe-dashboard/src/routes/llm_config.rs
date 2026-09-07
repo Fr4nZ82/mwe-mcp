@@ -941,12 +941,7 @@ fn claude_login_block(_llm: &LlmConfig) -> Markup {
                     "Approve on Claude's page, then paste the code it shows — a "
                     "couple of clicks."
                 }
-                // Always the out-of-band paste flow (`manual=1`): Claude Code's
-                // OAuth client does not accept this server's loopback callback as
-                // a redirect_uri, so the seamless path stays dormant. See
-                // claude_login.rs.
                 form action="/dashboard/admin/claude-login/start" method="post" class="inline-form" {
-                    input type="hidden" name="manual" value="1";
                     button type="submit" { "Log in with Claude Code" }
                 }
             },

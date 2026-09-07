@@ -179,9 +179,10 @@ pub struct MemoryHandles {
 /// redirect and the `callback`/`paste` completion (one operator login at
 /// a time; a new attempt overwrites any abandoned one).
 ///
-/// The token endpoint requires the same `redirect_uri` at code exchange
-/// that built the authorize URL, so it is recorded here alongside the
-/// PKCE `verifier` and the CSRF `state`. Test/personal use only — see
+/// The `redirect_uri` is not recorded: the flow has exactly one, the
+/// out-of-band page on Claude's own domain
+/// ([`mwe_core::oauth::OOB_REDIRECT_URI`]), and the token endpoint is
+/// handed that same constant at exchange. Test/personal use only — see
 /// [`mwe_core::oauth`].
 #[derive(Debug, Clone)]
 pub struct PendingClaudeLogin {
@@ -189,9 +190,6 @@ pub struct PendingClaudeLogin {
     pub verifier: String,
     /// CSRF guard echoed back by the provider and re-checked on completion.
     pub state: String,
-    /// The exact `redirect_uri` used for the authorize URL (loopback
-    /// callback for the seamless path, out-of-band for the paste path).
-    pub redirect_uri: String,
 }
 
 /// Per-slot overrides for the canonical LLM functions. Empty in

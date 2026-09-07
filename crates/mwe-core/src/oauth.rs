@@ -5,8 +5,8 @@
 //! browser authorize URL, the authorization-code → token exchange, refresh,
 //! and a workdir-local credential store that hands out a *fresh* access token
 //! (refreshing transparently when the short-lived one is near expiry). The
-//! "Log in with Claude Code" button and the HTTP routes that redirect to the
-//! authorize page and catch the callback live in the dashboard crate
+//! "Log in with Claude Code" button and the HTTP routes behind it live in
+//! the dashboard crate
 //! (`mwe_dashboard::routes::claude_login`); the server installs the
 //! process-wide [`OauthStore`] at startup (see [`install_global_store`] /
 //! [`default_store`]). The transport that *uses* the resulting token is
@@ -36,10 +36,12 @@ const TOKEN_ENDPOINT: &str = "https://console.anthropic.com/v1/oauth/token";
 /// Scopes the Claude Code subscription flow requests.
 const OAUTH_SCOPES: &str = "org:create_api_key user:profile user:inference";
 
-/// Anthropic's out-of-band callback page (the paste fallback).
+/// Anthropic's out-of-band callback page, and the only redirect this flow
+/// uses.
 ///
-/// It *displays* the authorization code for the user to paste back; used as
-/// the redirect when a loopback callback to our own dashboard is unavailable.
+/// It *displays* the authorization code for the user to paste back.
+/// Claude Code's OAuth client accepts no callback of this server's, so
+/// copying the code by hand is the return channel.
 pub const OOB_REDIRECT_URI: &str = "https://console.anthropic.com/oauth/code/callback";
 
 /// Reserved `api_key_env` value selecting the Claude Code login store.
@@ -160,10 +162,9 @@ pub fn generate_state() -> Result<String> {
 
 /// Build the browser authorization URL.
 ///
-/// `redirect_uri` is either a loopback callback the server owns (seamless
-/// path) or [`OOB_REDIRECT_URI`] (the paste fallback); whichever is used here
-/// must be replayed verbatim at code exchange (the token endpoint enforces an
-/// exact match).
+/// `redirect_uri` must be replayed verbatim at code exchange — the token
+/// endpoint enforces an exact match. The dashboard passes
+/// [`OOB_REDIRECT_URI`] both times.
 pub fn build_authorize_url(redirect_uri: &str, state: &str, challenge: &str) -> Result<String> {
     let url = reqwest::Url::parse_with_params(
         AUTHORIZE_ENDPOINT,
@@ -182,9 +183,8 @@ pub fn build_authorize_url(redirect_uri: &str, state: &str, challenge: &str) -> 
     Ok(url.into())
 }
 
-/// Split the value the out-of-band callback page hands the user. Anthropic
-/// formats it as `code#state`; the loopback path never needs this (the code
-/// and state arrive as separate query params).
+/// Split the value the out-of-band callback page hands the user, which
+/// Anthropic formats as `code#state`.
 #[must_use]
 pub fn parse_pasted_code(pasted: &str) -> (String, Option<String>) {
     match pasted.trim().split_once('#') {

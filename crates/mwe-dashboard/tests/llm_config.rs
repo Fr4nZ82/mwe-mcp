@@ -789,3 +789,50 @@ async fn a_save_missing_one_model_is_refused_and_writes_nothing() {
         "a refused save writes no slot at all"
     );
 }
+
+/// Claude Code's OAuth client accepts no callback of this server's, so
+/// the browser is never sent back here: the operator carries the code
+/// across by hand. The callback route that pretended otherwise is gone,
+/// and the page that starts the login says how it really ends.
+#[tokio::test]
+async fn claude_code_login_has_no_callback_the_browser_could_land_on() {
+    let (app, _pool, _cfg, _dir) = make_app().await;
+    let cookie = login_as_admin(&app).await;
+
+    let response = send(
+        &app,
+        Request::builder()
+            .uri("/admin/claude-login/callback?code=abc&state=def")
+            .header(header::COOKIE, &cookie)
+            .body(Body::empty())
+            .unwrap(),
+    )
+    .await;
+    assert_eq!(
+        response.status(),
+        StatusCode::NOT_FOUND,
+        "no route may accept a redirect Claude will never send"
+    );
+
+    let response = send(
+        &app,
+        Request::builder()
+            .method("POST")
+            .uri("/admin/claude-login/start")
+            .header(header::CONTENT_TYPE, "application/x-www-form-urlencoded")
+            .header(header::COOKIE, &cookie)
+            .body(Body::empty())
+            .unwrap(),
+    )
+    .await;
+    assert_eq!(response.status(), StatusCode::OK);
+    let html = body_string(response).await;
+    assert!(
+        html.contains("Claude does not send you back here"),
+        "the page must say the code is carried across by hand: {html}"
+    );
+    assert!(
+        html.contains("/dashboard/admin/claude-login/paste"),
+        "the paste box is the only way to finish: {html}"
+    );
+}
