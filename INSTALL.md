@@ -188,11 +188,11 @@ through everything — no YAML to hand-edit, no credentials to hand to anyone el
 2. **Configure the internal LLM — this comes first.** The wizard takes you
    straight here, because everything after it needs a working model. mwe-mcp
    has **six model slots**, and the product does not work until all six carry
-   a model — `ingest` (classifies and routes every turn), `navigator` (walks
-   the pages at recall), `rem_dedup_semantic` (decides whether two claims are
-   the same one), `rem_promotions` (the nightly structural decisions),
-   `cronista` (writes the prose) and `operator_chat` (drives the dashboard
-   chat). Set a provider's API key — Anthropic, Google Gemini, OpenAI or
+   a model — `ingest` (classifies and routes every turn), `operator_chat`
+   (drives the dashboard chat), `rem_promotions` (the nightly structural
+   decisions), `rem_dedup_semantic` (decides whether two claims are the same
+   one), `cronista` (writes the prose) and `navigator` (walks the pages at
+   recall). Set a provider's API key — Anthropic, Google Gemini, OpenAI or
    OpenRouter — or point a slot at a local [Ollama](https://ollama.com) model,
    then assign each slot. A quick profile fills all six in one click:
 

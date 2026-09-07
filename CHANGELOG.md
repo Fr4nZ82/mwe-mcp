@@ -420,7 +420,10 @@ argument is refused instead of dropped.
   reveal, the gated re-file, and the freshness stamp on a navigated page. They
   run everywhere now, so no test is skipped on any platform. `INSTALL.md` opens
   with what each platform gets — the suite, a prebuilt binary, how the server
-  is run as a service, and the two checks that are Linux-only.
+  is run as a service, and the two checks that do not fire everywhere: the
+  refusal to start under a login account, which is Linux-only, and the
+  workdir permission audit, which reads POSIX mode bits and so is silent on
+  Windows.
 
 - **The server runs as a service on all three, under an account nobody logs
   in with.** On Linux `mwe-mcp serve` still does the whole thing for you.
