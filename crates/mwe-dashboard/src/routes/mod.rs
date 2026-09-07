@@ -89,7 +89,9 @@ pub fn build(state: DashboardState) -> Router {
         // path in [`crate::read_only`] whatever is mounted, so a visitor
         // gets the real surface, inert — not a page of dead controls
         // inviting them to try. Keep this list in step with the admin
-        // block of the top nav (`ui::layout`).
+        // block of the top nav (`ui::layout`), which also offers Skills
+        // and Bridges — pages anybody may read, in the operator's half of
+        // the bar because only an operator has a job on them.
         //
         // The consequence is about **content**, not routing: on a frozen
         // instance these pages are readable by anybody who walks through

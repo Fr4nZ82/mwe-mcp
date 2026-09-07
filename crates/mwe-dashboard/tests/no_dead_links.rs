@@ -6,9 +6,10 @@
 //! — and on a phone, where the link is the whole affordance, that is the
 //! end of the road rather than a detour.
 //!
-//! So: render the pages a person who is not the admin actually walks
-//! through, follow every `/dashboard/...` link on them with that same
-//! person's session, and refuse anything that answers `4xx` / `5xx`.
+//! So: render every page a person who is not the admin can open — the
+//! ones the bar offers them and the ones they reach by address — follow
+//! every `/dashboard/...` link on them with that same person's session,
+//! and refuse anything that answers `4xx` / `5xx`.
 //! `405` is excluded: a form `action` quoted in the page is POST-only and
 //! is not a link a reader can follow.
 
