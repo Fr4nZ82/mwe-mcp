@@ -194,16 +194,20 @@ through everything — no YAML to hand-edit, no credentials to hand to anyone el
    one), `cronista` (writes the prose) and `navigator` (walks the pages at
    recall). Set a provider's API key — Anthropic, Google Gemini, OpenAI or
    OpenRouter — or point a slot at a local [Ollama](https://ollama.com) model,
-   then assign each slot. A quick profile fills all six in one click:
+   then assign each slot. **Quick profile** fills all six in one click —
+   three buttons on that page:
 
-   | Preset | Routing | Needs |
+   | Profile | Routing | Needs |
    |---|---|---|
    | **`all-api`** | all six slots on Anthropic | an Anthropic key; no local model |
    | **`hybrid`** | `ingest`, `operator_chat` and `rem_dedup_semantic` on a local Ollama model; `rem_promotions`, `cronista` and `navigator` on Anthropic | a local Ollama workhorse + an Anthropic key |
    | **`all-local`** | the local workhorse on all six (Ollama + Qwen) | strong local hardware (a GPU); zero API cost, fully offline |
-   | **`custom`** | wire nothing up front, pick every slot from the dashboard | — |
 
-   A preset is a starting point, not a limit: the slot editor takes any of
+   There is a fourth name, `custom`, and it is the absence of a profile:
+   `mwe-mcp init --llm-profile custom` seeds a config with no slot wired,
+   for an operator who will pick every one from the dashboard.
+
+   A profile is a starting point, not a limit: the slot editor takes any of
    the five backends (`ollama`, `anthropic`, `gemini`, `openai`,
    `openrouter`) on any slot, and a save that leaves a slot without a
    provider or a model is refused whole, naming the slot.
@@ -230,7 +234,7 @@ through everything — no YAML to hand-edit, no credentials to hand to anyone el
    wiki.
 
    > **Connecting Claude Code?** Skip the token: it signs in over OAuth instead
-   > (see [Next: connect an agent](#next-connect-an-agent)). You still need the
+   > (see [Next: connect a consumer](#next-connect-a-consumer)). You still need the
    > user created here.
    >
    > **Taking the ready-made assistant?** Skip it too: the command on
@@ -543,7 +547,7 @@ can rename a column, and the release notes say when one does.
 
 ---
 
-## Next: connect an agent
+## Next: connect a consumer
 
 A running server is a memory waiting for a consumer, and your server **serves the
 setup itself**: visit `/bridges` for the copy-paste setup per consumer (the
@@ -552,7 +556,7 @@ install address is tailored to how you reached the server), or use the
 today:
 
 - **[NanoClaw](https://github.com/nanocoai/nanoclaw)** (`/bridges/nanoclaw`) —
-  **the ready-made assistant**, and where to start if you have no agent of your
+  **the ready-made assistant**, and where to start if you have none of your
   own. One command is the whole install:
 
   ```bash
