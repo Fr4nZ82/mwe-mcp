@@ -52,6 +52,9 @@ const { MweClient } = await import(path.join(HOST_MODULE, 'client.js'));
 // module registers them with nanoclaw's tool server too, which starts nothing:
 // only the barrel's `startMcpServer()` does that.
 const { MWE_TOOLS } = await import(path.join(RUNNER, 'mcp-tools/mwe.js'));
+// The window as the container itself reads it back — the state turn 2's
+// assertions are really about.
+const { windowMessages } = await import(path.join(RUNNER, 'mwe/window.js'));
 
 // ---------------------------------------------------------------------------
 // assertions
@@ -312,7 +315,16 @@ async function main(): Promise<void> {
     seenPrompts.push(prompt);
     return '<message to="famiglia">bentornata</message>';
   });
-  await runTurn(provider, () => outboundChat().length > 0 && ingests().length >= 2, 'turn 1');
+  // Wait for turn 1's assistant half to reach the WINDOW, not merely for its
+  // ingest to be recorded: `endTurn` awaits that ingest and appends to the
+  // window only once the host's answer has travelled back through the mailbox,
+  // so an ingest count says the turn is nearly done, not done. Turn 2 asserts
+  // on the window, and stopping the loop in that gap emptied it.
+  await runTurn(
+    provider,
+    () => outboundChat().length > 0 && windowMessages().some((m) => m.role === 'assistant'),
+    'turn 1',
+  );
 
   const turn1 = ingests();
   ok('one ingest for the user turn, one for the reply', turn1.length === 2, `got ${turn1.length}`);

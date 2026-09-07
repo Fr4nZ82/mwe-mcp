@@ -77,7 +77,7 @@ pub type Result<T> = std::result::Result<T, ReviewerError>;
 /// Carries which wikis are `wiki-user` **identity wikis** (their `@profile.md`
 /// is an identity card — the agent wiki included, it is a normal
 /// `wiki-user`) and which groups each of those users belongs to. Group
-/// wikis and wikis that emerged carry other `wiki_type`s and never qualify.
+/// wikis and topic wikis carry other `wiki_type`s and never qualify.
 ///
 /// Build via [`IdentityContext::load`]; a `Default` (empty) context disables
 /// the check — used by callers that consume only the plan-shape findings.

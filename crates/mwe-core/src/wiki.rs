@@ -618,7 +618,7 @@ pub struct WikiMeta {
     /// Prose description of the wiki's **category** — its scope —
     /// read by the ingest/document classifier as a **placement signal**
     /// (never an ACL gate). A group wiki inherits the group's `scope`
-    /// prose; a wiki that emerged gets prose the LLM writes at creation.
+    /// prose; a topic wiki gets prose the LLM writes at creation.
     /// `None` for the many wikis that carry no description yet. The wiki's
     /// owning **principal** (whose category it is) is not declared here — it
     /// is **derived from topology** via

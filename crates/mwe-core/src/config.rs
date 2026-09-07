@@ -2009,7 +2009,8 @@ impl EmbeddingConfig {
 ///
 /// Off by default: with `enabled: false` (or any required field unset)
 /// the dashboard hides the "forgot password" affordance and the request
-/// route is inert, so a fresh deployment behaves exactly as before. The
+/// route is inert: there is no self-service recovery until an SMTP
+/// backend is configured. The
 /// SMTP password is **never** stored in the YAML — `password_env` names
 /// an env-var (default `MWE_SMTP_PASSWORD`) read from the process
 /// environment at send time, mirroring how the cloud LLM keys are
@@ -2663,8 +2664,8 @@ impl RateLimitsConfig {
 /// for it: a switch a panel admin can flip is not a switch that
 /// constrains a panel admin.
 ///
-/// Off by default in every field, so a plain `mwe-mcp serve` behaves
-/// exactly as it did before the section existed.
+/// Off by default in every field: a plain `mwe-mcp serve` freezes nothing,
+/// takes nothing away from the dashboard admin, and refuses no write.
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct InstanceConfig {
     /// Freeze the deployment: refuse every operation that changes memory

@@ -243,7 +243,7 @@ async fn the_widening_link_shows_everything_the_person_can_read() {
 }
 
 /// The console is the admin's view of the deployment: it opens on all of
-/// it, as it did before there was a narrowing to apply.
+/// it, narrowed to nobody.
 #[tokio::test]
 async fn the_admin_opens_facts_on_the_whole_deployment() {
     let (app, pool, tree, _dir) = make_app_with_memory().await;

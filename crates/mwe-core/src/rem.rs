@@ -10837,7 +10837,7 @@ mod tests {
         drop(dir);
     }
 
-    /// A wiki that emerged is not asked to emerge again.
+    /// A topic wiki is not asked to emerge again.
     ///
     /// The floor is a count of pages, and the pages a birth carried are still
     /// there the next night: the same handle ties them again and the question
