@@ -7,13 +7,20 @@ heading, and the memory acts on it.
 
 ## Leaving one
 
-Open a page, switch on **Add comments**, and a `§` appears beside every
-heading. Click the one you mean.
+Open a page. Near the top of it there is a small framed box that reads **Add
+comments**: press it and the page comes back in comment mode, the box now
+reading *"Comment mode is ON — click `+ Comment` next to a heading to leave
+feedback"*. Every heading has grown a **+ Comment** link — press the one over
+the part you mean.
 
 The form says who it will be saved under — you — and against which heading.
 Write what should change, why, and where the evidence for it is. **Save**.
+**Stop commenting**, in the same box, leaves comment mode.
 
 The comment stays visible on the page until it is acted on.
+
+Where the box reads *"You can't comment on this page"* instead, that is the
+read gate: you comment where you can read.
 
 ## What happens next
 

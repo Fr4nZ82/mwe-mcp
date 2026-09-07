@@ -41,8 +41,9 @@ text of the page directly."*
 
 Two things you can do from here:
 
-- **Add comments** — a toggle that puts a `§` beside every heading, so you can
-  leave a note anchored to one. See [Comments](comments.md).
+- **Add comments** — a switch that puts a **+ Comment** link beside every
+  heading, so you can leave a note anchored to one. See
+  [Comments](comments.md).
 - **Edit page description** — the one line that says what this page is for. It
   steers where a new fact lands, and it is read when deciding whether to open
   the page at all. It appears on the pages of a wiki that is yours or your
@@ -51,3 +52,8 @@ Two things you can do from here:
   replaces whatever you typed: what you write holds until the next rewrite and
   no longer. It is still worth typing when the memory is filing things badly
   right now.
+
+The small `§` that follows a passage is not part of either: it opens the record
+of the fact that passage was written from — its text, who said it, when it
+holds and who may read it. That page is described in
+[Your facts](your-facts.md).
