@@ -1,35 +1,30 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
-//! Proposal action routes — the bridge endpoints behind the chat.
+//! Proposal routes — what the chat panel reads, and the door into it.
 //!
 //! **There is no questionnaire or tray form.** Proposals are reviewed and
 //! applied by talking to the dashboard chat (`/dashboard/chat`), which
 //! drives the `mwe_core::proposals` chassis through its agentic tools
-//! (`structure_proposal_*`). This module mounts the two endpoints the chat
-//! and consumer links target:
+//! (`structure_proposal_*`) — applying one is a conversation, because the
+//! answers it needs are a conversation. This module mounts what the chat
+//! and the links into it need:
 //!
-//! - POST `/dashboard/proposals/:id/apply` — apply a pending proposal
-//!   (with form answers, for any deep-link that still posts them).
+//! - GET `/dashboard/proposals/in-flight-count` — the topnav badge.
+//! - GET `/dashboard/proposals/in-flight/chat-turn` — the chat panel's
+//!   own primer for whatever is pending.
 //! - GET `/dashboard/proposals/:id/open-in-chat` — server-side primer
 //!   that lands the operator inside the chat with the proposal already
 //!   summarised (a review/apply primer for a pending questionnaire, a
 //!   read-what-happened primer for an already-applied structured-wiki
 //!   emergence).
-//!
-//! The POST route renders no page. There is no form calling it, so it performs
-//! its chassis action and **303-redirects to `/dashboard/chat`** (the single
-//! operational surface) on both success and classified error — the chat is
-//! where the operator continues.
 
-use axum::Form;
 use axum::Router;
 use axum::extract::{Path, State};
-use axum::response::{Html, IntoResponse, Redirect, Response};
-use axum::routing::{get, post};
+use axum::response::{Html, IntoResponse, Response};
+use axum::routing::get;
 use axum_extra::extract::cookie::CookieJar;
 use maud::{PreEscaped, html};
 use mwe_core::proposals;
-use serde::{Deserialize, Serialize};
-use serde_json::Value;
+use serde::Serialize;
 
 use crate::auth::SessionUser;
 use crate::error::{DashboardError, Result};
@@ -37,15 +32,11 @@ use crate::routes::chat;
 use crate::state::DashboardState;
 use crate::ui::{components, layout};
 
-/// The single operational surface the action routes hand back to.
-const CHAT_SURFACE: &str = "/dashboard/chat";
-
 /// Mount under the authenticated tree.
 pub fn router() -> Router<DashboardState> {
     Router::new()
         .route("/proposals/in-flight-count", get(in_flight_count))
         .route("/proposals/in-flight/chat-turn", get(in_flight_chat_turn))
-        .route("/proposals/:proposal_id/apply", post(apply))
         .route("/proposals/:proposal_id/open-in-chat", get(open_in_chat))
 }
 
@@ -81,70 +72,6 @@ async fn in_flight_count(
         .await
         .map_err(|e| DashboardError::Internal(format!("count_pending: {e}")))?;
     Ok(axum::Json(InFlightCountJson { pending }))
-}
-
-/// Form fields for the apply submit — one field, because only one
-/// handler needs anything from the operator.
-///
-/// - `wiki_promote` paragraph → file: reads `target_page`.
-/// - `wiki_promote` pages → wiki: reads nothing; the handler takes
-///   every field from the proposal's own context.
-/// - `dedup_merge`: ignores every field (the act of posting is the
-///   confirmation).
-/// - `page_create`: a born-applied receipt, never `pending`, so the chassis
-///   refuses it here.
-///
-/// The variant is on the **proposal row**, never on the form: the
-/// chassis dispatches on it, so an operator cannot pick one.
-#[derive(Debug, Deserialize)]
-pub struct ApplyForm {
-    /// `wiki_promote` paragraph → file: target page name.
-    #[serde(default)]
-    pub target_page: Option<String>,
-}
-
-/// `POST /dashboard/proposals/:id/apply` — apply a pending proposal, then hand
-/// the operator back to the chat. Nothing renders the outcome as a page, and
-/// nothing surfaces an error as one either: the route logs what it classifies,
-/// then 303-redirects to the chat where the operator can inspect state with the
-/// read tools and retry conversationally.
-async fn apply(
-    State(state): State<DashboardState>,
-    user: SessionUser,
-    Path(proposal_id): Path<String>,
-    Form(form): Form<ApplyForm>,
-) -> Result<Response> {
-    let memory = state.memory.as_ref().ok_or_else(|| {
-        DashboardError::Internal(
-            "memory handles not wired — start with `mwe-mcp serve` not the identity-only build"
-                .into(),
-        )
-    })?;
-
-    let answers = build_answers(&form);
-
-    match proposals::apply_proposal(
-        &state.pool,
-        &memory.tree,
-        &proposal_id,
-        &answers,
-        Some(user.sender_id.as_str()),
-        user.is_admin,
-    )
-    .await
-    {
-        Ok(out) => tracing::info!(
-            proposal_id = %out.proposal_id,
-            kind = %out.kind,
-            "dashboard: proposal applied via action route"
-        ),
-        Err(e) => tracing::warn!(
-            error = %e,
-            %proposal_id,
-            "dashboard: proposal apply via action route failed"
-        ),
-    }
-    Ok(Redirect::to(CHAT_SURFACE).into_response())
 }
 
 /// `GET /dashboard/proposals/:id/open-in-chat` — server-side primer
@@ -269,18 +196,3 @@ fn compose_primer(proposal_id: &str) -> String {
     )
 }
 
-/// Build the `answers` JSON the chassis expects from the submitted
-/// form fields.
-///
-/// Only `wiki_promote` paragraph-to-file reads anything: its
-/// `target_page`. Every other kind and variant takes what it needs from
-/// the proposal's own context (`pages_to_new_wiki`) or ignores answers
-/// entirely (`dedup_merge`, where posting *is* the confirmation).
-fn build_answers(form: &ApplyForm) -> Value {
-    let target = form.target_page.as_deref().map_or("", str::trim);
-    if target.is_empty() {
-        serde_json::json!({})
-    } else {
-        serde_json::json!({ "target_page": target })
-    }
-}

@@ -1313,58 +1313,20 @@ async fn home_page_lists_memory_section() {
     assert!(html.contains("MCP calls (24h)"), "{html}");
 }
 
-// ---- Proposal action routes ----
+// ---- Proposal routes ----
 //
-// There is no proposals FORM surface: what the dashboard exposes are the
-// action routes — POST `apply` and GET `open-in-chat` — mounted as bridge
-// endpoints. The POST performs its chassis action and 303-redirects to
-// `/dashboard/chat` (the single operational surface) instead of rendering
-// a page, so these tests assert the redirect + the resulting DB / on-disk
-// state rather than flash HTML.
+// There is no proposals FORM surface and no apply endpoint: a proposal is
+// applied by talking to the chat, which drives the same chassis through its
+// agentic tools. What the dashboard exposes is the door into that
+// conversation, GET `open-in-chat`, whose primer is covered with the rest of
+// the agentic surface further down (it needs a planted model).
 
-/// Assert a response is the 303 redirect to the chat surface that the
-/// action routes return on both success and classified error.
-fn assert_redirects_to_chat(response: &axum::http::Response<Body>) {
-    assert_eq!(
-        response.status(),
-        StatusCode::SEE_OTHER,
-        "action route must 303-redirect to the chat"
-    );
-    let location = response
-        .headers()
-        .get(header::LOCATION)
-        .and_then(|v| v.to_str().ok());
-    assert_eq!(location, Some("/dashboard/chat"));
-}
-
+/// Applying a proposal is a conversation: the chat asks the questions the
+/// chassis needs answered, and no form on the dashboard posts them. A URL
+/// that looks like one is not mounted, so a stale bookmark or a hand-typed
+/// address gets a plain refusal rather than a silent chassis call.
 #[tokio::test]
-async fn proposals_apply_unknown_id_still_redirects_to_chat() {
-    // The action route surfaces no page on error: a failed apply (unknown id)
-    // is logged and the operator is handed back to the chat just like a
-    // success, where they can inspect state with the read tools.
-    let (app, _pool, _tree, _dir) = make_app_with_memory().await;
-    let cookie = login_as_admin(&app).await;
-
-    let response = send(
-        &app,
-        Request::builder()
-            .method("POST")
-            .uri("/proposals/p-missing/apply")
-            .header(header::CONTENT_TYPE, "application/x-www-form-urlencoded")
-            .header(header::COOKIE, cookie)
-            .body(Body::from("target_page=elsewhere.md"))
-            .unwrap(),
-    )
-    .await;
-    assert_redirects_to_chat(&response);
-}
-
-#[tokio::test]
-async fn proposals_apply_failure_still_redirects_and_leaves_row_pending() {
-    // Applying an unshipped-kind proposal fails at the chassis
-    // (`KindNotYetImplemented`). The action route renders no error page: it
-    // logs it and 303-redirects, leaving the row `pending` so the operator can
-    // retry conversationally.
+async fn there_is_no_apply_endpoint_to_post_a_proposal_to() {
     let (app, pool, _tree, _dir) = make_app_with_memory().await;
     let cookie = login_as_admin(&app).await;
     seed_pending_unshipped_proposal(&pool, "p-forge").await;
@@ -1376,12 +1338,16 @@ async fn proposals_apply_failure_still_redirects_and_leaves_row_pending() {
             .uri("/proposals/p-forge/apply")
             .header(header::CONTENT_TYPE, "application/x-www-form-urlencoded")
             .header(header::COOKIE, cookie)
-            .body(Body::empty())
+            .body(Body::from("target_page=elsewhere.md"))
             .unwrap(),
     )
     .await;
-    assert_redirects_to_chat(&response);
-    // Row still pending — the failed apply did not flip its status.
+    assert_eq!(
+        response.status(),
+        StatusCode::NOT_FOUND,
+        "no route may answer a POST to the apply URL"
+    );
+    // And nothing happened to the row behind it.
     let status: String =
         sqlx::query_scalar("SELECT status FROM structure_proposals WHERE proposal_id = ?")
             .bind("p-forge")
