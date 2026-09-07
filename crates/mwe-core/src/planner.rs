@@ -2128,13 +2128,12 @@ fn harvest_prose_links(tree: &WikiTree) -> BTreeMap<(String, String), Vec<String
             if links.is_empty() {
                 continue;
             }
-            out.insert(
-                (
-                    wiki_id.clone(),
-                    page.rel_path.to_string_lossy().into_owned(),
-                ),
-                links,
-            );
+            // POSIX, because the lookup key is `PagePlan::page_path`, which
+            // is always `/`-separated. A host path here misses on Windows for
+            // a page whose plan pins a nested path, and a missed lookup reads
+            // as "this page carries no links" — which is the compiler's
+            // licence to drop them.
+            out.insert((wiki_id.clone(), page.rel_path_posix()), links);
         }
     }
     out

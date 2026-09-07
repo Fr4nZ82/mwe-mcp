@@ -53,13 +53,15 @@ daemon runs headless regardless.
 
 ## Scope
 
-**Linux only**, and it stays that way. The tray is two Linux things at once:
-it draws itself through the freedesktop **StatusNotifierItem** protocol over
-D-Bus, which KDE and GNOME implement and macOS and Windows do not, and every
-menu item it offers is a `systemctl` call. A cross-platform form would be a
-different program — three service backends behind one icon — and it would put
-GTK and libappindicator into a build that today needs no C toolchain at all,
-for every Linux user, to serve a convenience on two other platforms.
+**Linux only**, and it stays that way. The tray is Linux twice over: it draws
+itself through the freedesktop **StatusNotifierItem** protocol over D-Bus,
+which KDE and GNOME implement and macOS and Windows do not, and everything it
+*does* is a Linux command — `systemctl` for the three service actions and the
+status poll, `xdg-open` for the dashboard, `journalctl` in Konsole for the
+logs. A cross-platform form would be a different program — three service
+backends and three log viewers behind one icon — and it would put GTK and
+libappindicator into a build that today needs no C toolchain at all, for every
+Linux user, to serve a convenience on two other platforms.
 
 Nothing is lost by not having it: the tray controls nothing that the
 dashboard and `systemctl` do not, and `INSTALL.md` gives macOS and Windows

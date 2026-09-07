@@ -107,8 +107,8 @@ impl TestWorkdir {
 /// holds a just-written file open for a moment, `DeleteFile` fails with a
 /// sharing violation, and the single attempt `TempDir` makes leaves the
 /// whole directory behind — the leak this module exists to prevent,
-/// arriving by another door. A few hundred milliseconds of retrying costs
-/// nothing where the first attempt already worked.
+/// arriving by another door. Retrying costs nothing where the first attempt
+/// already worked, which is every attempt on Linux and macOS.
 const REMOVAL_PATIENCE: std::time::Duration = std::time::Duration::from_secs(2);
 
 impl Drop for TestWorkdir {

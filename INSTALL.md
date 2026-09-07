@@ -24,26 +24,30 @@ Three steps: **get the binary → start the server → finish setup in the brows
 > mwe-mcp serve --bind 127.0.0.1
 > ```
 >
-> and **do not add `--bypassdedicateduser`**. The server will refuse to boot under a
-> login account and print how your human provisions the dedicated `mwe-mcp` user —
-> **that refusal is correct, not an error to work around.** Stop and let the human
-> run that step.
+> and **do not add `--bypassdedicateduser`**. On Linux the server refuses to boot
+> under a login account and prints how your human provisions the dedicated
+> `mwe-mcp` user — **that refusal is correct, not an error to work around.** Stop
+> and let the human run that step. On macOS and Windows nothing refuses: the
+> server starts as whoever you are, and the boundary it would have enforced is
+> still needed, so stop there too and hand your human
+> [Run it as a service](#run-it-as-a-service).
 
 ---
 
 ## Supported platforms
 
 Three, and they are all the gate: **Linux x86_64**, **macOS on Apple
-Silicon**, and **Windows x86_64**. Every push runs the whole test suite on
-all three, and a release publishes a prebuilt binary for each. On anything
-else — an Intel Mac, ARM Linux — you build from source, which works but is
-not something CI watches.
+Silicon**, and **Windows x86_64**. Every push to `main`, and every pull
+request against it, runs the whole test suite on all three — no test is
+skipped on any of them — and a release publishes a prebuilt binary for each.
+On anything else — an Intel Mac, ARM Linux — you build from source, which
+works but is not something CI watches.
 
 What is verified is not the same on all three, so here is the split:
 
 | | Linux x86_64 | macOS (Apple Silicon) | Windows x86_64 |
 |---|---|---|---|
-| **CI: the full test suite on every push** | yes | yes | yes |
+| **CI: the full test suite, nothing skipped** | yes | yes | yes |
 | **A release publishes a prebuilt binary** | yes | yes | yes |
 | **Run as a service, restarting on boot** | the server sets it up for you (systemd) | you install the launchd plist ([Run it as a service](#run-it-as-a-service)) | you register the scheduled task ([Run it as a service](#run-it-as-a-service)) |
 | **`serve` refuses to start under your login account** | yes | no — the check reads Linux-only files | no |
@@ -430,9 +434,10 @@ Three things are worth knowing before you set one:
 > per-reader redaction happens when the server renders a response, not on disk.
 > Keep the workdir on a machine/user that is allowed to see the memory, and
 > `chmod 700` it. `mwe-mcp serve` warns on a world-/group-readable workdir and
-> `mwe-mcp doctor` reports every loose path with a fix — both read POSIX mode
-> bits, so on Windows, where permissions are ACLs, they find nothing to
-> report and the workdir is yours to lock down. For a **multi-user** memory
+> `mwe-mcp doctor` reports every loose path with a fix. Both read POSIX mode
+> bits, so on Windows, where permissions are ACLs, the boot warning stays
+> silent and `doctor` says the permissions were not inspected — the workdir is
+> yours to lock down there. For a **multi-user** memory
 > or when the consumer agent runs with shell/file tools, read the topology rules in
 > [`INTEGRATING.md`](INTEGRATING.md#deployment-security--where-to-run-the-consumer).
 

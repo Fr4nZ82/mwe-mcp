@@ -13310,7 +13310,6 @@ mod tests {
     /// real with the receipt, the miss resolves `repaired`, and the gold
     /// candidates file grows.
     #[tokio::test]
-    #[cfg_attr(windows, ignore = "gated refile rejected on Windows — see issue #1")]
     #[expect(
         clippy::too_many_lines,
         reason = "one linear end-to-end scenario (fixture → miss → propose → gate → commit)"

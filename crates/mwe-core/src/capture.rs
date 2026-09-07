@@ -925,9 +925,16 @@ pub fn render_full_marker(
 /// Write a freshly-born page's testata — its **card** and its writing style —
 /// from what the turn that created it proposed.
 ///
-/// Only for a page that does not exist yet: an existing page's card is its
-/// own, hand-authored or compiler-written, and a new fact landing on it never
-/// re-describes it. No-op when the turn proposed neither.
+/// Only for a page that does not exist yet **under this exact spelling**: an
+/// existing page's card is its own, hand-authored or compiler-written, and a
+/// new fact landing on it never re-describes it. No-op when the turn proposed
+/// neither.
+///
+/// The spelling is byte-exact for the same reason the write above it is: on a
+/// case-folding filesystem `Path::exists` answers for a sibling that differs
+/// only by case. Reaching here with such a sibling on disk takes the capture
+/// past [`crate::wiki::page_creation_refusal`], which refuses that name before
+/// any of this runs — so this check is the second of two, not the only one.
 ///
 /// Best-effort by contract: the capture's commit point is the `fact_index`
 /// row, and a page that starts without a card gets one at its first compile.

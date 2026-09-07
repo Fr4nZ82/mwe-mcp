@@ -1800,13 +1800,13 @@ pub fn page_case_conflict(abs_dir: &Path, rel: &Path) -> Option<String> {
         };
         // Ask the *directory listing* what the real spelling is, never
         // `Path::exists`. On a case-folding filesystem (macOS, Windows)
-        // `_Meta.md`.exists() is true because it resolves to `_meta.md`,
-        // and trusting it made this function report "byte-exact, carry
-        // on" for a name that is not on disk at all — so a capture aimed
-        // at `_Meta.md` appended into the wiki's own `_meta.md`. The
-        // listing is the same on both kinds of filesystem, so the guard
-        // now behaves identically wherever the server runs. One `read_dir`
-        // per component, on page creation only.
+        // `Path::new("_Meta.md").exists()` is true because it resolves to
+        // `_meta.md`, so a caller trusting it reads "byte-exact, carry on"
+        // for a name that is not on disk at all — and a capture aimed at
+        // `_Meta.md` appends into the wiki's own `_meta.md`. The listing
+        // reads the same on both kinds of filesystem, which is what makes
+        // this guard behave identically wherever the server runs. One
+        // `read_dir` per component, on page creation only.
         let entries = std::fs::read_dir(&cur).ok()?;
         let name = s.to_string_lossy();
         let mut byte_exact = false;
@@ -1892,22 +1892,28 @@ pub fn abs_page_exists_byte_exact(abs_page: &Path) -> bool {
 /// The reason a write must refuse to **create** the page `rel` under
 /// `abs_dir`, or `None` when it may go ahead.
 ///
-/// The one question every page-writing path asks before it coins a name,
-/// in one place because the answer has three parts and getting any of them
-/// wrong costs a page:
+/// What a path asks before it coins a page name. Three parts, in the order
+/// they are answered, because getting any of them wrong costs a page:
 ///
 /// - a name already taken **byte-exactly** is not a creation at all, it is
 ///   an append, and an append carries none of these risks;
+/// - a name whose shape is itself a hazard ([`page_path_case_hazard`]) — a
+///   case variant of a reserved filename, or `.MD` where the link grammar
+///   only ever writes `.md`;
 /// - a name a case-insensitive mirror would collapse onto an existing
 ///   sibling ([`page_case_conflict`]) makes two server-side pages into one
-///   file the next time a smart consumer pulls;
-/// - a name whose shape is itself a hazard ([`page_path_case_hazard`]) —
-///   a case variant of a reserved filename, or `.MD` where the link
-///   grammar only ever writes `.md`.
+///   file the next time a smart consumer pulls.
+///
+/// A name that is both a hazard and a collision is refused for its shape:
+/// the first refusal is the whole refusal, and either sentence sends the
+/// caller to a different name.
 ///
 /// A path that only *moves* an existing page does not coin its name, so it
 /// asks [`page_case_conflict`] about the destination directory and leaves
-/// the shape check alone.
+/// the shape check alone. A smart consumer's push asks the three separately
+/// — [`page_path_case_hazard`] over the whole request before any byte is
+/// written, then the other two per page — because it also needs to know
+/// whether each page existed, to answer its own overwrite policy.
 #[must_use]
 pub fn page_creation_refusal(abs_dir: &Path, rel: &Path) -> Option<String> {
     if page_exists_byte_exact(abs_dir, rel) {
@@ -3357,15 +3363,10 @@ mod tests {
             .locate(&WikiId::parse("alice").unwrap())
             .expect("locate");
         let pages = h.list_pages().expect("list");
-        let rels: Vec<String> = pages
-            .iter()
-            .map(|p| p.rel_path.to_string_lossy().into_owned())
-            .collect();
+        let rels: Vec<String> = pages.iter().map(PageInfo::rel_path_posix).collect();
         assert!(rels.iter().any(|r| r == "intro.md"), "{rels:?}");
-        assert!(
-            rels.iter()
-                .any(|r| r.ends_with("recipes/pasta.md") || r.ends_with("recipes\\pasta.md"))
-        );
+        // One spelling to assert on: the accessor is POSIX everywhere.
+        assert!(rels.iter().any(|r| r == "recipes/pasta.md"), "{rels:?}");
         assert!(!rels.iter().any(|r| r.contains("acmecorp")), "{rels:?}");
         assert!(!rels.iter().any(|r| r.ends_with("_meta.md")), "{rels:?}");
     }
@@ -3582,6 +3583,10 @@ mod tests {
             (
                 "rel_dir.to_string_lossy",
                 "call DiscoveredWiki::rel_dir_posix()",
+            ),
+            (
+                "rel_path.to_string_lossy",
+                "call PageInfo::rel_path_posix()",
             ),
         ];
         let crates_dir = Path::new(env!("CARGO_MANIFEST_DIR")).parent().unwrap();

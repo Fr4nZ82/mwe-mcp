@@ -7,7 +7,7 @@ logs in with.
 | Platform | File | Registered with |
 |---|---|---|
 | macOS | [`macos/com.mwe-mcp.server.plist`](macos/com.mwe-mcp.server.plist) | `launchctl bootstrap system …` |
-| Windows | [`windows/mwe-mcp-task.xml`](windows/mwe-mcp-task.xml) | `schtasks /create /xml …` |
+| Windows | [`windows/mwe-mcp-task.xml`](windows/mwe-mcp-task.xml) | `Register-ScheduledTask -Xml …` |
 
 **Linux has no file here** because it does not need one: run `mwe-mcp serve`
 in a terminal and it offers to provision the dedicated `mwe-mcp` account,

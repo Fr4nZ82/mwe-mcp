@@ -1181,13 +1181,6 @@ fn warn_public_base_url(config: &Config) {
     }
 }
 
-/// HTTP transport. Same Axum process binds `/dashboard/*` (built-in
-/// web UI, cookie auth) and `/mcp` (rmcp Streamable HTTP, JWT auth).
-/// Defence-in-depth: the on-disk wiki bytes are cleartext, so per-reader ACL
-/// is only a real boundary when the OS keeps non-server principals out of the
-/// workdir. Warn loudly (never fatal) for each workdir path reachable by group
-/// or world — a co-located consumer reading the files would bypass the
-/// governance. See `workdir_security` and INTEGRATING.md "Deployment security".
 /// The `workdir perms` line `doctor` prints.
 ///
 /// An empty finding list means two different things, and they are not
@@ -1211,6 +1204,16 @@ fn workdir_perms_headline(findings: usize) -> String {
     )
 }
 
+/// Warn loudly (never fatal) for each workdir path reachable by group or
+/// world. Defence-in-depth: the on-disk wiki bytes are cleartext, so the
+/// per-reader ACL is only a real boundary while the OS keeps non-server
+/// principals out of the workdir, and a co-located consumer reading the files
+/// bypasses the governance. See `workdir_security` and INTEGRATING.md
+/// "Deployment security".
+///
+/// Silent where [`workdir_security::AUDIT_READS_PERMISSIONS`] is false: there
+/// are no mode bits to read, and saying nothing is the only honest thing a
+/// warning can do. `doctor` says so in words instead.
 fn warn_loose_workdir(workdir: &Path) {
     for f in workdir_security::audit(workdir) {
         warn!(

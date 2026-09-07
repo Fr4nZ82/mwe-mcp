@@ -1,9 +1,10 @@
 <?xml version="1.0" encoding="UTF-8"?>
 <!--
   mwe-mcp as a Windows scheduled task started at boot, running as the
-  dedicated local account `mwe-mcp`. Register it with
+  dedicated local account `mwe-mcp`. Register it from an elevated PowerShell
+  with
 
-      schtasks /create /tn mwe-mcp /xml packaging\windows\mwe-mcp-task.xml /ru mwe-mcp /rp <password>
+      Register-ScheduledTask -TaskName mwe-mcp -Xml (Get-Content .\packaging\windows\mwe-mcp-task.xml -Raw) -User mwe-mcp -Password <password>
 
   The file is UTF-8; Task Scheduler exports UTF-16, and `schtasks` rejects a
   file whose declared encoding does not match its bytes, so the declaration

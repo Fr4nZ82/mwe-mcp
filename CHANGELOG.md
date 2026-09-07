@@ -322,7 +322,11 @@ and in the dashboard's session check. Ten migrations, `0068` through `0077`.
   test suite on all three, and a red one on any of them is a red build. Until
   now Windows ran and was allowed to fail, which is the same as not running
   it: a release published a Windows binary whose suite nobody had to look at,
-  and it had been failing since the first public release. `INSTALL.md` opens
+  and it had been failing since the first public release. Three more tests
+  were skipped on Windows outright, each naming the same tracking issue, and
+  all three were skipped for the address bug fixed above — the retired-region
+  reveal, the gated re-file, and the freshness stamp on a navigated page. They
+  run everywhere now, so no test is skipped on any platform. `INSTALL.md` opens
   with what each platform gets — the suite, a prebuilt binary, how the server
   is run as a service, and the two checks that are Linux-only.
 
@@ -344,10 +348,12 @@ and in the dashboard's session check. Ten migrations, `0068` through `0077`.
   do and `INSTALL.md` says so in the same table.
 
 - **The desktop tray is Linux, and stays Linux.** `mwe-mcp-tray` draws itself
-  through a D-Bus protocol only Linux desktops implement, and every item in
-  its menu is a `systemctl` call. It controls nothing the dashboard and your
-  platform's own service tools do not, so its absence elsewhere costs a
-  convenience rather than a capability. No release has ever published it.
+  through a D-Bus protocol only Linux desktops implement, and everything it
+  does is a Linux command — `systemctl` for the service actions, `xdg-open`
+  for the dashboard, `journalctl` for the logs. It controls nothing the
+  dashboard and your platform's own service tools do not, so its absence
+  elsewhere costs a convenience rather than a capability. No release has ever
+  published it.
 
 ### Deprecated
 
@@ -407,7 +413,8 @@ and in the dashboard's session check. Ten migrations, `0068` through `0077`.
   found no facts on any page it was weighing; the recall gate and the
   freshness stamp on a navigated page missed the same way. One helper now
   writes that address, and the accessors built on it are how the rest of the
-  engine asks for one.
+  engine asks for one. On the compiler's side the same mismatch emptied a
+  page's outgoing links, which is the compiler's licence to drop them.
 
 - **`mwe-mcp doctor` stops calling a workdir it never looked at "owner-only".**
   The workdir permission audit reads POSIX mode bits, and Windows expresses
@@ -423,11 +430,11 @@ and in the dashboard's session check. Ten migrations, `0068` through `0077`.
   fact to a target spelt one way while the page on disk is spelt the other
   either coined a second page that a smart consumer's mirror will later
   collapse, or wrote into the first while telling the index it was the second.
-  The three move-and-append handlers, the page re-home and two
-  `wiki_admin_push` deletes now read the directory listing, and a name that
-  only differs from an existing page by case is refused with the spelling
-  already on disk — where, on a case-folding host, a delete had been removing
-  a page the caller never named.
+  The three move-and-append handlers, the page re-home, a smart consumer's
+  `wiki_admin_push` delete and the dashboard's Revert button now read the
+  directory listing, and a name that only differs from an existing page by
+  case is refused with the spelling already on disk — where, on a case-folding
+  host, either delete removes a page the caller never named.
 
 - **A plan a later message closed no longer rings as a commitment coming
   due.** The due sweep fires on a `plan` carrying a concrete end date, and a

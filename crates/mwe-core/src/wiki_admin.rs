@@ -2730,7 +2730,7 @@ mod tests {
             .list_pages()
             .unwrap()
             .into_iter()
-            .map(|p| p.rel_path.to_string_lossy().into_owned())
+            .map(|p| p.rel_path_posix())
             .collect();
         assert!(pages.iter().any(|p| p.ends_with("payments.md")));
         assert!(!pages.iter().any(|p| p.ends_with("auth.md")));
