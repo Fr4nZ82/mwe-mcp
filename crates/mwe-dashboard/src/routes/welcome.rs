@@ -744,8 +744,8 @@ fn step1_identity_fieldset(email_value: &str, locale_default: &str) -> Markup {
         fieldset data-step="1" {
             legend { "1 · Who you are" }
             p.muted {
-                "Your identity and the things an assistant must "
-                strong { "always" } " know. They go on your "
+                "Your identity and the things a consumer — the bot or assistant "
+                "you talk to — must " strong { "always" } " know. They go on your "
                 strong { "identity card" } " — the one page the memory serves "
                 "whole, every time somebody talks to you."
             }
@@ -754,7 +754,7 @@ fn step1_identity_fieldset(email_value: &str, locale_default: &str) -> Markup {
                 strong { "public" } " in your wiki, visible to other dashboard users. "
                 "Write only what you're happy to share; "
                 strong { "leave blank anything you want private" }
-                " and tell your assistant later in normal chat, which keeps facts "
+                " and say it later in normal chat instead, which keeps facts "
                 "private by default."
             }
 
@@ -784,8 +784,9 @@ fn step1_identity_fieldset(email_value: &str, locale_default: &str) -> Markup {
                 (components::text_field("language", "Primary language (it, en, en-GB …)", "text", locale_default, true))
                 p.help.muted {
                     "Required. This is the language your memory is written in, not only the "
-                    "language an assistant replies in: every page the engine compiles for you "
-                    "is written in it. Pre-filled from your browser — change it if it is wrong."
+                    "language a consumer answers you in: every page the engine compiles for "
+                    "you is written in it. Pre-filled from your browser — change it if it is "
+                    "wrong."
                 }
                 (components::text_field("timezone", "Time zone (e.g. Europe/Rome)", "text", "", false))
                 (components::text_field("pronouns", "Pronouns", "text", "", false))
@@ -797,7 +798,7 @@ fn step1_identity_fieldset(email_value: &str, locale_default: &str) -> Markup {
             textarea id="health_safety" name="health_safety" rows="2"
                      placeholder="severe allergies, celiac disease, chronic conditions, «only ever write to me in Italian»…" {}
             p.help.muted {
-                "Things an assistant must keep in mind in every exchange, whatever the topic. "
+                "Things a consumer must keep in mind in every exchange, whatever the topic. "
                 "Saved public like the rest of this step — leave it blank and mention it in "
                 "chat later if you'd rather keep it private."
             }
@@ -831,7 +832,7 @@ fn step2_rules_fieldset() -> Markup {
                 }
                 label {
                     input type="radio" name="sharing_default" value="group";
-                    " Shared with the relevant group when it makes sense — you decide, as the assistant."
+                    " Shared with the relevant group when it makes sense — the consumer decides."
                 }
                 label {
                     input type="radio" name="sharing_default" value="always_private";

@@ -180,11 +180,11 @@ fn render_list(
                         // never a person, and it can never hold a login.
                         td {
                             @if u.is_admin { "admin" }
-                            @else if u.is_agent { "agent" }
+                            @else if u.is_agent { "consumer" }
                             @else { "user" }
                         }
                         td {
-                            @if u.is_agent { "consumer agent (no login by design)" }
+                            @if u.is_agent { "a consumer's own identity (no login by design)" }
                             @else if u.has_credentials { "active" }
                             @else if let Some(invitation_id) = &u.open_invitation {
                                 "invited — "
@@ -450,26 +450,28 @@ fn render_new_form(
             (components::text_field_ac("email", "Email", "email", &form.email, true, "off"))
             p.help.muted { "The user signs in with this email. Required, and only you (the admin) can change it later." }
             // The email is mandatory because this form makes a person who
-            // signs in. A bot has no inbox and no login, so its identity is
-            // minted by the token that binds it — the standard-consumer flow
-            // on the Tokens page. Said here because the founder came looking
-            // for a bot on this page and was stopped by the email field, with
-            // nothing to say where else to go.
+            // signs in. A consumer has no inbox and no login, so its identity
+            // is minted by the token that binds it — the standard-consumer
+            // flow on the Tokens page. Said here because the founder came
+            // looking for one on this page and was stopped by the email field,
+            // with nothing to say where else to go.
             p.help.muted {
                 "This form is for " strong { "people" } " — someone who signs in and reads "
-                "their own memory. To create an " strong { "agent" } " (a bot, an assistant), "
-                "issue a " strong { "standard" } " consumer token on the "
+                "their own memory. To create a " strong { "consumer" }
+                " — the bot or assistant that talks to this memory — issue a "
+                strong { "standard" } " consumer token on the "
                 a href="/dashboard/tokens" { "Tokens" } " page instead: its "
-                code { "Bot id" } " field creates the agent's identity and its wiki, with "
+                code { "Consumer id" } " field creates its identity and its wiki, with "
                 "no email and no login."
             }
             (components::text_field("aliases", "Aliases (comma-separated)", "text", &form.aliases, false))
             (components::text_field("timezone", "Timezone (IANA, optional)", "text", &form.timezone, false))
             (components::text_field("locale", "Language (BCP-47, e.g. en-GB or it)", "text", &form.locale, false))
             p.help.muted {
-                "The language this person's memory is written in. It is not only how an "
-                "assistant replies: every page the engine compiles for them is written in it. "
-                "Leave it blank and the deployment falls back to English."
+                "The language this person's memory is written in. It is not only the "
+                "language a consumer answers them in: every page the engine compiles "
+                "for them is written in it. Leave it blank and the deployment falls "
+                "back to English."
             }
             p.help.muted {
                 "Where this user lives, e.g. " code { "Europe/Rome" } " or "
@@ -749,9 +751,10 @@ fn render_edit_form(
             (components::text_field("timezone", "Timezone (IANA, optional)", "text", &form.timezone, false))
             (components::text_field("locale", "Language (BCP-47, e.g. en-GB or it)", "text", &form.locale, false))
             p.help.muted {
-                "The language this person's memory is written in. It is not only how an "
-                "assistant replies: every page the engine compiles for them is written in it. "
-                "Leave it blank and the deployment falls back to English."
+                "The language this person's memory is written in. It is not only the "
+                "language a consumer answers them in: every page the engine compiles "
+                "for them is written in it. Leave it blank and the deployment falls "
+                "back to English."
             }
             p.help.muted {
                 "Where this user lives, e.g. " code { "Europe/Rome" } " or "
@@ -993,7 +996,7 @@ fn render_forget_confirm(
             ul {
                 li {
                     "Wikis erased, theirs and everything under it (the wiki a "
-                    "connected app writes for them lives there too): "
+                    "connected consumer writes for them lives there too): "
                     strong { (preview.wikis) }
                 }
                 li {
@@ -1009,7 +1012,7 @@ fn render_forget_confirm(
                 }
                 li {
                     "Their sign-in and aliases, their group memberships, the "
-                    "permissions letting an app speak as them, the notices waiting "
+                    "permissions letting a consumer speak as them, the notices waiting "
                     "for them, and the recent conversation window."
                 }
                 li {
@@ -1409,10 +1412,10 @@ mod tests {
     /// This form makes a **person**: someone who signs in, which is why
     /// the email is mandatory. An **agent** has no inbox and no login —
     /// its identity is minted by the standard consumer token that binds
-    /// it. Somebody who arrives here wanting a bot must be sent there
+    /// it. Somebody who arrives here wanting one must be sent there
     /// rather than stopped by a required field with no explanation.
     #[test]
-    fn the_new_user_form_says_where_an_agent_is_created_instead() {
+    fn the_new_user_form_says_where_a_consumer_is_created_instead() {
         let html = render_new_form(
             layout::Chrome::default(),
             &admin_session(),
@@ -1426,11 +1429,15 @@ mod tests {
         // other thing lives, as a link the admin can follow.
         assert!(html.contains("This form is for "), "{html}");
         assert!(html.contains("href=\"/dashboard/tokens\""), "{html}");
-        assert!(html.contains("Bot id"), "{html}");
-        // No second way to make an agent is offered here.
+        assert!(html.contains("Consumer id"), "{html}");
+        assert!(
+            !html.contains("Bot id"),
+            "the one name for the thing that connects is `consumer`: {html}"
+        );
+        // No second way to make one is offered here.
         assert!(
             !html.contains("is_agent") && !html.contains("name=\"agent\""),
-            "the agent is created by the token flow, not by a field on this form"
+            "a consumer is created by the token flow, not by a field on this form"
         );
     }
 }

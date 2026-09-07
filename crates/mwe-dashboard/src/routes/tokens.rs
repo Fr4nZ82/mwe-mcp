@@ -235,7 +235,7 @@ fn render_landing(
             (render_delegations_table(delegations))
         }
 
-        h2 { "Web agent connections" }
+        h2 { "Consumers connected over OAuth" }
         (render_connections_section(connections))
 
         h2 { "Revoked tokens" }
@@ -290,7 +290,7 @@ fn render_issue_form(users: &[String], form: &IssueFormState) -> Markup {
                 }
                 label.radio {
                     input type="radio" name="consumer_class" value="standard" checked[!smart];
-                    " Standard — a multi-user bot serving several people, acting as each "
+                    " Standard — one consumer serving several people, acting as each "
                     "(Telegram, mail, home automation)."
                 }
             }
@@ -312,11 +312,11 @@ fn render_issue_form(users: &[String], form: &IssueFormState) -> Markup {
                 }
             }
 
-            // Shared id: a free "Device id" for smart, the "Bot id" for
+            // Shared id: a free "Device id" for smart, the "Consumer id" for
             // standard (tokens.js swaps the label + help).
             p {
                 label id="consumer-id-label" for="consumer_id" {
-                    @if smart { "Device id" } @else { "Bot id" }
+                    @if smart { "Device id" } @else { "Consumer id" }
                 }
                 input id="consumer_id" name="consumer_id" type="text" value=(form.consumer_id) required;
                 p.help.muted id="consumer-id-help" {
@@ -324,7 +324,8 @@ fn render_issue_form(users: &[String], form: &IssueFormState) -> Markup {
                         "Free identifier for this device/session (e.g. cc-laptop). Recorded so "
                         code { "wiki_admin_op_log" } " can attribute writes to a specific device."
                     } @else {
-                        "The bot's own identity. Issuing creates a credential-less system user with "
+                        "The consumer's own identity — the bot or assistant that will talk "
+                        "to this memory. Issuing creates a credential-less system user with "
                         "this id (and its wiki). Lowercase letters and digits only, start with a "
                         "letter — no hyphen."
                     }
@@ -351,8 +352,8 @@ fn render_issue_form(users: &[String], form: &IssueFormState) -> Markup {
                     }
                     (act_as_checkboxes(users, &form.allowed_sender_ids))
                     p.help.muted {
-                        "The people this bot serves. Each call delegates to one of them via "
-                        code { "X-MWE-Act-As" } "; the bot writes each datum as the right human, "
+                        "The people this consumer serves. Each call delegates to one of them via "
+                        code { "X-MWE-Act-As" } "; the consumer writes each datum as the right human, "
                         "never as itself. Granting " code { "guest" } " lets the consumer serve "
                         "humans it cannot identify (an unrecognized voice, an unknown chat "
                         "sender): guest turns recall only public memory, store nothing, and "
@@ -457,7 +458,7 @@ fn render_connections_section(connections: &[oauth_server::Connection]) -> Marku
     html! {
         @if connections.is_empty() {
             p.muted {
-                "No web-agent connections yet. One appears when a user approves a "
+                "No consumer has connected over OAuth yet. One appears when a user approves a "
                 code { "webagentoauth" } " connection (e.g. the claude.ai web app)."
             }
         } @else {
@@ -534,7 +535,7 @@ async fn issue_submit(
         let msg = if smart {
             "Smart consumer requires a device id."
         } else {
-            "Standard consumer requires a bot id."
+            "Standard consumer requires a consumer id."
         };
         return render_issue_error(&state, admin.session(), &users, msg, &sticky).await;
     }
@@ -686,7 +687,7 @@ async fn resolve_standard_sender(
 async fn ensure_system_user(state: &DashboardState, bot_id: &str) -> Result<Option<String>> {
     if !enrollment::is_valid_user_id(bot_id) || !enrollment::is_filesystem_safe(bot_id) {
         return Ok(Some(
-            "Bot id must be lowercase letters and digits, start with a letter, and be \
+            "Consumer id must be lowercase letters and digits, start with a letter, and be \
              filesystem-safe."
                 .into(),
         ));
@@ -703,7 +704,7 @@ async fn ensure_system_user(state: &DashboardState, bot_id: &str) -> Result<Opti
     // wiki creation, so reject it here rather than ship a wiki-less bot.
     let Ok(wiki_id) = WikiId::parse(bot_id) else {
         return Ok(Some(
-            "Bot id must be lowercase letters and digits only (no underscore or hyphen) \
+            "Consumer id must be lowercase letters and digits only (no underscore or hyphen) \
              so its wiki can be created."
                 .into(),
         ));
@@ -728,7 +729,7 @@ async fn ensure_system_user(state: &DashboardState, bot_id: &str) -> Result<Opti
             return Ok(None);
         }
         return Ok(Some(format!(
-            "{bot_id:?} is a human account with a login — pick a different bot id (binding it \
+            "{bot_id:?} is a human account with a login — pick a different consumer id (binding it \
              would let the bot read and write as that person)."
         )));
     }
@@ -739,7 +740,7 @@ async fn ensure_system_user(state: &DashboardState, bot_id: &str) -> Result<Opti
             .await?;
     if group_clash > 0 {
         return Ok(Some(format!(
-            "Id {bot_id:?} clashes with an existing group — pick another bot id."
+            "Id {bot_id:?} clashes with an existing group — pick another consumer id."
         )));
     }
 
@@ -830,7 +831,7 @@ async fn upsert_delegation(
     .await?;
     // Propagate the change to the MCP middleware now instead of
     // waiting up to DELEGATION_REFRESH_INTERVAL — the admin clicking
-    // "Save" expects the next bot call to see the new list.
+    // "Save" expects the next consumer call to see the new list.
     state
         .delegations
         .refresh(&state.pool)
@@ -1085,7 +1086,7 @@ fn render_delegation_form(
         p.muted {
             "Changes propagate at the next tool call from the consumer "
             "(delegation table is read per-call with a short cache TTL). "
-            "The bot does not need to re-issue or restart."
+            "The consumer does not need to re-issue or restart."
         }
         form action=(format!("/dashboard/tokens/delegation/{}", form.consumer_id)) method="post" {
             p {

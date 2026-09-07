@@ -330,7 +330,7 @@ fn render_page(chrome: layout::Chrome, user: &SessionUser, turn: Option<&ChatTur
         p.muted {
             "Without JavaScript the panel's box posts to this page instead, and that "
             "path behaves differently: it runs your message through the ordinary "
-            "capture and recall, exactly as a message to your assistant would be, "
+            "capture and recall, exactly as a message to a consumer would be, "
             "and prints below what the engine made of it."
         }
 

@@ -5,12 +5,12 @@
 //! to ask "who is visiting":
 //!
 //! - **Public** (root-mounted, anonymous) for agents and `curl`:
-//!   - `GET /` — slim product front page: a line pointing an agent at
+//!   - `GET /` — slim product front page: a line pointing a consumer at
 //!     the bridge catalog, and a sign-in link for the human.
 //!   - `GET /bridges` + `GET /bridges/:consumer` — the catalog and the
-//!     per-bridge install guide. Every entry carries an **"agent
-//!     instructions"** link straight to its machine-readable `install.md`,
-//!     so an agent doesn't need the human guide at all.
+//!     per-bridge install guide. Every entry carries an **"instructions it
+//!     can follow"** link straight to its machine-readable `install.md`,
+//!     so a consumer doesn't need the human guide at all.
 //!   - `GET /bridges/:consumer/install.{sh,ps1,md}` — the self-contained
 //!     installers (each bridge's file tree embedded via [`rust_embed`] and
 //!     inlined as heredocs / here-strings; one `curl … | sh`, no
@@ -146,10 +146,11 @@ fn origin_from_host(host: &str) -> String {
 fn front_body(base: &str) -> Markup {
     html! {
         p.muted {
-            "Agent-agnostic, governed, persistent memory over MCP. Your memory "
-            "stays a folder you control; consumers connect over HTTP."
+            "Governed, persistent memory over MCP, for any consumer — the bot or "
+            "assistant that talks to it. Your memory stays a folder you control; "
+            "consumers connect over HTTP."
         }
-        h2 { "If you are an agent" }
+        h2 { "If you are a consumer" }
         p {
             "Read the setup instructions for connecting yourself to this memory: "
             a href=(format!("{base}/bridges")) { (format!("{base}/bridges")) }
@@ -165,13 +166,15 @@ fn front_body(base: &str) -> Markup {
 }
 
 /// Catalog body. `base` prefixes the per-consumer guide link; the
-/// "agent instructions" link always points at the public `install.md`.
+/// "instructions for the consumer" link always points at the public
+/// `install.md`.
 /// `origin` (`scheme://host`) is shown in the bridge-less claude.ai section.
 fn catalog_body(base: &str, origin: &str) -> Markup {
     html! {
         p.muted {
-            "Bridges connect a host agent to mwe-mcp. Start with "
-            strong { "NanoClaw" } " if you have no agent yet: it is the "
+            "A bridge connects a consumer — the bot or assistant that talks to "
+            "this memory — to mwe-mcp. Start with "
+            strong { "NanoClaw" } " if you have no consumer yet: it is the "
             "ready-made assistant, installed with one command and arriving "
             "with this memory as its only memory. It and "
             strong { "hermes" } " are the two " strong { "standard" }
@@ -179,13 +182,13 @@ fn catalog_body(base: &str, origin: &str) -> Markup {
             "block, per-sender attribution. A "
             strong { "smart" } " consumer (Claude Code) brings its own LLM and "
             "authors a project's smart wiki over MCP. Pick your host for the "
-            "setup, or hand the agent its " code { "install.md" } " directly."
+            "setup, or hand the consumer its " code { "install.md" } " directly."
         }
         table {
             thead { tr {
                 th { "Consumer" }
                 th { "Setup" }
-                th { "For agents" }
+                th { "For the consumer to read" }
             } }
             tbody {
                 @for (name, label) in BRIDGES {
@@ -198,7 +201,7 @@ fn catalog_body(base: &str, origin: &str) -> Markup {
                         }
                         td {
                             a href=(format!("/bridges/{name}/install.md")) {
-                                "agent instructions"
+                                "instructions it can follow"
                             }
                         }
                     }
@@ -219,7 +222,7 @@ fn claude_ai_section(origin: &str) -> Markup {
     html! {
         h2 { "Connect the claude.ai web app" }
         p.muted {
-            "claude.ai (Pro / Max / Team) connects directly as a smart memory agent "
+            "claude.ai (Pro / Max / Team) connects directly as a smart consumer "
             "over OAuth — no bridge to install, no token to copy. It authors its own "
             "dedicated wiki, and searches or saves when you ask it to."
         }
@@ -281,12 +284,13 @@ fn nanoclaw_guide_body(origin: &str) -> Markup {
     );
     html! {
         p.muted {
-            strong { "Start here if you have no agent yet." } " NanoClaw is the "
-            "ready-made assistant: a chat agent that arrives with this memory "
+            strong { "Start here if you have no consumer yet." } " A consumer is "
+            "the bot or assistant that talks to this memory. NanoClaw is the "
+            "ready-made assistant: a chat assistant that arrives with this memory "
             "already wired as its " strong { "only" } " memory. Its built-in "
             "memory stays off and no session is carried between turns, so what "
             "it remembers is exactly what the memory recalls — per person, and "
-            "governed. Everything else NanoClaw gives an agent (chat, the web, "
+            "governed. Everything else NanoClaw brings (chat, the web, "
             "its own container, scheduled tasks, several channels at once) is "
             "untouched."
         }
@@ -318,9 +322,9 @@ fn nanoclaw_guide_body(origin: &str) -> Markup {
             "above there."
         }
 
-        h3 { "…or let the agent do it" }
-        p { "Paste this to an agent that already has a shell — it runs the same "
-            "installer and then hands you the steps below:" }
+        h3 { "…or let a consumer do it" }
+        p { "Paste this to any consumer that already has a shell — it runs the "
+            "same installer and then hands you the steps below:" }
         pre.endpoint-display { (agent_line) }
         p.muted {
             "Machine-readable form: "
@@ -337,8 +341,8 @@ fn nanoclaw_guide_body(origin: &str) -> Markup {
                 code { "mwe" } "). On an install that already has agents: "
                 code { "ncl groups create --template mwe --name mwe --new" }
                 " — " code { "--name" } " is yours, it becomes the group folder. "
-                "It is not what the agent answers to: its name is a fact of this "
-                "memory, and anybody it serves can tell it in chat."
+                "It is not what the assistant answers to: its name is a fact of "
+                "this memory, and anybody it serves can tell it in chat."
             }
             li {
                 "Apply the skill: " code { "/add-mwe-memory" } " from Claude Code. "
@@ -382,7 +386,7 @@ fn claude_code_guide_body(origin: &str) -> Markup {
     html! {
         p.muted {
             "Claude Code connects as a " strong { "smart consumer" } ": it brings "
-            "its own subscription LLM and is a native MCP client, so there are no "
+            "its own subscription LLM and speaks MCP itself, so there are no "
             "plugins to install. It signs in over " strong { "OAuth — no token to "
             "copy" } " — and gets its own operational-memory wiki plus per-project "
             "memory it authors as you work."
@@ -415,7 +419,7 @@ fn claude_code_guide_body(origin: &str) -> Markup {
             "\"Connected\" alone doesn't load them into the running session."
         }
 
-        h2 { "Let the agent do the setup parts" }
+        h2 { "Let Claude Code do the setup parts" }
         p { "Or paste this to a running Claude Code session — it registers the server "
             "and walks you through the rest (the OAuth sign-in and the hook are yours "
             "to approve / add):" }
@@ -436,8 +440,8 @@ fn claude_code_guide_body(origin: &str) -> Markup {
             code { "~/.claude/settings.json" } ": a token-less command hook that injects "
             "a fixed reminder to call " code { "smart_bootstrap" } " + recall (the recall "
             "itself stays the model's own tool call). " strong { "You add it yourself" }
-            " — an agent can't merge an external hook into its settings (Claude Code "
-            "blocks that as self-modification), unless it is running in "
+            " — Claude Code can't merge an external hook into its own settings "
+            "(it blocks that as self-modification), unless it is running in "
             code { "bypass-permissions" } " mode, where it can add it for you."
         }
 
@@ -467,7 +471,7 @@ fn hermes_guide_body(consumer: &str, origin: &str) -> Markup {
     html! {
         p.muted {
             "First-party, served by this server. Follow it by hand below, or "
-            "hand it to the agent."
+            "hand it to hermes itself."
         }
 
         h2 { "1. Install the plugins" }
@@ -491,7 +495,7 @@ fn hermes_guide_body(consumer: &str, origin: &str) -> Markup {
             " (your hermes-agent checkout, if you don't run the installer from inside it)."
         }
 
-        h3 { "…or let the agent do it" }
+        h3 { "…or let hermes do it" }
         p { "Paste this to a running hermes — it runs the same installer itself:" }
         pre.endpoint-display { (agent_line) }
         p.muted {
@@ -1670,7 +1674,7 @@ mod tests {
     #[test]
     fn front_body_points_agent_at_catalog_and_human_at_signin() {
         let html = front_body("").into_string();
-        assert!(html.contains("If you are an agent"));
+        assert!(html.contains("If you are a consumer"));
         assert!(html.contains("/bridges"));
         assert!(html.contains("href=\"/dashboard/\""));
     }
@@ -1679,7 +1683,7 @@ mod tests {
     fn catalog_lists_hermes_with_agent_instructions_link() {
         let pub_html = catalog_body("", "https://memory.anna.dev").into_string();
         assert!(pub_html.contains("hermes"));
-        assert!(pub_html.contains("agent instructions"));
+        assert!(pub_html.contains("instructions it can follow"));
         assert!(pub_html.contains("/bridges/hermes/install.md"));
         assert!(pub_html.contains("href=\"/bridges/hermes\""));
         // The bridge-less claude.ai section shows the MCP URL to paste + the
@@ -1758,8 +1762,8 @@ mod tests {
     #[tokio::test]
     async fn public_routes_serve_pages_and_scripts() {
         let cases = [
-            ("/", "If you are an agent"),
-            ("/bridges", "agent instructions"),
+            ("/", "If you are a consumer"),
+            ("/bridges", "instructions it can follow"),
         ];
         for (uri, needle) in cases {
             let resp = public_site_router()

@@ -272,7 +272,7 @@ fn global_require_section(on: bool) -> Markup {
             p.muted {
                 "When on, every non-system user must set up two-factor authentication "
                 "before they can use the dashboard — enforced at their next sign-in. "
-                "System / bot identities (no password) are exempt. Turn this on before "
+                "System and consumer identities (no password) are exempt. Turn this on before "
                 "exposing the dashboard to a public user base."
             }
             form action="/dashboard/settings/require-2fa" method="post" {

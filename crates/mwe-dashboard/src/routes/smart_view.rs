@@ -181,7 +181,7 @@ async fn list_smart_wikis(
                             td { (r.title) }
                             td.muted {
                                 (r.wiki_type)
-                                @if r.is_agent { " " span.badge { "agent" } }
+                                @if r.is_agent { " " span.badge { "a consumer's own" } }
                             }
                             td.muted { (r.last_push.clone().unwrap_or_else(|| "—".to_owned())) }
                             td {
@@ -807,9 +807,9 @@ fn render_sharing(
         }
         section.meta {
             dl {
-                dt { "wiki_id" } dd { code { (sharing.wiki_id) } }
-                dt { "title" }   dd { (sharing.title) }
-                dt { "owner" }   dd { code { "user:" (sharing.owner_user) } }
+                dt { "Wiki" } dd { code { (sharing.wiki_id) } }
+                dt { "Title" } dd { (sharing.title) }
+                dt { "Owner" } dd { code { "user:" (sharing.owner_user) } }
             }
         }
 

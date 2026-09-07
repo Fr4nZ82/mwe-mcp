@@ -695,10 +695,10 @@ fn render_wikis_index(
                             td { (row.title) }
                             td.muted {
                                 (row.wiki_type)
-                                // An agent's wiki is a `wiki-user` like a
-                                // human's; the badge is the only thing that
+                                // A consumer's own wiki is a `wiki-user` like
+                                // a person's; the badge is the only thing that
                                 // tells them apart at a glance.
-                                @if row.is_agent { " " span.badge { "agent" } }
+                                @if row.is_agent { " " span.badge { "a consumer's own" } }
                             }
                             td { (row.facts) }
                             // Deleting a whole wiki subtree is the most
@@ -767,18 +767,18 @@ async fn view(
     let body = html! {
         section.meta {
             dl {
-                dt { "id" } dd { code { (wiki_id.as_str()) } }
-                dt { "title" } dd { (meta.title) }
-                dt { "type" }
+                dt { "Id" } dd { code { (wiki_id.as_str()) } }
+                dt { "Title" } dd { (meta.title) }
+                dt { "Kind" }
                 dd {
                     (meta.wiki_type)
-                    // Same reason as the list badge: an agent's own wiki is
+                    // Same reason as the list badge: a consumer's own wiki is
                     // typed `wiki-user`, so the type alone hides whose memory
                     // this is.
-                    @if meta.is_agent { " " span.badge { "agent" } }
+                    @if meta.is_agent { " " span.badge { "a consumer's own" } }
                 }
-                dt { "slug" } dd { code { (meta.slug.as_str()) } }
-                dt { "facts" } dd { (fact_count) " active" }
+                dt { "Short name" } dd { code { (meta.slug.as_str()) } }
+                dt { "Facts" } dd { (fact_count) " that still hold" }
                 // No owner row, because a wiki has none. A `wiki-user` is
                 // the place a person's `@profile.md` and `@rules.md` live
                 // and where the facts of their messages land when no other
@@ -1658,8 +1658,8 @@ fn render_view_page_body(
     html! {
         section.meta {
             dl {
-                dt { "wiki_id" } dd { code { (wiki_id.as_str()) } }
-                dt { "page" }    dd { code { (page_path) } }
+                dt { "Wiki" } dd { code { (wiki_id.as_str()) } }
+                dt { "Page" } dd { code { (page_path) } }
             }
         }
 
@@ -2139,8 +2139,8 @@ fn render_comment_form(
         }
         section.meta {
             dl {
-                dt { "wiki_id" } dd { code { (wiki_id) } }
-                dt { "page" }    dd { code { (page_path) } }
+                dt { "Wiki" } dd { code { (wiki_id) } }
+                dt { "Page" } dd { code { (page_path) } }
                 dt { "anchor" }  dd { code { "#" (anchor) } }
                 @if let Some(label) = heading_label {
                     dt { "heading" } dd { (label) }
@@ -2477,8 +2477,8 @@ fn render_edit_form(
         }
         section.meta {
             dl {
-                dt { "wiki_id" } dd { code { (wiki_id) } }
-                dt { "page" }    dd { code { (page_path) } }
+                dt { "Wiki" } dd { code { (wiki_id) } }
+                dt { "Page" } dd { code { (page_path) } }
             }
         }
 
@@ -2560,7 +2560,8 @@ fn render_describe_affordance(wiki_id: &WikiId, page_path: &str) -> Markup {
                 wiki_id.as_str(),
                 page_path
             )) { "✎ Edit page description" }
-            " — the page's one-line purpose (guides fact placement + recall navigation)."
+            " — the one line that steers where new facts land here. The Cronista "
+            "rewrites it with the page, so an edit holds until then."
         }
     }
 }
@@ -2706,18 +2707,22 @@ fn render_describe_form(
         }
         section.meta {
             dl {
-                dt { "wiki" } dd { code { (id) } }
-                dt { "page" } dd { code { (page_path) } }
+                dt { "Wiki" } dd { code { (id) } }
+                dt { "Page" } dd { code { (page_path) } }
             }
         }
+        p.flash.flash-info {
+            strong { "The Cronista writes this line." }
+            " It composes a fresh one every time it rewrites the page, and that "
+            "one replaces whatever is here. What you type holds "
+            strong { "until the next rewrite" }
+            " and no longer."
+        }
         p.muted {
-            "A short note on what this page is for. It is the one line other "
-            "parts of the engine read about this page: it guides where a new "
-            "fact gets filed, and it is what recall navigation reads to decide "
-            "whether to open the page at all. It holds "
-            strong { "until this page's prose is next written" }
-            " — the writer composes a fresh description along with the body. "
-            "Leave blank to clear."
+            "It is worth typing anyway when the engine is filing badly right "
+            "now: this is the one line the rest of the engine reads about the "
+            "page — it steers where a new fact lands, and recall reads it to "
+            "decide whether to open the page at all. Leave blank to clear."
         }
         form action=(format!("/dashboard/wiki/{id}/describe/{page_path}")) method="post" {
             p {
@@ -2733,7 +2738,7 @@ fn render_describe_form(
             a href=(format!("/dashboard/wiki/{id}/view/{page_path}")) { "← Back to page" }
         }
     };
-    let title = format!("Describe — {page_path}");
+    let title = format!("Page description — {page_path}");
     layout::authenticated_reading_page(chrome, &title, user, &body)
 }
 

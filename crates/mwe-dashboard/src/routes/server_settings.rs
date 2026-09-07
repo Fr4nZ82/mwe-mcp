@@ -102,7 +102,7 @@ fn public_address_section(cfg: &Config) -> Markup {
                 "The address people reach this server at from outside — the "
                 code { "public_base_url" } " key. Three things are built on it and "
                 "none of them works without it: the password-reset link, the "
-                "invitation email, and the link an agent mints with "
+                "invitation email, and the link a consumer mints with "
                 code { "dashboard_link" } " so somebody can open their own memory. "
                 "The server never guesses it from the request: an address taken "
                 "from the browser's " code { "Host" } " header is one whoever sent "

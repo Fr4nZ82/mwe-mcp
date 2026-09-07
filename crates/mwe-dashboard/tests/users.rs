@@ -497,13 +497,13 @@ async fn admin_can_change_user_email_and_login_follows() {
     );
 }
 
-/// A consumer agent's identity is enrolled like anyone else, so it shows up in
-/// this listing — but it is a bot. Rendered as `user` with the status "no
+/// A consumer's own identity is enrolled like anyone else, so it shows up in
+/// this listing — but it is not a person. Rendered as `user` with the status "no
 /// credentials, no invitation" it is indistinguishable from a human who has
 /// not accepted their invite yet, so the role column names it and the status
 /// says why it has no login.
 #[tokio::test]
-async fn user_list_tells_a_consumer_agent_from_a_person() {
+async fn user_list_tells_a_consumer_from_a_person() {
     let (app, pool, _tree, _dir) = common::make_app_with_memory().await;
     let admin_cookie = login_as_admin(&app).await;
     sqlx::query(
@@ -526,9 +526,9 @@ async fn user_list_tells_a_consumer_agent_from_a_person() {
     .await;
     assert_eq!(response.status(), StatusCode::OK);
     let html = body_string(response).await;
-    assert!(html.contains("<td>agent</td>"), "{html}");
+    assert!(html.contains("<td>consumer</td>"), "{html}");
     assert!(
-        html.contains("consumer agent (no login by design)"),
+        html.contains("a consumer's own identity (no login by design)"),
         "the status explains the missing login instead of implying an unsent invite: {html}"
     );
     // The invited human keeps the ordinary role and the invitation status.

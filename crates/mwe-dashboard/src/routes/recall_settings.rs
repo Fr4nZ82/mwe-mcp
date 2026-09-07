@@ -158,16 +158,17 @@ fn knobs() -> Vec<Knob> {
             field: "max_agent_identity_chars",
             label: "WHO YOU ARE — budget (chars)",
             default: def.max_agent_identity_chars.to_string(),
-            help: "Recall-block agent-identity section: whole bullets fitted, oldest tail drops."
+            help: "The consumer's own identity in the recall block: whole bullets \
+                   fitted, oldest tail drops."
                 .to_owned(),
         },
         Knob {
             field: "max_agent_history_chars",
             label: "History with user — budget (chars)",
             default: def.max_agent_history_chars.to_string(),
-            help:
-                "Recall-block per-user agent-history section: whole bullets fitted, newest first."
-                    .to_owned(),
+            help: "What the consumer and this person said to each other lately: \
+                   whole bullets fitted, newest first."
+                .to_owned(),
         },
         Knob {
             field: "max_sender_identity_chars",

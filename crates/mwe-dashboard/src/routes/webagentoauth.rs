@@ -516,7 +516,7 @@ async fn validate_client(
 fn consent_error(msg: &str) -> Response {
     let body = html! {
         (components::flash("error", msg))
-        p.muted { "Close this window and retry the connection from your agent." }
+        p.muted { "Close this window and start the connection again from the consumer." }
     };
     (
         StatusCode::BAD_REQUEST,
@@ -777,8 +777,9 @@ fn render_consent(
     let body = html! {
         @if let Some(e) = err { (components::flash("error", e)) }
         p {
-            "The application " strong { (client.client_name) } " wants to connect to your "
-            "memory as a " strong { "smart agent" } ", acting as " strong { (sender) }
+            "The consumer " strong { (client.client_name) }
+            " — the bot or assistant that will talk to this memory — wants to connect "
+            "as a " strong { "smart consumer" } ", acting as " strong { (sender) }
             ". It will read and write its own dedicated wiki."
         }
         // The name above is whatever the client called itself at
@@ -788,7 +789,7 @@ fn render_consent(
         p.muted {
             "After you approve, the connection is handed to "
             strong { (redirect_target_label(&p.redirect_uri)) }
-            ". If that is not where you expect this application to live, deny."
+            ". If that is not where you expect this consumer to live, deny."
         }
         form action="/dashboard/webagentoauth/authorize" method="post" {
             (components::text_field("connection", "Name this connection", "text", &default_conn, true))
@@ -809,7 +810,7 @@ fn render_consent(
         hr;
         @if is_loopback_redirect(&p.redirect_uri) {
             p.muted {
-                "This is a local CLI agent (e.g. Claude Code): it loads its mwe-mcp "
+                "This consumer runs on this computer (e.g. Claude Code): it loads its mwe-mcp "
                 "skill itself (via " code { "skill_fetch" } ") and recalls / saves on "
                 "its own — nothing to upload. Just approve and it is connected."
             }
@@ -821,7 +822,7 @@ fn render_consent(
                     "Download the mwe-mcp skill"
                 }
                 ", then in claude.ai open " strong { "Settings → Capabilities → Upload skill" }
-                " and drop it in. It tells the assistant when to recall and to keep your "
+                " and drop it in. It tells the consumer when to recall and to keep your "
                 "memory current on its own. (Set the memory tools to auto-allow there so it "
                 "doesn't ask every time.)"
             }
@@ -835,7 +836,7 @@ fn render_consent(
 /// redirect (never the path or query, which say nothing a person can judge).
 fn redirect_target_label(redirect_uri: &str) -> String {
     if is_loopback_redirect(redirect_uri) {
-        return "an application on this computer".to_owned();
+        return "a consumer on this computer".to_owned();
     }
     let (scheme, rest) = redirect_uri.split_once("://").unwrap_or(("", redirect_uri));
     let authority = rest.split(['/', '?', '#']).next().unwrap_or(rest);

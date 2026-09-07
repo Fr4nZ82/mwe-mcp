@@ -140,7 +140,8 @@ fn dead_link() -> Html<String> {
     let body = html! {
         (components::flash("error", "This link is invalid, expired, or has already been used."))
         p.muted {
-            "Dashboard links can be opened once. Ask your assistant to send a fresh one, or "
+            "Dashboard links can be opened once. Ask the consumer that sent it for a fresh "
+            "one, or "
             a href="/dashboard/login" { "sign in" }
             " with your password."
         }

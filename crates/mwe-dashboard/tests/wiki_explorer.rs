@@ -2552,11 +2552,11 @@ async fn facts_index_deep_link_points_at_edit_form() {
     );
 }
 
-/// An agent's own wiki is a `wiki-user` like a human's — the agent is an
+/// A consumer's own wiki is a `wiki-user` like a person's — the consumer is an
 /// enrolled user — so the type column alone shows Hermes and Alice as the same
 /// kind of thing. The badge is what tells the operator whose memory a row is.
 #[tokio::test]
-async fn wiki_list_badges_an_agent_wiki() {
+async fn wiki_list_badges_a_consumers_own_wiki() {
     let (app, _pool, tree, _dir) = make_app_with_memory().await;
     let cookie = login_as_admin(&app).await;
     let dir = tree.wikis_dir().join("hermes1");
@@ -2587,13 +2587,13 @@ async fn wiki_list_badges_an_agent_wiki() {
     assert_eq!(response.status(), StatusCode::OK);
     let html = body_string(response).await;
     assert!(
-        html.contains("wiki-user <span class=\"badge\">agent</span>"),
-        "the agent's row is badged: {html}"
+        html.contains("wiki-user <span class=\"badge\">a consumer's own</span>"),
+        "the consumer's row is badged: {html}"
     );
     // Exactly one badge: the admin's own identity wiki is a person's.
     assert_eq!(
-        html.matches("class=\"badge\">agent<").count(),
+        html.matches("class=\"badge\">a consumer's own<").count(),
         1,
-        "only the agent's wiki is badged: {html}"
+        "only the consumer's wiki is badged: {html}"
     );
 }

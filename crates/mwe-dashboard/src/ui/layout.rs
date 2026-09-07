@@ -647,7 +647,7 @@ pub fn help_body() -> Markup {
             "The chat panel on the right is how you operate on the memory you can "
             "already read: finding facts, correcting them, moving them, forgetting "
             "them, and answering what is waiting on you. Say what you want in plain "
-            "language; the assistant works through the tools and always asks you to "
+            "language; the chat works through the tools and always asks you to "
             "confirm before it writes anything."
         }
         ul style="margin:0;padding:0;list-style:none;display:flex;flex-direction:column;gap:.55rem" {

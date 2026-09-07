@@ -3,7 +3,7 @@
 // Two jobs, both optional — the form is fully usable without JS:
 //   1. Show only the fields that belong to the chosen consumer class
 //      (Smart needs an owner; Standard needs an act-as list), and relabel
-//      the shared id field ("Device id" vs "Bot id").
+//      the shared id field ("Device id" vs "Consumer id").
 //   2. Mirror the id field into the device-label field until the admin
 //      types their own label.
 //
@@ -32,11 +32,12 @@
         "so wiki_admin_op_log can attribute writes to a specific device.",
     },
     standard: {
-      label: "Bot id",
+      label: "Consumer id",
       help:
-        "The bot's own identity. Issuing creates a credential-less system " +
-        "user with this id (and its wiki). Lowercase letters and digits " +
-        "only, start with a letter — no hyphen.",
+        "The consumer's own identity — the bot or assistant that will talk " +
+        "to this memory. Issuing creates a credential-less system user with " +
+        "this id (and its wiki). Lowercase letters and digits only, start " +
+        "with a letter — no hyphen.",
     },
   };
 
