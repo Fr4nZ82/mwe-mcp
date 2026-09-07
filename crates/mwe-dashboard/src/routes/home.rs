@@ -166,8 +166,12 @@ pub async fn index(
                         }
                     }
                     li {
-                        a href=(format!("/dashboard/facts?wiki_id={}", user.sender_id)) {
-                            "The facts it holds"
+                        // What the memory holds *about* them, which is
+                        // not the same set as what is filed in their own
+                        // wiki: a fact about them can live on a group's
+                        // page, and their wiki holds facts about others.
+                        a href=(format!("/dashboard/facts?subject=user:{}", user.sender_id)) {
+                            "The facts about you"
                         }
                     }
                     li {

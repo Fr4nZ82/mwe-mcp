@@ -111,6 +111,15 @@ pub struct FactsFilters {
     /// Scope to a single `wiki_id`. Empty string treated as unset.
     #[serde(default)]
     pub wiki_id: Option<String>,
+    /// Scope to the person or group a fact is **about** — its subject,
+    /// as a principal (`user:bob`, `group:famiglia`). A wiki filter
+    /// answers "what is filed here"; this answers "what does the memory
+    /// hold about somebody", which is a different question and the one
+    /// most people arrive with. Empty string treated as unset; a value
+    /// that is not a principal is dropped rather than refused, so a
+    /// hand-edited URL narrows to nothing instead of failing the page.
+    #[serde(default)]
+    pub subject: Option<String>,
     /// Scope to a single `fact_type` tag. Empty string treated as unset.
     #[serde(default)]
     pub fact_type: Option<String>,
@@ -162,7 +171,8 @@ impl FactsFilters {
     fn to_core_filters(&self, limit: usize) -> FactFilters {
         FactFilters {
             wiki_id: non_empty(self.wiki_id.as_deref()),
-            subject_id: None,
+            subject_id: non_empty(self.subject.as_deref())
+                .and_then(|s| s.parse::<mwe_core::types::Principal>().ok()),
             sender_id: None,
             fact_type: non_empty(self.fact_type.as_deref()),
             created_after: non_empty(self.created_after.as_deref()),
@@ -217,8 +227,9 @@ impl FactsFilters {
         } else {
             None
         };
-        let pairs: [(&str, Option<&str>); 8] = [
+        let pairs: [(&str, Option<&str>); 9] = [
             ("wiki_id", self.wiki_id.as_deref()),
+            ("subject", self.subject.as_deref()),
             ("fact_type", self.fact_type.as_deref()),
             ("topic", self.topic.as_deref()),
             ("created_after", self.created_after.as_deref()),
@@ -1456,8 +1467,11 @@ fn index_intro(reveal: bool) -> Markup {
             (crate::reveal::banner())
         } @else {
             p.muted {
-                "Filtered list of every fact you can read — the governed memory of "
-                "your standard wikis. Smart-wiki documentation is indexed as "
+                "Every fact you can read — the governed memory of your standard "
+                "wikis. " code { "About" } " narrows to what the memory holds "
+                "about one person or group; " code { "Wiki" } " narrows to what "
+                "is filed in one place, which is not the same set. Smart-wiki "
+                "documentation is indexed as "
                 a href="/dashboard/facts/sections" { "sections" }
                 " instead. Filters narrow together, and " code { "Topic" }
                 " takes one word. Arrowed headers sort; click an id to copy it."
@@ -1472,6 +1486,12 @@ fn filter_form(filters: &FactsFilters, page_size: usize) -> Markup {
             // The filter fields flex-wrap into columns on a wide screen and
             // collapse to one column on mobile (see `.field-grid`).
             div.field-grid {
+                p {
+                    label for="filter-subject" { "About" }
+                    input id="filter-subject" type="text" name="subject"
+                        value=(filters.subject.as_deref().unwrap_or(""))
+                        placeholder="e.g. user:alice or group:famiglia";
+                }
                 p {
                     label for="filter-wiki-id" { "Wiki" }
                     input id="filter-wiki-id" type="text" name="wiki_id"
@@ -1642,6 +1662,9 @@ fn pagination_links(
 /// visible number input supplies.
 fn filter_hidden_inputs(filters: &FactsFilters, page_size: usize) -> Markup {
     html! {
+        @if let Some(v) = non_empty(filters.subject.as_deref()) {
+            input type="hidden" name="subject" value=(v);
+        }
         @if let Some(v) = non_empty(filters.wiki_id.as_deref()) {
             input type="hidden" name="wiki_id" value=(v);
         }

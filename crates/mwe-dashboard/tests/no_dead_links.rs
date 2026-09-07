@@ -201,3 +201,52 @@ async fn the_operator_consoles_still_refuse_a_reader() {
         assert_eq!(response.status(), StatusCode::FORBIDDEN, "{uri}");
     }
 }
+
+/// "The facts about you" on the home page narrows by **subject** — the
+/// person a fact is about — not by the wiki it happens to be filed in.
+/// The two are different sets: a fact about somebody can live on a
+/// group's page, and their own wiki holds facts about other people.
+#[tokio::test]
+async fn the_home_page_points_at_the_facts_about_the_reader() {
+    let (app, pool, _tree, _dir) = make_app_with_memory().await;
+    let admin = login_as_admin(&app).await;
+    let member = make_member(&app, &admin, "bob").await;
+    sqlx::query("UPDATE user_credentials SET profile_initialized = 1 WHERE user_id = 'bob'")
+        .execute(&pool)
+        .await
+        .unwrap();
+
+    let response = send(
+        &app,
+        Request::builder()
+            .uri("/home")
+            .header(header::HOST, "memory.example.org")
+            .header(header::COOKIE, member.as_str())
+            .body(Body::empty())
+            .unwrap(),
+    )
+    .await;
+    let html = body_string(response).await;
+    assert!(
+        html.contains("/dashboard/facts?subject=user:bob"),
+        "the home page must point at the facts about the reader"
+    );
+
+    // …and the fact browser understands it.
+    let response = send(
+        &app,
+        Request::builder()
+            .uri("/facts?subject=user:bob")
+            .header(header::HOST, "memory.example.org")
+            .header(header::COOKIE, member.as_str())
+            .body(Body::empty())
+            .unwrap(),
+    )
+    .await;
+    assert_eq!(response.status(), StatusCode::OK);
+    let html = body_string(response).await;
+    assert!(
+        html.contains(r#"name="subject" value="user:bob""#),
+        "the filter must come back filled in, so the reader can widen it"
+    );
+}
