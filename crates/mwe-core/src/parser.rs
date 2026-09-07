@@ -426,7 +426,7 @@ fn parse_attrs(spec: &str, marker_offset: usize, warnings: &mut Vec<ParseWarning
             // `owner=` is the pre-rename spelling of this axis and is read
             // FOREVER, never written. It is on every page and every export
             // tarball produced before the rename, and on every region a human
-            // hand-authored from the old documentation.
+            // hand-authored with that spelling.
             //
             // Dropping it would not raise an error: an unknown key falls
             // through to the warn-and-keep arm below, leaving the subject

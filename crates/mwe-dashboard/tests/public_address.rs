@@ -54,7 +54,7 @@ async fn ask_for_a_reset(app: &axum::Router) -> StatusCode {
             .method("POST")
             .uri("/forgot-password")
             .header(header::CONTENT_TYPE, "application/x-www-form-urlencoded")
-            // The header a link used to be built from. It is attacker-chosen
+            // The header no link may be built from: it is attacker-chosen
             // on any deployment reachable from outside.
             .header(header::HOST, "attacker.example")
             .header("x-forwarded-proto", "https")

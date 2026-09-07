@@ -1,9 +1,9 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 //! Integration test for the admin **Dream** console
-//! (`POST /dream/{light,compile,full}`) that replaced the old "DO REM NOW"
-//! button. Verifies the route is admin/auth-gated and that, with the REM slots
-//! resolvable, `full` runs a cycle synchronously and renders the report. The
-//! happy path uses `FakeLlmBackend` overrides so no Ollama is needed.
+//! (`POST /dream/{light,compile,full}`). Verifies the route is
+//! admin/auth-gated and that, with the REM slots resolvable, `full` runs a
+//! cycle synchronously and renders the report. The happy path uses
+//! `FakeLlmBackend` overrides so no Ollama is needed.
 
 mod common;
 

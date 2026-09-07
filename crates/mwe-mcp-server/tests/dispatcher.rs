@@ -1760,7 +1760,7 @@ async fn wiki_admin_push_indexes_inline_without_reindex_channel() {
     assert_eq!(
         out["section_indexing"],
         json!("inline"),
-        "no channel (tests, degraded boot) → synchronous indexing as before"
+        "no channel (tests, degraded boot) → synchronous indexing"
     );
 }
 

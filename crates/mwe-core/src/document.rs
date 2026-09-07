@@ -3334,7 +3334,7 @@ mod tests {
             // classify
             // Five words, capitalised, with a person's name among them —
             // what the classify step actually answers on a real document,
-            // and what the anchor used to carry into `fact_index`.
+            // and more than the pair the anchor carries into `fact_index`.
             r#"{"disposition":"dossier","format":"prose","title":"Meeting X","page_slug":"meeting_x.md","target_wiki_id":"alice","summary":"Riunione sul viaggio in Norvegia.","page_description":"dossier del meeting","style":"prosa","topics":["meeting","Norvegia","viaggio","budget","Gimli"]}"#,
             // extract (one segment — short document). The extractor decides the
             // fact's subject (`subject_id`) and audience (`allow_ids`) under the

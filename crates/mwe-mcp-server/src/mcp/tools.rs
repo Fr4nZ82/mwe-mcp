@@ -2603,7 +2603,7 @@ pub(super) async fn call_wiki_admin_push(
     // near-free idempotent re-runs instead. Best-effort either way — the
     // safety-net sweep is the backstop, so an index hiccup never fails a
     // committed push. Without a queue handle (tests, degraded boot) we
-    // index inline as before.
+    // index inline.
     let mut section_indexing = "queued";
     if let Ok(handle) = state.tree.locate(&resp.wiki_id) {
         for rel in &affected {

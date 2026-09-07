@@ -134,7 +134,7 @@ way: only the lines move. Below the ceiling nothing changes, because a cached
 whole index is both cheaper and complete.
 
 An operator override without the marker still works: the whole rendered body
-goes to the system prompt as before and nothing is marked cacheable.
+goes to the system prompt and nothing is marked cacheable.
 
 ### The nightly part (v1.34)
 

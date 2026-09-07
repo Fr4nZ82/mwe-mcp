@@ -2162,8 +2162,8 @@ mod tests {
         forge_user(&tree, "bob");
         forge_group(&tree, "famiglia");
         let pool = make_pool().await;
-        // One readable fact per wiki — the shape the old principal family
-        // turned into a door. None of them may seed one.
+        // One readable fact per wiki — the shape that would turn a wiki
+        // itself into a door. None of them may seed one.
         for (n, w) in [(1u8, "alice"), (2, "bob"), (3, "famiglia")] {
             seed_fact(
                 &pool,

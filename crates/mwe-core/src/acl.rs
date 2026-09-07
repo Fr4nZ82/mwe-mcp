@@ -235,9 +235,9 @@ pub(crate) fn principal_matches(p: &Principal, sender_id: &str, sender_groups: &
 ///
 /// True when the builtin `global` group appears anywhere in the region's
 /// effective principal set (`subject ∪ allow ∪ sender`). Centralises the "is
-/// this public?" question so call sites stop pattern-matching a single
-/// position (the old `subject == global` shortcut, which broke once `subject`
-/// became the subject and visibility moved to the `allow`/`sender` axes).
+/// this public?" question in one place: `subject == global` alone answers it
+/// wrong, because `subject` says who a fact is about and the audience rides
+/// the `allow` and `sender` axes.
 #[must_use]
 pub fn is_public(subject: &Principal, allow: &[Principal], sender: Option<&Principal>) -> bool {
     subject.is_global()
@@ -315,7 +315,7 @@ pub fn sender_may_rewrite(
 /// wider (the subject and the author come in through their own doors, and a
 /// `global` fact is legible to everyone), and "everyone may read it" must not
 /// become "anyone may retire it". A fact shared with nobody stays with its
-/// subject and its author, exactly as before.
+/// subject and its author.
 ///
 /// Rewriting is the other half and does not go this wide: replacing a fact
 /// asserts something NEW about its subject, which is the subject's to allow

@@ -1645,8 +1645,8 @@ pub struct AnthropicBackend {
     /// Extended-thinking budget in tokens, mapped from the slot's
     /// `reasoning_effort` by [`Self::with_reasoning_effort`]. `None` (the
     /// default) sends no `thinking` field — the model answers without an
-    /// extended reasoning pass, exactly as before this knob existed.
-    /// `Some(b)` enables `thinking: { type: "enabled", budget_tokens: b }`
+    /// extended reasoning pass. `Some(b)` enables
+    /// `thinking: { type: "enabled", budget_tokens: b }`
     /// on the single-shot `complete` path only; `chat` is deliberately
     /// excluded (see [`LlmBackend::chat`] for the round-trip reason).
     thinking_budget: Option<u32>,

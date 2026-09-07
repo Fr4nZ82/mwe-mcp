@@ -1295,15 +1295,15 @@ async fn home_page_lists_memory_section() {
     let html = body_string(response).await;
     assert!(html.contains("Browse wikis"), "{html}");
     assert!(html.contains("Browse facts"), "{html}");
-    // The proposals link now points at the chat (the form surface is
-    // retired), not the removed page.
+    // The proposals link points at the chat: there is no form page for
+    // them.
     assert!(
         html.contains("Review pending changes in the chat"),
         "{html}"
     );
     assert!(
         !html.contains("href=\"/dashboard/proposals\""),
-        "Home must not link to the retired proposals form page: {html}"
+        "Home must not link to a proposals form page: {html}"
     );
     // "Open the chat" link removed: chat lives in the right-side panel.
     assert!(

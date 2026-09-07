@@ -3034,7 +3034,7 @@ pub async fn conciliate_new_pages(
 ///
 /// A proposal no assignment claims has no prospective wiki; it lands in
 /// the `""` bucket, gets the English fallback, and is left for the plan
-/// builder to home or drop as before.
+/// builder to home or drop.
 ///
 /// Deterministic: `BTreeMap` orders the wikis, proposal order survives
 /// inside each.

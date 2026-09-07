@@ -2,9 +2,8 @@
 //! Integration tests for the structured engine-direct fact actions at
 //! `POST /dashboard/facts/:fact_id/acl` and `.../validity`.
 //!
-//! These replaced the old unapplyable ACL/validity chat-bridge: they hit
-//! the engine directly (subject-or-admin gated, standard-wikis only),
-//! mint a born-applied `wiki_promote` receipt, and 303-redirect the
+//! They hit the engine directly (subject-or-admin gated, standard-wikis
+//! only), mint a born-applied `wiki_promote` receipt, and 303-redirect the
 //! operator onto that receipt.
 //!
 //! The subject-or-admin gate's pure logic is unit-tested inside

@@ -788,12 +788,12 @@ struct PageInfoSnippet {
 /// operator who pastes what they are looking at hands the model a path, and the
 /// model splits it wherever it likes — `wiki_id: "alice-work/view"` is the
 /// observed case. Two things follow. [`WikiId::parse`] already quotes the
-/// offending value and names the character, so the old wrapper repeated the
-/// value a second time in its own quoting style and said nothing new; and a
-/// refusal that does not say what the right shape *is* costs a whole iteration
-/// of the 8-step budget to rediscover. `field` is named because a tool that
-/// carries two wiki ids — a source and a destination — leaves "invalid wiki
-/// id" alone unable to say which.
+/// offending value and names the character, so this wrapper does not quote it
+/// a second time in a style of its own; and a refusal that does not say what
+/// the right shape *is* costs a whole iteration of the 8-step budget to
+/// rediscover. `field` is named because a tool that carries two wiki ids — a
+/// source and a destination — leaves "invalid wiki id" alone unable to say
+/// which.
 ///
 /// Only for ids the **operator** supplied: a `wiki_id` read back out of the DB
 /// that fails to parse is an [`AgenticToolError::InternalFailure`], not bad
@@ -2357,7 +2357,7 @@ mod tests {
     /// the operator copies `…/wiki/<id>/view/<page>` out of the browser and the
     /// model hands a tool `alice-work/view`. The refusal has to teach the
     /// shape, or the model spends an iteration rediscovering it; and it must
-    /// name the value once, not twice as the old wrapper did.
+    /// name the value once, not twice.
     #[test]
     fn a_pasted_dashboard_path_is_refused_with_the_shape_that_would_have_worked() {
         let err = parse_operator_wiki_id("alice-work/view", "wiki_id", "wiki_list_pages")

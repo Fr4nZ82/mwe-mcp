@@ -56,8 +56,8 @@ pub struct IdentityProfile {
     pub is_admin: bool,
     /// Consumer class — `Smart` authorises the smart-wiki
     /// tool families (`wiki_admin_*`, `wiki_type_register`). Defaults
-    /// to [`ConsumerClass::Standard`] when the JWT omits the claim, so
-    /// older tokens behave exactly as before.
+    /// to [`ConsumerClass::Standard`] when the JWT omits the claim, so a
+    /// token that carries no class is a standard consumer.
     pub consumer_class: ConsumerClass,
     /// Connection profile — `Web` (claude.ai over `webagentoauth`) trims the
     /// `tools/list` catalog to what a bridge-less, no-local-FS client can use.

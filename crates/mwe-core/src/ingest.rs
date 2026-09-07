@@ -4335,7 +4335,7 @@ fn build_prompt(
     // The classifier honours the privacy/sharing rules here when it
     // decides each fact's `subject_id`/`allow_ids` (e.g. "keep health private" →
     // subject-only), and surfaces the behaviour rules to the consumer. Absent →
-    // "(none)": decide ACL as before. No hard gate — an aid to the decision.
+    // "(none)": decide ACL without it. No hard gate — an aid to the decision.
     //
     // **Rendered whole.** The prompt calls this the sender's policy «in full»,
     // under the standing rule that a slot may act against a set it is shown
@@ -4511,7 +4511,7 @@ fn build_prompt(
             }
             // validity: where this fact stands in time against THIS turn's
             // reference instant. Omitted for a fact that makes no time claim,
-            // so the durable majority renders exactly as before.
+            // so the durable majority costs no tokens here.
             if let Some(status) =
                 validity_status(h.valid_from.as_deref(), h.valid_to.as_deref(), now)
             {
@@ -6621,8 +6621,8 @@ fn fallback_response(
     IngestResponse {
         intent: IntentKind::Skip,
         context_snippet,
-        // The degraded path computes no behaviour rules — the dedicated channel
-        // is silent, exactly as it was when it rode `context_snippet`.
+        // The degraded path computes no behaviour rules, so the dedicated
+        // channel is silent.
         rules: None,
         suggested_seed,
         // The degraded path serves no window either: it may not even have
@@ -7027,7 +7027,7 @@ pub async fn wiki_ingest_message(
         .map_err(|e| IngestError::Recall(RecallError::Db(e)))?;
     // The sender's standing policy, so the classifier
     // honours their privacy/sharing rules when it assigns per-fact ACL.
-    // Best-effort — absent/unreadable → the classifier decides as before.
+    // Best-effort — absent/unreadable → the classifier decides without it.
     let sender_policy = sender_rules(tree, &request.sender_id);
     // The behaviour rules in force for this user (all three scopes — agent's
     // wiki + the sender's identity wiki) — surfaced to the
@@ -7042,7 +7042,7 @@ pub async fn wiki_ingest_message(
     // normal user message, when no consumer binding resolves, or when the bot is
     // acting as itself (a smart consumer IS its user, so its replies are already
     // its own facts on the normal path); in every `None` case attribution falls
-    // back to the user, exactly as before — the assistant pass simply no-ops.
+    // back to the user — the assistant pass simply no-ops.
     let agent_sender: Option<Principal> = if request.author == MessageRole::Assistant {
         match request.consumer_id.as_deref() {
             Some(cid) => crate::consumers::system_user_for(pool, cid)
@@ -10389,8 +10389,8 @@ mod tests {
     }
 
     /// The mirror case, and the one that keeps the prompt cheap: a fact with
-    /// no bounds makes no claim about time and renders exactly as before, so
-    /// the durable majority of hits costs no extra tokens.
+    /// no bounds makes no claim about time and renders with no validity line,
+    /// so the durable majority of hits costs no extra tokens.
     #[test]
     fn build_prompt_says_nothing_about_time_for_a_durable_recalled_fact() {
         let request = req("alice now prefers tea", "alice");

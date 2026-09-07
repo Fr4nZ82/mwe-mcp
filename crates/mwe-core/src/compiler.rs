@@ -1107,9 +1107,9 @@ const CRONISTA_TASK_MARKER: &str = "=== PAGE TO WRITE ===";
 ///
 /// Returns `(system, task)`. A prompt without the marker — an operator
 /// override written against an older bundled body — yields `(whole,
-/// None)`: the entire prompt stays in the system field exactly as before
-/// and nothing is marked cacheable, because a system prompt that varies
-/// per page would write one cache entry per call and read none.
+/// None)`: the entire prompt stays in the system field and nothing is
+/// marked cacheable, because a system prompt that varies per page would
+/// write one cache entry per call and read none.
 fn split_cronista_prompt(rendered: &str) -> (&str, Option<&str>) {
     // The marker counts only as a LINE OF ITS OWN. The standing brief names
     // it in prose ("after the `=== PAGE TO WRITE ===` line") to tell the
@@ -1884,7 +1884,7 @@ async fn compile_list_page(
 /// retracted or contradicted one (the `item · done` shape the lista style is
 /// described with at ingest). Keyed strictly on `decay_reason`: a window with
 /// a future or merely-expired `valid_to` and no explicit closure gets no cue,
-/// and an open record renders exactly as before.
+/// and an open record renders without one.
 ///
 /// Takes the two fields rather than a plan row, so a record read straight from
 /// `fact_index` — the turn's own refresh of a list — renders identically to
@@ -3413,9 +3413,9 @@ mod tests {
         drop(dir);
     }
 
-    /// A prompt with no marker — an operator override predating v1.14 —
-    /// must behave exactly as before: everything in the system prompt, and
-    /// (asserted in the unit test below) nothing marked cacheable.
+    /// A prompt with no marker — an operator override written against an
+    /// older bundled body — keeps everything in the system prompt, and
+    /// (asserted in the unit test below) marks nothing cacheable.
     #[test]
     fn split_cronista_prompt_degrades_without_the_marker() {
         let (system, task) = split_cronista_prompt("brief\n\n=== PAGE TO WRITE ===\nPAGE: x");
@@ -3936,7 +3936,7 @@ mod tests {
         // language-free done-cue — `· ✓ <date>` for completed, `· ✗` for
         // retracted/contradicted — INSIDE its region marker, so redaction
         // hides the closure together with the fact. An open record and a
-        // window without an explicit closure render exactly as before.
+        // window without an explicit closure render with no cue at all.
         let (dir, tree, pool) = setup().await;
         let open = ffp(0x21, "forbici");
         let mut bought = ffp(0x22, "latte");
@@ -4643,7 +4643,7 @@ mod tests {
     }
 
     /// The index carries descriptions and never another page's facts —
-    /// that starvation is the whole mechanism. It now also carries the
+    /// that starvation is the whole mechanism. It also carries the
     /// page being written: one string per run is what makes the system
     /// half of the Cronista prompt a cacheable prefix, and the body pays
     /// for it with an explicit never-link-to-itself rule.
@@ -5694,9 +5694,10 @@ mod tests {
         );
     }
 
-    /// An operator override predating the marker is one undivided document.
-    /// There is no task half to open, so the part rides its end rather than
-    /// being silently dropped — the night still gets its brief.
+    /// An operator override written against an older bundled body carries no
+    /// marker: it is one undivided document. There is no task half to open, so
+    /// the part rides its end rather than being silently dropped — the night
+    /// still gets its brief.
     #[test]
     fn a_markerless_override_still_receives_the_part() {
         let spliced = splice_task_part("an override with no marker at all", "NIGHT BRIEF");
