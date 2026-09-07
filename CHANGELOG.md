@@ -243,8 +243,9 @@ and in the dashboard's session check. Ten migrations, `0068` through `0077`.
   On a phone: every one of the 52 rendered pages now fits 390 px with no
   sideways scroll — the `curl … | sh` install line scrolls inside its own box
   instead of pushing the page out — and a column heading stays on one line
-  rather than breaking into four stacked words. A refused save on the recall or
-  REM panel hands the form back with what was typed still in it, instead of an
+  rather than breaking into four stacked words. A refused save on the recall,
+  REM or embedding panel hands the form back with what was typed still in it —
+  the offending value included, so it can be seen and corrected — instead of an
   error page and eighteen fields to fill again.
 
 - **A forget-request vote is raised near its deadline, not every turn.** The

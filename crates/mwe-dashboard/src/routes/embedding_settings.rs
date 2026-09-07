@@ -22,6 +22,7 @@ use std::path::{Path, PathBuf};
 
 use axum::Router;
 use axum::extract::State;
+use axum::http::StatusCode;
 use axum::response::{Html, IntoResponse, Response};
 use axum::routing::get;
 use maud::{Markup, html};
@@ -67,13 +68,24 @@ async fn page(State(state): State<DashboardState>, admin: AdminUser) -> Result<H
     let workdir = workdir_of(&state)?;
     let cfg = Config::load_raw(&workdir)
         .map_err(|e| DashboardError::Internal(format!("config load: {e}")))?;
-    Ok(Html(render(chrome, admin.session(), &cfg.embedding, None)))
+    Ok(Html(render(
+        chrome,
+        admin.session(),
+        &cfg.embedding,
+        None,
+        None,
+    )))
 }
 
+/// `typed` is the raw form body of a save that did not go through: its
+/// values win over the stored ones so a refused save hands the admin back
+/// what they wrote, instead of a bare error page and six fields to fill
+/// again.
 fn render(
     chrome: layout::Chrome,
     session: &crate::auth::SessionUser,
     cfg: &EmbeddingConfig,
+    typed: Option<&HashMap<String, String>>,
     flash: Option<Flash<'_>>,
 ) -> String {
     let bundled_ok = bundled_embedder_available();
@@ -101,7 +113,7 @@ fn render(
             ". Default: Ollama " code { "bge-m3" } " on localhost."
         }
 
-        (embedding_form(cfg, bundled_ok, gpu_ok))
+        (embedding_form(cfg, typed, bundled_ok, gpu_ok))
 
         p.muted {
             "Related: the generative LLM slots live in the "
@@ -115,8 +127,23 @@ fn render(
 
 /// The `<form>` block — split out of [`render`] to keep that function within
 /// the line budget. `bundled_ok` / `gpu_ok` gate the backend + device options
-/// to what this build actually supports.
-fn embedding_form(cfg: &EmbeddingConfig, bundled_ok: bool, gpu_ok: bool) -> Markup {
+/// to what this build actually supports, and `typed` is what a refused save
+/// puts back in the fields.
+fn embedding_form(
+    cfg: &EmbeddingConfig,
+    typed: Option<&HashMap<String, String>>,
+    bundled_ok: bool,
+    gpu_ok: bool,
+) -> Markup {
+    // What to show in a field: what the admin typed if this render is a
+    // refusal, else what is stored.
+    let shown = |field: &str, stored: &str| -> String {
+        typed
+            .and_then(|t| t.get(field))
+            .map_or_else(|| stored.to_owned(), Clone::clone)
+    };
+    let backend = shown("backend", cfg.backend.as_str());
+    let device = shown("device", cfg.device.as_str());
     html! {
         form action="/dashboard/admin/embedding" method="post" {
             table.config-table {
@@ -127,7 +154,7 @@ fn embedding_form(cfg: &EmbeddingConfig, bundled_ok: bool, gpu_ok: bool) -> Mark
                             select id="backend" name="backend" {
                                 @for &(val, lbl) in BACKENDS {
                                     @let disabled = val == "bundled" && !bundled_ok;
-                                    option value=(val) selected[cfg.backend.as_str() == val]
+                                    option value=(val) selected[backend == val]
                                         disabled[disabled] {
                                         (lbl)
                                         @if disabled { " — not in this build" }
@@ -146,7 +173,8 @@ fn embedding_form(cfg: &EmbeddingConfig, bundled_ok: bool, gpu_ok: bool) -> Mark
                         td { label for="model" { "Model" } }
                         td {
                             input id="model" name="model" type="text"
-                                value=(cfg.model) placeholder="bge-m3";
+                                value=(shown("model", cfg.model.as_str()))
+                                placeholder="bge-m3";
                         }
                         td.muted {
                             "Ollama: the wire model name. Bundled: the stable model id "
@@ -157,7 +185,7 @@ fn embedding_form(cfg: &EmbeddingConfig, bundled_ok: bool, gpu_ok: bool) -> Mark
                         td { label for="base_url" { "Ollama base URL" } }
                         td {
                             input id="base_url" name="base_url" type="text"
-                                value=(cfg.base_url.clone().unwrap_or_default())
+                                value=(shown("base_url", &cfg.base_url.clone().unwrap_or_default()))
                                 placeholder="http://localhost:11434";
                         }
                         td.muted { "Ollama endpoint override. Ignored by other backends." }
@@ -166,8 +194,8 @@ fn embedding_form(cfg: &EmbeddingConfig, bundled_ok: bool, gpu_ok: bool) -> Mark
                         td { label for="device" { "Device (bundled)" } }
                         td {
                             select id="device" name="device" {
-                                option value="cpu" selected[cfg.device.as_str() == "cpu"] { "CPU" }
-                                option value="gpu" selected[cfg.device.as_str() == "gpu"]
+                                option value="cpu" selected[device == "cpu"] { "CPU" }
+                                option value="gpu" selected[device == "gpu"]
                                     disabled[!gpu_ok] {
                                     "GPU"
                                     @if !gpu_ok { " — needs a CUDA build" }
@@ -182,7 +210,8 @@ fn embedding_form(cfg: &EmbeddingConfig, bundled_ok: bool, gpu_ok: bool) -> Mark
                         td { label for="dimensions" { "Dimensions" } }
                         td {
                             input id="dimensions" name="dimensions" type="number" min="1"
-                                value=(cfg.dimensions.to_string()) placeholder="1024";
+                                value=(shown("dimensions", &cfg.dimensions.to_string()))
+                                placeholder="1024";
                         }
                         td.muted { "Vector size the model emits (Ollama). bge-m3 = 1024." }
                     }
@@ -190,7 +219,7 @@ fn embedding_form(cfg: &EmbeddingConfig, bundled_ok: bool, gpu_ok: bool) -> Mark
                         td { label for="model_dir" { "Bundled model dir (offline)" } }
                         td {
                             input id="model_dir" name="model_dir" type="text"
-                                value=(cfg.model_dir.clone().unwrap_or_default())
+                                value=(shown("model_dir", &cfg.model_dir.clone().unwrap_or_default()))
                                 placeholder="(auto-download to this account's model cache)";
                         }
                         td.muted {
@@ -214,7 +243,13 @@ async fn save(
     HtmlForm(form): HtmlForm<HashMap<String, String>>,
 ) -> Result<Response> {
     let chrome = layout::Chrome::of(&state);
-    let parsed = parse_form(&form)?;
+    // A backend, device or dimension the parser will not take hands the
+    // whole form back with what was typed still in it. Losing every field
+    // to one typo is the kind of refusal nobody forgives twice.
+    let parsed = match parse_form(&form) {
+        Ok(parsed) => parsed,
+        Err(e) => return refused(&state, &admin, &form, &e.to_string()),
+    };
 
     // Preserve every non-embedding section by re-loading from disk (raw
     // — env overrides are runtime-only and must never be baked into the
@@ -261,12 +296,36 @@ async fn save(
         chrome,
         admin.session(),
         &parsed,
+        None,
         Some(Flash {
             kind: "success",
             msg,
         }),
     );
     Ok(Html(body).into_response())
+}
+
+/// The page a save that did not go through comes back as: the same form,
+/// the values the admin typed still in the fields, the reason across the
+/// top — and a `422`, because nothing was written.
+fn refused(
+    state: &DashboardState,
+    admin: &AdminUser,
+    typed: &HashMap<String, String>,
+    msg: &str,
+) -> Result<Response> {
+    let chrome = layout::Chrome::of(state);
+    let workdir = workdir_of(state)?;
+    let cfg = Config::load_raw(&workdir)
+        .map_err(|e| DashboardError::Internal(format!("config load: {e}")))?;
+    let body = render(
+        chrome,
+        admin.session(),
+        &cfg.embedding,
+        Some(typed),
+        Some(Flash { kind: "error", msg }),
+    );
+    Ok((StatusCode::UNPROCESSABLE_ENTITY, Html(body)).into_response())
 }
 
 /// Decode the flat form into an [`EmbeddingConfig`], starting from the Rust
