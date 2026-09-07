@@ -1349,6 +1349,13 @@
   .wiki-page-view.prose p { margin: 0 0 0.7rem; }
   .wiki-page-view.prose ul,
   .wiki-page-view.prose ol { margin: 0 0 0.7rem; padding-left: 1.4rem; }
+  /* Preflight strips every list marker. Rendered markdown needs them
+     back: a list that says "in this order" and then shows no numbers
+     has lost the thing it was telling the reader. */
+  .wiki-page-view.prose ul { list-style: disc outside; }
+  .wiki-page-view.prose ol { list-style: decimal outside; }
+  /* A task list carries its checkbox instead — one marker per item. */
+  .wiki-page-view.prose li:has(> input[type="checkbox"]) { list-style: none; }
   .wiki-page-view.prose li { margin-bottom: 0.25rem; }
   .wiki-page-view.prose blockquote {
     border-left: 3px solid var(--p-dim);
