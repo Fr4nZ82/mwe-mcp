@@ -307,9 +307,12 @@ dashboard; the change takes effect within a minute, with no restart here.
 
 The reverse channel needs three things: `eventsEnabled` not set to false, a
 token carrying a `consumer_id` claim, and a `senderMap` entry for the person a
-notice is addressed to. An unroutable notice is retried for about ten minutes
-and then logged as `UNDELIVERABLE`; the facts stay in that person's memory
-either way.
+notice is addressed to. A notice with no entry to route on is retried for about
+ten minutes — long enough to add one live — and then logged as `UNDELIVERABLE`.
+For somebody this NanoClaw has no chat for at all, list their mwe user id under
+`unroutable` in `mwe.json`: their notices are then confirmed as they arrive,
+with one line in the log instead of ten minutes of them. The facts stay in that
+person's memory either way.
 
 ### After a NanoClaw upgrade
 

@@ -364,7 +364,9 @@ the bridge delivers the two of that shape:
   on), and Bruno took no part in that conversation.
 - `reminder_due`: a dated commitment Bruno's memory already holds has
   come round. Only the memory knows the appointment moved, which is why
-  it rings and a job written when he first asked cannot.
+  it rings and a job written when he first asked cannot. It reaches
+  everyone the commitment concerns, so Bruno may be hearing about
+  somebody else's.
 
 The reverse-channel half closes that loop, all on supported hermes
 surface:
@@ -380,19 +382,27 @@ surface:
   (hermes's own `cron.jobs` API): the job's prompt carries the bodies
   and the delivery rules (recipient's language; add nothing of your
   own), in the wording its kind calls for — a minted notice says the
-  content came *through* the sender and that the recipient took no part,
-  a reminder says their own commitment has come round and when it falls
-  due — and it ends by offering the page the notice names
+  content came *through* the sender and that the recipient took no part;
+  a reminder says a commitment already in their memory is coming due, at
+  what wall-clock time (rendered in this install's own zone, which is
+  named beside it), and that whose commitment it is comes from the
+  content, since the memory rings one for everybody it concerns and not
+  only for the person who made it — and it ends by offering the page the
+  notice names
   (`dashboard_path` hung on `dashboardUrl`, or on the MCP `url` without
   its `/mcp`; no base means no link rather than a broken one). Its
   `deliver` targets the recipient's private chat, and the gateway's own
   scheduler runs it within its ≤60 s tick. `events_ack` fires only
   **after** the job is durably in `jobs.json` — at-least-once, end to
-  end. A recipient with no `telegram:` mapping is retried for ~10
-  minutes (fix `senderMap` live — the hook re-reads it each tick), then
-  acked away with an ERROR log; the facts remain in their memory either
-  way. Optional `mwe.json` knobs: `eventsEnabled: false` (kill-switch),
-  `eventsPollSeconds` (default 30, floor 5).
+  end. A recipient whose `telegram:` mapping is only missing is retried
+  for ~10 minutes (fix `senderMap` live — the hook re-reads it each
+  tick), then acked away with an ERROR log; one this hermes has no chat
+  for at all is named in `unroutable` and confirmed as the notice
+  arrives, since there is nothing to wait for. Either way it costs one
+  log line per person per round, not one per notice, and either way the
+  facts remain in their memory. Optional `mwe.json` knobs:
+  `eventsEnabled: false` (kill-switch), `eventsPollSeconds` (default 30,
+  floor 5), `unroutable` (the list above).
 - **`scripts/mwe-daily-digest.py`** — every *other* event kind
   (reorganizations, auto-applied proposals, finished documents, compile
   streaks…) is deliberately **not** pushed per event: it batches into a

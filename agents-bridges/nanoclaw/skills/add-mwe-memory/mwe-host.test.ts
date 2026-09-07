@@ -42,6 +42,7 @@ function config(overrides: Partial<MweConfig> = {}): MweConfig {
     locale: 'it-IT',
     maxWindow: 4,
     groups: [],
+    unroutable: [],
     eventsEnabled: true,
     eventsPollSeconds: 30,
     dashboardUrl: 'https://memory.example',
@@ -211,7 +212,7 @@ describe('the per-turn request', () => {
           pending_votes: {
             count: 1,
             requests: [{ requester: 'bob', deadline: '2026-06-19T09:00:00Z' }],
-            dashboard_path: '/dashboard/proposals',
+            dashboard_path: '/dashboard/chat',
           },
         },
       ],
@@ -221,7 +222,7 @@ describe('the per-turn request', () => {
       { config: config(), token: 'jwt', clientFor: () => client as never },
     );
     const votes = answer.ok === true ? (answer.data.pending_votes as Record<string, unknown>) : {};
-    expect(votes.dashboard_path).toBe('https://memory.example/dashboard/proposals');
+    expect(votes.dashboard_path).toBe('https://memory.example/dashboard/chat');
     // The rest of the block is the server's and stays as it came.
     expect(votes.count).toBe(1);
   });
@@ -251,6 +252,18 @@ describe('the reverse channel', () => {
       from_user_id: 'carol',
       facts: [{ body: 'the viewing is at six' }],
       dashboard_path: '/dashboard/wiki/bob',
+    },
+  });
+
+  const reminderDue = (id: number, recipient: string, dueAt = '2026-08-06T17:00:00Z'): Record<string, unknown> => ({
+    event_id: id,
+    kind: 'reminder_due',
+    payload: {
+      recipient_id: `user:${recipient}`,
+      due_at: dueAt,
+      fires_at: dueAt,
+      facts: [{ body: 'alice has the dentist on thursday at five' }],
+      dashboard_path: '/dashboard/wiki/alice',
     },
   });
 
@@ -318,6 +331,48 @@ describe('the reverse channel', () => {
     expect(ack?.args.event_ids).toEqual([10]);
   });
 
+  it('confirms a notice at once for somebody this consumer has no chat for', async () => {
+    // Two different reasons a notice does not route, and only one of them is
+    // worth waiting on. Twenty ticks of retrying somebody who has no chat here
+    // at all is twenty rounds of log lines and a delivery nobody was waiting
+    // for; the operator has already answered the question the retry asks.
+    const client = recordingClient({ events_poll: [{ events: [minted(71, 'frodo')] }, { events: [] }] });
+    const lines: string[] = [];
+    const state = newEventsState();
+    const deps = {
+      config: config({ unroutable: ['frodo'] }),
+      token: 'jwt',
+      enqueue: async () => true,
+      log: (level: string, message: string) => lines.push(`${level}: ${message}`),
+    };
+    const result = await personalTick(deps as never, state, client as never, 'consumer-1');
+    const ack = client.calls.find((c) => c.tool === 'events_ack');
+    expect(ack?.args.event_ids).toEqual([71]);
+    expect(result.pending).toBe(0);
+    expect(state.routeAttempts.size).toBe(0);
+    expect(lines).toHaveLength(1);
+    expect(lines[0]).toContain('confirmed without delivery');
+  });
+
+  it('says a person is unreachable once a round, not once a notice', async () => {
+    // Fourteen notices for one unreachable person, every thirty seconds, is
+    // how a log stops being read.
+    const backlog = [minted(81, 'frodo'), minted(82, 'frodo'), minted(83, 'frodo')];
+    const client = recordingClient({ events_poll: [{ events: backlog }, { events: [] }] });
+    const lines: string[] = [];
+    const deps = {
+      config: config(),
+      token: 'jwt',
+      enqueue: async () => true,
+      log: (level: string, message: string) => lines.push(`${level}: ${message}`),
+    };
+    const result = await personalTick(deps as never, newEventsState(), client as never, 'consumer-1');
+    expect(result.pending).toBe(3);
+    expect(lines).toHaveLength(1);
+    expect(lines[0]).toContain('3 notice(s) for "frodo" have no chat to go to (attempt 1/20)');
+    expect(client.calls.some((c) => c.tool === 'events_ack')).toBe(false);
+  });
+
   it('tells the agent the recipient was not there, and hands it the content', () => {
     const instruction = buildInstruction([minted(11, 'bob')] as never, 'bob', config());
     expect(instruction).toContain('the viewing is at six');
@@ -372,6 +427,68 @@ describe('the reverse channel', () => {
     await personalTick(deps as never, newEventsState(), client as never, 'consumer-1');
     expect(enqueued.map((d) => d.recipient).sort()).toEqual(['alice', 'bob']);
     expect(enqueued.map((d) => d.senderKey).sort()).toEqual(['telegram:1', 'telegram:2']);
+  });
+
+  it('delivers a due commitment as a reminder, never as news that just arrived', () => {
+    // The two kinds are two messages. Four reminders went out in the voice of
+    // the notices — "some things came in for you from X's conversations" — for
+    // commitments the person had made themselves.
+    const instruction = buildInstruction([reminderDue(51, 'bob')] as never, 'bob', config(), 'Europe/Rome');
+    expect(instruction).toContain('Deliver a reminder to "bob"');
+    expect(instruction).toContain('COMMITMENTS COMING DUE');
+    expect(instruction).toContain('alice has the dentist on thursday at five');
+    expect(instruction).toContain('reminder of something already agreed, never news');
+    // The notices' own voice must not leak into it: nobody's conversation is
+    // being reported here.
+    expect(instruction).not.toContain('NEW MEMORY STORED');
+    expect(instruction).not.toContain('took no part');
+  });
+
+  it('says when it falls due on a clock the person reads, not in UTC', () => {
+    const instruction = buildInstruction([reminderDue(52, 'bob')] as never, 'bob', config(), 'Europe/Rome');
+    expect(instruction).toContain('due 2026-08-06 19:00 (Europe/Rome)');
+    expect(instruction).not.toContain('17:00');
+  });
+
+  it('never tells the agent whose commitment it is — the content says that', () => {
+    // The memory rings a commitment for its subject and for everyone it was
+    // shared with, and the notice carries no subject: a household member is
+    // told about alice's appointment, not about their own.
+    const instruction = buildInstruction([reminderDue(53, 'bob')] as never, 'bob', config(), 'Europe/Rome');
+    expect(instruction).toContain('the content says whose they are');
+    expect(instruction).toContain("never assume it is the recipient's own");
+  });
+
+  it('passes a due time it cannot read through untouched', () => {
+    const instruction = buildInstruction([reminderDue(54, 'bob', 'thursday')] as never, 'bob', config(), 'Europe/Rome');
+    expect(instruction).toContain('due thursday');
+  });
+
+  it('keeps notices and reminders in two blocks of the same message', async () => {
+    const client = recordingClient({
+      events_poll: [{ events: [minted(61, 'bob'), reminderDue(62, 'bob')] }, { events: [] }],
+    });
+    const enqueued: Array<{ instruction: string }> = [];
+    const deps = {
+      config: config(),
+      token: 'jwt',
+      timezone: 'Europe/Rome',
+      enqueue: async (d: { instruction: string }) => {
+        enqueued.push(d);
+        return true;
+      },
+    };
+    const result = await personalTick(deps as never, newEventsState(), client as never, 'consumer-1');
+    expect(result.delivered).toBe(1);
+    const instruction = enqueued[0].instruction;
+    expect(instruction).toContain('Deliver what the memory has waiting for "bob"');
+    expect(instruction).toContain('NEW MEMORY STORED FOR BOB');
+    expect(instruction).toContain('COMMITMENTS COMING DUE');
+    expect(instruction).toContain('Keep the two apart inside that message');
+    // One block does not swallow the other: the reminder is not reported as
+    // something out of somebody else's conversation.
+    expect(instruction.indexOf('ITEM 1')).toBeLessThan(instruction.indexOf('COMMITMENTS COMING DUE'));
+    expect(instruction).toContain('ITEM 2 — due 2026-08-06 19:00 (Europe/Rome)');
   });
 
   it('holds a whole group back when its one delivery could not be written', async () => {

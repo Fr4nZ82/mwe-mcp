@@ -45,6 +45,7 @@ const merged = {
   locale: existing.locale ?? '',
   maxWindow: existing.maxWindow ?? 16,
   groups: existing.groups ?? [],
+  unroutable: existing.unroutable ?? [],
   eventsEnabled: existing.eventsEnabled ?? true,
   eventsPollSeconds: existing.eventsPollSeconds ?? 30,
   dashboardUrl: existing.dashboardUrl ?? '',

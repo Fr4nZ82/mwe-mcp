@@ -31,6 +31,16 @@ export interface MweConfig {
    * container.
    */
   groups: string[];
+  /**
+   * mwe user ids this consumer has no chat for at all. A personal notice for
+   * one of them is confirmed as soon as it arrives, with a single line in the
+   * log, instead of being retried for ten minutes first: the retry is there so
+   * an operator can add a missing `senderMap` entry live, and this list is the
+   * operator saying there is nothing to add. A person who is in `senderMap`
+   * anyway is delivered to — routing is asked first. Their facts stay in their
+   * memory either way; what they do not get is the push.
+   */
+  unroutable: string[];
   eventsEnabled: boolean;
   eventsPollSeconds: number;
   /** Public origin of the dashboard; empty = derived from `serverUrl`. */
@@ -117,6 +127,7 @@ export function loadMweConfig(root: string, onWarn?: (message: string) => void):
     locale: asString(obj.locale),
     maxWindow: Math.max(2, asInt(obj.maxWindow, DEFAULT_MAX_WINDOW)),
     groups: Array.isArray(obj.groups) ? obj.groups.map(asString).filter(Boolean) : [],
+    unroutable: Array.isArray(obj.unroutable) ? obj.unroutable.map(asString).filter(Boolean) : [],
     eventsEnabled: obj.eventsEnabled !== false,
     eventsPollSeconds: Math.max(MIN_POLL_SECONDS, asInt(obj.eventsPollSeconds, DEFAULT_POLL_SECONDS)),
     dashboardUrl: asString(obj.dashboardUrl),
@@ -139,9 +150,10 @@ export function actAsFor(config: MweConfig, senderKey: string): string {
 /**
  * mwe user id → chat sender key, from `senderMap` read backwards.
  *
- * Only explicit entries qualify, and the first one per user wins. A personal
- * notice that cannot be routed waits and is then logged; it never lands in
- * somebody else's chat.
+ * Only explicit entries qualify, and the first one per user wins. A person
+ * with no entry has no route, and a personal notice never lands in somebody
+ * else's chat for want of one — what becomes of an unrouted notice is
+ * `events.ts`'s business.
  */
 export function reverseRoutes(config: MweConfig): Map<string, string> {
   const routes = new Map<string, string>();

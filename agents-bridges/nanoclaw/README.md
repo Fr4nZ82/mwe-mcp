@@ -42,9 +42,10 @@ per-turn contract **v1**
   recall block. Nothing is ever compacted or summarized.
 - **The memory can start a conversation, once.** A fact minted for somebody
   else, or a commitment coming due, is delivered to that person's own chat,
-  phrased by the agent, in their language. Everything waiting for one person
-  in one round travels as **one** message — a backlog is a paragraph with the
-  items in it, never a burst of notifications.
+  phrased by the agent, in their language — a fact as news, a commitment as a
+  reminder with the time it falls due. Everything waiting for one person in one
+  round travels as **one** message — a backlog is a paragraph with the items in
+  it, never a burst of notifications.
 - **What the memory needs from a person reaches them, when it is due.** A
   request to forget a fact they are part of rides every turn of its seven-day
   window, but the agent is told to raise it only in the **last day** — with the
@@ -203,6 +204,7 @@ after the first two lines is yours to edit.
   "locale": "it-IT",
   "maxWindow": 16,
   "groups": [],
+  "unroutable": [],
   "eventsEnabled": true,
   "eventsPollSeconds": 30,
   "dashboardUrl": "https://memory.example"
@@ -217,6 +219,7 @@ after the first two lines is yours to edit.
 | `locale` | BCP-47 tag sent as `metadata.locale`. Empty = each user's own server-side default. |
 | `maxWindow` | how many messages of recent conversation ride each turn (default 16, the server's cap). |
 | `groups` | agent groups the host serves. Empty — the normal case — means all of them, and what makes a group ask is the `mwe` plugin. Fill it to take one group off the memory without restarting its container. |
+| `unroutable` | mwe user ids this nanoclaw has no chat for at all — somebody in the memory who does not use it. A notice for them is confirmed as it arrives, with one line in the log, instead of being retried for ten minutes first. Their facts stay in their memory; what they do not get is the push. Somebody listed here who *is* in `senderMap` is delivered to anyway. |
 | `eventsEnabled` | the reverse channel. `false` stops the poll loop entirely. |
 | `eventsPollSeconds` | how often it polls (default 30, floor 5). |
 | `dashboardUrl` | the public origin every dashboard link hangs on — the one `mwe_dashboard_link` mints, the page a vote block names, the page a notice offers. Empty = `serverUrl` minus `/mcp`, which is right only when the server is reachable at that address from a phone. |
@@ -280,15 +283,20 @@ Every `eventsPollSeconds` the host polls the memory for notices:
   `senderMap` **read backwards**, finds the chat that person talks to the agent
   in, and puts a delivery instruction there. The agent writes the message: in
   their language, saying where it came from, never implying they were present.
-- **`reminder_due`** — something they committed to has come round.
+- **`reminder_due`** — a commitment already in their memory is coming due. The
+  agent is told to deliver it as a reminder and not as news, with the time it
+  falls due on a clock the person reads (the install's own zone, named beside
+  it). It never says whose commitment it is: the memory rings one for everybody
+  it concerns, not only for whoever made it, so the content is what says that.
 
 **One delivery per person per round.** Whatever is waiting for the same
-recipient is composed into a single instruction — each item keeping its own
-source line and its own link — and the agent is told to answer with one
-message. This is what a backlog looks like when the bridge has been down for a
-while, and one message per notice would be a burst of system alerts rather than
-somebody who remembers. Two people's notices in the same round stay two
-deliveries. A group is acked as a group: acking part of it would drop the
+recipient is composed into a single instruction — each item keeping where it
+comes from and its own link — and the agent is told to answer with one message.
+The two kinds keep their own block inside it, in that order: what was stored for
+them, then what is coming due. This is what a backlog looks like when the bridge
+has been down for a while, and one message per notice would be a burst of system
+alerts rather than somebody who remembers. Two people's notices in the same round
+stay two deliveries. A group is acked as a group: acking part of it would drop the
 notices whose words never reached anybody.
 
 **A turn carrying notices is never cut short.** A person's message can be
@@ -298,9 +306,15 @@ it was enqueued. So a follow-up arriving while the agent is delivering notices
 waits for that turn to end instead of ending it.
 
 The notice is acked only once the instruction is durably written, so a crash
-between the two costs a repeat, never a loss. A recipient with no `senderMap`
-entry is retried for about ten minutes — the map can be fixed live — and then
-logged as `UNDELIVERABLE`; the facts stay in their memory either way.
+between the two costs a repeat, never a loss.
+
+**A notice that finds no chat stops for one of two reasons.** A recipient whose
+`senderMap` entry is only *missing* is retried for about ten minutes — the map
+can be fixed live — and then logged as `UNDELIVERABLE`. A recipient this
+nanoclaw has no chat for at all is named in `unroutable`, and their notices are
+confirmed as they arrive: there is nothing to wait for. Either way it is **one
+line per person per round**, not one per notice, and either way the facts stay
+in their memory.
 
 The remaining kinds are the operator's business (pages reorganized, documents
 ingested, proposals waiting) and are batched into **one recap a day** in

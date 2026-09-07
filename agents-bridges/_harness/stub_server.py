@@ -84,6 +84,11 @@ DEFAULT_RESPONSES = {
 # action, so the block carries where to go, not a way to vote from here — and
 # no fact text, only its id.
 #
+# The block's page is the one the server puts there —
+# `PENDING_VOTES_DASHBOARD_PATH` in `crates/mwe-mcp-server/src/mcp/tools.rs`,
+# the dashboard chat, where a vote is cast by asking for it. The per-request
+# path beside it is `proposals::proposal_dashboard_path`.
+#
 # The deadline is relative because a bridge reads it against the clock to
 # decide whether to raise the vote at all: a fixed date would drift out of the
 # window it is meant to sit inside and quietly test the other branch.
@@ -100,7 +105,7 @@ PENDING_VOTES = {
         "deadline": PENDING_VOTES_DEADLINE,
         "dashboard_path": "/dashboard/proposals/p-forget-1/open-in-chat",
     }],
-    "dashboard_path": "/dashboard/proposals",
+    "dashboard_path": "/dashboard/chat",
     "note": "vote_no_to_block_silence_is_consent",
 }
 

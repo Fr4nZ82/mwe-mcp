@@ -107,6 +107,7 @@ const config = {
   locale: 'it-IT',
   maxWindow: 16,
   groups: [],
+  unroutable: [],
   eventsEnabled: true,
   eventsPollSeconds: 30,
   dashboardUrl: 'https://memory.example',
@@ -525,7 +526,7 @@ async function main(): Promise<void> {
             dashboard_path: '/dashboard/proposals/p-forget-1/open-in-chat',
           },
         ],
-        dashboard_path: '/dashboard/proposals',
+        dashboard_path: '/dashboard/chat',
         note: 'vote_no_to_block_silence_is_consent',
       },
       document_promoted: { catalog_id: 'c-2026-06-12-doc-001.txt', job_id: 'j-1', existing: false },
@@ -546,7 +547,7 @@ async function main(): Promise<void> {
     // The page is named as an address, for the same reason the minted link is.
     'it sends the person to the dashboard, the only place a vote is cast',
     governancePrompt.includes('mwe_dashboard_link') &&
-      governancePrompt.includes(`${config.dashboardUrl}/dashboard/proposals`) &&
+      governancePrompt.includes(`${config.dashboardUrl}/dashboard/chat`) &&
       governancePrompt.includes('nowhere else'),
   );
   ok(
@@ -710,6 +711,17 @@ async function main(): Promise<void> {
       kind: 'fact_minted_for_you',
       payload: { recipient_id: 'user:frodo', facts: [{ body: 'niente' }] },
     },
+    {
+      event_id: 3,
+      kind: 'reminder_due',
+      payload: {
+        recipient_id: 'user:bob',
+        due_at: '2026-08-06T17:00:00Z',
+        fires_at: '2026-08-06T17:00:00Z',
+        facts: [{ body: 'alice ha il dentista giovedì alle cinque' }],
+        dashboard_path: '/dashboard/wiki/alice',
+      },
+    },
   ];
   scriptStub({ events_poll: { events, has_more: false } });
   const order: string[] = [];
@@ -726,6 +738,9 @@ async function main(): Promise<void> {
     {
       config,
       token: 'test-jwt',
+      // Pinned so the wall-clock rendering of a due time is the same on every
+      // machine that runs this.
+      timezone: 'Europe/Rome',
       enqueue: async (delivery: { senderKey: string; instruction: string }) => {
         order.push('enqueue');
         enqueued.push(delivery);
@@ -736,10 +751,24 @@ async function main(): Promise<void> {
     recordingClient,
     'consumer-1',
   );
-  ok('the routable notice was delivered', result.delivered === 1);
+  ok('everything routable for one person is one delivery', result.delivered === 1 && enqueued.length === 1);
   ok('it went to the recipient own chat', enqueued[0].senderKey === 'telegram:2');
   ok('it carries the content, not a pointer', enqueued[0].instruction.includes('la visita è alle sei'));
   ok('it tells the agent the recipient was not there', enqueued[0].instruction.includes('took no part'));
+  // A reminder in the same round keeps its own block: a commitment coming due
+  // is not news out of somebody else's conversation, and four of them went out
+  // in that voice before the two were separated.
+  ok(
+    'the commitment coming due keeps its own block, with the time it falls due',
+    enqueued[0].instruction.includes('COMMITMENTS COMING DUE') &&
+      enqueued[0].instruction.includes('due 2026-08-06 19:00 (Europe/Rome)') &&
+      enqueued[0].instruction.includes('alice ha il dentista giovedì alle cinque'),
+  );
+  ok(
+    'and the agent is told to deliver it as a reminder, not as news',
+    enqueued[0].instruction.includes('never news that has just arrived') &&
+      enqueued[0].instruction.includes('Keep the two apart inside that message'),
+  );
   ok('poll, then enqueue, then ack', order.slice(0, 3).join('>') === 'events_poll>enqueue>events_ack');
   await waitFor(
     () => stubState().calls.some((c) => c.tool === 'events_ack'),
@@ -747,7 +776,7 @@ async function main(): Promise<void> {
     'the ack to reach the stub',
   );
   const ack = stubState().calls.filter((c) => c.tool === 'events_ack').pop();
-  ok('only the delivered notice is acked', JSON.stringify(ack?.arguments.event_ids) === '[1]');
+  ok('what was delivered is acked, and only that', JSON.stringify(ack?.arguments.event_ids) === '[1,3]');
   ok('the unroutable one is held for a retry', state.routeAttempts.get(2) === 1);
   ok('it was never delivered to somebody else', enqueued.length === 1);
 

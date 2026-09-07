@@ -15,6 +15,7 @@
  * Registration is inert: nothing here opens a socket or reads memory at
  * import time.
  */
+import { TIMEZONE } from '../../config.js';
 import { registerDeliveryAction } from '../../delivery.js';
 import { getMessagingGroupAgents, getMessagingGroupByPlatform } from '../../db/messaging-groups.js';
 import { readEnvFile } from '../../env.js';
@@ -151,6 +152,9 @@ onHostStart(() => {
     token: secret,
     enqueue: enqueueDelivery,
     log: (level, message) => log[level](`mwe-events: ${message}`),
+    // A commitment falls due at a wall-clock time somebody has to act on, so
+    // it is said in this install's own zone — the one its agents reason in.
+    timezone: TIMEZONE,
   });
 });
 

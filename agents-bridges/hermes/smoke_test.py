@@ -11,7 +11,9 @@ HERMES_HOME pointing at a scratch home with the provider and the
 hermes-agent checkout with the engine symlinked in (smoke.sh sets both).
 """
 
+import contextlib
 import json
+import logging
 import os
 import sys
 from datetime import datetime, timedelta, timezone
@@ -49,6 +51,33 @@ def fresh_provider(url, **init_kwargs):
     kwargs.update(init_kwargs)
     provider.initialize(session_id="smoke", **kwargs)
     return provider
+
+
+@contextlib.contextmanager
+def _captured_logs(logger):
+    """Collect the messages one logger emits inside the block.
+
+    How loud a tick is *is* the behaviour here: an unreachable person cost
+    one line per notice per tick, and reading the count back is the only
+    way a test can say so.
+    """
+    lines = []
+
+    class _Collector(logging.Handler):
+        def emit(self, record):
+            lines.append(record.getMessage())
+
+    handler = _Collector()
+    previous_level, previous_propagate = logger.level, logger.propagate
+    logger.addHandler(handler)
+    logger.setLevel(logging.INFO)
+    logger.propagate = False
+    try:
+        yield lines
+    finally:
+        logger.removeHandler(handler)
+        logger.setLevel(previous_level)
+        logger.propagate = previous_propagate
 
 
 def drain(provider):
@@ -250,7 +279,7 @@ def main():
         # is: what the agent puts in front of a person has to be openable.
         ok("the vote line sends the user to the dashboard, the only place to vote",
            "mwe_dashboard_link" in block
-           and f"{origin}/dashboard/proposals" in block
+           and f"{origin}/dashboard/chat" in block
            and "nowhere else" in block)
         ok("the vote line carries the consent rule and forbids inventing the fact",
            "Saying nothing until the deadline is consent" in block
@@ -736,21 +765,23 @@ def main():
         ok("job prompt offers the notice's own page, hung on the dashboard base",
            f"{dashboard}/dashboard/wiki/casa" in job["prompt"])
 
-        # A due commitment rings with its own wording: it is the
-        # recipient's own commitment coming round, not material relayed
-        # from somebody else's conversation.
+        # A due commitment rings with its own wording: it is a commitment
+        # the memory already holds, coming due, and not material relayed
+        # out of somebody else's conversation. The zone is pinned so the
+        # wall-clock rendering is the same on every machine.
         reminder = {
             "event_id": 9, "kind": "reminder_due", "wiki_id": "casa",
             "payload": {
                 "recipient_id": "user:bruno",
                 "due_at": "2026-08-06T17:00:00Z",
+                "fires_at": "2026-08-06T17:00:00Z",
                 "dashboard_path": "/dashboard/wiki/casa",
                 "facts": [{"fact_id": "f2", "wiki_id": "casa",
-                           "body": "dentista giovedì alle cinque"}]},
+                           "body": "anna ha il dentista giovedì alle cinque"}]},
         }
         stub2.responses["events_poll"] = {"events": [reminder], "has_more": False}
         delivered, pending = hook._tick_once(
-            client, "smokebot", routes, "it-IT", dashboard, attempts)
+            client, "smokebot", routes, "it-IT", dashboard, attempts, "Europe/Rome")
         ok("due reminder → delivery enqueued", delivered == 1 and pending == 0)
         ok("reminder acked after its enqueue",
            stub2.calls("events_ack")[-1]["arguments"]["event_ids"] == [9])
@@ -758,16 +789,29 @@ def main():
                      if str(j.get("name", "")).startswith("mwe-notice-9-")), None)
         ok("reminder job persisted for the recipient's chat",
            rjob is not None and rjob["deliver"] == "telegram:42")
-        ok("reminder prompt carries the commitment, its due time and the reminder framing",
-           "dentista giovedì alle cinque" in rjob["prompt"]
-           and "2026-08-06T17:00:00Z" in rjob["prompt"]
-           and "come round" in rjob["prompt"]
+        ok("reminder prompt carries the commitment itself",
+           "anna ha il dentista giovedì alle cinque" in rjob["prompt"])
+        ok("a reminder is delivered as a reminder, never as news that just arrived",
+           "A commitment already in their memory is coming due" in rjob["prompt"]
+           and "never news that has just arrived" in rjob["prompt"]
            and "took no part" not in rjob["prompt"])
+        ok("the due time is said on a clock the person reads, not in UTC",
+           "2026-08-06 19:00 (Europe/Rome)" in rjob["prompt"]
+           and "17:00" not in rjob["prompt"])
+        ok("whose commitment it is comes from the content, never from the bridge",
+           "never assume it is the recipient's own" in rjob["prompt"])
+        ok("a due time it cannot read is passed through untouched",
+           "It falls due at giovedì."
+           in hook._build_job_prompt(
+               {**reminder, "payload": {**reminder["payload"], "due_at": "giovedì"}},
+               "bruno", "it-IT", "", "Europe/Rome"))
         ok("no dashboard base → no link rather than a broken one",
            "/dashboard/wiki/casa"
-           not in hook._build_job_prompt(reminder, "bruno", "it-IT", ""))
+           not in hook._build_job_prompt(reminder, "bruno", "it-IT", "", "Europe/Rome"))
 
-        # Unroutable recipient: retried without ack, acked away at the cap.
+        # A recipient whose senderMap entry is only missing: retried
+        # without ack — the operator may add it live — and acked away at
+        # the cap.
         stub2.responses["events_poll"] = {
             "events": [{"event_id": 8, "kind": "fact_minted_for_you",
                         "payload": {"recipient_id": "user:zoe", "facts": []}}],
@@ -783,6 +827,48 @@ def main():
         ok("unroutable notice acked away at the attempt cap",
            stub2.calls("events_ack")[-1]["arguments"]["event_ids"] == [8]
            and 8 not in attempts)
+
+        # A recipient this hermes has no chat for at all: the operator has
+        # said so in `unroutable`, so there is nothing to wait for. It is
+        # confirmed on arrival, with one line, and the retry counter never
+        # opens on it.
+        stub2.responses["events_poll"] = {
+            "events": [{"event_id": 11, "kind": "fact_minted_for_you",
+                        "payload": {"recipient_id": "user:zoe", "facts": []}},
+                       {"event_id": 12, "kind": "reminder_due",
+                        "payload": {"recipient_id": "user:zoe", "facts": []}}],
+            "has_more": False}
+        with _captured_logs(hook.logger) as lines:
+            delivered, pending = hook._tick_once(
+                client, "smokebot", routes, "", dashboard, attempts,
+                unroutable=frozenset({"zoe"}))
+        ok("a recipient with no possible chat is confirmed, not retried",
+           delivered == 0 and pending == 0
+           and stub2.calls("events_ack")[-1]["arguments"]["event_ids"] == [11, 12]
+           and 11 not in attempts and 12 not in attempts)
+        ok("and it costs one log line, not one per notice",
+           len(lines) == 1 and "confirmed without delivery" in lines[0],
+           " | ".join(lines))
+
+        # The map really is only incomplete: still retried, but the log
+        # says it once for the person, not once for each notice.
+        attempts.clear()
+        stub2.responses["events_poll"] = {
+            "events": [{"event_id": 13, "kind": "fact_minted_for_you",
+                        "payload": {"recipient_id": "user:zoe", "facts": []}},
+                       {"event_id": 14, "kind": "fact_minted_for_you",
+                        "payload": {"recipient_id": "user:zoe", "facts": []}}],
+            "has_more": False}
+        acked_before = len(stub2.calls("events_ack"))
+        with _captured_logs(hook.logger) as lines:
+            delivered, pending = hook._tick_once(
+                client, "smokebot", routes, "", dashboard, attempts)
+        ok("a missing senderMap entry is still worth waiting on",
+           pending == 2 and len(stub2.calls("events_ack")) == acked_before
+           and attempts[13] == 1 and attempts[14] == 1)
+        ok("one line for the person, whatever the backlog",
+           len(lines) == 1 and "2 notice(s) for 'zoe' have no chat to go to" in lines[0],
+           " | ".join(lines))
 
         # The daily digest script: drains the system kinds, prints counts,
         # acks what it summarised; [SILENT] contract via NO_EVENTS.

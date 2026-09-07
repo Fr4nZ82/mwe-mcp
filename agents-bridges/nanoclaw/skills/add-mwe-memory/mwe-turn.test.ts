@@ -87,13 +87,13 @@ describe('the recall block', () => {
         requests: [{ requester: 'bob', deadline: deadlineIn(6) }],
         // The host completes the page before the container sees it, so this is
         // the shape that actually arrives.
-        dashboard_path: 'https://memory.example/dashboard/proposals',
+        dashboard_path: 'https://memory.example/dashboard/chat',
       },
     });
     expect(block).toContain('1 open request');
     expect(block).toContain('asked by bob, open until ');
     expect(block).toContain('mwe_dashboard_link');
-    expect(block).toContain('https://memory.example/dashboard/proposals');
+    expect(block).toContain('https://memory.example/dashboard/chat');
     expect(block).toContain('Saying nothing until the deadline is consent');
     // The block names the fact by id: an agent that fills the gap in would be
     // telling the person what somebody wants forgotten, invented.
@@ -112,14 +112,14 @@ describe('the recall block', () => {
       pending_votes: {
         count: 1,
         requests: [{ requester: 'bob', deadline: deadlineIn(5 * 24) }],
-        dashboard_path: 'https://memory.example/dashboard/proposals',
+        dashboard_path: 'https://memory.example/dashboard/chat',
       },
     });
     expect(block).toContain('The deadline is still more than a day away: do not bring this up');
     expect(block).not.toContain('raise it this turn');
     // It is still there to answer a direct question with, and the link with it.
     expect(block).toContain("waiting on this person's vote");
-    expect(block).toContain('https://memory.example/dashboard/proposals');
+    expect(block).toContain('https://memory.example/dashboard/chat');
   });
 
   it('speaks when the nearest of several deadlines is close, not when the last is', () => {
@@ -205,11 +205,11 @@ describe('the answer a disambiguation commit gives', () => {
       pending_votes: {
         count: 1,
         requests: [{ requester: 'bob', deadline: new Date(Date.now() + 3_600_000).toISOString() }],
-        dashboard_path: 'https://memory.example/dashboard/proposals',
+        dashboard_path: 'https://memory.example/dashboard/chat',
       },
     });
     expect(answer).toContain("waiting on this person's vote");
-    expect(answer).toContain('https://memory.example/dashboard/proposals');
+    expect(answer).toContain('https://memory.example/dashboard/chat');
   });
 });
 
