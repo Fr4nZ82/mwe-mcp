@@ -32,7 +32,7 @@
 //! — `load` takes a directory that already holds
 //! `config.json`, `tokenizer.json`, and `pytorch_model.bin`.
 
-use std::path::{Path, PathBuf};
+use std::path::Path;
 use std::sync::Arc;
 
 use candle_core::{DType, Device, IndexOp, Tensor};
@@ -418,6 +418,8 @@ fn sha256_file(path: &Path) -> std::io::Result<String> {
 
 #[cfg(test)]
 mod tests {
+    use std::path::PathBuf;
+
     use super::*;
 
     #[test]
