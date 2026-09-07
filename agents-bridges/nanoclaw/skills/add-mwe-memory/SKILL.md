@@ -176,9 +176,16 @@ speaks as a guest, which is the safe answer — never somebody else's identity.
 ### 7. The token
 
 The bearer token is the one thing this skill will not touch: it is not an
-argument, it is not logged, and it never passes through an installer.
+argument to any step here, and it is never logged. Somebody puts it in `.env`,
+and that somebody is either the person reading this or the served installer,
+which redeems an install claim for one. So the instruction is worth printing
+only while it is still owed:
 
-```nc:operator
+```nc:run capture:mwe_token_present
+grep -qs '^MWE_TOKEN=.' .env && echo yes || echo no
+```
+
+```nc:operator when:mwe_token_present=no
 Put the consumer token in the fork's `.env`, on its own line:
 MWE_TOKEN=<the token you minted in the mwe-mcp dashboard>
 The host reads it from there and never puts it in the environment of a child

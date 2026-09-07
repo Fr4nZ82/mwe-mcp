@@ -1870,7 +1870,9 @@ async fn cmd_serve_http(
         // The consent step that needs a login is `/dashboard/webagentoauth/authorize`
         // (in the dashboard router). Anonymous like the other root surfaces — the
         // human login + consent is the gate, not client identity.
-        .merge(mwe_dashboard::webagentoauth_public_router(dashboard_state))
+        .merge(mwe_dashboard::webagentoauth_public_router(
+            dashboard_state.clone(),
+        ))
         .nest("/mcp", mcp_router)
         // The media byte pair (upload + ACL-enforced serving), behind
         // the same bearer JWT as /mcp — the MCP ingest stays JSON and
@@ -1893,10 +1895,17 @@ async fn cmd_serve_http(
         // sign-in), the bridge catalog (`/bridges`), and the
         // self-contained installers (`/bridges/<consumer>/install.{sh,ps1,md}`).
         // Unauthenticated on purpose — `curl … | sh` reaches it from a
-        // box with no dashboard session, and nothing here is secret (the
-        // token is issued from the dashboard home, never here). The same
-        // catalog is also the authenticated `/dashboard/bridges` tab.
-        .merge(mwe_dashboard::public_site_router());
+        // box with no dashboard session, and nothing served here is a
+        // credential. The same catalog is also the authenticated
+        // `/dashboard/bridges` tab.
+        .merge(mwe_dashboard::public_site_router())
+        // Where the served NanoClaw installer trades the single-use claim
+        // an admin minted on the Bridges tab for the consumer token it
+        // writes into the fork. Anonymous for the same reason as the
+        // surface above — the installing box has no session — and safe for
+        // the reason the claim exists: it is short-lived, it is burned on
+        // first use, and it is the only thing the caller has.
+        .merge(mwe_dashboard::bridge_claim_router(dashboard_state));
 
     let addr = SocketAddr::new(bind, port);
     let listener = tokio::net::TcpListener::bind(addr)

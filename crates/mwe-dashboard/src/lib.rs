@@ -90,6 +90,20 @@ pub fn public_site_router() -> Router {
     routes::public_site_router()
 }
 
+/// Public, anonymous **install-claim** router, mounted at the root of the
+/// HTTP tree by `mwe-mcp-server` beside [`public_site_router`].
+///
+/// Serves `POST /bridges/nanoclaw/claim`, where the served nanoclaw
+/// installer trades the single-use claim an admin minted on the Bridges
+/// tab for the standard consumer token it writes into the fork. It is the
+/// one bridge route that needs the database, which is why it is separate
+/// from the stateless distribution surface, and it is unauthenticated
+/// because the box running `curl … | sh` has no dashboard session — the
+/// claim is the credential, and it is burned on first use.
+pub fn bridge_claim_router(state: DashboardState) -> Router {
+    routes::bridge_claim_router(state)
+}
+
 /// Public, anonymous **`webagentoauth`** OAuth router, mounted at
 /// the root of the HTTP tree by `mwe-mcp-server` alongside [`public_site_router`].
 ///

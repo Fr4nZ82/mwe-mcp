@@ -100,16 +100,20 @@ and most current SDKs) skip the shim entirely:
 
 Two **per-turn** (standard-consumer) host bridges ship here, both wiring their
 host to a running mwe-mcp at full fidelity — the per-turn contract below. You
-don't wire either by hand: the server serves the installer, one command, and the
-token stays a dashboard step the installer never handles.
+don't wire either by hand: the server serves the installer, one command.
 
 - **[NanoClaw](https://github.com/nanocoai/nanoclaw)** — the **ready-made
-  assistant**: the consumer to reach for when you have no agent of your own. The
-  installer at **`/bridges/nanoclaw`** places the `mwe` agent template and the
-  `add-mwe-memory` fork skill, cloning NanoClaw at the tested ref if you do not
-  have it. The complete step-by-step — the template, the skill, `mwe.json`,
-  `senderMap`, the reverse channel, media — is in
-  **[`agents-bridges/nanoclaw/README.md`](agents-bridges/nanoclaw/README.md)**.
+  assistant**: the consumer to reach for when you have no agent of your own. One
+  command at **`/bridges/nanoclaw`** does the whole install — the `mwe` agent
+  template and the `add-mwe-memory` fork skill into a NanoClaw it clones at the
+  tested ref if you do not have it, then NanoClaw's own setup, the memory, the
+  Telegram channel and the wiring. It needs a terminal: NanoClaw asks two
+  questions of its own and the Claude sign-in opens a browser. An admin can mint
+  the command with a one-time **install claim** in it, and then the consumer
+  token is written into the fork rather than pasted; without one the token is
+  the single step the installer hands back. The complete step-by-step — the
+  template, the skill, `mwe.json`, `senderMap`, the reverse channel, media — is
+  in **[`agents-bridges/nanoclaw/README.md`](agents-bridges/nanoclaw/README.md)**.
 - **[Hermes](https://github.com/NousResearch/hermes-agent)** (Nous Research) —
   for a Hermes you already run: a plugin quartet with **no fork and no upstream
   patch**, served at **`/bridges/hermes`**. The step-by-step — plugins,

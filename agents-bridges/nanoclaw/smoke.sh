@@ -1,9 +1,11 @@
 #!/usr/bin/env bash
 # Offline smoke for the nanoclaw bridge: fetch nanoclaw at BRIDGE_UPSTREAM_REF,
-# install the skill and the template into a scratch fork the way an operator
-# does, apply it a second time the way an upgrade does, then drive the real poll
-# loop against the recording stub endpoint.
-# No mwe-mcp server, no model, no Docker.
+# copy the skill and the template into a scratch fork, apply the skill through
+# the headless driver the bridge ships (the one the served installer runs),
+# apply it a second time the way an upgrade does, then drive the real poll loop
+# against the recording stub endpoint.
+# No mwe-mcp server, no model, no Docker — so the served installer's own half
+# (nanoclaw's setup, Telegram, the restart) is not exercised here.
 #
 # Env:
 #   BRIDGE_UPSTREAM_REF  upstream ref to test against (default: the manifest pin)
@@ -34,6 +36,7 @@ cleanup() {
 trap cleanup EXIT
 
 FORK="$SCRATCH/nanoclaw"
+SKILL_IN_FORK=".claude/skills/add-mwe-memory"
 echo "fetching nanoclaw @ ${REF} from ${SRC}"
 git clone --quiet "$SRC" "$FORK"
 if [ "$REF" != "HEAD" ]; then
@@ -54,17 +57,25 @@ echo "installing dependencies (host, then agent runner)"
 echo "validating the template"
 (cd "$FORK" && bun "$BRIDGE/smoke_template.ts")
 
-# The skill, applied headlessly through nanoclaw's own apply engine. The
-# operator answers three questions; here they come from the environment, which
-# is the engine's documented pipeline posture.
+# The skill, applied headlessly through the driver the bridge ships into the
+# fork — the same one the served installer runs. The operator answers three
+# questions; here they come from the environment, which is the engine's
+# documented pipeline posture. The restart is the caller's: this harness owns
+# process lifecycle.
 echo "applying add-mwe-memory"
 (
     cd "$FORK"
     export NC_INPUT_MWE_SERVER_URL="http://127.0.0.1:8742/mcp"
     export NC_INPUT_MWE_ADMIN_SENDER="telegram:1"
     export NC_INPUT_MWE_ADMIN_USER="alice"
-    bun "$BRIDGE/smoke_apply.ts"
+    export NC_SKIP_EFFECTS=restart
+    pnpm exec tsx "$SKILL_IN_FORK/apply-headless.ts" "$SKILL_IN_FORK"
 )
+
+# There is no memory server here to claim a token from, and the host module
+# wants one on disk to consider itself configured. A fake is the only kind
+# that belongs in a test.
+printf '\nMWE_TOKEN=test-jwt\n' >> "$FORK/.env"
 
 # Splicing the reach-ins twice must change nothing, and removing them must give
 # nanoclaw's own files back byte for byte. That is what makes the wiring safe to
@@ -99,11 +110,21 @@ echo "checking a re-apply carries a changed module"
     export NC_INPUT_MWE_SERVER_URL="http://127.0.0.1:8742/mcp"
     export NC_INPUT_MWE_ADMIN_SENDER="telegram:1"
     export NC_INPUT_MWE_ADMIN_USER="alice"
-    bun "$BRIDGE/smoke_apply.ts" >/dev/null
+    export NC_SKIP_EFFECTS=restart
+    out="$(pnpm exec tsx "$SKILL_IN_FORK/apply-headless.ts" "$SKILL_IN_FORK")"
     grep -qF "$MARKER" src/modules/mwe/events.ts || {
         echo "FAIL: re-applying the skill left the fork on the old module"
         exit 1
     }
+    # The token step is owed until somebody satisfies it, and by now the
+    # token is in .env — printed again it would be an instruction to redo
+    # something already done, which is what the served installer's run
+    # would read like from beginning to end.
+    if echo "$out" | grep -q 'manual step'; then
+        echo "FAIL: the token step is still printed once the token is in .env"
+        exit 1
+    fi
+    echo "ok   the token instruction stops once the token is in .env"
     # Back to what the bridge ships, on both sides of the copy.
     cp "$BRIDGE/skills/add-mwe-memory/host/events.ts" .claude/skills/add-mwe-memory/host/events.ts
     pnpm exec tsx .claude/skills/add-mwe-memory/refresh-modules.ts >/dev/null

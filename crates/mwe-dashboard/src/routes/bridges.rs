@@ -1,8 +1,11 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 //! Bridge **onboarding + distribution** surface.
 //!
-//! The same non-secret content is reachable two ways, so we never have
-//! to ask "who is visiting":
+//! The catalog and the guides are non-secret and reachable two ways, so
+//! we never have to ask "who is visiting". The one exception is the
+//! install claim below: it is minted only where a session says who is
+//! asking, and it is the only thing this surface hands out that a person
+//! must not share.
 //!
 //! - **Public** (root-mounted, anonymous) for consumers and `curl`:
 //!   - `GET /` — slim product front page: a line pointing a consumer at
@@ -16,29 +19,50 @@
 //!     inlined as heredocs / here-strings; one `curl … | sh`, no
 //!     `tar`/`jq`/bundle). A consumer ships only the forms that can work:
 //!     claude-code has just an `install.md`, and nanoclaw no `.ps1`.
+//!     nanoclaw's takes `?claim=<code>`, which it carries into the script.
+//!   - `POST /bridges/nanoclaw/claim` — where that script trades the code
+//!     for a consumer token. The one route here that touches the database,
+//!     which is why it is [`claim_router`] and not the stateless one.
 //! - **Dashboard tab** (`/dashboard/bridges`, authenticated) for the
 //!   operator: the *same* catalog + guide bodies wrapped in the dashboard
-//!   shell. Wiring a consumer in is the operator's job, so "Bridges" is a
-//!   nav entry for an admin; the page answers anybody who has the address.
-//!   Shared body functions take a base prefix so the in-page links resolve
-//!   under `/dashboard` there and at the root publicly.
+//!   shell, plus `POST /bridges/nanoclaw/command`, where an admin mints a
+//!   claim and gets the command that carries it. Wiring a consumer in is
+//!   the operator's job, so "Bridges" is a nav entry for an admin; the
+//!   page answers anybody who has the address, and only an admin is
+//!   offered the button. Shared body functions take a base prefix so the
+//!   in-page links resolve under `/dashboard` there and at the root
+//!   publicly.
 //!
-//! The **token never lives here** — it is a credential, minted on the
-//! dashboard's Tokens page, which the home's "Connect a consumer" card
-//! links to. These pages and scripts only ever instruct the operator to
-//! mint it, disable the host's built-in memory, and restart.
+//! A **token** is a credential and is minted on the dashboard's Tokens
+//! page. The nanoclaw installer is the one path that carries one without
+//! anybody copying it, and it does so through an **install claim**: the
+//! admin mints a short-lived, single-use code on the Bridges tab, the
+//! served command carries the code, and the installer trades it at
+//! `POST /bridges/nanoclaw/claim` for a standard consumer token it writes
+//! straight into the fork's `.env`. The code is not the token — it expires,
+//! it is burned on first use through the same `jti` blacklist as a
+//! single-use dashboard link, and it only ever answers a request that
+//! reaches this server. Every other page and script instructs the operator
+//! to mint the token themselves.
+
+use std::time::Duration;
 
 use axum::Router;
-use axum::extract::{Host, Path, State};
+use axum::extract::{Host, Path, Query, State};
 use axum::http::{HeaderValue, StatusCode, header};
 use axum::response::{Html, IntoResponse, Response};
-use axum::routing::get;
+use axum::routing::{get, post};
 use maud::{Markup, html};
+use mwe_core::enrollment;
+use mwe_core::jwt::{self, TokenClaims};
 use rust_embed::RustEmbed;
+use serde::Deserialize;
 
-use crate::auth::SessionUser;
+use crate::auth::{AdminUser, SessionUser};
+use crate::error::{DashboardError, Result};
+use crate::form::HtmlForm;
 use crate::state::DashboardState;
-use crate::ui::layout;
+use crate::ui::{components, layout};
 
 /// The hermes bridge tree (plugins + gateway hooks + cron scripts),
 /// embedded from the in-repo bridge directory. Python build artifacts
@@ -56,9 +80,14 @@ struct HermesBridge;
 /// directory. Exactly two of its directories travel to a fork — the
 /// `mwe` agent template and the `add-mwe-memory` skill; everything else
 /// (README, manifest, smokes and their stubs) is dropped by
-/// [`route_embedded_path`] returning `None`. The manifest is embedded
-/// too, unrouted, because [`nanoclaw_upstream`] reads the tested repo and
-/// ref out of it so the installer cannot drift from the bridge.
+/// [`route_embedded_path`] returning `None`.
+///
+/// Two of the unrouted files are still read here rather than shipped:
+/// the manifest, because [`nanoclaw_upstream`] takes the tested repo and
+/// ref out of it so the installer cannot drift from the bridge, and
+/// `install-assistant.sh`, which [`nanoclaw_install_driver`] appends to
+/// the served installer. That one drives a fork from outside it, so it
+/// belongs to the server, not to the checkout.
 #[derive(RustEmbed)]
 #[folder = "$CARGO_MANIFEST_DIR/../../agents-bridges/nanoclaw/"]
 struct NanoclawBridge;
@@ -94,6 +123,44 @@ const NANOCLAW_REGISTRY_BRANCHES: &[&str] = &["channels", "providers"];
 /// making the operator find it in the picker.
 const NANOCLAW_TEMPLATE_ENV_LINE: &str = "NANOCLAW_TEMPLATE_PATH=mwe";
 
+/// The consumer id an install claim mints a standard token for. Fixed,
+/// because a memory server has one ready-made assistant: a second install
+/// refreshes that consumer's delegations instead of coining a second
+/// identity and a second wiki nobody asked for.
+const NANOCLAW_CONSUMER_ID: &str = "mwe";
+
+/// How long an install claim stays good. The installer trades it in its
+/// first seconds — before the clone, before nanoclaw's own setup, before
+/// the browser sign-in — so this window covers copying the command and
+/// starting it, not the install it starts.
+const CLAIM_TTL: Duration = Duration::from_secs(15 * 60);
+
+/// `device_label` of an install claim, checked before one is burned. It
+/// is what stops a claim being redeemed as a browser session, and a
+/// session cookie or an MCP bearer being redeemed as a claim — the same
+/// defence [`crate::routes::auth_link`] applies to a single-use link.
+const CLAIM_DEVICE_LABEL: &str = "nanoclaw-install-claim";
+
+/// Rate-limit profile an install claim carries. It never reaches `/mcp`
+/// under its own name; the profile is there because the claim shape
+/// requires one.
+const CLAIM_RATE_LIMIT_ID: &str = "dashboard";
+
+/// Whether a claim is shaped like one this server mints.
+///
+/// The claim is interpolated into a shell script the operator pipes into
+/// `sh`, so the answer decides whether that script is safe to serve. A
+/// JWT's alphabet is `[A-Za-z0-9_-]` in three dot-separated parts and
+/// nothing else: a claim carrying anything outside it is refused rather
+/// than quoted, because a claim that needs quoting is not a claim.
+fn claim_is_wellformed(claim: &str) -> bool {
+    !claim.is_empty()
+        && claim.len() <= 4096
+        && claim
+            .bytes()
+            .all(|b| b.is_ascii_alphanumeric() || matches!(b, b'.' | b'_' | b'-'))
+}
+
 fn bridge_label(consumer: &str) -> Option<&'static str> {
     BRIDGES
         .iter()
@@ -115,11 +182,27 @@ pub fn public_site_router() -> Router {
 
 /// Authenticated "Bridges" tab, merged into the dashboard tree under
 /// `/dashboard`. Same catalog + guide bodies as the public surface, but
-/// wrapped in the dashboard shell (top nav) so it reads as a tab.
+/// wrapped in the dashboard shell (top nav) so it reads as a tab — plus
+/// the one thing only an admin may do here: mint the install claim that
+/// lets the nanoclaw installer collect its own token.
 pub fn dashboard_tab_router() -> Router<DashboardState> {
     Router::new()
         .route("/bridges", get(tab_bridges_index))
+        .route("/bridges/nanoclaw/command", post(tab_mint_install_command))
         .route("/bridges/:consumer", get(tab_bridge_page))
+}
+
+/// Public, anonymous **claim-redemption** route, mounted at the root of
+/// the HTTP tree by `mwe-mcp-server` beside [`public_site_router`].
+///
+/// Separate from that router because it is the one bridge endpoint that
+/// touches the database: it burns a claim and mints a consumer token.
+/// Anonymous by necessity — the box running `curl … | sh` has no
+/// dashboard session, and the claim in its hand is the whole credential.
+pub fn claim_router(state: DashboardState) -> Router {
+    Router::new()
+        .route("/bridges/nanoclaw/claim", post(redeem_install_claim))
+        .with_state(state)
 }
 
 // ---------------------------------------------------------------------
@@ -273,28 +356,111 @@ fn claude_ai_section(origin: &str, may_mint: bool) -> Markup {
     }
 }
 
-/// Per-consumer install guide body. No token here — that lives on the
-/// dashboard home's "Connect a consumer" card. Dispatches on the
-/// consumer: nanoclaw and hermes ship a `curl … | sh` installer;
-/// claude-code gets an `install.md` it follows itself (no files, no
-/// shell installer).
-fn guide_body(consumer: &str, origin: &str, may_mint: bool) -> Markup {
+/// A minted install command, rendered once on the Bridges tab.
+///
+/// Held apart from the claim it carries so nothing but the command line
+/// itself ever reaches a template: the claim is inside that string, and
+/// the string is shown to the admin who minted it and nobody else.
+struct InstallCommand {
+    /// The whole `curl … | sh` line, claim included.
+    command: String,
+    /// The instant the claim stops working, in UTC.
+    expires_utc: String,
+}
+
+/// Per-consumer install guide body. Dispatches on the consumer: nanoclaw
+/// and hermes ship a `curl … | sh` installer; claude-code gets an
+/// `install.md` it follows itself (no files, no shell installer).
+///
+/// `minted` is the install command an admin has just asked for, and only
+/// the nanoclaw guide has anywhere to put one. Everywhere else the token
+/// is a step the reader takes on the Tokens page.
+fn guide_body(
+    consumer: &str,
+    origin: &str,
+    may_mint: bool,
+    minted: Option<&InstallCommand>,
+) -> Markup {
     match consumer {
-        "nanoclaw" => nanoclaw_guide_body(origin, may_mint),
+        "nanoclaw" => nanoclaw_guide_body(origin, may_mint, minted),
         "claude-code" => claude_code_guide_body(origin),
         _ => hermes_guide_body(consumer, origin, may_mint),
     }
 }
 
+/// The command itself, and how the reader gets one that carries a claim.
+///
+/// Three readers, one block: an admin who has just minted (the command is
+/// on screen, with what the claim buys and when it dies), an admin who has
+/// not (the plain command, and the button), and everybody else (the plain
+/// command, and where the other kind comes from).
+fn nanoclaw_command_block(curl: &str, may_mint: bool, minted: Option<&InstallCommand>) -> Markup {
+    html! {
+        h2 { "One command" }
+
+        @if let Some(cmd) = minted {
+            (components::flash(
+                "success",
+                "Your install command is below. Copy it now — the claim inside it works once.",
+            ))
+            pre.endpoint-display { (cmd.command) }
+            p.muted {
+                "The claim stops working at " strong { (cmd.expires_utc) } " UTC. The "
+                "installer trades it, in its first seconds, for a "
+                strong { "standard" } " consumer token for "
+                code { (NANOCLAW_CONSUMER_ID) } " and writes it into the fork's "
+                code { ".env" } ": it is never shown on this page, never printed by "
+                "the installer, and never put on a command line. The token starts "
+                "out able to speak for everybody enrolled here, plus "
+                code { "guest" } " — open the "
+                (tokens_page(may_mint))
+                " and untick whoever the assistant has no business speaking for."
+            }
+        } @else {
+            pre.endpoint-display { (curl) }
+            @if may_mint {
+                p {
+                    "That command does everything except the token, which it leaves "
+                    "for you to mint and paste. Or let it collect its own:"
+                }
+                form action="/dashboard/bridges/nanoclaw/command" method="post" {
+                    (components::submit("Create an install command that carries the token"))
+                }
+                p.muted {
+                    "You get the same command with a one-time claim in it. The claim "
+                    "is not the token: it is good once, it expires in minutes, and it "
+                    "is spent the moment the installer trades it for a token of its "
+                    "own."
+                }
+            } @else {
+                p.muted {
+                    "This command does everything except the token: when it "
+                    "finishes it tells you to mint a standard consumer token and put "
+                    "it in the fork's " code { ".env" } ". An admin signed in here "
+                    "can instead press a button on this page and get the same command "
+                    "with a one-time claim in it, which the installer trades for the "
+                    "token by itself."
+                }
+            }
+        }
+    }
+}
+
 /// Human guide for the **nanoclaw** bridge — the ready-made assistant,
-/// and the first consumer this catalog recommends. One command places
-/// the `mwe` agent template and the `add-mwe-memory` fork skill; the
-/// five steps after it are the operator's, and the token is one of them.
+/// and the first consumer this catalog recommends. One command carries
+/// the whole install: it places the `mwe` agent template and the
+/// `add-mwe-memory` fork skill, drives nanoclaw's own setup, applies the
+/// memory, connects Telegram and wires the chat.
+///
+/// An admin gets a second version of that command with an install claim
+/// in it, and the claim is what makes the token step disappear. Without
+/// one the command still runs everything else and ends by naming the
+/// token as the step that is left.
 ///
 /// No PowerShell here on purpose: nanoclaw runs on Windows only inside
 /// WSL2, so the Windows path is the same `sh` command in a WSL2 shell —
 /// see [`render_install_ps1`].
-fn nanoclaw_guide_body(origin: &str, may_mint: bool) -> Markup {
+fn nanoclaw_guide_body(origin: &str, may_mint: bool, minted: Option<&InstallCommand>) -> Markup {
     let curl = format!("curl -fsSL {origin}/bridges/nanoclaw/install.sh | sh");
     let agent_line = format!(
         "Read {origin}/bridges/nanoclaw/install.md and follow the instructions to connect me to this memory."
@@ -312,80 +478,81 @@ fn nanoclaw_guide_body(origin: &str, may_mint: bool) -> Markup {
             "untouched."
         }
 
-        h2 { "1. Install the template and the skill" }
-        p { "Run this anywhere. If you are already inside a NanoClaw checkout it "
-            "uses that one; otherwise it clones NanoClaw at the tested ref into "
-            code { "~/nanoclaw" } " (set " code { "NANOCLAW_DIR" }
-            " to put it elsewhere, or to point at a fork you already have):" }
-        pre.endpoint-display { (curl) }
+        (nanoclaw_command_block(&curl, may_mint, minted))
+
+        h3 { "What it does, and the two things it asks you" }
+        ol {
+            li {
+                "Finds your NanoClaw, or clones it at the tested ref into "
+                code { "~/nanoclaw" } " (set " code { "NANOCLAW_DIR" }
+                " to put it elsewhere, or to point at a fork you already have), "
+                "and places the " code { "mwe" } " agent template and the "
+                code { "add-mwe-memory" } " fork skill inside it. It also fetches "
+                "NanoClaw's " code { "channels" } " and " code { "providers" }
+                " branches: its channel adapters are copied out of them, so a "
+                "warning about one of those is a channel that cannot be installed "
+                "until the fetch succeeds."
+            }
+            li {
+                strong { "Asks you two things only you know:" } " the bot token "
+                "@BotFather gave you, and your own numeric Telegram id. Both can "
+                "come from the environment instead ("
+                code { "MWE_TELEGRAM_BOT_TOKEN" } ", "
+                code { "MWE_TELEGRAM_OPERATOR_ID" } ")."
+            }
+            li {
+                "Runs NanoClaw's own setup, which installs Node, pnpm and Docker if "
+                "they are missing and builds the sandbox image here. It asks "
+                strong { "two questions of its own" } " that no setting answers: "
+                "“How would you like to begin?” — take " strong { "Standard setup" }
+                ", the default — and “How would you like to connect to Claude?” — take "
+                "the subscription sign-in, which opens your browser and keeps the "
+                "token in NanoClaw's own vault. The channel, the agent, the sandbox "
+                "image, the runtime and the timezone are already answered."
+            }
+            li {
+                "Stamps the " code { "mwe" } " agent, applies the memory skill, "
+                "installs Telegram and wires your chat to the agent " strong { "without "
+                "the pairing code" } " (a private chat's id is your own id, so there is "
+                "nothing left to learn), restarts the service and the agent containers, "
+                "and then watches for your first message to confirm the turn was stored "
+                "and recalled."
+            }
+        }
         p.muted {
-            "Where the files land: the " code { "mwe" } " agent template in "
-            code { "templates/mwe/" } " and the " code { "add-mwe-memory" }
-            " fork skill in " code { ".claude/skills/add-mwe-memory/" }
-            ", both inside the checkout. The installer itself needs only "
-            code { "git" } " — NanoClaw's own "
-            code { "nanoclaw.sh" } " installs Node, pnpm and Docker if they are "
-            "missing. Claude Code is what drives the skill conversationally in "
-            "step 2. The installer also fetches NanoClaw's "
-            code { "channels" } " and " code { "providers" } " branches — its "
-            "channel adapters are copied out of them, so without those a "
-            "channel cannot be installed at all — and names " code { "mwe" }
-            " as the template in the checkout's " code { ".env" } ", so setup "
-            "offers it instead of asking you to find it."
+            "Run it in a terminal you are sitting at: NanoClaw's two questions and the "
+            "browser sign-in need one, and the installer stops with that in words rather "
+            "than hanging if there is none. Re-running the whole command is how you "
+            "update an install — every step of it checks what is already there. To place "
+            "the files and stop, for a fork you set up yourself, run it with "
+            code { "MWE_FILES_ONLY=1" } " and follow "
+            code { "agents-bridges/nanoclaw/README.md" } "."
         }
         p.muted {
             strong { "Windows:" } " NanoClaw runs under WSL2, so there is no "
             "PowerShell installer. Open your WSL2 shell and run the command "
-            "above there."
+            "there."
         }
 
         h3 { "…or let a consumer do it" }
-        p { "Paste this to any consumer that already has a shell — it runs the "
-            "same installer and then hands you the steps below:" }
+        p { "Paste this to any consumer that already has a shell — it reads the same "
+            "instructions, and hands the command to you to run:" }
         pre.endpoint-display { (agent_line) }
         p.muted {
             "Machine-readable form: "
             a href="/bridges/nanoclaw/install.md" { "/bridges/nanoclaw/install.md" }
         }
 
-        h2 { "2. Finish (the steps the installer leaves to you)" }
-        p { "The installer never touches your token. From the checkout:" }
-        ol {
-            li {
-                "Stamp the agent. On a fresh install run " code { "bash nanoclaw.sh" }
-                " and confirm the " code { "mwe" } " template it offers (decline, "
-                "and you pick it by hand: " strong { "Local templates" } ", then "
-                code { "mwe" } "). On an install that already has agents: "
-                code { "ncl groups create --template mwe --name mwe --new" }
-                " — " code { "--name" } " is yours, it becomes the group folder. "
-                "It is not what the assistant answers to: its name is a fact of "
-                "this memory, and anybody it serves can tell it in chat."
-            }
-            li {
-                "Apply the skill: " code { "/add-mwe-memory" } " from Claude Code. "
-                "Without Claude Code, the same steps are ordinary shell commands "
-                "in " code { ".claude/skills/add-mwe-memory/SKILL.md" }
-                ". Its last step restarts the agent containers as well as the "
-                "service — a container that keeps running answers with the code "
-                "as it was before, and says nothing about it."
-            }
-            li {
-                "Issue a " strong { "standard" } " consumer token from the "
-                (tokens_page(may_mint)) " and set it as "
-                code { "MWE_TOKEN" } " in the checkout's " code { ".env" }
-                ". In that consumer's delegations tick every person it will "
-                "speak for, plus " code { "guest" } " — without " code { "guest" }
-                " an unrecognised sender is refused instead of answered "
-                "anonymously."
-            }
-            li {
-                "Fill in " code { "senderMap" } " in " code { "mwe.json" }
-                " — one line per person, " code { "<channel>:<platform id>" }
-                " to their mwe user id — and restart NanoClaw. Anyone not listed "
-                "speaks as a guest; there is no fallback to the owner."
-            }
-            li { "Connect a channel (" code { "/manage-channels" }
-                ", or " code { "ncl wirings create" } ") and talk to it." }
+        h2 { "Who the assistant speaks for" }
+        p.muted {
+            "One line per person in " code { "senderMap" } " in the fork's "
+            code { "mwe.json" } " — their " code { "<channel>:<platform id>" }
+            " to their user id in this memory — and a tick for each of them, plus "
+            code { "guest" } ", in the consumer's delegations on the "
+            (tokens_page(may_mint)) ". The installer writes the first line, yours, and "
+            "the rest are added the same way as people arrive. Anybody the map does not "
+            "name speaks as a guest, whose turns recall only public memory and store "
+            "nothing; there is no falling back to the owner."
         }
     }
 }
@@ -684,12 +851,30 @@ fn nanoclaw_upstream(key: &str) -> Option<String> {
 /// Generate the self-contained POSIX installer, or `None` for a
 /// consumer without one (claude-code registers itself over MCP; an
 /// unknown name has no bridge at all).
-fn render_install_sh(consumer: &str) -> Option<String> {
+///
+/// `origin` and `claim` are the nanoclaw installer's: it talks back to
+/// this server to redeem the claim and it writes the endpoint into the
+/// fork. The hermes installer places files and needs neither.
+fn render_install_sh(consumer: &str, origin: &str, claim: Option<&str>) -> Option<String> {
     match consumer {
         "hermes" => Some(render_install_sh_hermes()),
-        "nanoclaw" => render_install_sh_nanoclaw(),
+        "nanoclaw" => render_install_sh_nanoclaw(origin, claim),
         _ => None,
     }
+}
+
+/// The second half of the nanoclaw installer, embedded from the bridge's
+/// own `install-assistant.sh` so the shell that drives nanoclaw's setup is
+/// a file somebody can read, lint and run, not a wall of string pushes.
+///
+/// The shebang goes: this body is appended to a script that already has
+/// one, and a second `#!` line halfway down a file is noise a reader has
+/// to explain to themselves. `None` when the file is not embedded, which
+/// makes the installer 404 rather than serve a half of it.
+fn nanoclaw_install_driver() -> Option<String> {
+    let file = NanoclawBridge::get("install-assistant.sh")?;
+    let body = String::from_utf8_lossy(&file.data);
+    Some(body.strip_prefix("#!/bin/sh\n").unwrap_or(&body).to_owned())
 }
 
 /// Append every routed file of a bridge as a `mkdir -p` + quoted
@@ -762,8 +947,18 @@ fn render_install_sh_hermes() -> String {
 /// registry branches fetched into remote-tracking refs
 /// ([`NANOCLAW_REGISTRY_BRANCHES`]) so a channel can be installed, and
 /// the template pick in `.env` ([`NANOCLAW_TEMPLATE_ENV_LINE`]) so the
-/// wizard offers this template. Neither is fatal to the file placement and
-/// neither goes near the token.
+/// wizard offers this template.
+///
+/// Everything after that is [`nanoclaw_install_driver`], appended
+/// verbatim: the two answers only a person has, the claim redemption,
+/// nanoclaw's setup, the memory skill, Telegram, the restart and the
+/// check. It reads `NANOCLAW_DIR`, `MWE_ORIGIN` and `MWE_CLAIM`, which is
+/// why they are assigned here at the top.
+///
+/// The claim reaches this function already checked against
+/// [`claim_is_wellformed`] — it lands inside a double-quoted shell
+/// assignment in a script the operator pipes into `sh`, so the check is
+/// what makes that safe, and it belongs at the edge that receives it.
 ///
 /// `None` when the manifest carries no upstream repo or pin: an
 /// installer that cloned an unpinned `main` would place a bridge beside
@@ -772,21 +967,28 @@ fn render_install_sh_hermes() -> String {
     clippy::literal_string_with_formatting_args,
     reason = "shell ${VAR:-default} braces are not Rust format args"
 )]
-fn render_install_sh_nanoclaw() -> Option<String> {
+fn render_install_sh_nanoclaw(origin: &str, claim: Option<&str>) -> Option<String> {
     let repo = nanoclaw_upstream("repo")?;
     let pin = nanoclaw_upstream("pin")?;
+    let driver = nanoclaw_install_driver()?;
     let mut s = String::new();
     s.push_str("#!/bin/sh\n");
     s.push_str(
         "# mwe-mcp NanoClaw bridge installer — self-contained, served by your mwe-mcp server.\n",
     );
     s.push_str(
-        "# Places the `mwe` agent template and the add-mwe-memory fork skill into a\n\
-         # NanoClaw checkout, cloning one at the tested ref if you have none.\n\
-         # It needs only git: nanoclaw.sh installs Node, pnpm and Docker itself.\n\
-         # It never touches your token.\n",
+        "# Installs the ready-made assistant: the `mwe` agent template and the\n\
+         # add-mwe-memory fork skill into a NanoClaw checkout (cloned at the tested\n\
+         # ref if you have none), then NanoClaw's own setup, the memory, Telegram\n\
+         # and the wiring. Run it in a terminal you are sitting at.\n\
+         # It needs git and curl: nanoclaw.sh installs Node, pnpm and Docker itself.\n",
     );
     s.push_str("set -eu\n\n");
+    s.push_str("MWE_ORIGIN=\"");
+    s.push_str(origin);
+    s.push_str("\"\nMWE_CLAIM=\"");
+    s.push_str(claim.unwrap_or_default());
+    s.push_str("\"\n\n");
     s.push_str("NANOCLAW_REPO=\"");
     s.push_str(&repo);
     s.push_str("\"\nNANOCLAW_REF=\"");
@@ -824,7 +1026,8 @@ fn render_install_sh_nanoclaw() -> Option<String> {
     // only that ref, so `origin/channels` does not resolve and the setup
     // wizard dies at the channel step; name the branches in the refspec
     // and the refs exist. A fork that cannot reach them still gets the
-    // bridge — the warning says what to run later.
+    // bridge and the memory — the warning says what to run before a
+    // channel can be installed.
     s.push_str("# nanoclaw copies a channel adapter out of its registry branches with\n");
     s.push_str("# `git show origin/<branch>:<path>`, so those refs have to exist here.\n");
     s.push_str("for branch in ");
@@ -860,17 +1063,17 @@ fn render_install_sh_nanoclaw() -> Option<String> {
 
     s.push_str(
         "\nprintf '%s\\n' \"\" \\\n  \
-         \"mwe-mcp NanoClaw bridge: files installed into $NANOCLAW_DIR.\" \\\n  \
+         \"mwe-mcp NanoClaw bridge: files placed in $NANOCLAW_DIR.\" \\\n  \
          \"  mwe agent template -> $NANOCLAW_DIR/templates/mwe/\" \\\n  \
-         \"  add-mwe-memory skill -> $NANOCLAW_DIR/.claude/skills/add-mwe-memory/\" \\\n  \
-         \"\" \\\n  \
-         \"Five steps remain — they are yours; the installer never handles your token:\" \\\n  \
-         \"  1. Stamp the agent. Fresh install: run 'bash nanoclaw.sh' from $NANOCLAW_DIR and confirm the mwe template it offers. Existing install: ncl groups create --template mwe --name mwe --new (--name is yours).\" \\\n  \
-         \"  2. Apply the skill: /add-mwe-memory from Claude Code, or the shell commands listed in .claude/skills/add-mwe-memory/SKILL.md.\" \\\n  \
-         \"  3. Issue a STANDARD consumer token from your mwe-mcp dashboard, set MWE_TOKEN in $NANOCLAW_DIR/.env, and tick every person it speaks for plus guest in its delegations.\" \\\n  \
-         \"  4. Fill in senderMap in $NANOCLAW_DIR/mwe.json — one line per person — and restart nanoclaw.\" \\\n  \
-         \"  5. Connect a channel and talk to it.\"\n",
+         \"  add-mwe-memory skill -> $NANOCLAW_DIR/.claude/skills/add-mwe-memory/\"\n",
     );
+
+    // Everything below is the bridge's own `install-assistant.sh`, appended
+    // verbatim: it reads the three variables assigned at the top of this
+    // script and takes the fork from "files in place" to "answering on
+    // Telegram with this memory".
+    s.push('\n');
+    s.push_str(&driver);
     Some(s)
 }
 
@@ -956,74 +1159,89 @@ fn render_install_md(consumer: &str, origin: &str) -> Option<String> {
     }
 }
 
-/// The **nanoclaw** install a consumer runs itself — it is pointed at
-/// the served `curl … | sh` installer, then handed the five steps it
-/// must have the *operator* do. The token is one of them: a consumer
-/// that mints or pastes a credential on the operator's behalf is the
-/// one failure mode this whole surface is shaped to prevent.
+/// The **nanoclaw** install a consumer is pointed at. One command does
+/// the whole thing, and the consumer's job is to hand it to a person: it
+/// needs a terminal for nanoclaw's own two questions and for the browser
+/// sign-in, and it asks for a bot token, which a consumer must never
+/// collect on somebody's behalf.
 fn render_install_md_nanoclaw(origin: &str) -> String {
     format!(
         "# Install the mwe-mcp NanoClaw bridge\n\
          \n\
          You are connecting **NanoClaw** — the ready-made assistant of a\n\
-         first-party mwe-mcp memory server at `{origin}` — to that server. The\n\
-         installer is served by the same server:\n\
+         first-party mwe-mcp memory server at `{origin}` — to that server. One\n\
+         command, served by the same server, does the whole install:\n\
          \n\
          ```sh\n\
          curl -fsSL {origin}/bridges/nanoclaw/install.sh | sh\n\
          ```\n\
          \n\
-         Run it from anywhere. If the current directory is already a NanoClaw\n\
-         checkout it uses that one; otherwise it clones NanoClaw at the tested\n\
-         ref into `~/nanoclaw`. Set `NANOCLAW_DIR` to install into a fork that\n\
-         lives elsewhere. If that path exists and is *not* a NanoClaw checkout\n\
-         the installer stops instead of writing into it — do not work around\n\
-         that, ask the operator which fork they mean.\n\
+         **Do not run it yourself. Give it to your operator.** It has to run in a\n\
+         terminal a person is sitting at: NanoClaw's setup asks two questions of\n\
+         its own, the Claude sign-in opens a browser, and the installer asks for a\n\
+         Telegram bot token — a credential you must never collect on somebody's\n\
+         behalf. Run without a terminal it stops and says so; it does not hang.\n\
+         \n\
+         Tell your operator what it will do and what it will ask:\n\
+         \n\
+         1. It finds their NanoClaw, or clones it at the tested ref into\n\
+            `~/nanoclaw` (`NANOCLAW_DIR` puts it elsewhere, or points at a fork\n\
+            they already have), and places the `mwe` agent template and the\n\
+            `add-mwe-memory` fork skill inside it, plus NanoClaw's `channels`\n\
+            and `providers` branches, which its channel adapters are copied out\n\
+            of. If that path exists and is *not* a NanoClaw checkout it stops\n\
+            instead of writing into it — do not work around that, ask which\n\
+            fork they mean.\n\
+         2. It asks them **two things only they know**: the bot token @BotFather\n\
+            gave them, and their own numeric Telegram id. Both can come from the\n\
+            environment instead (`MWE_TELEGRAM_BOT_TOKEN`,\n\
+            `MWE_TELEGRAM_OPERATOR_ID`) if they would rather not paste at a\n\
+            prompt.\n\
+         3. It runs NanoClaw's own setup, which installs Node, pnpm and Docker if\n\
+            they are missing and builds the sandbox image locally. NanoClaw asks\n\
+            **two questions no setting answers**: “How would you like to begin?”\n\
+            (take **Standard setup**, the default) and “How would you like to\n\
+            connect to Claude?” (take the subscription sign-in — it opens their\n\
+            browser and keeps the token in NanoClaw's own vault).\n\
+         4. It stamps the `mwe` agent, applies the memory skill, installs Telegram\n\
+            and wires their chat to the agent without the pairing code, restarts\n\
+            the service **and** the agent containers, and watches for their first\n\
+            message.\n\
          \n\
          There is **no PowerShell installer**: NanoClaw runs on Windows inside\n\
          WSL2, so on Windows the operator runs the same command in a WSL2 shell.\n\
          \n\
-         The installer needs only `git`; NanoClaw's own `nanoclaw.sh` installs\n\
-         Node, pnpm and Docker if they are missing. It places two directories —\n\
-         the `mwe` agent template in `templates/mwe/` and the `add-mwe-memory`\n\
-         fork skill in `.claude/skills/add-mwe-memory/` — fetches NanoClaw's\n\
-         `channels` and `providers` branches (its channel adapters are copied\n\
-         out of them, so a channel cannot be installed without them), names\n\
-         `mwe` as the template in the checkout's `.env`, and **does not touch\n\
-         the token**.\n\
+         ## The token, and the one thing that makes it automatic\n\
          \n\
-         Once the files are in place, **tell your operator** to do these five\n\
-         things. Do not attempt them silently, and do not handle the token\n\
-         yourself:\n\
+         The command above leaves the **consumer token** to the operator: when it\n\
+         finishes it tells them to issue a *standard* consumer token from the\n\
+         dashboard, set it as `MWE_TOKEN` in the fork's `.env`, and restart. Until\n\
+         they do, the assistant answers and remembers nothing.\n\
          \n\
-         1. Stamp the agent. On a fresh install, run `bash nanoclaw.sh` from the\n\
-            checkout and confirm the `mwe` template setup offers (the installer\n\
-            named it in `.env`); declining drops back to picking **Local\n\
-            templates**, then `mwe`, by hand. On an install that already has\n\
-            agents: `ncl groups create --template mwe --name mwe --new` —\n\
-            `--name` is theirs to choose and becomes the group folder. It is\n\
-            **not** what the assistant answers to: its name is a fact of\n\
-            this memory, and anybody it serves can tell it in chat.\n\
-         2. Apply the skill: `/add-mwe-memory` from Claude Code. Without Claude\n\
-            Code, the same steps are ordinary shell commands in\n\
-            `.claude/skills/add-mwe-memory/SKILL.md`. It asks three questions —\n\
-            the endpoint, their chat id, their mwe user id — then copies the\n\
-            modules in, splices the reach-ins into NanoClaw's own files, writes\n\
-            `mwe.json`, builds and tests, and restarts both the service **and**\n\
-            the agent containers. Do not skip the second restart: a container\n\
-            that keeps running answers with the code as it was before the\n\
-            skill, with nothing in any log to say so.\n\
-         3. Issue a **standard** consumer token from the mwe-mcp dashboard and\n\
-            set it as `MWE_TOKEN` in the checkout's `.env`, then tick every\n\
-            person the consumer will speak for — plus `guest` — in its\n\
-            delegations. Without the `guest` delegation an unrecognised sender\n\
-            is refused rather than answered anonymously.\n\
-         4. Fill in `senderMap` in `mwe.json`, one line per person\n\
-            (`<channel>:<platform id>` → their mwe user id), and restart\n\
-            NanoClaw. Anyone not listed speaks as a guest; there is no fallback\n\
-            to the owner.\n\
-         5. Connect a channel (`/manage-channels`, or `ncl wirings create`) and\n\
-            talk to the assistant.\n\
+         An admin signed in to the dashboard can skip that: **Bridges → NanoClaw**\n\
+         has a button that mints the same command with a one-time *install claim*\n\
+         in it, and the installer trades the claim for a token by itself. Tell them\n\
+         that page exists; **do not attempt the token yourself**, and do not ask\n\
+         them to paste one to you.\n\
+         \n\
+         Either way they will want the delegations: every person the assistant\n\
+         speaks for, plus `guest`. Without the `guest` delegation an unrecognised\n\
+         sender is refused rather than answered anonymously. A claimed install\n\
+         starts with everyone enrolled plus `guest` ticked, which is a starting\n\
+         point to narrow, not a decision.\n\
+         \n\
+         ## Afterwards\n\
+         \n\
+         Re-running the whole command is how an install is updated — every step\n\
+         checks what is already there. `MWE_FILES_ONLY=1` places the two\n\
+         directories and stops, which is the path for a fork the operator sets up\n\
+         themselves; the manual steps are then in\n\
+         `.claude/skills/add-mwe-memory/SKILL.md`.\n\
+         \n\
+         Who the assistant speaks *as* is `senderMap` in the fork's `mwe.json`:\n\
+         one line per person, `<channel>:<platform id>` to their mwe user id. The\n\
+         installer puts the operator in there. Anyone not listed speaks as a\n\
+         guest; there is no fallback to the owner.\n\
          \n\
          The `mwe` template is what switches NanoClaw's built-in memory off for\n\
          a group: a group carrying that plugin creates no `memory/` tree, injects\n\
@@ -1209,10 +1427,42 @@ fn text_response(body: String, content_type: &'static str) -> Response {
     resp
 }
 
-async fn install_sh(Path(consumer): Path<String>) -> Response {
-    render_install_sh(&consumer).map_or_else(
+/// `?claim=<code>` on the nanoclaw installer. Absent everywhere else,
+/// and the only query parameter this surface reads.
+#[derive(Debug, Deserialize)]
+struct InstallQuery {
+    #[serde(default)]
+    claim: Option<String>,
+}
+
+async fn install_sh(
+    Path(consumer): Path<String>,
+    Host(host): Host,
+    Query(q): Query<InstallQuery>,
+) -> Response {
+    let claim = q.claim.as_deref().map(str::trim).filter(|c| !c.is_empty());
+    if claim.is_some_and(|c| !claim_is_wellformed(c)) {
+        // `curl -f` never pipes a 4xx body into a shell, so refusing here
+        // is the end of it — and refusing beats quoting something that is
+        // not a claim into a script somebody runs.
+        return (
+            StatusCode::BAD_REQUEST,
+            "that is not a claim this server minted\n",
+        )
+            .into_response();
+    }
+    render_install_sh(&consumer, &origin_from_host(&host), claim).map_or_else(
         || StatusCode::NOT_FOUND.into_response(),
-        |body| text_response(body, "text/plain; charset=utf-8"),
+        |body| {
+            let mut resp = text_response(body, "text/plain; charset=utf-8");
+            if claim.is_some() {
+                // A claim-bearing installer is a one-time credential in a
+                // URL: it must not sit in a proxy or a browser cache.
+                resp.headers_mut()
+                    .insert(header::CACHE_CONTROL, HeaderValue::from_static("no-store"));
+            }
+            resp
+        },
     )
 }
 
@@ -1258,6 +1508,7 @@ async fn public_bridge_page(Path(consumer): Path<String>, Host(host): Host) -> R
                     &consumer,
                     &origin_from_host(&host),
                     /* may_mint */ false,
+                    /* minted */ None,
                 ),
             ))
             .into_response()
@@ -1287,19 +1538,263 @@ async fn tab_bridge_page(
     Host(host): Host,
     user: SessionUser,
 ) -> Response {
-    let chrome = layout::Chrome::of(&state);
-    bridge_label(&consumer).map_or_else(
+    render_tab_bridge_page(&state, &consumer, &host, &user, None)
+}
+
+/// The Bridges tab's per-consumer page. Shared by the GET that opens it
+/// and the POST that mints an install command, so the page an admin lands
+/// on after minting is the same page, with the command on it.
+fn render_tab_bridge_page(
+    state: &DashboardState,
+    consumer: &str,
+    host: &str,
+    user: &SessionUser,
+    minted: Option<&InstallCommand>,
+) -> Response {
+    let chrome = layout::Chrome::of(state);
+    bridge_label(consumer).map_or_else(
         || StatusCode::NOT_FOUND.into_response(),
         |label| {
             Html(layout::authenticated_page(
                 chrome,
                 &format!("{label} bridge"),
-                &user,
-                &guide_body(&consumer, &origin_from_host(&host), user.is_admin),
+                user,
+                &guide_body(consumer, &origin_from_host(host), user.is_admin, minted),
             ))
             .into_response()
         },
     )
+}
+
+/// `POST /dashboard/bridges/nanoclaw/command` — mint an install claim and
+/// show the command that carries it.
+///
+/// The claim is a short-lived, single-use JWT with its own
+/// [`CLAIM_DEVICE_LABEL`], bound to the admin who pressed the button: it
+/// is what tells [`redeem_install_claim`] whose memory user id to hand
+/// back, and it is what a replay is refused against. Nothing is created
+/// here — the consumer, its delegations and its token all come into being
+/// when the claim is redeemed, so a command nobody runs leaves no trace.
+async fn tab_mint_install_command(
+    State(state): State<DashboardState>,
+    admin: AdminUser,
+    Host(host): Host,
+) -> Result<Response> {
+    let claims = TokenClaims::new(
+        admin.sender_id(),
+        CLAIM_DEVICE_LABEL,
+        CLAIM_RATE_LIMIT_ID,
+        CLAIM_TTL,
+    );
+    let claim = jwt::issue(&state.secret, &claims).map_err(DashboardError::Token)?;
+    let origin = origin_from_host(&host);
+    tracing::info!(
+        actor = admin.sender_id(),
+        jti = %claims.jti,
+        "dashboard minted a nanoclaw install claim"
+    );
+    let minted = InstallCommand {
+        command: format!("curl -fsSL \"{origin}/bridges/nanoclaw/install.sh?claim={claim}\" | sh"),
+        expires_utc: chrono::DateTime::from_timestamp(claims.exp, 0)
+            .unwrap_or_else(chrono::Utc::now)
+            .format("%Y-%m-%d %H:%M")
+            .to_string(),
+    };
+    Ok(render_tab_bridge_page(
+        &state,
+        "nanoclaw",
+        &host,
+        admin.session(),
+        Some(&minted),
+    ))
+}
+
+/// What the installer posts to redeem a claim.
+#[derive(Debug, Deserialize)]
+struct ClaimSubmission {
+    claim: String,
+}
+
+/// `POST /bridges/nanoclaw/claim` — trade an install claim for a standard
+/// consumer token.
+///
+/// Anonymous, because the box running the installer has no session: the
+/// claim is the whole credential, which is why it is short-lived, burned
+/// on first use, and checked for its own `device_label` before anything
+/// else happens. The order matters — burn first, mint second — so two
+/// installers racing on one command produce one token, not two.
+///
+/// The answer is `key=value` lines rather than JSON: its only reader is a
+/// POSIX shell with no `jq`.
+async fn redeem_install_claim(
+    State(state): State<DashboardState>,
+    HtmlForm(sub): HtmlForm<ClaimSubmission>,
+) -> Response {
+    // One refusal, because from the installer's side the reasons are one
+    // event: this claim will not work, and the fix is a fresh command. The
+    // blacklist is refreshed at redemption, so a replay usually fails at
+    // `verify` rather than at the burn — telling those two apart would be
+    // telling the caller which internal step noticed, not what to do.
+    let refused = || {
+        (
+            StatusCode::FORBIDDEN,
+            "this claim will not work: it is expired, already used, or not one this server \
+             minted. Mint a fresh install command on the dashboard's Bridges page.\n",
+        )
+            .into_response()
+    };
+
+    let claim = sub.claim.trim();
+    if !claim_is_wellformed(claim) {
+        return refused();
+    }
+    let Ok(claims) = jwt::verify(&state.secret, claim, &state.pool, &state.blacklist).await else {
+        return refused();
+    };
+    if claims.device_label != CLAIM_DEVICE_LABEL {
+        return refused();
+    }
+    match jwt::revoke_once(
+        &state.pool,
+        &claims.jti,
+        "nanoclaw_install_claim_redeemed",
+        &claims.sender_id,
+        claims.exp,
+    )
+    .await
+    {
+        Ok(true) => {},
+        Ok(false) => return refused(),
+        Err(e) => {
+            tracing::error!(error = %e, "burning a nanoclaw install claim");
+            return (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                "could not redeem the claim\n",
+            )
+                .into_response();
+        },
+    }
+    // Close the blacklist cache's window immediately, the way a
+    // single-use dashboard link does, so a fast replay loses too.
+    if let Err(e) = state.blacklist.refresh(&state.pool).await {
+        tracing::error!(error = %e, "refreshing the blacklist after a claim redemption");
+    }
+
+    match mint_claimed_consumer_token(&state, &claims.sender_id).await {
+        Ok(Ok(token)) => {
+            let body = format!(
+                "token={token}\nconsumer_id={NANOCLAW_CONSUMER_ID}\noperator_user_id={}\n",
+                claims.sender_id
+            );
+            let mut resp = body.into_response();
+            resp.headers_mut().insert(
+                header::CONTENT_TYPE,
+                HeaderValue::from_static("text/plain; charset=utf-8"),
+            );
+            resp.headers_mut()
+                .insert(header::CACHE_CONTROL, HeaderValue::from_static("no-store"));
+            resp
+        },
+        Ok(Err(msg)) => (StatusCode::CONFLICT, format!("{msg}\n")).into_response(),
+        Err(e) => {
+            tracing::error!(error = %e, "minting the nanoclaw consumer token");
+            (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                "could not mint the consumer token\n",
+            )
+                .into_response()
+        },
+    }
+}
+
+/// Mint the standard consumer token a redeemed claim buys, through the
+/// same path the Tokens page uses — [`super::tokens::resolve_standard_sender`]
+/// creates the system user and records the delegation,
+/// [`super::tokens::build_claims`] shapes the token — so a consumer born
+/// here is indistinguishable from one an admin issued by hand.
+///
+/// The delegation it starts with is **everyone enrolled, plus `guest`**.
+/// That is the widest useful default and it is deliberate: an assistant
+/// that cannot speak for a household member answers them as a stranger,
+/// and narrowing a roster on the Tokens page is a tick, while widening one
+/// after a confusing first conversation is a support question. The
+/// installer says so when it finishes, and the guide says so before it
+/// starts.
+///
+/// `Ok(Err(msg))` is a reason the operator can act on — the id is taken by
+/// a person, say. The outer `Result` is a database failure.
+async fn mint_claimed_consumer_token(
+    state: &DashboardState,
+    actor: &str,
+) -> Result<std::result::Result<String, String>> {
+    let users = super::tokens::fetch_user_ids(state).await?;
+
+    // The claim was minted for an admin, but that was minutes ago and a
+    // token lives a year. Two things go wrong if this is not re-read: an
+    // admin who was demoted in between still buys a consumer delegated to
+    // everybody, and a subject who was removed becomes the `senderMap`
+    // entry the installer writes — a user id nobody has, so every turn
+    // that person sends comes back `403 act_as_not_delegated`.
+    let still_admin: Option<i64> =
+        sqlx::query_scalar("SELECT is_admin FROM enrollment_users WHERE user_id = ?")
+            .bind(actor)
+            .fetch_optional(&state.pool)
+            .await?;
+    if still_admin != Some(1) {
+        return Ok(Err(format!(
+            "{actor:?} is no longer an admin of this memory, so this claim buys nothing. \
+             Sign in as the admin and mint a fresh install command."
+        )));
+    }
+
+    let mut allowed = users.clone();
+    allowed.push(enrollment::GUEST_USER_ID.to_owned());
+
+    let resolved = super::tokens::resolve_standard_sender(
+        state,
+        NANOCLAW_CONSUMER_ID,
+        &allowed,
+        &users,
+        actor,
+    )
+    .await?;
+    let (sender_id, is_admin) = match resolved {
+        Ok(pair) => pair,
+        Err(msg) => return Ok(Err(msg)),
+    };
+
+    // A nanoclaw sits on the operator's own machine or their LAN, which is
+    // the case the Tokens page's default TTL profile is for, and it holds
+    // no rate-limit profile of its own.
+    let mut claims = super::tokens::build_claims(
+        &sender_id,
+        /* device_label */ NANOCLAW_CONSUMER_ID,
+        /* rate_limit_id */ "default",
+        /* ttl_profile */ "internal",
+        is_admin,
+        /* smart */ false,
+    );
+    claims.consumer_id = Some(NANOCLAW_CONSUMER_ID.to_owned());
+    if let Err(msg) = enrollment::validate_token_identity(
+        &state.pool,
+        &claims.sender_id,
+        claims.consumer_class,
+        claims.consumer_id.is_some(),
+    )
+    .await
+    {
+        return Ok(Err(msg));
+    }
+
+    let token = jwt::issue(&state.secret, &claims).map_err(DashboardError::Token)?;
+    tracing::info!(
+        actor,
+        consumer = NANOCLAW_CONSUMER_ID,
+        jti = %claims.jti,
+        delegated = allowed.len(),
+        "install claim redeemed for a standard consumer token"
+    );
+    Ok(Ok(token))
 }
 
 #[cfg(test)]
@@ -1308,6 +1803,10 @@ mod tests {
     use axum::body::Body;
     use axum::http::Request;
     use tower::ServiceExt;
+
+    /// The origin every rendered-script test reads back, so a URL in an
+    /// assertion is obviously the one this input produced.
+    const ORIGIN: &str = "https://memory.anna.dev";
 
     async fn body_string(resp: Response) -> String {
         let bytes = axum::body::to_bytes(resp.into_body(), 1 << 20)
@@ -1427,6 +1926,9 @@ mod tests {
         }
         assert!(route_embedded_path("nanoclaw", "README.md").is_none());
         assert!(route_embedded_path("nanoclaw", "bridge.toml").is_none());
+        // The installer's own second half is served, never copied: it
+        // drives a fork from outside it.
+        assert!(route_embedded_path("nanoclaw", "install-assistant.sh").is_none());
         assert!(route_embedded_path("nanoclaw", "smoke.sh").is_none());
         assert!(route_embedded_path("nanoclaw", "smoke_test.ts").is_none());
         assert!(route_embedded_path("nanoclaw", "stub_runner.py").is_none());
@@ -1434,7 +1936,7 @@ mod tests {
 
     #[test]
     fn nanoclaw_install_sh_writes_two_trees_and_leaves_the_token_alone() {
-        let sh = render_install_sh("nanoclaw").expect("nanoclaw sh");
+        let sh = render_install_sh("nanoclaw", ORIGIN, None).expect("nanoclaw sh");
         assert!(sh.starts_with("#!/bin/sh"));
         assert!(sh.contains("cat > \"$NANOCLAW_DIR/templates/mwe/plugin.json\""));
         assert!(sh.contains(
@@ -1459,14 +1961,89 @@ mod tests {
         assert!(sh.contains("NANOCLAW_DIR=\"$HOME/nanoclaw\""));
         assert!(sh.contains("is not a nanoclaw checkout"));
         assert!(sh.contains("git clone --branch \"$NANOCLAW_REF\" --depth 1"));
-        // The residual steps, and no token anywhere near them.
-        assert!(sh.contains("Five steps remain — they are yours"));
-        assert!(sh.contains("ncl groups create --template mwe --name mwe --new"));
-        assert!(sh.contains("confirm the mwe template it offers"));
-        assert!(sh.contains("/add-mwe-memory"));
-        assert!(sh.contains("STANDARD consumer token"));
-        assert!(sh.contains("senderMap"));
-        assert!(sh.contains("Connect a channel"));
+        assert!(sh.contains("$NANOCLAW_DIR/.claude/skills/add-mwe-memory/apply-headless.ts"));
+    }
+
+    /// The whole install is one script: the half rendered here places the
+    /// files, and everything that turns them into a working assistant is
+    /// the bridge's own `install-assistant.sh` appended to it. A served
+    /// script without that half would place two directories and stop,
+    /// which is exactly what this change is here to end.
+    #[test]
+    fn nanoclaw_install_sh_carries_the_driver_that_finishes_the_install() {
+        let sh = render_install_sh("nanoclaw", ORIGIN, None).expect("nanoclaw sh");
+        let driver = nanoclaw_install_driver().expect("the driver is embedded");
+        assert!(
+            sh.ends_with(&driver),
+            "the driver must be the tail of the script"
+        );
+        // One shebang, at the top, where a shell looks for it.
+        assert_eq!(sh.matches("#!/bin/sh").count(), 1);
+        // The pieces the driver exists for, in the order it runs them.
+        for needle in [
+            "/bridges/nanoclaw/claim",
+            "bash nanoclaw.sh </dev/tty",
+            "$MWE_SKILL_DIR/apply-headless.ts",
+            ".claude/skills/add-telegram",
+            "messaging-groups create",
+            "wirings create",
+            "bash setup/lib/restart.sh",
+            "restart-mwe-groups.ts",
+            "[mwe] memory is on",
+        ] {
+            assert!(sh.contains(needle), "the installer never reaches: {needle}");
+        }
+        // The two questions nanoclaw asks that no setting answers are named
+        // before they arrive, and the settings that answer every other one
+        // are passed.
+        assert!(sh.contains("How would you like to begin?"));
+        assert!(sh.contains("How would you like to connect to Claude?"));
+        for setting in [
+            "NANOCLAW_HARDENED_IMAGE=false",
+            "NANOCLAW_AGENT_PROVIDER=claude",
+            "NANOCLAW_SKIP_CLAUDE_ASSIST=1",
+        ] {
+            assert!(sh.contains(setting), "missing {setting}");
+        }
+    }
+
+    /// A claim rides the script as a shell assignment and nothing else,
+    /// and the script without one still runs — it just ends by naming the
+    /// token as the operator's step.
+    #[test]
+    fn nanoclaw_install_sh_carries_a_claim_and_works_without_one() {
+        let claimed = render_install_sh("nanoclaw", ORIGIN, Some("aaa.bbb.ccc")).expect("claimed");
+        assert!(claimed.contains("MWE_CLAIM=\"aaa.bbb.ccc\""));
+        assert!(claimed.contains(&format!("MWE_ORIGIN=\"{ORIGIN}\"")));
+
+        let bare = render_install_sh("nanoclaw", ORIGIN, None).expect("bare");
+        assert!(bare.contains("MWE_CLAIM=\"\""));
+        // Same script either way: the claim is data, not a second flow.
+        assert_eq!(
+            claimed.replace("aaa.bbb.ccc", ""),
+            bare,
+            "a claim must change one assignment and nothing else"
+        );
+        // Without a claim the installer says the token is still the
+        // operator's, and it never invents one.
+        assert!(bare.contains("the token stays yours to mint"));
+        assert!(!bare.contains("MWE_TOKEN=$"));
+    }
+
+    /// The claim is interpolated into a script somebody pipes into `sh`,
+    /// so what may be in one is the whole of its safety.
+    #[test]
+    fn only_a_jwt_shaped_claim_is_wellformed() {
+        assert!(claim_is_wellformed(
+            "eyJhbGciOiJIUzI1NiJ9.eyJhIjoxfQ.sig-_x"
+        ));
+        assert!(!claim_is_wellformed(""));
+        assert!(!claim_is_wellformed("a\"; rm -rf ~ ; echo \""));
+        assert!(!claim_is_wellformed("$(id)"));
+        assert!(!claim_is_wellformed("`id`"));
+        assert!(!claim_is_wellformed("aaa bbb"));
+        assert!(!claim_is_wellformed("aaa\nbbb"));
+        assert!(!claim_is_wellformed(&"a".repeat(4097)));
     }
 
     /// The installer clones the ref the bridge is tested against. The
@@ -1490,7 +2067,7 @@ mod tests {
         let pin = value_of("pin");
         let repo = value_of("repo");
         assert_eq!(nanoclaw_upstream("pin").as_deref(), Some(pin.as_str()));
-        let sh = render_install_sh("nanoclaw").expect("nanoclaw sh");
+        let sh = render_install_sh("nanoclaw", ORIGIN, None).expect("nanoclaw sh");
         assert!(
             sh.contains(&format!("NANOCLAW_REF=\"{pin}\"")),
             "the installer does not carry the manifest pin {pin}"
@@ -1506,7 +2083,7 @@ mod tests {
     /// for a fork it just cloned and for one it was pointed at.
     #[test]
     fn nanoclaw_install_sh_brings_the_branches_the_channel_skills_read() {
-        let sh = render_install_sh("nanoclaw").expect("nanoclaw sh");
+        let sh = render_install_sh("nanoclaw", ORIGIN, None).expect("nanoclaw sh");
         assert_eq!(
             NANOCLAW_REGISTRY_BRANCHES,
             ["channels", "providers"],
@@ -1523,8 +2100,8 @@ mod tests {
             "git -C \"$NANOCLAW_DIR\" fetch --depth 1 --quiet origin \"$branch:refs/remotes/origin/$branch\""
         ));
         // Already there → left alone; unreachable → a warning, never a
-        // dead install: the two directories are the job, the branches are
-        // the wizard's.
+        // dead install: the branches are what a channel is copied out of,
+        // and everything before the channel still works without them.
         assert!(sh.contains("rev-parse --verify --quiet \"refs/remotes/origin/$branch\""));
         assert!(sh.contains("warning: could not fetch origin/$branch"));
         // It runs after the fork is resolved, so a reused checkout gets
@@ -1545,7 +2122,7 @@ mod tests {
     /// only when absent, on its own line, and never near the token.
     #[test]
     fn nanoclaw_install_sh_names_the_template_and_touches_nothing_else_in_env() {
-        let sh = render_install_sh("nanoclaw").expect("nanoclaw sh");
+        let sh = render_install_sh("nanoclaw", ORIGIN, None).expect("nanoclaw sh");
         assert_eq!(NANOCLAW_TEMPLATE_ENV_LINE, "NANOCLAW_TEMPLATE_PATH=mwe");
         assert!(sh.contains("NANOCLAW_ENV=\"$NANOCLAW_DIR/.env\""));
         assert!(
@@ -1557,22 +2134,23 @@ mod tests {
         assert!(
             sh.contains("printf '\\n%s\\n' \"NANOCLAW_TEMPLATE_PATH=mwe\" >> \"$NANOCLAW_ENV\"")
         );
-        // Only that key. The other setup env vars are read from the
-        // process environment, never from `.env`, so writing them here
-        // would be a line that looks like configuration and does nothing.
-        assert!(!sh.contains("NANOCLAW_AGENT_NAME"));
-        assert!(!sh.contains("NANOCLAW_AGENT_PROVIDER"));
-        assert!(!sh.contains("NANOCLAW_DISPLAY_NAME"));
-        // Exactly one line of the script writes to that file, and it is
-        // the template pick. The token appears in the installer only
-        // inside the skill's own operator instructions, never as
-        // something this script writes.
+        // Exactly one line of the placement half writes to that file, and
+        // it is the template pick. Everything the driver writes later —
+        // the bot token, the timezone, the consumer token — goes through
+        // its own `env_set`, which reads and rewrites the file rather than
+        // appending blind, and never puts a value on a command line.
         assert_eq!(
             sh.matches(">> \"$NANOCLAW_ENV\"").count(),
             1,
-            "the installer must append exactly one line to the fork's .env"
+            "the placement half must append exactly one line to the fork's .env"
         );
+        assert!(sh.contains("env_set TELEGRAM_BOT_TOKEN"));
+        assert!(sh.contains("env_set MWE_TOKEN"));
         assert!(!sh.contains("MWE_TOKEN=$"));
+        // The other setup keys reach nanoclaw through the environment of
+        // the one command that runs it, never through `.env`, where
+        // nothing would read them.
+        assert!(!sh.contains("NANOCLAW_AGENT_PROVIDER=claude\" >>"));
     }
 
     /// nanoclaw runs on Windows only inside WSL2, so the honest Windows
@@ -1585,6 +2163,7 @@ mod tests {
             "nanoclaw",
             "https://memory.anna.dev",
             /* may_mint */ true,
+            /* minted */ None,
         )
         .into_string();
         assert!(html.contains("WSL2"));
@@ -1594,22 +2173,29 @@ mod tests {
         assert!(!md.contains("install.ps1"));
     }
 
+    /// The instructions a consumer is pointed at. The install needs a
+    /// person at a terminal and asks for a bot token, so the one thing
+    /// this document must never do is read like something the consumer
+    /// can run on its own.
     #[test]
-    fn nanoclaw_install_md_carries_origin_and_residual_steps() {
-        let md = render_install_md("nanoclaw", "https://memory.anna.dev").expect("nanoclaw md");
-        assert!(md.contains("curl -fsSL https://memory.anna.dev/bridges/nanoclaw/install.sh | sh"));
-        assert!(md.contains("tell your operator"));
+    fn nanoclaw_install_md_hands_the_command_to_a_person() {
+        let md = render_install_md("nanoclaw", ORIGIN).expect("nanoclaw md");
+        assert!(md.contains(&format!(
+            "curl -fsSL {ORIGIN}/bridges/nanoclaw/install.sh | sh"
+        )));
+        assert!(md.contains("**Do not run it yourself. Give it to your operator.**"));
+        assert!(md.contains("terminal"));
+        assert!(md.contains("do not attempt the token yourself"));
         assert!(md.contains("MWE_TOKEN"));
-        assert!(md.contains("do not handle the token"));
-        assert!(md.contains("ncl groups create --template mwe --name mwe --new"));
-        assert!(md.contains("/add-mwe-memory"));
+        assert!(md.contains("install claim"));
         assert!(md.contains("senderMap"));
         assert!(md.contains("guest"));
         assert!(md.contains("NANOCLAW_DIR"));
+        assert!(md.contains("MWE_FILES_ONLY=1"));
     }
 
     #[test]
-    fn nanoclaw_guide_leads_the_catalog_and_mints_no_token() {
+    fn nanoclaw_guide_leads_the_catalog_and_offers_the_claim() {
         // nanoclaw is the first entry: the ready-made assistant is what
         // an operator with no agent of their own should reach for.
         assert_eq!(BRIDGES[0].0, "nanoclaw");
@@ -1634,25 +2220,57 @@ mod tests {
         assert!(tab_html.contains("/bridges/nanoclaw/install.md"));
 
         let guide = guide_body(
-            "nanoclaw",
-            "https://memory.anna.dev",
-            /* may_mint */ true,
+            "nanoclaw", ORIGIN, /* may_mint */ true, /* minted */ None,
         )
         .into_string();
         assert!(
-            guide.contains("https://memory.anna.dev/bridges/nanoclaw/install.sh | sh"),
+            guide.contains(&format!("{ORIGIN}/bridges/nanoclaw/install.sh | sh")),
             "the guide must show the served install command"
         );
-        assert!(guide.contains("confirm the "));
-        assert!(guide.contains("channels"));
-        assert!(guide.contains("MWE_TOKEN"));
-        // The token is issued from the Tokens page, never minted here.
+        // An admin who has not minted yet is offered the button, and no
+        // claim exists until they press it.
+        assert!(guide.contains("action=\"/dashboard/bridges/nanoclaw/command\""));
+        assert!(!guide.contains("?claim="));
         assert!(guide.contains("href=\"/dashboard/tokens\""));
+    }
+
+    /// The minted command is the whole point of the button: it carries the
+    /// claim, it says when the claim dies, and the token it will buy is
+    /// named as something the installer writes rather than something the
+    /// reader copies.
+    #[test]
+    fn a_minted_command_is_shown_once_with_its_expiry() {
+        let minted = InstallCommand {
+            command: format!(
+                "curl -fsSL \"{ORIGIN}/bridges/nanoclaw/install.sh?claim=a.b.c\" | sh"
+            ),
+            expires_utc: "2026-09-07 12:34".to_owned(),
+        };
+        let guide = guide_body("nanoclaw", ORIGIN, true, Some(&minted)).into_string();
+        assert!(guide.contains("install.sh?claim=a.b.c"));
+        assert!(guide.contains("2026-09-07 12:34"));
+        assert!(guide.contains("works once"));
+        assert!(guide.contains("never shown on this page"));
+        // The button is gone: the command on screen is the answer to it.
+        assert!(!guide.contains("action=\"/dashboard/bridges/nanoclaw/command\""));
+    }
+
+    /// A reader who cannot open the Tokens page cannot mint a claim
+    /// either — the button posts to an admin-only route, and offering it
+    /// would be a 403 with extra steps.
+    #[test]
+    fn only_an_admin_is_offered_the_install_command_button() {
+        let reader = guide_body("nanoclaw", ORIGIN, /* may_mint */ false, None).into_string();
+        assert!(!reader.contains("action=\"/dashboard/bridges/nanoclaw/command\""));
+        assert!(
+            reader.contains("An admin signed in"),
+            "a reader must still learn the claim exists: {reader}"
+        );
     }
 
     #[test]
     fn install_sh_is_self_contained_and_routes_destinations() {
-        let sh = render_install_sh("hermes").expect("hermes sh");
+        let sh = render_install_sh("hermes", ORIGIN, None).expect("hermes sh");
         assert!(sh.contains("cat > \"$HERMES_HOME/plugins/mwe/"));
         assert!(sh.contains("cat > \"$HERMES_HOME/plugins/mwe-media/"));
         assert!(sh.contains("cat > \"$HERMES_HOME/plugins/mwe-watchdog/"));
@@ -1702,7 +2320,7 @@ mod tests {
 
     #[test]
     fn unknown_consumer_has_no_installer() {
-        assert!(render_install_sh("nope").is_none());
+        assert!(render_install_sh("nope", ORIGIN, None).is_none());
         assert!(render_install_ps1("nope").is_none());
         assert!(render_install_md("nope", "https://x").is_none());
     }
@@ -1745,6 +2363,7 @@ mod tests {
             "hermes",
             "https://memory.anna.dev",
             /* may_mint */ true,
+            /* minted */ None,
         )
         .into_string();
         assert!(html.contains("https://memory.anna.dev/bridges/hermes/install.sh"));
@@ -1770,6 +2389,7 @@ mod tests {
             "claude-code",
             "https://memory.anna.dev",
             /* may_mint */ true,
+            /* minted */ None,
         )
         .into_string();
         assert!(html.contains("smart consumer"));
@@ -1781,7 +2401,7 @@ mod tests {
         // HTML-escapes the quotes, so match the distinctive token).
         assert!(html.contains("mcpServers"));
         // install.md only — claude-code ships no shell installers.
-        assert!(render_install_sh("claude-code").is_none());
+        assert!(render_install_sh("claude-code", ORIGIN, None).is_none());
         assert!(render_install_ps1("claude-code").is_none());
     }
 
@@ -1836,6 +2456,7 @@ mod tests {
             .oneshot(
                 Request::builder()
                     .uri("/bridges/hermes/install.sh")
+                    .header("host", "memory.anna.dev")
                     .body(Body::empty())
                     .unwrap(),
             )
@@ -1916,18 +2537,269 @@ mod tests {
         assert!(bridge_label("nanoclaw").is_some(), "the tab needs a label");
     }
 
+    // ----------------------------------------------------------------
+    // The install claim
+    // ----------------------------------------------------------------
+
+    /// A state with a real database, an enrolled admin and one other
+    /// person — enough for the delegation the claim writes to have
+    /// somebody in it besides the admin.
+    ///
+    /// The temp dir goes back to the caller: a leaked one is never
+    /// removed by anything.
+    async fn claim_state() -> (DashboardState, tempfile::TempDir) {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let pool = mwe_core::db::open_or_init(dir.path()).await.expect("db");
+        for (user, admin) in [("alice", 1), ("bob", 0)] {
+            sqlx::query(
+                "INSERT INTO enrollment_users (user_id, aliases, is_admin) VALUES (?, '[]', ?)",
+            )
+            .bind(user)
+            .bind(admin)
+            .execute(&pool)
+            .await
+            .expect("enrol");
+        }
+        let secret = mwe_core::jwt::TokenSecret::new(vec![0x5Au8; 32]).expect("secret");
+        let blacklist = std::sync::Arc::new(mwe_core::jwt::BlacklistCache::new());
+        let delegations = std::sync::Arc::new(mwe_core::delegations::DelegationCache::new());
+        (
+            DashboardState::new(pool, secret, blacklist, delegations),
+            dir,
+        )
+    }
+
+    fn mint_claim(state: &DashboardState, subject: &str) -> String {
+        let claims = TokenClaims::new(subject, CLAIM_DEVICE_LABEL, CLAIM_RATE_LIMIT_ID, CLAIM_TTL);
+        jwt::issue(&state.secret, &claims).expect("issue")
+    }
+
+    async fn post_claim(state: &DashboardState, claim: &str) -> Response {
+        claim_router(state.clone())
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/bridges/nanoclaw/claim")
+                    .header("content-type", "application/x-www-form-urlencoded")
+                    .body(Body::from(format!("claim={claim}")))
+                    .unwrap(),
+            )
+            .await
+            .unwrap()
+    }
+
+    /// The whole point of a claim: the installer hands one over and gets
+    /// back a standard consumer token, its own memory user id, and a
+    /// delegation roster it did not have to fill in.
+    #[tokio::test]
+    async fn a_claim_buys_a_standard_consumer_token_delegated_to_everybody() {
+        let (state, _workdir) = claim_state().await;
+        let claim = mint_claim(&state, "alice");
+
+        let resp = post_claim(&state, &claim).await;
+        assert_eq!(resp.status(), StatusCode::OK);
+        assert_eq!(
+            resp.headers().get(header::CACHE_CONTROL).unwrap(),
+            "no-store",
+            "a response carrying a credential must not be cached"
+        );
+        let body = body_string(resp).await;
+        assert!(body.contains(&format!("consumer_id={NANOCLAW_CONSUMER_ID}\n")));
+        assert!(
+            body.contains("operator_user_id=alice\n"),
+            "the installer needs the admin's memory user id for senderMap: {body}"
+        );
+        let token = body
+            .lines()
+            .find_map(|l| l.strip_prefix("token="))
+            .expect("a token line");
+
+        // It is a real consumer token, standard, and it names the consumer
+        // whose delegations were just written.
+        let claims = jwt::verify(&state.secret, token, &state.pool, &state.blacklist)
+            .await
+            .expect("the minted token verifies");
+        assert_eq!(claims.sender_id, NANOCLAW_CONSUMER_ID);
+        assert!(!claims.consumer_class.is_smart());
+        assert_eq!(claims.consumer_id.as_deref(), Some(NANOCLAW_CONSUMER_ID));
+        assert!(!claims.is_admin, "a consumer identity is never an admin");
+
+        // Everybody enrolled, plus guest — the roster the guide and the
+        // installer both say to narrow afterwards.
+        let allowed: String = sqlx::query_scalar(
+            "SELECT allowed_sender_ids FROM consumer_delegations WHERE consumer_id = ?",
+        )
+        .bind(NANOCLAW_CONSUMER_ID)
+        .fetch_one(&state.pool)
+        .await
+        .expect("a delegation row");
+        let allowed: Vec<String> = serde_json::from_str(&allowed).expect("json");
+        assert!(allowed.contains(&"alice".to_owned()));
+        assert!(allowed.contains(&"bob".to_owned()));
+        assert!(
+            allowed.contains(&"guest".to_owned()),
+            "without guest an unrecognised sender is refused, not answered anonymously"
+        );
+
+        // And the consumer exists as a credential-less system user.
+        let is_system = mwe_core::enrollment::is_system_user(&state.pool, NANOCLAW_CONSUMER_ID)
+            .await
+            .expect("system user");
+        assert!(is_system);
+    }
+
+    /// A claim outlives the click that made it, and a token outlives the
+    /// claim by a year. If the person it was minted for is no longer an
+    /// admin, it buys nothing — and it certainly does not name them in a
+    /// `senderMap` that would then refuse their every turn.
+    #[tokio::test]
+    async fn a_claim_from_somebody_who_is_no_longer_an_admin_buys_nothing() {
+        let (state, _workdir) = claim_state().await;
+        let claim = mint_claim(&state, "alice");
+        sqlx::query("UPDATE enrollment_users SET is_admin = 0 WHERE user_id = 'alice'")
+            .execute(&state.pool)
+            .await
+            .expect("demote");
+
+        let resp = post_claim(&state, &claim).await;
+        assert_eq!(resp.status(), StatusCode::CONFLICT);
+        assert!(body_string(resp).await.contains("no longer an admin"));
+        let rows: i64 = sqlx::query_scalar("SELECT count(*) FROM consumer_delegations")
+            .fetch_one(&state.pool)
+            .await
+            .expect("count");
+        assert_eq!(
+            rows, 0,
+            "no consumer is created for a claim that buys nothing"
+        );
+    }
+
+    /// A claim is a credential in a URL: it travels through a shell
+    /// history and a server log, so it survives exactly one redemption.
+    #[tokio::test]
+    async fn a_claim_works_once_and_the_replay_is_refused() {
+        let (state, _workdir) = claim_state().await;
+        let claim = mint_claim(&state, "alice");
+
+        assert_eq!(post_claim(&state, &claim).await.status(), StatusCode::OK);
+
+        let replay = post_claim(&state, &claim).await;
+        assert_eq!(replay.status(), StatusCode::FORBIDDEN);
+        let msg = body_string(replay).await;
+        assert!(
+            msg.contains("already used") && msg.contains("Mint a fresh install command"),
+            "the refusal must name the fix, not the internal step: {msg}"
+        );
+    }
+
+    /// The same secret signs session cookies, MCP bearers and claims, so
+    /// the label is what keeps them apart. A stolen session cookie must
+    /// not buy a consumer token that outlives it by a year.
+    #[tokio::test]
+    async fn a_session_token_is_not_an_install_claim() {
+        let (state, _workdir) = claim_state().await;
+        let session = TokenClaims::new(
+            "alice",
+            crate::auth::session::SESSION_DEVICE_LABEL,
+            CLAIM_RATE_LIMIT_ID,
+            CLAIM_TTL,
+        );
+        let token = jwt::issue(&state.secret, &session).expect("issue");
+
+        let resp = post_claim(&state, &token).await;
+        assert_eq!(resp.status(), StatusCode::FORBIDDEN);
+        // And nothing was created on the way to refusing.
+        let rows: i64 = sqlx::query_scalar("SELECT count(*) FROM consumer_delegations")
+            .fetch_one(&state.pool)
+            .await
+            .expect("count");
+        assert_eq!(rows, 0, "a refused claim must leave no consumer behind");
+    }
+
+    /// A claim that is not shaped like one is refused at the door, by the
+    /// same check that decides whether it is safe to write into a served
+    /// shell script.
+    #[tokio::test]
+    async fn a_claim_that_is_not_one_is_refused_before_anything_happens() {
+        let (state, _workdir) = claim_state().await;
+        let resp = post_claim(&state, "not+a+claim").await;
+        assert_eq!(resp.status(), StatusCode::FORBIDDEN);
+        let rows: i64 = sqlx::query_scalar("SELECT count(*) FROM token_blacklist")
+            .fetch_one(&state.pool)
+            .await
+            .expect("count");
+        assert_eq!(rows, 0, "nothing is burned for a claim that is not one");
+    }
+
+    /// The installer is a script somebody pipes into `sh`. A claim that
+    /// could change what that script does is refused, and `curl -f` never
+    /// pipes a 4xx body anywhere.
+    #[tokio::test]
+    async fn the_installer_is_not_served_with_a_claim_it_could_not_have_minted() {
+        let resp = public_site_router()
+            .oneshot(
+                Request::builder()
+                    .uri("/bridges/nanoclaw/install.sh?claim=a%22%3B%20id%20%3B%22")
+                    .header("host", "memory.anna.dev")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), StatusCode::BAD_REQUEST);
+    }
+
+    /// A claim-bearing installer is a one-time credential in a URL, so it
+    /// must not sit in a cache; the same script without one is the public
+    /// artefact it always was.
+    #[tokio::test]
+    async fn only_a_claim_bearing_installer_refuses_to_be_cached() {
+        let fetch = |uri: &'static str| async move {
+            public_site_router()
+                .oneshot(
+                    Request::builder()
+                        .uri(uri)
+                        .header("host", "memory.anna.dev")
+                        .body(Body::empty())
+                        .unwrap(),
+                )
+                .await
+                .unwrap()
+        };
+
+        let claimed = fetch("/bridges/nanoclaw/install.sh?claim=aaa.bbb.ccc").await;
+        assert_eq!(claimed.status(), StatusCode::OK);
+        assert_eq!(
+            claimed.headers().get(header::CACHE_CONTROL).unwrap(),
+            "no-store"
+        );
+        assert!(
+            body_string(claimed)
+                .await
+                .contains("MWE_CLAIM=\"aaa.bbb.ccc\"")
+        );
+
+        let bare = fetch("/bridges/nanoclaw/install.sh").await;
+        assert_eq!(bare.status(), StatusCode::OK);
+        assert_eq!(
+            bare.headers().get(header::CACHE_CONTROL).unwrap(),
+            "public, max-age=300, must-revalidate"
+        );
+    }
+
     /// The Tokens page is admin-only, so the guide links to it for
     /// whoever may open it and names it in plain words for everybody
     /// else — a reader following that link would meet a 403.
     #[test]
     fn the_tokens_page_is_a_link_only_where_it_opens() {
-        let for_admin = guide_body("nanoclaw", "https://memory.anna.dev", true).into_string();
+        let for_admin = guide_body("nanoclaw", "https://memory.anna.dev", true, None).into_string();
         assert!(
             for_admin.contains("href=\"/dashboard/tokens\""),
             "{for_admin}"
         );
 
-        let for_reader = guide_body("nanoclaw", "https://memory.anna.dev", false).into_string();
+        let for_reader =
+            guide_body("nanoclaw", "https://memory.anna.dev", false, None).into_string();
         assert!(
             !for_reader.contains("href=\"/dashboard/tokens\""),
             "a reader must not be pointed at a console that refuses them: {for_reader}"

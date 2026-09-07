@@ -541,18 +541,29 @@ today:
 
 - **[NanoClaw](https://github.com/nanocoai/nanoclaw)** (`/bridges/nanoclaw`) —
   **the ready-made assistant**, and where to start if you have no agent of your
-  own. One command places the `mwe` agent template and the `add-mwe-memory` fork
-  skill, cloning NanoClaw at the tested ref if you do not have it:
+  own. One command is the whole install:
 
   ```bash
   curl -fsSL http://127.0.0.1:8742/bridges/nanoclaw/install.sh | sh
   ```
 
-  It arrives as a *standard* consumer with this memory as its **only** memory.
-  NanoClaw's own prerequisites are Node 22+, pnpm 10+ and Docker (its
-  `nanoclaw.sh` installs them), plus Claude Code to apply the skill
-  conversationally; on Windows it runs inside WSL2, so run the command there.
-  Its step-by-step setup is in
+  It clones NanoClaw at the tested ref if you do not have it, places the `mwe`
+  agent template and the `add-mwe-memory` fork skill, runs NanoClaw's own setup,
+  stamps the agent, applies the memory, connects Telegram and wires your chat,
+  restarts, and watches for your first message. It arrives as a *standard*
+  consumer with this memory as its **only** memory.
+
+  **Run it in a terminal you are sitting at.** It asks you two things only you
+  know — the bot token @BotFather gave you and your own numeric Telegram id —
+  and NanoClaw's own setup asks two of its own: “How would you like to begin?”
+  (Standard setup) and “How would you like to connect to Claude?” (the
+  subscription sign-in, which opens your browser). NanoClaw installs Node, pnpm
+  and Docker itself. On Windows it runs inside WSL2, so run the command there.
+
+  Sign in first and take the command from **Bridges → NanoClaw** instead, and
+  it carries a one-time **install claim**: the consumer token is then minted and
+  written into the fork for you, rather than left as the step at the end. The
+  step-by-step, and the manual path, are in
   [`agents-bridges/nanoclaw/README.md`](agents-bridges/nanoclaw/README.md).
 - **Claude Code** (`/bridges/claude-code`) — one command plus an OAuth sign-in,
   with **no token to mint or paste**:

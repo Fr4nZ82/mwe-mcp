@@ -211,6 +211,15 @@ pub fn public_site_router() -> Router {
     bridges::public_site_router()
 }
 
+/// Public install-claim router — `POST /bridges/nanoclaw/claim`.
+///
+/// Split out of [`public_site_router`] because it is the one bridge route
+/// that reads and writes the database: it burns a single-use claim and
+/// mints the consumer token the served installer writes into a fork.
+pub fn bridge_claim_router(state: DashboardState) -> Router {
+    bridges::claim_router(state)
+}
+
 /// Public `webagentoauth` OAuth router.
 ///
 /// Discovery + Dynamic Client Registration + token endpoint, mounted at the

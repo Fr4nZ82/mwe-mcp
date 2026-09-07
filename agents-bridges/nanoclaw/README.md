@@ -5,12 +5,17 @@ The default consumer agent of an mwe-mcp memory server, built on
 remembers every conversation, recalls the right part of it on every turn, and
 knows what it may say to whom.
 
-Two pieces, installed together:
+Two pieces travel into a fork:
 
 | | what it is | where it lands in the fork |
 |---|---|---|
 | **`templates/mwe`** | the agent template — the persona and the plugin that switches the memory on | `templates/mwe/` |
 | **`skills/add-mwe-memory`** | the fork skill — the per-turn contract, the host module, the reverse channel | `.claude/skills/add-mwe-memory/` |
+
+A third file stays here: **`install-assistant.sh`**, the second half of the
+installer the dashboard serves. It drives a fork from outside it — nanoclaw's
+own setup, the memory, Telegram, the restart and the check — so the server
+appends it to the script it hands out rather than copying it in.
 
 Tested against nanoclaw **v2.3.0** (the `pin` in `bridge.toml`). Implements the
 per-turn contract **v1**
@@ -58,30 +63,102 @@ scheduled tasks, several channels at once — is untouched.
 
 ## Before you install
 
-- **nanoclaw's own prerequisites**: Node 22+, pnpm 10+, Docker, and Claude Code
-  if you want to drive the skill conversationally.
-- **A running mwe-mcp server** ([`INSTALL.md`](../../INSTALL.md)), and from its
-  dashboard:
-  - a **consumer token** for this nanoclaw (a *standard* consumer — the bot is
-    a credential-less system user speaking for delegated humans);
-  - a **delegation** for every person it will speak for, plus **`guest`**.
-    Without the `guest` delegation an unrecognised sender's turn is refused
-    (`403 act_as_not_delegated`) instead of being answered anonymously.
-- A bot user id made of plain lowercase letters and digits — `samnano`, say. No
-  underscores, no hyphens.
+- **A running mwe-mcp server** ([`INSTALL.md`](../../INSTALL.md)) you can reach
+  from the machine the assistant will run on.
+- **A Telegram bot**: message @BotFather, `/newbot`, and keep the token. And
+  your own numeric Telegram id — any "what is my id" bot tells you.
+- **A Claude subscription** to sign in to during nanoclaw's setup.
+- **A terminal you are sitting at.** The install is one `curl … | sh`, and both
+  nanoclaw's questions and the Claude sign-in need one.
+- `git` and `curl`. Node 22+, pnpm 10+ and Docker are nanoclaw's own
+  prerequisites and its `nanoclaw.sh` installs them; Claude Code is only needed
+  if you would rather drive the skill conversationally.
+
+Every person the assistant speaks for needs a **delegation** on the consumer,
+plus **`guest`** — without `guest` an unrecognised sender's turn is refused
+(`403 act_as_not_delegated`) instead of being answered anonymously. A claimed
+install starts with all of them ticked; a hand-minted token is yours to tick.
 
 ## Install
 
-The dashboard serves this as one command:
+The dashboard serves the whole thing as one command:
 
 ```bash
-curl <your-mwe-origin>/bridges/nanoclaw/install.sh | sh
+curl -fsSL <your-mwe-origin>/bridges/nanoclaw/install.sh | sh
 ```
 
-These are the steps it performs, if you would rather do them by hand. Run them
-from your nanoclaw fork.
+**Run it in a terminal you are sitting at**, not over a pipe with no terminal
+behind it — NanoClaw's setup asks two questions of its own and the Claude
+sign-in opens a browser. Without one the installer stops and says so.
 
-1. **Get nanoclaw at the tested ref, with its registry branches.**
+It asks you **two things**: the bot token @BotFather gave you, and your own
+numeric Telegram id. Both can come from the environment instead
+(`MWE_TELEGRAM_BOT_TOKEN`, `MWE_TELEGRAM_OPERATOR_ID`). Then NanoClaw's own
+setup asks **two of its own** that no setting answers — *"How would you like to
+begin?"* (take **Standard setup**, the default) and *"How would you like to
+connect to Claude?"* (take the subscription sign-in, which opens your browser
+and keeps the token in NanoClaw's own vault). Everything else it would ask —
+the sandbox image, the runtime, the display name, the agent name, the timezone,
+the channel — is answered before it starts.
+
+What it does, in order:
+
+1. Finds your fork, or clones NanoClaw at the tested ref into `~/nanoclaw`
+   (`NANOCLAW_DIR` puts it elsewhere, or points at one you already have), and
+   fetches the `channels` and `providers` branches its channel adapters are
+   copied out of.
+2. Copies `templates/mwe` and `.claude/skills/add-mwe-memory` into the fork,
+   and names `mwe` as the template in the fork's `.env`.
+3. Redeems the install claim, if the command carries one (below), and writes
+   `MWE_TOKEN` into `.env`. It never prints it and never puts it on a command
+   line.
+4. Runs `bash nanoclaw.sh` with everything it can preset.
+5. Stamps the `mwe` agent group, if the setup did not.
+6. Applies `add-mwe-memory` head-first through NanoClaw's own apply engine —
+   `apply-headless.ts`, the driver this bridge ships into the fork, which
+   answers each `nc:prompt` from an `NC_INPUT_<VAR>` in the environment.
+7. Applies NanoClaw's own `add-telegram` through the same driver, skipping only
+   its pairing step, and then writes what pairing would have written:
+   the chat (`ncl messaging-groups create`), you (`ncl users create`), your
+   role on an install that has no owner yet (`ncl roles grant`), and the wiring
+   (`ncl wirings create`). A private chat's id **is** your own Telegram id,
+   which is why there is no code to send.
+8. Restarts the host service and then the agent containers, and watches up to
+   two minutes for your first message to log `[mwe] memory is on for this
+   agent`.
+
+Re-running the whole command is how you update an install: every step checks
+what is already there. `MWE_FILES_ONLY=1` places the two directories and stops,
+which is the path for a fork you set up yourself — the manual steps are then the
+ordinary shell commands in
+[`skills/add-mwe-memory/SKILL.md`](skills/add-mwe-memory/SKILL.md).
+
+### The token, without pasting it
+
+The command above ends by telling you to mint a **standard** consumer token and
+put it in `.env`. An admin can make that step disappear: **Bridges → NanoClaw**
+in the dashboard has a button that mints the same command with a one-time
+**install claim** in it, and the installer trades the claim for a token by
+itself.
+
+The claim is not the token. It is good for one redemption and about fifteen
+minutes, it is burned through the same blacklist as a single-use dashboard
+link, and the installer spends it in its first seconds — before the clone,
+before NanoClaw's setup, before the browser sign-in — so the window covers
+copying the command, not the install it starts.
+
+The consumer it mints is `mwe`, delegated to **everybody enrolled in that
+memory, plus `guest`**. That is a starting point, not a decision: open the
+Tokens page and untick whoever the assistant has no business speaking for. The
+`guest` tick is the one to keep — without it an unrecognised sender's turn is
+refused (`403 act_as_not_delegated`) instead of being answered anonymously.
+
+### By hand
+
+These are the same steps, for a fork you would rather drive yourself. Run them
+from your NanoClaw fork.
+
+1. **Get NanoClaw at the tested ref, with its registry branches.**
 
    ```bash
    git clone https://github.com/nanocoai/nanoclaw
@@ -90,9 +167,9 @@ from your nanoclaw fork.
    git fetch --depth 1 origin providers:refs/remotes/origin/providers
    ```
 
-   The last two lines are not optional. nanoclaw ships no channel adapter in
+   The last two lines are not optional. NanoClaw ships no channel adapter in
    trunk: `/add-telegram` and its siblings copy their files with
-   `git show origin/channels:<path>`, and the alternative providers come from
+   `git show origin/<branch>:<path>`, and the alternative providers come from
    `origin/providers` the same way. A clone of one ref tracks only that ref, so
    without those refs the setup wizard dies at the channel step with
    `fatal: invalid object name 'origin/channels'`.
@@ -105,7 +182,7 @@ from your nanoclaw fork.
    cp -R <bridge>/skills/add-mwe-memory  .claude/skills/add-mwe-memory
    ```
 
-3. **Run nanoclaw's setup** if this is a fresh install (`bash nanoclaw.sh`).
+3. **Run NanoClaw's setup** if this is a fresh install (`bash nanoclaw.sh`).
 
    Name the template first and the wizard offers it instead of asking you to
    find it:
@@ -114,34 +191,38 @@ from your nanoclaw fork.
    echo 'NANOCLAW_TEMPLATE_PATH=mwe' >> .env
    ```
 
-   That is the one key nanoclaw's wizard reads out of `.env` (`setup/auto.ts`
-   bridges it into the run); it then asks you to confirm the `mwe` template and
-   stamps the first agent. Decline, and you pick it by hand: **Local
-   templates**, then `mwe`. On an existing install, stamp it yourself:
+   That is the one key NanoClaw's wizard reads out of `.env`
+   (`setup/auto.ts` bridges it into the run); it then stamps the `mwe`
+   template as your first agent. On an existing install, stamp it yourself:
 
    ```bash
    ncl groups create --template mwe --name mwe --new
    ```
 
-   `--name` is yours: it becomes the group folder, and nanoclaw's own default
+   `--name` is yours: it becomes the group folder, and NanoClaw's own default
    for the agent's name. It is not what the agent answers to — that is the
    memory's business, and anybody it serves can tell it in chat.
 
-   **What the wizard still asks**, whatever is in `.env`: where the sandbox
-   image comes from (**Build it here** needs no account), the OneCLI vault, the
-   Claude sign-in it opens in your browser, and — when you connect a channel —
-   the pairing code you send the bot.
-
 4. **Apply the skill.** From Claude Code, `/add-mwe-memory`. It asks three
    questions — the endpoint, your chat id, your mwe user id — then copies the
-   modules in, splices the reach-ins into seven of nanoclaw's own files,
+   modules in, splices the reach-ins into seven of NanoClaw's own files,
    clears a memory tree an earlier boot left behind, writes `mwe.json`, builds
    and tests. Run again later it does the same, and brings every module whose
    bytes have changed with it.
 
    Without Claude Code, the same steps are in
    [`skills/add-mwe-memory/SKILL.md`](skills/add-mwe-memory/SKILL.md) as
-   ordinary shell commands.
+   ordinary shell commands, and
+
+   ```bash
+   NC_INPUT_MWE_SERVER_URL=… NC_INPUT_MWE_ADMIN_SENDER=… NC_INPUT_MWE_ADMIN_USER=… \
+     pnpm exec tsx .claude/skills/add-mwe-memory/apply-headless.ts \
+       .claude/skills/add-mwe-memory
+   ```
+
+   runs them through NanoClaw's own apply engine with no questions at all. That
+   driver takes any skill directory, which is how the served installer connects
+   Telegram too.
 
 5. **Put the token in `.env`.**
 
@@ -149,8 +230,7 @@ from your nanoclaw fork.
    MWE_TOKEN=<the consumer token from the dashboard>
    ```
 
-   The installer never carries it, never logs it, and never asks for it on a
-   command line.
+   Nothing logs it, and nothing asks for it on a command line.
 
 6. **Fill in `senderMap`** — one line per person (below) — and restart. Both
    halves: the host service, and the agent containers.
@@ -160,7 +240,7 @@ from your nanoclaw fork.
    pnpm exec tsx .claude/skills/add-mwe-memory/restart-mwe-groups.ts
    ```
 
-   The second line is the one that is easy to miss. nanoclaw leaves a session's
+   The second line is the one that is easy to miss. NanoClaw leaves a session's
    container running when the host service stops, and the agent runner is a
    process that read its modules at boot — a read-only mount of the patched
    source does not reload them. Until the container is replaced, the agent

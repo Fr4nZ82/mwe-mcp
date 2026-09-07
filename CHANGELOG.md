@@ -154,14 +154,35 @@ and in the dashboard's session check. Ten migrations, `0068` through `0077`.
   unmapped, media out of band, and a reverse channel that delivers a notice to
   its own recipient's chat. NanoClaw's built-in memory stands down for a group
   carrying the plugin and no session is carried between turns, so the memory,
-  not a transcript, decides what the agent remembers. The dashboard serves it
-  at **`/bridges/nanoclaw`** as the first consumer it recommends —
-  `curl … | sh`, which clones NanoClaw at the tested ref when the operator has
-  none and writes two directories into the fork. The installer never touches
-  the token: minting it, applying the skill, the `senderMap` and the channel
-  stay the operator's five steps, printed when it finishes. There is no
-  PowerShell installer, because NanoClaw runs on Windows inside WSL2 and the
-  Windows path is the same command in a WSL2 shell.
+  not a transcript, decides what the agent remembers.
+
+  The dashboard serves it at **`/bridges/nanoclaw`** as the first consumer it
+  recommends, and it is **one command**: `curl … | sh` clones NanoClaw at the
+  tested ref when the operator has none, places the template and the skill,
+  drives NanoClaw's own setup with everything it can answer already answered,
+  stamps the agent, applies the memory, installs Telegram, wires the operator's
+  chat without the pairing code, restarts both halves and then watches for the
+  first message to confirm the turn was stored and recalled. What is left to
+  the person is what no machine can do for them: **the bot token @BotFather
+  gave them, their own Telegram id**, and NanoClaw's own two questions —
+  “Standard setup”, and the Claude subscription sign-in that opens their
+  browser. It needs a terminal, and it says so instead of hanging when there
+  is none. Re-running the whole command is how an install is updated.
+
+  **The token comes with it, if the admin wants.** *Bridges → NanoClaw* mints
+  an **install claim**: a code that is good once and for fifteen minutes, that
+  rides the command as `?claim=…`, and that the installer trades in its first
+  seconds — at `POST /bridges/nanoclaw/claim` — for a standard consumer token
+  it writes straight into the fork's `.env`. The token is never shown on the
+  page, never printed, never on a command line. The claim is not the token: it
+  expires, it is burned through the same `jti` blacklist as a single-use
+  dashboard link, and a replay is refused. The consumer starts delegated to
+  everybody enrolled plus `guest`, which the installer and the page both say
+  to narrow on the Tokens page. Run the same command without a claim and
+  everything else still happens; the token is the one step it hands back.
+
+  There is no PowerShell installer, because NanoClaw runs on Windows inside
+  WSL2 and the Windows path is the same command in a WSL2 shell.
 
 - **The per-turn contract names the two governance blocks a turn can carry.**
   `INTEGRATING.md` documents `pending_votes` (the speaker owes a vote on a

@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 //! Admin-gated token management.
 //!
-//! Five handlers:
+//! Six handlers:
 //!
 //! - GET  `/tokens`                                 — landing page with
 //!   the issue form, the consumer-delegations table, and the revoked
@@ -16,6 +16,9 @@
 //! - POST `/tokens/revoke`                          — insert into
 //!   `token_blacklist` and refresh the in-memory cache so the next
 //!   verify sees it.
+//! - POST `/tokens/connection/revoke`               — disconnect a
+//!   consumer that signed in over `webagentoauth` (its refresh token
+//!   stops renewing; its dedicated wiki is kept).
 //! - GET  `/tokens/delegation/:consumer_id`         — edit form for an
 //!   existing consumer's `allowed_sender_ids`.
 //! - POST `/tokens/delegation/:consumer_id`         — apply the edit.
@@ -118,7 +121,7 @@ async fn fetch_connections(state: &DashboardState) -> Result<Vec<oauth_server::C
         .map_err(|e| DashboardError::Internal(format!("list webagentoauth connections: {e}")))
 }
 
-async fn fetch_user_ids(state: &DashboardState) -> Result<Vec<String>> {
+pub(super) async fn fetch_user_ids(state: &DashboardState) -> Result<Vec<String>> {
     let ids: Vec<String> =
         sqlx::query_scalar("SELECT user_id FROM enrollment_users ORDER BY user_id ASC")
             .fetch_all(&state.pool)
@@ -653,7 +656,11 @@ async fn resolve_smart_sender(
 /// credential-less system user created on first use. The act-as list is
 /// validated first so a bad request never leaves an orphan system user;
 /// then the delegation is recorded. A standard token is never admin.
-async fn resolve_standard_sender(
+///
+/// Shared with the nanoclaw install claim
+/// ([`super::bridges`]), so a consumer born from a `curl … | sh` is
+/// created and delegated by the same code as one an admin issues here.
+pub(super) async fn resolve_standard_sender(
     state: &DashboardState,
     bot_id: &str,
     allowed: &[String],
@@ -780,7 +787,7 @@ fn build_sticky(submission: &IssueSubmission) -> IssueFormState {
     }
 }
 
-fn build_claims(
+pub(super) fn build_claims(
     sender_id: &str,
     device_label: &str,
     rate_limit_id: &str,
