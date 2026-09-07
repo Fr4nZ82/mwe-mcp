@@ -191,11 +191,12 @@ fn embedding_form(cfg: &EmbeddingConfig, bundled_ok: bool, gpu_ok: bool) -> Mark
                         td {
                             input id="model_dir" name="model_dir" type="text"
                                 value=(cfg.model_dir.clone().unwrap_or_default())
-                                placeholder="(auto-download to the XDG cache)";
+                                placeholder="(auto-download to this account's model cache)";
                         }
                         td.muted {
                             "Bundled only: a local weights directory. Empty → auto-download "
-                            "to the XDG cache on first use."
+                            "on first use into the model cache of the account the server runs "
+                            "as, which is where it stays across restarts."
                         }
                     }
                 }

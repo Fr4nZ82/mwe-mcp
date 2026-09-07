@@ -340,36 +340,6 @@ const BGE_M3_FILES: &[WeightFile] = &[
     },
 ];
 
-/// Default on-disk cache for auto-downloaded weights.
-///
-/// `$XDG_CACHE_HOME/mwe-mcp/models/<model_id>`, falling back to
-/// `$HOME/.cache/...`, then a relative `.cache/...`. The *engine* lives in
-/// the binary; the *weights* live here, fetched once.
-#[must_use]
-pub fn default_cache_dir(model_id: &str) -> PathBuf {
-    resolve_cache_dir(
-        std::env::var_os("XDG_CACHE_HOME").as_deref(),
-        std::env::var_os("HOME").as_deref(),
-        model_id,
-    )
-}
-
-/// Pure cache-dir resolution, split out so it is unit-testable without
-/// touching the process environment. A relative `XDG_CACHE_HOME` is
-/// invalid per the XDG spec, so it is ignored in favour of `$HOME/.cache`.
-fn resolve_cache_dir(
-    xdg_cache_home: Option<&std::ffi::OsStr>,
-    home: Option<&std::ffi::OsStr>,
-    model_id: &str,
-) -> PathBuf {
-    let base = xdg_cache_home
-        .map(PathBuf::from)
-        .filter(|p| p.is_absolute())
-        .or_else(|| home.map(|h| PathBuf::from(h).join(".cache")))
-        .unwrap_or_else(|| PathBuf::from(".cache"));
-    base.join("mwe-mcp").join("models").join(model_id)
-}
-
 /// Ensure the bge-m3 weights are present in `dir`, downloading any missing
 /// file from `HuggingFace` over rustls and verifying its pinned SHA-256.
 ///
@@ -480,33 +450,6 @@ mod tests {
             vec![0.0, 0.0, 0.0],
             "zero vector must stay zero (no NaN)"
         );
-    }
-
-    #[test]
-    fn resolve_cache_dir_prefers_absolute_xdg() {
-        let dir = resolve_cache_dir(
-            Some(std::ffi::OsStr::new("/var/cache")),
-            Some(std::ffi::OsStr::new("/home/u")),
-            "bge-m3",
-        );
-        assert_eq!(dir, PathBuf::from("/var/cache/mwe-mcp/models/bge-m3"));
-    }
-
-    #[test]
-    fn resolve_cache_dir_falls_back_to_home_cache() {
-        let dir = resolve_cache_dir(None, Some(std::ffi::OsStr::new("/home/u")), "bge-m3");
-        assert_eq!(dir, PathBuf::from("/home/u/.cache/mwe-mcp/models/bge-m3"));
-    }
-
-    #[test]
-    fn resolve_cache_dir_ignores_relative_xdg() {
-        // A relative XDG_CACHE_HOME is invalid per spec → fall back to HOME.
-        let dir = resolve_cache_dir(
-            Some(std::ffi::OsStr::new("relative/cache")),
-            Some(std::ffi::OsStr::new("/home/u")),
-            "bge-m3",
-        );
-        assert_eq!(dir, PathBuf::from("/home/u/.cache/mwe-mcp/models/bge-m3"));
     }
 
     #[test]

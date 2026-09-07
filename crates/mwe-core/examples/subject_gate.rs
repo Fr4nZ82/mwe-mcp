@@ -152,7 +152,7 @@ async fn main() -> anyhow::Result<()> {
 
     let pool = db::open_or_init(&workdir).await?;
     let tree = wiki::WikiTree::open(&workdir)?;
-    let cache = mwe_core::local_embedder::default_cache_dir("bge-m3");
+    let cache = mwe_core::embedder::default_cache_dir("bge-m3");
     let embedder: Arc<dyn Embedder> = Arc::new(mwe_core::local_embedder::LocalEmbedder::load(
         &cache,
         candle_core::Device::Cpu,

@@ -445,6 +445,19 @@ and in the dashboard's session check. Ten migrations, `0068` through `0077`.
 
 ### Fixed
 
+- **On Windows the downloaded model stays where it was put.** The 2.2 GB of
+  bge-m3 weights are fetched once and kept in a cache directory. Linux and
+  macOS name that directory after the account the server runs as; Windows has
+  no `$HOME`, so unless `XDG_CACHE_HOME` was set by hand the server fell back
+  to a `.cache` folder **beside whatever directory it happened to be started
+  from** — a different folder per shortcut, per shell, per scheduled task, and
+  a fresh 2.2 GB download each time it changed. It now uses
+  `%LOCALAPPDATA%\mwe-mcp\models`, the per-user store Windows names for this,
+  and `XDG_CACHE_HOME` still wins where it is set (the packaged scheduled task
+  sets it, so a service install is unaffected). **A Windows install that had
+  already downloaded the weights downloads them once more**, into the stable
+  place; the old `.cache` folders can be deleted.
+
 - **On Windows, a page of your own facts no longer reads as entirely
   private.** A page's address in the engine's index is written with `/`
   between its parts, on every platform. Five places built that address from

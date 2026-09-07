@@ -124,7 +124,12 @@ mwe-mcp serve
   machine only) and on which port — pass `--bind` / `--port` to skip the prompt.
   It serves `/mcp` and `/dashboard/*` on the same port (`8742` by default).
 - The **first run downloads the `bge-m3` weights (~2.2 GB)** once, before the
-  dashboard comes up.
+  dashboard comes up. They land in a per-user cache the account keeps across
+  restarts — `$XDG_CACHE_HOME/mwe-mcp/models` when that variable is set,
+  otherwise `~/.cache/mwe-mcp/models` on Linux and macOS and
+  `%LOCALAPPDATA%\mwe-mcp\models` on Windows. Set `XDG_CACHE_HOME` to put them
+  somewhere else, on any of the three; a service account gets its own copy,
+  because the cache belongs to the account the server runs as.
 
 The server prints the dashboard setup URL when it's ready.
 
@@ -327,9 +332,10 @@ Copy-Item .\mwe-mcp.exe "C:\Program Files\mwe-mcp\"
 icacls "C:\ProgramData\mwe-mcp" /inheritance:r `
        /grant "mwe-mcp:(OI)(CI)F" /grant "Administrators:(OI)(CI)F" /T
 
-# 3. Where the bge-m3 weights (~2.2 GB) go. Machine-wide, because on Windows
-#    the server has no home directory to fall back on and would otherwise
-#    write them relative to its working directory.
+# 3. Where the bge-m3 weights (~2.2 GB) go. Left alone the service account
+#    caches them under its own %LOCALAPPDATA%; pinning them machine-wide
+#    keeps them inside the ACL'd tree you locked down above, beside the
+#    workdir they serve.
 [Environment]::SetEnvironmentVariable(
   "XDG_CACHE_HOME", "C:\ProgramData\mwe-mcp\cache", "Machine")
 

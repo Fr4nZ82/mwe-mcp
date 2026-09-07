@@ -1841,9 +1841,9 @@ pub struct EmbeddingConfig {
     pub dimensions: usize,
     /// Directory holding the `bundled` backend's weights (`config.json`,
     /// `tokenizer.json`, `pytorch_model.bin`) — the offline / air-gapped
-    /// path. Leave it unset and the weights land in the default cache,
-    /// auto-downloaded on first use ([`crate::local_embedder`]). Ignored by
-    /// other backends.
+    /// path. Leave it unset and the weights land in the running account's
+    /// own cache ([`crate::embedder::default_cache_dir`]), auto-downloaded
+    /// on first use. Ignored by other backends.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub model_dir: Option<String>,
 }
@@ -1975,7 +1975,7 @@ impl EmbeddingConfig {
                     ),
                 });
             }
-            let cache = crate::local_embedder::default_cache_dir(&self.model);
+            let cache = crate::embedder::default_cache_dir(&self.model);
             crate::local_embedder::ensure_bge_m3_weights(&cache)
                 .await
                 .map_err(|e| ConfigError::EmbeddingUnavailable {
