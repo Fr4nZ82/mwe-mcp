@@ -50,7 +50,7 @@ What is verified is not the same on all three, so here is the split:
 | **CI: the full test suite, nothing skipped** | yes | yes | yes |
 | **A release publishes a prebuilt binary** | yes | yes | yes |
 | **Run as a service, restarting on boot** | the server sets it up for you (systemd) | you install the launchd plist ([Run it as a service](#run-it-as-a-service)) | you register the scheduled task ([Run it as a service](#run-it-as-a-service)) |
-| **`serve` refuses to start under your login account** | yes | no — the check reads Linux-only files | no |
+| **`serve` refuses to start under your login account** | yes | no — the check reads Linux-only files | no — the same check, the same reason |
 | **`mwe-mcp doctor` audits the workdir permissions** | yes | yes | no — it reads POSIX mode bits, and Windows uses ACLs |
 | **Desktop tray icon** | Linux only (see below) | — | — |
 
@@ -186,19 +186,27 @@ through everything — no YAML to hand-edit, no credentials to hand to anyone el
 
 1. **Create the single admin.**
 2. **Configure the internal LLM — this comes first.** The wizard takes you
-   straight here, because everything after it needs a working model (mwe-mcp's
-   internal models classify every turn, walk the pages at recall, deduplicate,
-   run the nightly REM cycle, write the prose and drive the dashboard chat —
-   six roles, and the product does not work until all six have a model). Set a provider's API key — Anthropic, Google Gemini, or
-   OpenRouter — or point a role at a local [Ollama](https://ollama.com) model,
-   then assign each role. A quick profile fills every role in one click:
+   straight here, because everything after it needs a working model. mwe-mcp
+   has **six model slots**, and the product does not work until all six carry
+   a model — `ingest` (classifies and routes every turn), `navigator` (walks
+   the pages at recall), `rem_dedup_semantic` (decides whether two claims are
+   the same one), `rem_promotions` (the nightly structural decisions),
+   `cronista` (writes the prose) and `operator_chat` (drives the dashboard
+   chat). Set a provider's API key — Anthropic, Google Gemini, OpenAI or
+   OpenRouter — or point a slot at a local [Ollama](https://ollama.com) model,
+   then assign each slot. A quick profile fills all six in one click:
 
    | Preset | Routing | Needs |
    |---|---|---|
-   | **`all-api`** | every generative function on an external provider (Anthropic / Gemini) | API keys; no local model |
-   | **`hybrid`** | `ingest` and `operator_chat` on a local Ollama model; the navigator, `cronista` and the nightly REM roles on an API model | a local Ollama workhorse + API keys |
-   | **`all-local`** | local workhorse for everything (Ollama + Qwen/Llama) | strong local hardware (a GPU); zero API cost, fully offline |
-   | **`custom`** | wire nothing up front, pick every role from the dashboard | — |
+   | **`all-api`** | all six slots on Anthropic | an Anthropic key; no local model |
+   | **`hybrid`** | `ingest`, `operator_chat` and `rem_dedup_semantic` on a local Ollama model; `rem_promotions`, `cronista` and `navigator` on Anthropic | a local Ollama workhorse + an Anthropic key |
+   | **`all-local`** | the local workhorse on all six (Ollama + Qwen) | strong local hardware (a GPU); zero API cost, fully offline |
+   | **`custom`** | wire nothing up front, pick every slot from the dashboard | — |
+
+   A preset is a starting point, not a limit: the slot editor takes any of
+   the five backends (`ollama`, `anthropic`, `gemini`, `openai`,
+   `openrouter`) on any slot, and a save that leaves a slot without a
+   provider or a model is refused whole, naming the slot.
 
    **Embeddings always run locally and are free** — independent of this choice.
    Already running Ollama with an embedder? Switch the embedding backend to
@@ -206,24 +214,28 @@ through everything — no YAML to hand-edit, no credentials to hand to anyone el
    the one embedder that leaves the process, so its calls are counted on the
    Usage & spend page; the bundled one runs inside the binary and is not.
 
-   > **How capable does the internal LLM need to be?** The `ingest` role is a
+   > **How capable does the internal LLM need to be?** The `ingest` slot is a
    > structured router: it must emit valid plans with exact wiki ids, every
    > turn. In our testing, **small local models (≤ ~10B) route unreliably** —
    > they hallucinate target ids and facts get dropped — so `all-local` wants
-   > a genuinely strong local model, and `hybrid` (local `ingest` and chat,
-   > an API model on the navigator, `cronista` and REM) is the safer budget
-   > setup; a strong API model on `ingest` alone is the safer one still. If pages
+   > a genuinely strong local model, and `hybrid` is the safer budget setup;
+   > a strong API model on `ingest` alone is the safer one still. If pages
    > come out empty or badly filed, suspect the model before the engine.
 3. **Do the short profile primer** the wizard shows next (your name, language, a
    few preferences) so the memory starts with some context — or skip it.
-4. **Mint a token for your agent** (Admin → users / tokens). User ids are
-   plain lowercase letters and digits (`anna`, `sam2`); the enrollment form
-   refuses anything else, because the id is also the name of the person's
-   identity wiki.
+4. **Mint a token for your consumer** — a consumer is any program that talks
+   to the memory for a person — from Admin → Tokens. User ids are plain
+   lowercase letters and digits (`anna`, `sam2`); the enrollment form refuses
+   anything else, because the id is also the name of the person's identity
+   wiki.
 
    > **Connecting Claude Code?** Skip the token: it signs in over OAuth instead
    > (see [Next: connect an agent](#next-connect-an-agent)). You still need the
    > user created here.
+   >
+   > **Taking the ready-made assistant?** Skip it too: the command on
+   > *Bridges → NanoClaw* can carry a one-time **install claim** that the
+   > installer trades for the token and writes into the fork for you.
 
 That's it — you have a running, governed memory.
 
@@ -431,7 +443,7 @@ Three things are worth knowing before you set one:
 - **It is read against your price list.** A model you have not priced spends
   nothing as far as the budget is concerned — the page says how many of today's
   calls that is.
-- **A stop is not a way to run without a model.** All six model roles stay
+- **A stop is not a way to run without a model.** All six model slots stay
   required. A stopped deployment answers user turns degraded — the turn says
   nothing was saved rather than dying — and the nightly cycle skips its round
   and says why. It is a pause you chose, and it lasts until you take it back.
