@@ -1495,9 +1495,9 @@ fn index_intro(reveal: bool, opened_on_self: bool) -> Markup {
             p.muted {
                 "The facts this memory holds " strong { "about you" } " — wherever "
                 "they are filed, including on other people's and groups' pages. "
+                "The wider list is every fact your standard wikis grant you, "
+                "other people's included: "
                 a href="/dashboard/facts?subject=" { "Everything I can read →" }
-                " widens it to every fact your standard wikis grant you, which "
-                "includes facts about other people."
             }
             (how_the_filters_narrow())
         } @else {
