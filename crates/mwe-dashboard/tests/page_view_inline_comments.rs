@@ -1075,7 +1075,7 @@ async fn comment_form_get_renders_context() {
     );
 }
 
-/// The synchronous Submit endpoint refuses a comment on a NARRATIVE
+/// The mark-as-read endpoint refuses a comment on a NARRATIVE
 /// wiki: those are applied by the REM dream as fact ops, never mark-passive
 /// drained out from under it. The row must stay pending after the 400.
 #[tokio::test]
@@ -1407,4 +1407,160 @@ async fn toggle_reveal_sets_then_clears_the_cookie() {
         cleared.contains("mwe_admin_reveal=;") || cleared.contains("mwe_admin_reveal= "),
         "cookie not cleared: {cleared}"
     );
+}
+
+// ---------- "Mark as read" on a pending comment ----------
+
+/// Drop a **smart** wiki (`casa`, child of `alice`) with one page.
+fn seed_smart_casa_with_page(tree: &WikiTree, page: &str, body: &str) {
+    let dir = tree.wikis_dir().join("casa");
+    std::fs::create_dir_all(&dir).unwrap();
+    let meta = "---\n\
+                wiki_id: casa\n\
+                wiki_type: wiki-tech\n\
+                parent_wiki_id: alice\n\
+                slug: casa\n\
+                title: Casa\n\
+                acl_default: 'user:alice'\n\
+                smart: true\n\
+                ---\n";
+    std::fs::write(dir.join("_meta.md"), meta).unwrap();
+    std::fs::write(dir.join(page), body).unwrap();
+}
+
+/// The route that clears a comment had no button anywhere: it was
+/// reachable only by crafting the request. On a smart wiki — the only
+/// family it accepts — every pending comment now carries one.
+#[tokio::test]
+async fn a_smart_wiki_comment_offers_the_control_that_clears_it() {
+    let (app, pool, tree, _dir) = make_app_with_memory().await;
+    let cookie = login_as_admin(&app).await;
+    seed_alice_with_page(&tree, "index.md", "# Alice\n");
+    seed_smart_casa_with_page(
+        &tree,
+        "impianti.md",
+        "# Impianti\n\n## Boiler\n\nServiced.\n",
+    );
+    let bi_id = seed_briefing_item(
+        &pool,
+        "casa",
+        Some("wiki://casa/impianti.md#boiler"),
+        Some("alice"),
+        "user",
+        "The service is due in October.",
+        None,
+        None,
+    )
+    .await;
+
+    let response = send(
+        &app,
+        Request::builder()
+            .uri("/wiki/casa/view/impianti.md")
+            .header(header::COOKIE, &cookie)
+            .body(Body::empty())
+            .unwrap(),
+    )
+    .await;
+    assert_eq!(response.status(), StatusCode::OK);
+    let html = body_string(response).await;
+    assert!(
+        html.contains(&format!(
+            "/dashboard/wiki/casa/briefing-items/bi_{bi_id}/process"
+        )),
+        "the comment must carry the form that clears it: {html}"
+    );
+    assert!(html.contains("Mark as read"), "{html}");
+}
+
+/// A comment on a standard wiki is read by the nightly cycle, which
+/// changes the facts from it. `POST …/process` refuses one with a 400,
+/// so the page must not offer the button that would ask for it.
+#[tokio::test]
+async fn a_standard_wiki_comment_offers_no_control_the_route_would_refuse() {
+    let (app, pool, tree, _dir) = make_app_with_memory().await;
+    let cookie = login_as_admin(&app).await;
+    seed_alice_with_page(&tree, "cucina.md", "# Cucina\n\n## Colazione\n\nCoffee.\n");
+    seed_briefing_item(
+        &pool,
+        "alice",
+        Some("wiki://alice/cucina.md#colazione"),
+        Some("alice"),
+        "user",
+        "Bob takes it without sugar.",
+        None,
+        None,
+    )
+    .await;
+
+    let response = send(
+        &app,
+        Request::builder()
+            .uri("/wiki/alice/view/cucina.md")
+            .header(header::COOKIE, &cookie)
+            .body(Body::empty())
+            .unwrap(),
+    )
+    .await;
+    assert_eq!(response.status(), StatusCode::OK);
+    let html = body_string(response).await;
+    assert!(
+        !html.contains("briefing-items/"),
+        "a standard-wiki comment must not offer a control the route refuses: {html}"
+    );
+    assert!(!html.contains("Mark as read"), "{html}");
+}
+
+/// Clearing a comment lands the reader back on the page they were
+/// reading, not on the wiki index.
+#[tokio::test]
+async fn clearing_a_comment_returns_to_the_page_it_was_on() {
+    let (app, pool, tree, _dir) = make_app_with_memory().await;
+    let cookie = login_as_admin(&app).await;
+    seed_alice_with_page(&tree, "index.md", "# Alice\n");
+    seed_smart_casa_with_page(
+        &tree,
+        "impianti.md",
+        "# Impianti\n\n## Boiler\n\nServiced.\n",
+    );
+    let bi_id = seed_briefing_item(
+        &pool,
+        "casa",
+        Some("wiki://casa/impianti.md#boiler"),
+        Some("alice"),
+        "user",
+        "The service is due in October.",
+        None,
+        None,
+    )
+    .await;
+
+    let response = send(
+        &app,
+        Request::builder()
+            .method("POST")
+            .uri(format!("/wiki/casa/briefing-items/bi_{bi_id}/process"))
+            .header(header::COOKIE, &cookie)
+            .header(header::CONTENT_TYPE, "application/x-www-form-urlencoded")
+            .body(Body::empty())
+            .unwrap(),
+    )
+    .await;
+    assert!(response.status().is_redirection(), "{}", response.status());
+    assert_eq!(
+        response
+            .headers()
+            .get(header::LOCATION)
+            .and_then(|v| v.to_str().ok()),
+        Some("/dashboard/wiki/casa/view/impianti.md"),
+        "must land back on the page the comment was anchored to"
+    );
+
+    let processed: Option<String> =
+        sqlx::query_scalar("SELECT processed_at FROM wiki_briefing_items WHERE id = ?")
+            .bind(bi_id)
+            .fetch_one(&pool)
+            .await
+            .unwrap();
+    assert!(processed.is_some(), "the row must be drained");
 }

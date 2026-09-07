@@ -270,9 +270,9 @@ pub struct RemPolicy {
     pub briefing_processor_enabled: bool,
     /// Briefing-processor: a row whose `ts` is
     /// within this grace period of `now` is left alone — the operator
-    /// might still be editing the comment in the dashboard. The
-    /// synchronous Submit endpoint on the dashboard bypasses the
-    /// grace period, the cycle does not. Default 15 minutes.
+    /// might still be editing the comment in the dashboard. "Mark as
+    /// read" on the dashboard bypasses the grace period, the cycle does
+    /// not. Default 15 minutes.
     pub briefing_processor_grace: chrono::Duration,
     /// Husk-page GC: page FILES removed per full cycle. A husk is a
     /// plan-absent, non-reserved page whose fact rows are all tombstoned
@@ -688,7 +688,7 @@ pub struct BriefingDispatcherReport {
 /// policy: stamp `processed_at = NOW()` after a pro-forma read of the
 /// cited context. The same core function
 /// ([`briefing_processor::process_briefing_item`]) is also invoked
-/// synchronously from the dashboard "Submit" button on a per-row
+/// synchronously from the dashboard's "Mark as read" button on a per-row
 /// basis; that path bypasses the grace period because the operator
 /// has explicitly asked for immediate drain.
 #[derive(Debug, Clone, Default)]
@@ -700,8 +700,8 @@ pub struct BriefingProcessorReport {
     pub items_processed: usize,
     /// Rows skipped because the row was already `processed_at IS NOT
     /// NULL` between the scan and the per-row processor call. Real-
-    /// world cause: a synchronous Submit drained the row between the
-    /// candidate list and the per-row call.
+    /// world cause: somebody marked the row read in the dashboard
+    /// between the candidate list and the per-row call.
     pub items_already_processed: usize,
     /// Rows whose `wiki_id` did not resolve to a known wiki on disk
     /// (deleted wiki with rows still in the inbox). Left untouched —
@@ -7415,14 +7415,14 @@ async fn run_lease_expirer(
 /// Narrative families (every non-smart wiki: `wiki-user`, `wiki-group`, and
 /// emerged sub-wikis) have no smart consumer, so REM
 /// fills the gap by calling the **same** core function
-/// ([`briefing_processor::process_briefing_item`]) the dashboard
-/// "Submit" endpoint uses synchronously — one branch, two callers, no
-/// drift.
+/// ([`briefing_processor::process_briefing_item`]) the dashboard's
+/// "Mark as read" button calls synchronously — one branch, two callers,
+/// no drift.
 ///
 /// Policy: **mark-passive** (see [`briefing_processor`] module doc).
 /// The grace period guards against draining a comment the operator is
-/// still editing through the dashboard — the synchronous Submit
-/// endpoint bypasses the grace, the cycle does not.
+/// still editing through the dashboard — "Mark as read" bypasses the
+/// grace, the cycle does not.
 ///
 /// Per-row outcomes from `process_briefing_item`:
 ///

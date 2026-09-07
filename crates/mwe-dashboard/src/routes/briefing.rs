@@ -1,12 +1,16 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
-//! Briefing-item synchronous Submit endpoint.
+//! Marking one pending comment read, now, without waiting for REM.
 //!
 //! Single POST route — `POST /dashboard/wiki/:id/briefing-items/:bi_id/process`.
 //! On a **smart** wiki the handler calls the shared
 //! [`mwe_core::rem::briefing_processor::process_briefing_item`] core
-//! function (the same one REM's mark-passive path calls) and
-//! redirects back to the wiki view so the operator immediately sees
-//! the row drained from the inline comment list.
+//! function (the same one REM's mark-passive path calls) and lands the
+//! reader back on the page the comment is anchored to, where the block
+//! they just cleared is gone from the inline list.
+//!
+//! The button that calls it is the "Mark as read" control on each
+//! comment block of a smart wiki's page view
+//! ([`crate::routes::wiki_view`]).
 //!
 //! ## Standard wikis are refused
 //!
@@ -87,10 +91,10 @@ async fn submit_process(
 
     // A comment on a standard page is applied by the nightly cycle as a
     // fact op (correct / remove / add), not mark-passive drained. Refuse the
-    // synchronous Submit for standard wikis — draining it here would stamp
+    // button for standard wikis — draining it here would stamp
     // `processed_at` and the cycle would then never action-take it. A memory
     // edit must never be a user-triggered token-burning click; it waits for
-    // the next cycle. A smart wiki keeps the Submit: its comments are the
+    // the next cycle. A smart wiki keeps the button: its comments are the
     // consumer's inbox, and draining one is the whole act.
     let row_wiki: Option<String> =
         sqlx::query_scalar("SELECT wiki_id FROM wiki_briefing_items WHERE id = ?")
@@ -126,13 +130,40 @@ async fn submit_process(
         },
     }
 
-    Ok(Redirect::to(&format!("/dashboard/wiki/{}", wiki_id.as_str())).into_response())
+    // Back to where the button was. The row's own `target_cite` names
+    // that page, so the destination is derived server-side rather than
+    // taken from the request: a caller-supplied return address on a POST
+    // is an open redirect. A row with no usable cite (or one pointing at
+    // another wiki) falls back to the wiki index.
+    Ok(Redirect::to(&return_to(&state, bi_id, &wiki_id).await).into_response())
+}
+
+/// The page to land on after a comment is marked read: the page its
+/// `target_cite` points at, else the wiki index.
+async fn return_to(state: &DashboardState, bi_id: i64, wiki_id: &WikiId) -> String {
+    let index = format!("/dashboard/wiki/{}", wiki_id.as_str());
+    let cite: Option<Option<String>> =
+        sqlx::query_scalar("SELECT target_cite FROM wiki_briefing_items WHERE id = ?")
+            .bind(bi_id)
+            .fetch_optional(&state.pool)
+            .await
+            .ok()
+            .flatten();
+    let Some(Some(cite)) = cite else { return index };
+    match mwe_core::briefing::parse_cite(&cite) {
+        Ok(parsed) => format!(
+            "/dashboard/wiki/{}/view/{}",
+            parsed.wiki_id.as_str(),
+            parsed.path
+        ),
+        Err(_) => index,
+    }
 }
 
 /// Whether the wiki named `wiki_id` is **standard** — every wiki that is
 /// not smart (read from the per-wiki `_meta.md` smart flag). Their
 /// comments the nightly cycle applies as fact ops, so the synchronous
-/// Submit is refused for them. A wiki that no longer resolves (deleted)
+/// button is refused for them. A wiki that no longer resolves (deleted)
 /// reads as not-standard — the row's own processor handles the
 /// `WikiNotFound` case downstream.
 fn is_standard_wiki(tree: &mwe_core::wiki::WikiTree, wiki_id: &str) -> Result<bool> {

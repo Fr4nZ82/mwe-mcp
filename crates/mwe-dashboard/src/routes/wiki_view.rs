@@ -1072,6 +1072,13 @@ async fn view_page(
     // Whether to offer the "✎ page description" affordance: standard wiki +
     // owner-or-admin. A non-owner reader never sees a link that would 404.
     let can_edit_meta = !frozen && may_edit_page_meta(&state.pool, memory, &wiki_id, &user).await?;
+    // Whether to offer "Mark as read" on a pending comment. Smart wikis
+    // only — the same gate `POST …/briefing-items/:bi_id/process`
+    // enforces, so the button is never rendered where it would 400.
+    let can_mark_read = !frozen
+        && wiki_get_meta(&memory.tree, &wiki_id)
+            .map_err(map_wiki_err)?
+            .smart;
 
     // Relative markdown links resolve against this page's directory,
     // same as the browser would — but rewritten to the canonical view
@@ -1091,6 +1098,7 @@ async fn view_page(
             can_edit_meta,
             reveal,
             frozen,
+            can_mark_read,
         },
         &|target| resolve_wikilink_href(&link_index, Some(wiki_id.as_str()), target),
         &|dest| {
@@ -1584,6 +1592,12 @@ struct PageViewFlags {
     /// `can_comment` and `can_edit_meta` are false, and changes the
     /// *reason* the page gives for it.
     frozen: bool,
+    /// The viewer may clear a pending comment off this page — a smart
+    /// wiki on a deployment that is not frozen. On a standard wiki the
+    /// nightly cycle reads the comment and changes the facts from it, so
+    /// clearing it by hand would drop the change on the floor, and
+    /// `POST …/process` refuses it: the button is not offered.
+    can_mark_read: bool,
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -1605,6 +1619,7 @@ fn render_view_page_body(
         can_edit_meta,
         reveal,
         frozen,
+        can_mark_read,
     } = flags;
     let view_url = format!("/dashboard/wiki/{}/view/{}", wiki_id.as_str(), page_path);
     let comment_mode_url = format!("{view_url}?mode=comment");
@@ -1625,7 +1640,10 @@ fn render_view_page_body(
         }
         if let Some(comments) = inline_by_anchor.remove(slug) {
             for c in &comments {
-                buf.push_str(&render_comment_block(c, /* orphaned */ false).into_string());
+                buf.push_str(
+                    &render_comment_block(wiki_id, c, /* orphaned */ false, can_mark_read)
+                        .into_string(),
+                );
             }
         }
         if buf.is_empty() { None } else { Some(buf) }
@@ -1703,7 +1721,7 @@ fn render_view_page_body(
                     "not lost when a heading is renamed."
                 }
                 @for c in &layout.orphaned {
-                    (render_comment_block(c, /* orphaned */ true))
+                    (render_comment_block(wiki_id, c, /* orphaned */ true, can_mark_read))
                 }
             }
         }
@@ -1787,7 +1805,14 @@ fn render_add_comment_cta_html(wiki_id: &WikiId, page_path: &str, anchor: &str) 
     .into_string()
 }
 
-fn render_comment_block(c: &PageComment, orphaned: bool) -> Markup {
+/// One pending comment, with the control that clears it when this wiki
+/// is one the reader may clear from ([`PageViewFlags::can_mark_read`]).
+fn render_comment_block(
+    wiki_id: &WikiId,
+    c: &PageComment,
+    orphaned: bool,
+    can_mark_read: bool,
+) -> Markup {
     let attribution = match (c.author_sender_id.as_deref(), c.source_kind.as_str()) {
         (Some(author), _) => format!("Comment by @{author}"),
         (None, "rem") => "From REM".to_owned(),
@@ -1814,6 +1839,20 @@ fn render_comment_block(c: &PageComment, orphaned: bool) -> Markup {
             }
             div.comment-body {
                 pre { (c.body) }
+            }
+            @if can_mark_read {
+                form.comment-action method="post"
+                    action=(format!(
+                        "/dashboard/wiki/{}/briefing-items/{}/process",
+                        wiki_id.as_str(),
+                        c.briefing_item_id,
+                    )) {
+                    button type="submit" { "Mark as read" }
+                    span.help.muted {
+                        "Takes it out of the consumer's inbox. Nothing the memory "
+                        "holds changes."
+                    }
+                }
             }
         }
     }

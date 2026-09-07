@@ -1441,6 +1441,33 @@
     font-family: inherit;
     font-size: 0.9rem;
   }
+  /* "Mark as read", with what it does beside it. Wraps to its own line
+     on a narrow screen instead of squeezing the button. */
+  .comment-block .comment-action {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    gap: 0.5rem;
+    margin-top: 0.5rem;
+  }
+  .comment-block .comment-action button {
+    padding: 0.15rem 0.6rem;
+    border: 1px solid var(--border);
+    border-radius: var(--radius);
+    background: var(--bg-3);
+    color: var(--text-dim);
+    font-family: inherit;
+    font-size: 0.8rem;
+    cursor: pointer;
+  }
+  .comment-block .comment-action button:hover {
+    color: var(--p);
+    border-color: var(--p);
+  }
+  .comment-block .comment-action .help {
+    font-size: 0.78rem;
+    margin: 0;
+  }
   section.orphaned-comments {
     margin-top: 1.5rem;
     padding-top: 1rem;

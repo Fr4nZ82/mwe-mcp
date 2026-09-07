@@ -21,9 +21,11 @@
 //! The same function is invoked **(a)** in batch by [`super::run_cycle`]
 //! over every pending non-smart row past the grace
 //! period and **(b)** synchronously by the dashboard endpoint
-//! `POST /dashboard/wiki/:id/briefing-items/:bi_id/process` when the
-//! operator clicks the "Submit" button on a non-smart wiki view
-//! and does not want to wait for the next REM tick.
+//! `POST /dashboard/wiki/:id/briefing-items/:bi_id/process`, behind the
+//! "Mark as read" button on a comment of a **smart** wiki's page view.
+//! That endpoint takes smart rows only: a comment on a standard wiki is
+//! what the cycle reads to change the facts, so clearing one by hand
+//! would drop the change.
 //!
 //! ## Policy: mark-passive (MVP default)
 //!
