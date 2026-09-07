@@ -31,6 +31,45 @@ Three steps: **get the binary → start the server → finish setup in the brows
 
 ---
 
+## Supported platforms
+
+Three, and they are all the gate: **Linux x86_64**, **macOS on Apple
+Silicon**, and **Windows x86_64**. Every push runs the whole test suite on
+all three, and a release publishes a prebuilt binary for each. On anything
+else — an Intel Mac, ARM Linux — you build from source, which works but is
+not something CI watches.
+
+What is verified is not the same on all three, so here is the split:
+
+| | Linux x86_64 | macOS (Apple Silicon) | Windows x86_64 |
+|---|---|---|---|
+| **CI: the full test suite on every push** | yes | yes | yes |
+| **A release publishes a prebuilt binary** | yes | yes | yes |
+| **Run as a service, restarting on boot** | the server sets it up for you (systemd) | you install the launchd plist ([Run it as a service](#run-it-as-a-service)) | you register the scheduled task ([Run it as a service](#run-it-as-a-service)) |
+| **`serve` refuses to start under your login account** | yes | no — the check reads Linux-only files | no |
+| **`mwe-mcp doctor` audits the workdir permissions** | yes | yes | no — it reads POSIX mode bits, and Windows uses ACLs |
+| **Desktop tray icon** | Linux only (see below) | — | — |
+
+Read the middle three rows together, because they are one thing: **the daemon
+belongs to an account nobody logs in with**, and on Linux the server insists
+on that and provisions it for you, while on macOS and Windows it is yours to
+set up and nothing stops you skipping it. The reason it matters is the same
+everywhere — per-reader redaction is applied when the server *renders* an
+answer, and the memory under the workdir is cleartext on disk, so anything
+running as an account that can read those files reads every fragment
+un-redacted. [Run it as a service](#run-it-as-a-service) is that setup, per
+platform.
+
+**The tray icon is Linux only.** `mwe-mcp-tray` is an optional desktop
+control surface — an icon that says whether the service is running, and a
+menu to start, stop and restart it. It is a separate binary that no release
+publishes: it talks to systemd, and it draws itself through the D-Bus status
+notifier protocol that KDE and GNOME implement and macOS and Windows do not.
+It controls nothing the dashboard and your platform's own service tools do
+not, so its absence costs you a convenience, not a capability.
+
+---
+
 ## 1. Get the binary
 
 **Linux / macOS** — download-and-run:
@@ -104,10 +143,11 @@ tools can read the cleartext memory past the per-reader redaction.
   to wall off. **Don't carry it into the same-machine case below**, and if an agent
   is doing the install, it must not use it at all (it is always co-located).
 
-  Run interactively it **offers to install a restart-on-boot systemd service**.
-  Put TLS in front (a reverse proxy or a Cloudflare Tunnel) — the endpoint is
-  JWT-gated but plain HTTP — and mint `exposed` (30-day) tokens for remote
-  consumers.
+  On Linux, run interactively, it **offers to install a restart-on-boot
+  systemd service**; on macOS and Windows you set that up yourself, in
+  [Run it as a service](#run-it-as-a-service). Put TLS in front (a reverse
+  proxy or a Cloudflare Tunnel) — the endpoint is JWT-gated but plain HTTP —
+  and mint `exposed` (30-day) tokens for remote consumers.
 - **Same machine as a consumer agent** (e.g. Hermes) — the boundary is real, so run
 
   ```bash
@@ -115,10 +155,12 @@ tools can read the cleartext memory past the per-reader redaction.
   ```
 
   **with no `--bypassdedicateduser`** — passing it would disable exactly the
-  boundary you need here. `serve` **won't start under your login account**: from an
-  interactive terminal it **offers to provision a dedicated `mwe-mcp` user**, lock
-  the workdir, and install the systemd service for you. Let that prompt run; the
-  local consumer then connects to `127.0.0.1`.
+  boundary you need here. On Linux `serve` **won't start under your login
+  account**: from an interactive terminal it **offers to provision a dedicated
+  `mwe-mcp` user**, lock the workdir, and install the systemd service for you.
+  Let that prompt run; the local consumer then connects to `127.0.0.1`. On
+  macOS and Windows nothing refuses, so this is the case where you must do it
+  yourself — [Run it as a service](#run-it-as-a-service) is the walkthrough.
 
 The full ordered rules (separate machines > separate users > same user) live in
 [`INTEGRATING.md`](INTEGRATING.md#deployment-security--where-to-run-the-consumer).
@@ -175,6 +217,136 @@ through everything — no YAML to hand-edit, no credentials to hand to anyone el
    > user created here.
 
 That's it — you have a running, governed memory.
+
+---
+
+## Run it as a service
+
+A server you have to remember to start is a memory that is missing whenever
+you forgot. This section makes `mwe-mcp` a background daemon that comes back
+after a reboot and restarts if it crashes — and, just as important, one that
+runs as **an account nobody logs in with**.
+
+That account is the point of the exercise. The per-reader redaction is
+applied when the server renders an answer, but `wikis/` and `engine.db` under
+the workdir are plain files. Any process running as an account that can read
+them reads the un-redacted union of every fragment, whoever it was about — a
+co-located agent with file tools included. Giving the daemon its own account,
+and the workdir to that account alone, is what keeps them out.
+
+### Linux — the server does it for you
+
+Run `mwe-mcp serve` in a terminal. It refuses to start under your login
+account and offers to do the whole thing: create the `mwe-mcp` system
+account, move the workdir to `/home/mwe-mcp/workdir` and lock it to `700`,
+install the binary to `/usr/local/bin/mwe-mcp`, write the systemd unit and
+start it. Say yes and it hands the port to the service before it exits.
+
+```bash
+sudo systemctl status mwe-mcp     # is it running?
+sudo systemctl restart mwe-mcp    # after a binary swap
+journalctl -u mwe-mcp -f          # follow the logs
+```
+
+There is nothing to copy from this repository: the unit is rendered by the
+binary itself, so it always agrees with the binary that will run it.
+
+### macOS — a launchd daemon
+
+The plist is [`packaging/macos/com.mwe-mcp.server.plist`](packaging/macos/com.mwe-mcp.server.plist).
+Provision the account and the directories it names, then load it:
+
+```bash
+# 1. A hidden role account with no login shell. macOS names these with a
+#    leading underscore and hides UIDs under 500; check 401 is free first:
+#      dscl . -list /Users UniqueID | awk '{print $2}' | sort -n | tail -20
+sudo dscl . -create /Groups/_mwe-mcp PrimaryGroupID 401
+sudo dscl . -create /Users/_mwe-mcp UserShell /usr/bin/false
+sudo dscl . -create /Users/_mwe-mcp UniqueID 401
+sudo dscl . -create /Users/_mwe-mcp PrimaryGroupID 401
+sudo dscl . -create /Users/_mwe-mcp NFSHomeDirectory /usr/local/var/mwe-mcp
+
+# 2. The binary where the daemon can exec it, and its own tree, owner-only.
+sudo install -m 755 ./mwe-mcp /usr/local/bin/mwe-mcp
+sudo mkdir -p /usr/local/var/mwe-mcp/{workdir,cache,logs}
+sudo chown -R _mwe-mcp:_mwe-mcp /usr/local/var/mwe-mcp
+sudo chmod -R go-rwx /usr/local/var/mwe-mcp
+
+# 3. The daemon. launchd refuses a plist anyone but root can write.
+sudo install -m 644 -o root -g wheel \
+  packaging/macos/com.mwe-mcp.server.plist /Library/LaunchDaemons/
+sudo launchctl bootstrap system /Library/LaunchDaemons/com.mwe-mcp.server.plist
+```
+
+```bash
+sudo launchctl print system/com.mwe-mcp.server         # is it running?
+sudo launchctl kickstart -k system/com.mwe-mcp.server  # restart
+sudo tail -f /usr/local/var/mwe-mcp/workdir/logs/mwe-mcp.log*  # the server's log
+sudo tail -f /usr/local/var/mwe-mcp/logs/launchd.log   # launchd starting it
+```
+
+The server writes its own rotating log under the workdir, dated daily; the
+plist's `StandardOutPath` catches what launchd sees around it.
+
+To remove it: `sudo launchctl bootout system/com.mwe-mcp.server`.
+
+Moving an existing workdir into place? Copy it before the `chown`, and let
+the first boot re-download the bge-m3 weights (~2.2 GB) into the daemon's own
+cache — the plist pins `XDG_CACHE_HOME` inside its tree so they never land in
+a home directory it does not own.
+
+### Windows — a scheduled task at boot
+
+The task definition is [`packaging/windows/mwe-mcp-task.xml`](packaging/windows/mwe-mcp-task.xml).
+**A scheduled task, not a Windows service:** `mwe-mcp.exe` is a console
+program and does not speak the service control protocol, so a service made
+with `sc.exe create` is killed at start with error 1053. The task gives the
+two properties that actually matter — it starts at boot, and it runs as an
+account you never log in with.
+
+Run these in an **elevated** PowerShell, from the folder you unzipped:
+
+```powershell
+# 1. The dedicated local account, kept out of the interactive path.
+$cred = Get-Credential -UserName mwe-mcp -Message "choose a password for the service account"
+New-LocalUser -Name mwe-mcp -Password $cred.Password -PasswordNeverExpires `
+              -Description "mwe-mcp service account" -UserMayNotChangePassword
+# Then deny it interactive and network logon in secpol.msc → Local Policies →
+# User Rights Assignment ("Deny log on locally", "Deny access to this computer
+# from the network"). It only ever needs to run as a batch job.
+
+# 2. The binary and its tree, readable by that account and nobody else.
+New-Item -ItemType Directory -Force "C:\Program Files\mwe-mcp",
+                                    "C:\ProgramData\mwe-mcp\workdir",
+                                    "C:\ProgramData\mwe-mcp\cache"
+Copy-Item .\mwe-mcp.exe "C:\Program Files\mwe-mcp\"
+icacls "C:\ProgramData\mwe-mcp" /inheritance:r `
+       /grant "mwe-mcp:(OI)(CI)F" /grant "Administrators:(OI)(CI)F" /T
+
+# 3. Where the bge-m3 weights (~2.2 GB) go. Machine-wide, because on Windows
+#    the server has no home directory to fall back on and would otherwise
+#    write them relative to its working directory.
+[Environment]::SetEnvironmentVariable(
+  "XDG_CACHE_HOME", "C:\ProgramData\mwe-mcp\cache", "Machine")
+
+# 4. The task itself, running as that account.
+Register-ScheduledTask -TaskName mwe-mcp `
+  -Xml (Get-Content .\packaging\windows\mwe-mcp-task.xml -Raw) `
+  -User $cred.UserName -Password $cred.GetNetworkCredential().Password
+Start-ScheduledTask -TaskName mwe-mcp
+```
+
+```powershell
+Get-ScheduledTaskInfo -TaskName mwe-mcp    # last run, last result
+Stop-ScheduledTask  -TaskName mwe-mcp
+Start-ScheduledTask -TaskName mwe-mcp      # restart, after a binary swap
+Get-Content "C:\ProgramData\mwe-mcp\workdir\logs\mwe-mcp.log*" -Wait
+```
+
+To remove it: `Unregister-ScheduledTask -TaskName mwe-mcp -Confirm:$false`.
+
+The task file ships in the release archive alongside the binary, so
+`.\packaging\windows\mwe-mcp-task.xml` is where you unzipped it.
 
 ---
 
@@ -258,7 +430,9 @@ Three things are worth knowing before you set one:
 > per-reader redaction happens when the server renders a response, not on disk.
 > Keep the workdir on a machine/user that is allowed to see the memory, and
 > `chmod 700` it. `mwe-mcp serve` warns on a world-/group-readable workdir and
-> `mwe-mcp doctor` reports every loose path with a fix. For a **multi-user** memory
+> `mwe-mcp doctor` reports every loose path with a fix — both read POSIX mode
+> bits, so on Windows, where permissions are ACLs, they find nothing to
+> report and the workdir is yours to lock down. For a **multi-user** memory
 > or when the consumer agent runs with shell/file tools, read the topology rules in
 > [`INTEGRATING.md`](INTEGRATING.md#deployment-security--where-to-run-the-consumer).
 
@@ -312,7 +486,9 @@ The defaults are already conservative; production exposure adds seven habits:
    time; the files are cleartext on disk. The workdir permission rules and
    the consumer co-location topology are in
    [`INTEGRATING.md`](INTEGRATING.md#deployment-security--where-to-run-the-consumer)
-   — `mwe-mcp doctor` audits the current install and prints fixes.
+   — `mwe-mcp doctor` audits the current install and prints fixes on Linux and
+   macOS. On Windows it has no mode bits to read, so lock the workdir with
+   `icacls` as [Run it as a service](#run-it-as-a-service) does.
 7. **Give a busy consumer its own ceiling.** Every token is already held to
    one: 120 calls a minute and 3 000 an hour, of which 30 a minute and 600 an
    hour may be the calls that run a model or an embedding (`wiki_ingest_message`,

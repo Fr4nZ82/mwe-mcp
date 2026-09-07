@@ -85,6 +85,9 @@ jobs:
           features: local-embedder
           archive: mwe-mcp-$tag-$target
           checksum: sha256
-          include: README.md,LICENSE,LICENSING.md
+          # `packaging/` carries the launchd plist and the Windows scheduled
+          # task INSTALL.md tells the operator to register; they are no use
+          # to somebody who only has the archive unless they are in it.
+          include: README.md,LICENSE,LICENSING.md,INSTALL.md,packaging
           token: ${{ secrets.GITHUB_TOKEN }}
           dry-run: ${{ github.ref_type != 'tag' }}

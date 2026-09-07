@@ -119,12 +119,18 @@ impl UserClass {
 
 /// Classify the current effective user for the dedicated-user gate.
 ///
-/// Linux-only (reads `/proc/self/status` + `/etc/passwd`, no FFI so the crate
-/// stays `#![forbid(unsafe_code)]`); other targets return [`UserClass::Dedicated`]
-/// since the gate's macOS/Windows form is tracked separately. A
-/// uid we cannot resolve is treated as dedicated — the human-mistake case
-/// (running as your own login account) always has a `/etc/passwd` entry with a
-/// real shell and is caught.
+/// The classification is **Linux-only**: it reads `/proc/self/status` and
+/// `/etc/passwd`, which is how the crate answers "who am I running as"
+/// without FFI and so stays `#![forbid(unsafe_code)]`. A uid it cannot
+/// resolve is treated as dedicated — the human-mistake case (running as your
+/// own login account) always has a `/etc/passwd` entry with a real shell and
+/// is caught.
+///
+/// On macOS and Windows there is no equivalent to read, so the gate does not
+/// fire there and `INSTALL.md` tells the operator that provisioning the
+/// account is theirs to do. Making it fire would mean refusing to boot on two
+/// platforms where every existing install runs as a login account today, so
+/// it is a decision for the owner rather than a gap to close quietly.
 #[cfg(target_os = "linux")]
 #[must_use]
 pub fn classify_current_user() -> UserClass {
@@ -145,8 +151,9 @@ pub fn classify_current_user() -> UserClass {
     }
 }
 
-/// Non-Linux: the gate's form for this OS is tracked separately;
-/// do not block here.
+/// On a platform whose account model this crate cannot read, the gate has
+/// nothing to judge and does not block. See the Linux arm above for why that
+/// is where the decision sits.
 #[cfg(not(target_os = "linux"))]
 #[must_use]
 pub fn classify_current_user() -> UserClass {

@@ -1,0 +1,71 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!--
+  mwe-mcp as a Windows scheduled task started at boot, running as the
+  dedicated local account `mwe-mcp`. Register it with
+
+      schtasks /create /tn mwe-mcp /xml packaging\windows\mwe-mcp-task.xml /ru mwe-mcp /rp <password>
+
+  The file is UTF-8; Task Scheduler exports UTF-16, and `schtasks` rejects a
+  file whose declared encoding does not match its bytes, so the declaration
+  above says what this file actually is.
+
+  A scheduled task rather than a Windows service: `mwe-mcp.exe` is a console
+  program and does not implement the service control protocol, so `sc.exe
+  create` produces a service that Windows kills at start with error 1053.
+  The task gives the same two properties that matter — it starts at boot and
+  it runs as an account nobody logs in with. The step-by-step is in
+  INSTALL.md ("Run it as a service").
+
+  Adjust the port and the bind address to your topology; every other value
+  matches the paths INSTALL.md provisions.
+-->
+<Task version="1.4" xmlns="http://schemas.microsoft.com/windows/2004/02/mit/task">
+  <RegistrationInfo>
+    <Description>mwe-mcp — agent-agnostic memory MCP server</Description>
+    <URI>\mwe-mcp</URI>
+  </RegistrationInfo>
+  <Triggers>
+    <BootTrigger>
+      <Enabled>true</Enabled>
+    </BootTrigger>
+  </Triggers>
+  <Principals>
+    <Principal id="Author">
+      <UserId>mwe-mcp</UserId>
+      <LogonType>Password</LogonType>
+      <RunLevel>LeastPrivilege</RunLevel>
+    </Principal>
+  </Principals>
+  <Settings>
+    <MultipleInstancesPolicy>IgnoreNew</MultipleInstancesPolicy>
+    <DisallowStartIfOnBatteries>false</DisallowStartIfOnBatteries>
+    <StopIfGoingOnBatteries>false</StopIfGoingOnBatteries>
+    <AllowHardTerminate>true</AllowHardTerminate>
+    <StartWhenAvailable>true</StartWhenAvailable>
+    <RunOnlyIfNetworkAvailable>false</RunOnlyIfNetworkAvailable>
+    <IdleSettings>
+      <StopOnIdleEnd>false</StopOnIdleEnd>
+      <RestartOnIdle>false</RestartOnIdle>
+    </IdleSettings>
+    <AllowStartOnDemand>true</AllowStartOnDemand>
+    <Enabled>true</Enabled>
+    <Hidden>false</Hidden>
+    <RunOnlyIfIdle>false</RunOnlyIfIdle>
+    <WakeToRun>false</WakeToRun>
+    <!-- A server runs until it is stopped; the default is 72 hours. -->
+    <ExecutionTimeLimit>PT0S</ExecutionTimeLimit>
+    <Priority>7</Priority>
+    <!-- The scheduler's equivalent of Restart=on-failure. -->
+    <RestartOnFailure>
+      <Interval>PT1M</Interval>
+      <Count>3</Count>
+    </RestartOnFailure>
+  </Settings>
+  <Actions Context="Author">
+    <Exec>
+      <Command>C:\Program Files\mwe-mcp\mwe-mcp.exe</Command>
+      <Arguments>serve --workdir C:\ProgramData\mwe-mcp\workdir --bind 127.0.0.1 --port 8742</Arguments>
+      <WorkingDirectory>C:\ProgramData\mwe-mcp</WorkingDirectory>
+    </Exec>
+  </Actions>
+</Task>

@@ -183,15 +183,20 @@ server still starts). Encryption-at-rest is *not* a substitute — a
 co-located process running as the same user can reach the key.
 
 The **same-user** case (option 3) is the one `chmod 700` cannot fix — a
-process running as *you* reads the bytes regardless. So `serve` goes
-beyond advisory there: it **refuses to boot as a login account or root**,
-and on an interactive terminal **offers to provision the dedicated-user
-systemd service** (creates the `mwe-mcp` account, relocates and locks the
-workdir, installs + starts `mwe-mcp.service`) — the one-prompt path to
-option 2. The full walkthrough is in
-[`INSTALL.md` §"Start the server"](INSTALL.md#2-start-the-server);
-`--bypassdedicateduser` is the explicit opt-out for hosts where a
-dedicated account is impossible (containers, some managed servers).
+process running as *you* reads the bytes regardless. So on Linux `serve`
+goes beyond advisory there: it **refuses to boot as a login account or
+root**, and on an interactive terminal **offers to provision the
+dedicated-user systemd service** (creates the `mwe-mcp` account, relocates
+and locks the workdir, installs + starts `mwe-mcp.service`) — the one-prompt
+path to option 2. `--bypassdedicateduser` is the explicit opt-out for hosts
+where a dedicated account is impossible (containers, some managed servers).
+
+The refusal reads `/proc` and `/etc/passwd`, so **on macOS and Windows it
+does not fire** and nothing stops you running the daemon as yourself. The
+reasoning above applies there unchanged; only the enforcement is missing, so
+provisioning the account is yours to do —
+[`INSTALL.md` §"Run it as a service"](INSTALL.md#run-it-as-a-service) is the
+walkthrough for all three platforms.
 
 Two more operational rules learned the same way:
 

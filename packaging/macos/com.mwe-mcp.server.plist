@@ -1,0 +1,71 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<!--
+  mwe-mcp as a launchd system daemon, running as the dedicated `_mwe-mcp`
+  account. Install to /Library/LaunchDaemons/com.mwe-mcp.server.plist, owned
+  by root:wheel, mode 644 — launchd refuses a daemon plist that anyone else
+  can write. The step-by-step is in INSTALL.md ("Run it as a service").
+
+  Adjust the port and the bind address to your topology; every other value
+  matches the paths INSTALL.md provisions.
+-->
+<plist version="1.0">
+<dict>
+  <!-- Must match the filename stem, or `launchctl bootstrap` refuses it. -->
+  <key>Label</key>
+  <string>com.mwe-mcp.server</string>
+
+  <key>ProgramArguments</key>
+  <array>
+    <string>/usr/local/bin/mwe-mcp</string>
+    <string>serve</string>
+    <string>--workdir</string>
+    <string>/usr/local/var/mwe-mcp/workdir</string>
+    <string>--bind</string>
+    <string>127.0.0.1</string>
+    <string>--port</string>
+    <string>8742</string>
+  </array>
+
+  <!-- The dedicated account. It owns the workdir and has no login shell, so
+       no interactive user shares its view of the cleartext memory. -->
+  <key>UserName</key>
+  <string>_mwe-mcp</string>
+  <key>GroupName</key>
+  <string>_mwe-mcp</string>
+
+  <key>WorkingDirectory</key>
+  <string>/usr/local/var/mwe-mcp</string>
+
+  <key>EnvironmentVariables</key>
+  <dict>
+    <!-- The bge-m3 weights (~2.2 GB, fetched once) land under
+         $XDG_CACHE_HOME/mwe-mcp/models/. Pinned inside the daemon's own
+         tree so they are not written to a home directory it does not own. -->
+    <key>XDG_CACHE_HOME</key>
+    <string>/usr/local/var/mwe-mcp/cache</string>
+    <key>HOME</key>
+    <string>/usr/local/var/mwe-mcp</string>
+  </dict>
+
+  <key>RunAtLoad</key>
+  <true/>
+  <!-- Restart on a crash, stay down after a clean exit — the launchd
+       equivalent of systemd's Restart=on-failure. -->
+  <key>KeepAlive</key>
+  <dict>
+    <key>SuccessfulExit</key>
+    <false/>
+  </dict>
+  <key>ThrottleInterval</key>
+  <integer>10</integer>
+
+  <!-- Whatever the process writes to stdout/stderr, which is mostly launchd's
+       own view of it starting and stopping. The server's own rotating log is
+       the one to read: <workdir>/logs/mwe-mcp.log, dated daily. -->
+  <key>StandardOutPath</key>
+  <string>/usr/local/var/mwe-mcp/logs/launchd.log</string>
+  <key>StandardErrorPath</key>
+  <string>/usr/local/var/mwe-mcp/logs/launchd.log</string>
+</dict>
+</plist>

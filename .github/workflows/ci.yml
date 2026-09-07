@@ -40,12 +40,11 @@ jobs:
   test:
     name: cargo test (${{ matrix.os }})
     runs-on: ${{ matrix.os }}
-    # Windows is best-effort for now: binaries build and ship, but a family
-    # of recall/region tests behaves differently on windows-latest and needs
-    # a real Windows box to investigate — tracked in issue #1. The job stays
-    # visible (and exhaustive, via --no-fail-fast) without blocking releases;
-    # Linux and macOS remain the hard gate.
-    continue-on-error: ${{ matrix.os == 'windows-latest' }}
+    # All three are the gate. `mwe-mcp` ships prebuilt binaries for Linux,
+    # macOS and Windows, so a suite that is green on one of them says
+    # nothing about what the other two download. `fail-fast: false` runs
+    # every OS to completion, and `--no-fail-fast` every test within it, so
+    # one red platform still reports the whole picture.
     strategy:
       fail-fast: false
       matrix:
