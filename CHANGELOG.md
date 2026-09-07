@@ -216,8 +216,11 @@ and in the dashboard's session check. Ten migrations, `0068` through `0077`.
   server address a consumer is pointed at are read and rendered for an admin
   alone, because they are taken across everybody's memory, past the
   per-fragment ACL — a reader could not reproduce them and they are not about
-  them. A test walks every page a reader passes through and fails on any link
-  that would refuse them.
+  them. The top bar follows: **Skills** and **Bridges** are what a consumer is
+  taught and how it is wired in, which is the operator's job, so they are
+  offered to the operator — both pages stay mounted for everyone, because they
+  are somebody's job and not a secret. A test walks every page a reader passes
+  through and fails on any link that would refuse them.
 
   Columns and knobs stopped being database fields read aloud. The fact browser
   headed its columns `fact_id`, `wiki_id`, `salience`, `allow_ids`,

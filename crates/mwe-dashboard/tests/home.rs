@@ -1,9 +1,11 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
-//! What the landing page shows, and to whom.
+//! What a person sees when they sign in: the landing page, and the bar
+//! above it.
 //!
-//! Two questions live here: the sentence a fresh install opens with (the
-//! model slots that have nothing behind them), and the split between what
-//! a person sees on arrival and what belongs to the operator.
+//! Three questions live here: the sentence a fresh install opens with (the
+//! model slots that have nothing behind them), the split between what a
+//! person sees on arrival and what belongs to the operator, and which
+//! entries the top bar offers each of them.
 
 mod common;
 
@@ -179,4 +181,67 @@ async fn the_admin_still_gets_the_deployment_counts_and_the_address() {
     // And their own memory is still on it — the split is about what is
     // added for an operator, not about taking their own memory away.
     assert!(html.contains("Your memory"), "{html}");
+}
+
+/// Skills and Bridges are the operator's work — what a consumer is taught,
+/// and how it is wired in. The bar offers them to whoever does that work,
+/// and to nobody else; the pages themselves stay mounted for everyone.
+#[tokio::test]
+async fn the_bar_offers_skills_and_bridges_to_the_admin_alone() {
+    let (app, pool, _tree, _dir) = make_app_with_memory().await;
+    let admin = login_as_admin(&app, &pool).await;
+    let bob = make_member(&app, &pool, &admin, "bob").await;
+
+    let readers = home_page(&app, &bob).await;
+    for operators_own in ["/dashboard/skills", "/dashboard/bridges"] {
+        assert!(
+            !readers.contains(operators_own),
+            "a reader's bar must not offer `{operators_own}`: {readers}"
+        );
+    }
+    // What the reader keeps: the entries that are about their own memory.
+    for theirs in [
+        "/dashboard/wiki",
+        "/dashboard/facts",
+        "/dashboard/recall-traces",
+    ] {
+        assert!(
+            readers.contains(theirs),
+            "the bar lost `{theirs}`: {readers}"
+        );
+    }
+
+    let operators = home_page(&app, &admin).await;
+    for entry in [
+        r#"href="/dashboard/skills""#,
+        r#"href="/dashboard/bridges""#,
+    ] {
+        assert!(
+            operators.contains(entry),
+            "the admin's bar lost `{entry}`: {operators}"
+        );
+    }
+}
+
+/// The two pages are somebody's job, not a secret: a reader who has the
+/// address still gets the page rather than a refusal.
+#[tokio::test]
+async fn skills_and_bridges_still_answer_a_reader_who_asks_for_them() {
+    let (app, pool, _tree, _dir) = make_app_with_memory().await;
+    let admin = login_as_admin(&app, &pool).await;
+    let bob = make_member(&app, &pool, &admin, "bob").await;
+
+    for page in ["/skills", "/bridges"] {
+        let response = send(
+            &app,
+            Request::builder()
+                .uri(page)
+                .header(header::HOST, "memory.example.org")
+                .header(header::COOKIE, bob.as_str())
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await;
+        assert_eq!(response.status(), StatusCode::OK, "{page}");
+    }
 }

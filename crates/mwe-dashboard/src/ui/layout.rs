@@ -345,9 +345,18 @@ fn header(read_only: bool, demo_identities: &[String], user: Option<&SessionUser
                     // tab bar on the page itself (`wiki_view::wiki_family_tabs`),
                     // so no wiki appears under two nav links.
                     (nav_link("/dashboard/wiki", "Wikis"))
-                    (nav_link("/dashboard/skills", "Skills"))
+                    // "Skills" and "Bridges" are the operator's work — what
+                    // a consumer is taught and how it is wired in — so they
+                    // are in the bar for whoever does it. Both pages stay
+                    // mounted for everyone: they are somebody's job, not a
+                    // secret, and a reader who has the address gets the page.
+                    @if u.is_admin {
+                        (nav_link("/dashboard/skills", "Skills"))
+                    }
                     (nav_link("/dashboard/facts", "Facts"))
-                    (nav_link("/dashboard/bridges", "Bridges"))
+                    @if u.is_admin {
+                        (nav_link("/dashboard/bridges", "Bridges"))
+                    }
                     // "Traces" — your own last recalls and the 3D replay of
                     // the route each took. Not admin-gated: a trace belongs
                     // to the sender it was recorded for, so reading your own
