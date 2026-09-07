@@ -30,7 +30,10 @@ that goes stale first. Where the guide must state a number — a token's
 lifetime, a retention window, the percentage the budget warns at — it is taken
 from `config.rs` and the module that reads it, not from another document. Where
 the dashboard already has a word for a thing, the guide repeats that word: one
-name per thing across the dashboard, the skills and the guide.
+name per thing across the dashboard, the skills and the guide. The dashboard
+serves this same folder: `crates/mwe-dashboard/src/routes/guide.rs` embeds it
+into the binary and puts it under **Guide** in the top bar, so a page is read
+where it is verified and there is no second copy to keep in step.
 
 **The rule that keeps it true, and the whole reason the folder is allowed to
 exist:** *before every release, every page of the guide is re-verified on the

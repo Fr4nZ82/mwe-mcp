@@ -125,6 +125,7 @@ async fn a_reader_is_never_pointed_at_a_page_that_refuses_them() {
         "/settings/2fa",
         "/chat",
         "/help",
+        "/guide",
     ] {
         let response = send(
             &app,

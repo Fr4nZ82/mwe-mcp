@@ -31,6 +31,7 @@ mod smart_view;
 /// `chat` route module's internals.
 pub use chat::BUNDLED_AGENTIC_PROMPT_MD;
 mod groups;
+pub(crate) mod guide;
 mod help;
 mod home;
 mod invitations;
@@ -74,6 +75,7 @@ pub fn build(state: DashboardState) -> Router {
         .merge(sections_view::router())
         .merge(media::router())
         .merge(help::router())
+        .merge(guide::router())
         .merge(briefing::router())
         .merge(chat::router())
         .merge(recall_traces::router())

@@ -1314,11 +1314,11 @@
 
   /* Prose styles for the markdown preview rendered by
      `md_render::render`. Sits inside `<section
-     class="wiki-page-view prose">` on both the page viewer
-     (/dashboard/wiki/:id/view/*path) and the wiki home's index.md
-     preview. The container itself gets the panel frame so
-     interleaved comment blocks remain visually distinct from
-     prose paragraphs. */
+     class="wiki-page-view prose">` on the page viewer
+     (/dashboard/wiki/:id/view/*path), the wiki home's index.md
+     preview, and the guide (/dashboard/guide). The container itself
+     gets the panel frame so interleaved comment blocks remain
+     visually distinct from prose paragraphs. */
   .wiki-page-view.prose {
     background: var(--bg-1);
     border: 1px solid var(--border);

@@ -1,5 +1,6 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
-//! Markdown → HTML rendering for the dashboard wiki page preview.
+//! Markdown → HTML rendering for the dashboard's markdown surfaces: the
+//! memory-explorer page preview, the chat reply, and the guide.
 //!
 //! Built on top of [`pulldown_cmark`] with four opinionated tweaks:
 //!
@@ -62,16 +63,18 @@
 //!   is emitted as raw HTML right after the heading's closing tag.
 //!   The comment viewer uses this to interleave the
 //!   "+ Comment on #slug" CTA and the inline comment blocks.
-//! - [`render_page`] — the memory-explorer page surface: reveal switch,
-//!   heading injections, and a [`PageRenderContext`] for wikilink
-//!   click-through + fact-ref anchors.
+//! - [`render_page`] — a surface whose links are rewritten: reveal switch,
+//!   heading injections, and a [`PageRenderContext`]. The memory explorer
+//!   takes all of it (wikilink click-through, fact-ref anchors); the guide
+//!   takes the link rewrite alone.
 
 use mwe_core::briefing::slug_from_heading;
 use mwe_core::types::{CatalogId, FactId};
 use pulldown_cmark::{CowStr, Event, HeadingLevel, Options, Parser, Tag, TagEnd};
 
-/// Per-render context for the memory-explorer page surfaces
-/// (`/dashboard/wiki/:id` + `/dashboard/wiki/:id/view/*path`).
+/// Per-render context for the surfaces whose markdown links are
+/// rewritten: the memory-explorer pages (`/dashboard/wiki/:id` +
+/// `/dashboard/wiki/:id/view/*path`) and the guide (`/dashboard/guide`).
 pub struct PageRenderContext<'a> {
     /// Resolve one raw wikilink target (the part before any `|` alias,
     /// e.g. `famiglia` or `famiglia/albero_genealogico`) to an
@@ -87,8 +90,10 @@ pub struct PageRenderContext<'a> {
     /// this to point wiki-relative `page.md` links at the canonical
     /// `/view/` route — the wiki home renders at `/dashboard/wiki/:id`,
     /// where the browser would resolve them against `/dashboard/wiki/`
-    /// into dead URLs. Return `None` to keep the author's destination
-    /// untouched (absolute URLs, `#anchors`, unresolved targets).
+    /// into dead URLs; the guide uses it to point the relative links its
+    /// pages carry for GitHub at the routes that serve them here. Return
+    /// `None` to keep the author's destination untouched (absolute URLs,
+    /// `#anchors`, unresolved targets).
     pub resolve_md_link: &'a dyn Fn(&str) -> Option<String>,
     /// Rewrite `{{factref=<fact_id>}}` markers into superscript anchors
     /// to `/dashboard/facts/<id>/edit` (the fact's record). Enabled only
@@ -103,12 +108,14 @@ pub fn render(body: &str) -> String {
     render_with_heading_injections(body, |_| None)
 }
 
-/// The memory-explorer page render.
+/// The render for a page whose links are rewritten — the memory
+/// explorer's pages and the guide's.
 ///
 /// `reveal` picks the admin ACL-reveal wrapper pass-through (see
-/// [`render_reveal`]), `ctx` enables wikilink click-through + fact-ref
-/// anchors, and `inject_after_heading` is the per-heading comment/CTA
-/// hook of [`render_with_heading_injections`].
+/// [`render_reveal`]), `ctx` carries the link rewrites (and, for the
+/// memory explorer, wikilink click-through + fact-ref anchors), and
+/// `inject_after_heading` is the per-heading comment/CTA hook of
+/// [`render_with_heading_injections`].
 pub fn render_page<F>(
     body: &str,
     reveal: bool,

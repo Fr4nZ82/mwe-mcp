@@ -234,6 +234,15 @@ one for whoever the memory is about.
   before a release ships, and a page nobody can verify is deleted rather than
   kept.
 
+- **The guide is in the dashboard too, under Guide.** The pages of
+  [`docs/`](docs/) travel inside the binary, so a server serves the guide it
+  was built from and there is one copy to keep true. The top bar has a
+  **Guide** entry for everybody, and a screen the guide covers with one page
+  of its own carries a small **?** beside its title that opens it. Each half
+  goes to whoever it is for: the operator's pages need the admin account, the
+  rest opens for anybody signed in, and the map shows each reader the half
+  that is theirs.
+
 ### Changed
 
 - **The dashboard says what the engine does.** Its prose had been left behind

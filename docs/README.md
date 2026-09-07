@@ -3,6 +3,13 @@
 This is the guide for **people**: the operator who installs and runs the
 server, and everybody whose memory it holds.
 
+## Where to read it
+
+Here, and in the dashboard. The server carries these pages inside its binary
+and serves them under **Guide** in the top bar, so what you read there is this
+folder as your server was built from it. The operator's half needs the admin
+account there; everything else opens for anybody signed in.
+
 ## The rule that keeps it true
 
 **Before every release, every page here is opened again against the running
@@ -103,10 +110,10 @@ Then running it day to day:
 
 ## The documents that are not this guide
 
-- [`../INSTALL.md`](../INSTALL.md) — getting the binary, running it as a
+- [`INSTALL.md`](../INSTALL.md) — getting the binary, running it as a
   service, deployment topologies, the hardening checklist.
-- [`../INTEGRATING.md`](../INTEGRATING.md) — wiring your own consumer: the
+- [`INTEGRATING.md`](../INTEGRATING.md) — wiring your own consumer: the
   per-turn contract, tokens, transports.
-- [`../AGENT_INSTRUCTIONS.md`](../AGENT_INSTRUCTIONS.md) — what an *agent*
+- [`AGENT_INSTRUCTIONS.md`](../AGENT_INSTRUCTIONS.md) — what an *agent*
   reads to connect itself.
-- [`../CHANGELOG.md`](../CHANGELOG.md) — what shipped, release by release.
+- [`CHANGELOG.md`](../CHANGELOG.md) — what shipped, release by release.

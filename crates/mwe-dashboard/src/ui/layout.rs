@@ -114,7 +114,15 @@ pub fn anonymous_page(title: &str, body: &Markup) -> String {
     // No nav, a single focused form (login / setup / invite / recovery): the
     // `anon-shell` class centers it as a narrow column (see `tailwind/app.css`) instead of
     // pinning it to the left of a wide empty page.
-    shell(Chrome::default(), title, None, "anon-shell", body).into_string()
+    shell(
+        Chrome::default(),
+        title,
+        None,
+        "anon-shell",
+        body,
+        /* offer_screen_guide */ false,
+    )
+    .into_string()
 }
 
 /// Like [`anonymous_page`] but for an *informational / onboarding* anonymous
@@ -128,7 +136,15 @@ pub fn anonymous_page(title: &str, body: &Markup) -> String {
 /// panel: the visitor is anonymous.
 #[must_use]
 pub fn anonymous_reading_page(title: &str, body: &Markup) -> String {
-    shell(Chrome::default(), title, None, "reading-main", body).into_string()
+    shell(
+        Chrome::default(),
+        title,
+        None,
+        "reading-main",
+        body,
+        /* offer_screen_guide */ false,
+    )
+    .into_string()
 }
 
 /// Like [`anonymous_reading_page`] but centred — a **hero**: one line of
@@ -149,6 +165,7 @@ pub fn anonymous_hero_page(title: &str, body: &Markup) -> String {
         None,
         "reading-main text-center",
         body,
+        /* offer_screen_guide */ false,
     )
     .into_string()
 }
@@ -164,7 +181,15 @@ pub fn authenticated_page(
     body: &Markup,
 ) -> String {
     let class = chrome.body_class(false);
-    shell(chrome, title, Some(user), class, body).into_string()
+    shell(
+        chrome,
+        title,
+        Some(user),
+        class,
+        body,
+        /* offer_screen_guide */ true,
+    )
+    .into_string()
 }
 
 /// Like [`authenticated_page`] but for a **reading / single-form** surface
@@ -182,14 +207,50 @@ pub fn authenticated_reading_page(
     body: &Markup,
 ) -> String {
     let class = chrome.body_class(true);
-    shell(chrome, title, Some(user), class, body).into_string()
+    shell(
+        chrome,
+        title,
+        Some(user),
+        class,
+        body,
+        /* offer_screen_guide */ true,
+    )
+    .into_string()
+}
+
+/// Like [`authenticated_reading_page`], for a page **of the guide**
+/// ([`crate::routes::guide`]).
+///
+/// The one difference is the mark beside the title: every other screen
+/// offers a small **?** into the guide, and a guide page offering one
+/// into itself would send the reader back where they already are.
+#[must_use]
+pub fn guide_page(chrome: Chrome, title: &str, user: &SessionUser, body: &Markup) -> String {
+    let class = chrome.body_class(true);
+    shell(
+        chrome,
+        title,
+        Some(user),
+        class,
+        body,
+        /* offer_screen_guide */ false,
+    )
+    .into_string()
 }
 
 /// Shared body used both by the error converter and by ad-hoc
 /// non-page payloads (e.g. CLI bootstrap response).
 #[must_use]
 pub fn render_page(title: &str, body: &Markup) -> String {
-    shell(Chrome::default(), title, None, "anon-shell", body).into_string()
+    shell(
+        Chrome::default(),
+        title,
+        None,
+        "anon-shell",
+        body,
+        /* offer_screen_guide */ false,
+    )
+    .into_string()
 }
 
 /// The HTML shell — `<head>`, top nav, page header, body slot, footer.
@@ -200,12 +261,17 @@ pub fn render_page(title: &str, body: &Markup) -> String {
 /// `chat.js` keeps the chat content responsibilities (hydration from
 /// `localStorage`, agentic submit, drag-resize); `ui.js` keeps the
 /// shell-toggle ones.
+///
+/// `offer_screen_guide` allows the small **?** beside the title that
+/// opens the guide's page for this screen ([`crate::routes::guide`]).
+/// The guide's own pages turn it off, so a page never links to itself.
 fn shell(
     chrome: Chrome,
     title: &str,
     user: Option<&SessionUser>,
     body_class: &str,
     body: &Markup,
+    offer_screen_guide: bool,
 ) -> Markup {
     // Destructured rather than borrowed field by field: the two halves
     // are used in four places between `<head>`, the top bar and the
@@ -279,7 +345,25 @@ fn shell(
                     @if read_only && user.is_some() {
                         div class="mb-4" { (crate::read_only::banner()) }
                     }
-                    h1 class="text-xl md:text-2xl mb-4 mt-0" { (title) }
+                    // The screen's title, and — where the guide has one
+                    // page that is exactly about this screen — a "?" beside
+                    // it opening that page. `page_for_screen` withholds the
+                    // link from a reader the page would refuse, so the mark
+                    // never leads to a `403`.
+                    h1 class="text-xl md:text-2xl mb-4 mt-0" {
+                        (title)
+                        @if let Some(page) = user
+                            .filter(|_| offer_screen_guide)
+                            .and_then(|u| crate::routes::guide::page_for_screen(title, u.is_admin))
+                        {
+                            " "
+                            a href=(format!("/dashboard/guide/{page}"))
+                                title="What this screen is, in the guide"
+                                style="font-size:.7em;vertical-align:super;color:var(--text-dim);text-decoration:none" {
+                                "?"
+                            }
+                        }
+                    }
                     (body)
                 }
                 footer class="site-footer mt-12 mb-6 text-text-dim text-xs text-center" {
@@ -390,6 +474,11 @@ fn header(read_only: bool, demo_identities: &[String], user: Option<&SessionUser
                         // (forms at the top, the journal table below).
                         (nav_link("/dashboard/dream", "Dream"))
                     }
+                    // "Guide" — `docs/`, the guide for people, carried in
+                    // the binary and served at /dashboard/guide. Offered to
+                    // everybody: the map shows each reader the half that is
+                    // theirs (see `crate::routes::guide`).
+                    (nav_link("/dashboard/guide", "Guide"))
                     (nav_link("/dashboard/settings/me", "Settings"))
                 }
                 // Session badge + logout button live in one flex

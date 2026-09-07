@@ -64,7 +64,8 @@ hex = { workspace = true }
 serde_yaml = { workspace = true }
 
 # Markdown → HTML for the wiki page preview rendered at
-# `/dashboard/wiki/:id/view/*path`. Heading slugs are computed via
+# `/dashboard/wiki/:id/view/*path` and for the guide at
+# `/dashboard/guide`. Heading slugs are computed via
 # `mwe_core::briefing::slug_from_heading` so the comment anchors line up
 # onto the rendered `<h*>` elements.
 pulldown-cmark = { workspace = true }
