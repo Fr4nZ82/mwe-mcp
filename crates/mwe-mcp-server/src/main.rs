@@ -1188,6 +1188,29 @@ fn warn_public_base_url(config: &Config) {
 /// workdir. Warn loudly (never fatal) for each workdir path reachable by group
 /// or world — a co-located consumer reading the files would bypass the
 /// governance. See `workdir_security` and INTEGRATING.md "Deployment security".
+/// The `workdir perms` line `doctor` prints.
+///
+/// An empty finding list means two different things, and they are not
+/// interchangeable: on Unix nothing is reachable by another principal, and on
+/// Windows the permissions were never read at all — this module inspects POSIX
+/// mode bits and Windows expresses permissions as ACLs. Printing "owner-only"
+/// there would hand the operator a verdict nobody reached.
+fn workdir_perms_headline(findings: usize) -> String {
+    if !workdir_security::AUDIT_READS_PERMISSIONS {
+        return "workdir perms : not inspected — this platform expresses permissions as ACLs, \
+                not mode bits. Lock the workdir to the account the server runs as (INSTALL.md \
+                \"Run it as a service\")"
+            .to_owned();
+    }
+    if findings == 0 {
+        return "workdir perms : owner-only (no group/world access)".to_owned();
+    }
+    format!(
+        "workdir perms : {findings} path(s) reachable by other principals (per-reader ACL \
+         bypassable):"
+    )
+}
+
 fn warn_loose_workdir(workdir: &Path) {
     for f in workdir_security::audit(workdir) {
         warn!(
@@ -2977,13 +3000,8 @@ async fn cmd_doctor(workdir: &Path) -> Result<()> {
 
     // Workdir reachability: the wiki bytes are cleartext on disk, so the
     // per-reader ACL only holds if non-server principals cannot read them.
-    if d.perm_findings.is_empty() {
-        println!("workdir perms : owner-only (no group/world access)");
-    } else {
-        println!(
-            "workdir perms : {} path(s) reachable by other principals (per-reader ACL bypassable):",
-            d.perm_findings.len()
-        );
+    println!("{}", workdir_perms_headline(d.perm_findings.len()));
+    if !d.perm_findings.is_empty() {
         for f in &d.perm_findings {
             println!(
                 "                [{}] {} {}",
@@ -3319,6 +3337,30 @@ mod tests {
             !unit.contains("--bypassdedicateduser"),
             "the service runs as the dedicated user and must not bypass the gate:\n{unit}"
         );
+    }
+
+    /// "Nothing reachable" and "nothing was read" both arrive as an empty
+    /// finding list, and only one of them is good news. The line is chosen by
+    /// whether the audit can inspect this platform at all, so a Linux run
+    /// covers the Windows branch too.
+    #[test]
+    fn doctor_never_calls_an_uninspected_workdir_owner_only() {
+        // The branch this platform takes.
+        let clean = workdir_perms_headline(0);
+        if workdir_security::AUDIT_READS_PERMISSIONS {
+            assert!(clean.contains("owner-only"), "{clean}");
+        } else {
+            assert!(clean.contains("not inspected"), "{clean}");
+            assert!(!clean.contains("owner-only"), "{clean}");
+        }
+        // Findings are always reported as findings, on any platform.
+        let loose = workdir_perms_headline(3);
+        assert!(loose.contains('3'), "{loose}");
+        assert!(loose.contains("reachable by other principals"), "{loose}");
+        // Every line is the same field, so the report stays column-aligned.
+        for line in [&clean, &loose] {
+            assert!(line.starts_with("workdir perms : "), "{line}");
+        }
     }
 
     /// The bypass service (single-purpose host, no co-located consumer) runs as

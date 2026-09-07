@@ -226,8 +226,9 @@ const fn severity_for(mode: u32) -> Option<Severity> {
 /// `engine.db` / `wikis/` / `media/` stores are checked too so a loose root
 /// surfaces every leaking path, not just the directory.
 ///
-/// Returns an empty vector when everything is owner-only (or on non-Unix, where
-/// POSIX mode bits do not apply and Windows ACL auditing is not implemented).
+/// Returns an empty vector when everything is owner-only. It returns one on
+/// non-Unix too, where there are no mode bits to read — see
+/// [`AUDIT_READS_PERMISSIONS`], which is how a caller tells the two apart.
 #[cfg(unix)]
 #[must_use]
 pub fn audit(workdir: &Path) -> Vec<PermFinding> {
@@ -259,13 +260,21 @@ pub fn audit(workdir: &Path) -> Vec<PermFinding> {
     findings
 }
 
-/// Non-Unix stub: Windows uses ACLs rather than POSIX mode bits, and auditing
-/// them is a separate mechanism not yet implemented.
+/// Non-Unix: this module reads POSIX mode bits, and Windows expresses
+/// permissions as ACLs instead, so there is nothing here for it to inspect.
 #[cfg(not(unix))]
 #[must_use]
 pub fn audit(_workdir: &Path) -> Vec<PermFinding> {
     Vec::new()
 }
+
+/// Whether [`audit`] inspects anything on this platform.
+///
+/// It returns an empty vector in two very different situations — nothing is
+/// reachable by another principal, and the permissions were never read — and
+/// a caller that turns that vector into a verdict must tell them apart. On
+/// Windows, reporting "owner-only" would be a claim of safety nobody checked.
+pub const AUDIT_READS_PERMISSIONS: bool = cfg!(unix);
 
 #[cfg(all(test, unix))]
 mod tests {

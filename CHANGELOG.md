@@ -409,6 +409,13 @@ and in the dashboard's session check. Ten migrations, `0068` through `0077`.
   writes that address, and the accessors built on it are how the rest of the
   engine asks for one.
 
+- **`mwe-mcp doctor` stops calling a workdir it never looked at "owner-only".**
+  The workdir permission audit reads POSIX mode bits, and Windows expresses
+  permissions as ACLs — so on Windows it returned nothing to report and the
+  report turned that into a clean bill of health. It now says the permissions
+  were not inspected and points at the `icacls` step in `INSTALL.md`, which is
+  the same distinction the boot-time warning already makes by staying silent.
+
 - **A page write asks whether the name is free, byte for byte.** macOS and
   Windows treat `Ricette.md` and `ricette.md` as one file; the engine treats
   them as two pages. Asking the filesystem "does this page exist" therefore
