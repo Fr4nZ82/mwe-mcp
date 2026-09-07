@@ -56,9 +56,9 @@ depends on your `consumer_class` claim:
   `document_promoted`, tell the user their document was archived and is
   being read into memory.
 - **Smart consumers** (Claude Code today; any native MCP client with
-  its own subscription LLM): bring their own classification budget. `wiki_search` for
-  recall, `wiki_admin_push/pull` for authoritative smart-wiki
-  management. Full pattern in the **`smart-consumer`** skill
+  its own subscription LLM): bring their own classification budget.
+  `wiki_search` for recall, `wiki_admin_push/pull` for authoritative
+  smart-wiki management. Full pattern in the **`smart-consumer`** skill
   (cwd-bound mode) or **`core-globalmemory`** (transversal mode).
 
 The dispatcher in skill `core` picks which deeper skill to load. The
