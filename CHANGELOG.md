@@ -172,6 +172,17 @@ and in the dashboard's session check. Ten migrations, `0068` through `0077`.
   `rules`, both are absent rather than null when they do not apply, and neither
   is ever carried by a guest turn.
 
+- **The memory can be asked what it holds about one person, and that is what
+  the fact browser opens on.** The browser could narrow by the wiki a fact is
+  filed in and by nothing that identifies a person — different sets, because a
+  fact about somebody lives wherever it was filed, often on a group's page,
+  while their own wiki holds facts about other people. There is an **About**
+  field beside Wiki now, and for a person opening Facts from the top bar it is
+  filled in with them: the question people arrive with — what does this thing
+  know about me — is answered before they ask it, with **Everything I can
+  read** one click away and carried through the pager. An admin opens on the
+  deployment, as the console always did.
+
 ### Changed
 
 - **The dashboard says what the engine does.** Its prose had been left behind

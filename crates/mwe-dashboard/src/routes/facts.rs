@@ -46,7 +46,7 @@
 
 use axum::Form;
 use axum::Router;
-use axum::extract::{Path as AxumPath, Query, State};
+use axum::extract::{Path as AxumPath, Query, RawQuery, State};
 use axum::response::{Html, IntoResponse, Redirect, Response};
 use axum::routing::{get, post};
 use axum_extra::extract::cookie::CookieJar;
@@ -377,15 +377,29 @@ impl FactRow {
 
 /// GET `/dashboard/facts`.
 ///
-/// Renders the filter form + a paginated table of every fact the
-/// connected user can read.
+/// Renders the filter form + a paginated table of the facts the connected
+/// user can read.
+///
+/// **A bare address means "about me" for a person.** Somebody who opens
+/// Facts from the top bar is asking the question people arrive with — what
+/// does this thing know about me — so the browser opens narrowed to them,
+/// with the widening one click away. Any query string at all is taken
+/// literally instead, which is what makes the widening stick: the "every
+/// fact I can read" link carries an empty `subject`, and every pager and
+/// sort link built from there carries the filter set it was given. An
+/// admin is never narrowed — the console is their view of the deployment.
 async fn index(
     State(state): State<DashboardState>,
     user: SessionUser,
     jar: CookieJar,
-    Query(filters): Query<FactsFilters>,
+    RawQuery(raw_query): RawQuery,
+    Query(mut filters): Query<FactsFilters>,
 ) -> Result<Html<String>> {
     let chrome = layout::Chrome::of(&state);
+    let opened_on_self = !user.is_admin && raw_query.is_none_or(|q| q.is_empty());
+    if opened_on_self {
+        filters.subject = Some(format!("user:{}", user.sender_id));
+    }
     let (page, page_size) = normalise_pagination(&filters);
 
     // Load the FULL visible window (ACL-projected in-process), count it to
@@ -465,6 +479,7 @@ async fn index(
         total_pages,
         total_is_estimate,
         reveal,
+        opened_on_self,
     )))
 }
 
@@ -1359,13 +1374,14 @@ fn render_index(
     total_pages: usize,
     total_is_estimate: bool,
     reveal: bool,
+    opened_on_self: bool,
 ) -> String {
     let body = html! {
         // Standard / smart split, mirroring the wiki explorer's tabs: this
         // page browses `fact_index`, the Sections tab browses
         // `wiki_sections`. Each row lives under exactly one tab.
         (super::sections_view::corpus_tabs(/* sections_active */ false))
-        (index_intro(reveal))
+        (index_intro(reveal, opened_on_self))
 
         (filter_form(filters, page_size))
 
@@ -1461,10 +1477,33 @@ fn render_index(
 
 /// The page's lead paragraph. Under the reveal lens the list is not
 /// "facts you can read" but every user's facts, so the banner replaces it.
-fn index_intro(reveal: bool) -> Markup {
+///
+/// `opened_on_self` is the bare-address arrival of a person: the list in
+/// front of them is the facts about them, so the paragraph says so and
+/// carries the one link that widens it. That link is an **empty**
+/// `subject`, which is a query string, which is how the page knows not to
+/// narrow again.
+fn index_intro(reveal: bool, opened_on_self: bool) -> Markup {
     html! {
         @if reveal {
             (crate::reveal::banner())
+        } @else if opened_on_self {
+            p.muted {
+                "The facts this memory holds " strong { "about you" } " — wherever "
+                "they are filed, including on a group's pages. "
+                a href="/dashboard/facts?subject=" { "Everything I can read →" }
+            }
+            p.muted {
+                "That wider list is every fact your standard wikis grant you, "
+                "which includes facts about other people. Either way "
+                code { "About" } " narrows to what the memory holds about one "
+                "person or group and " code { "Wiki" } " narrows to what is "
+                "filed in one place, which is not the same set. Smart-wiki "
+                "documentation is indexed as "
+                a href="/dashboard/facts/sections" { "sections" }
+                " instead. Filters narrow together, and " code { "Topic" }
+                " takes one word. Arrowed headers sort; click an id to copy it."
+            }
         } @else {
             p.muted {
                 "Every fact you can read — the governed memory of your standard "
