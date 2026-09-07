@@ -26,7 +26,8 @@ you took a wrong turn — close this.
 mwe-mcp is the **persistent memory** of an LLM agent. What you call
 depends on your `consumer_class` claim:
 
-- **Standard consumers** (openclaw, hermes, nanoclaw): every user
+- **Standard consumers** (NanoClaw — the ready-made assistant this
+  product ships — Hermes, or your own host): every user
   turn → `wiki_ingest_message` (thin passthrough; mwe-mcp's
   server-side `ingest` slot does classification, recall, capture).
   Media (photos, voice notes, documents) travel out of band: upload
@@ -54,8 +55,8 @@ depends on your `consumer_class` claim:
   heuristic in either direction; when a turn response carries
   `document_promoted`, tell the user their document was archived and is
   being read into memory.
-- **Smart consumers** (Claude Code, Cowork, Codex — own subscription
-  LLM): bring their own classification budget. `wiki_search` for
+- **Smart consumers** (Claude Code today; any native MCP client with
+  its own subscription LLM): bring their own classification budget. `wiki_search` for
   recall, `wiki_admin_push/pull` for authoritative smart-wiki
   management. Full pattern in the **`smart-consumer`** skill
   (cwd-bound mode) or **`core-globalmemory`** (transversal mode).
@@ -104,7 +105,7 @@ follow from that.
 | **Where captures land** | `wikis/<human-user-id>/` | With header: `wikis/<real-user-id>/`. Without: `wikis/<bot-system-user-id>/`. |
 | **Prerequisite** | Your human user exists in `enrollment_users` *with* a `user_credentials` account. | The bot's identity exists as a **system user** in `enrollment_users` (no credentials), is bound to the consumer (`consumers.system_user_id`, set at `consumer_register`), and the dashboard records the **delegation list** (which real users the bot may act as). |
 
-### Pattern B mechanics (A.17)
+### Pattern B mechanics
 
 For each MCP call the bot picks one of:
 
@@ -141,10 +142,11 @@ For each MCP call the bot picks one of:
   the returned context, don't act on enrolled users' behalf, and never
   promise to remember ("I won't remember this — ask <admin> to enroll
   you if I should"). Tools that leave permanent state
-  (`wiki_ingest_external`, media upload, `wiki_admin_notify`,
-  `consumer_register`) and operator surfaces (`tool_log_search`,
-  `wiki_lint`, `dashboard_link`) answer `sender_unauthorized` on guest turns —
-  expected, not an error to retry.
+  (`wiki_ingest_external`, `wiki_admin_notify`, `consumer_register`) and
+  operator surfaces (`tool_log_search`, `wiki_lint`, `dashboard_link`)
+  answer `sender_unauthorized` on guest turns; the media upload
+  (`POST /media`) answers `403 guest_cannot_upload`. Expected, not an
+  error to retry.
 
 Stable error wire codes:
 
@@ -157,22 +159,23 @@ Stable error wire codes:
 
 ### Operator-side setup for Pattern B
 
-Performed once by the human operator via the dashboard:
+Performed once by the human operator, on `/dashboard/tokens` — **not**
+on the Users page, whose form makes a person who signs in and needs an
+email a consumer has not got:
 
-1. **Create the synthetic identity as a system user.** From
-   `/dashboard/users/new`, create a user with `user_id =
-   <bot-synthetic-id>` (e.g. `samvise-bot`). The dashboard inserts
-   into `enrollment_users` and materializes `wikis/samvise-bot/`.
-   It generates a single-use invitation link — **discard it** so the
-   account has no `user_credentials` and stays a non-loggable
-   system user.
-2. **Issue the consumer token.** From `/dashboard/tokens`, set
-   `sender_id = samvise-bot`, check "Consumer token", fill
-   `consumer_id = samvise-prod` (deployment id), pick the allowed
-   senders for the delegation list. Token is shown **once** —
-   copy immediately (A.7 policy).
-3. **Hand the token to the consumer dev.** That JWT goes in
+1. **Issue the token, and the identity comes with it.** Pick consumer
+   class **Standard**, fill the **Consumer id** (e.g. `samvise`): that
+   id is minted as a credential-less system user with its own wiki, and
+   it becomes the token's `sender_id`. Tick every human the consumer may
+   act as — plus **`guest`**, which is the enable switch for the
+   unidentified-human path below. The token is shown **once**: copy it
+   there and then.
+2. **Hand the token to the consumer dev.** That JWT goes in
    `Authorization: Bearer …` on every MCP call.
+
+The **ready-made assistant** skips both steps: its served installer can
+carry a one-time install claim that it trades for the token and writes
+into the fork ([`INTEGRATING.md`](INTEGRATING.md)).
 
 ---
 
@@ -261,7 +264,7 @@ bootstrap is which family covers which job:
 | **D — Read (consumer UI)** | ACL-filtered page read + vector / full-text search. | any |
 | **E — Audit / health** | Audit-trail query + wiki lint pass. | admin |
 | **F — Setup** | First-time consumer registration + bulk external import. | any |
-| **G — Dashboard** | Mint a one-shot signed link into the built-in PWA. | any |
+| **G — Dashboard** | Mint a one-shot signed link into the built-in dashboard. | any |
 | **H — Smart-wiki admin** | Authoritative smart-wiki management: push / pull, briefing notify, cooperative lease. | smart |
 | **I — Skills** | Enumerate + fetch skill bodies (bundled). | any |
 | **K — Smart-consumer bootstrap** | Session-start smart-wiki landscape + transversal contextual recall (hook-driven). | smart |
