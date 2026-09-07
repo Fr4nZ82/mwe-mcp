@@ -22,10 +22,13 @@
 //!   an arbitrary page. Renders the body through
 //!   `render_for_sender`, then walks each line and interpolates any
 //!   pending `wiki_briefing_items.target_cite` comment after the
-//!   matching heading. Comments whose anchor is missing from the
-//!   current body land in a footer `<section class="orphaned-comments">`
-//!   so the operator does not lose the feedback when a heading is
-//!   renamed. The spec ideal `/dashboard/wiki/:id/<path>` cannot
+//!   matching heading. A cite that names the page and no heading is a
+//!   remark about the whole page: it opens the body in a
+//!   `<section class="page-comments">` headed "On this page". Comments
+//!   whose anchor is missing from the current body land in a footer
+//!   `<section class="orphaned-comments">` so the operator does not lose
+//!   the feedback when a heading is renamed. The spec ideal
+//!   `/dashboard/wiki/:id/<path>` cannot
 //!   coexist with the editor sibling `/wiki/:id/edit/*path` under
 //!   axum 0.7's `matchit` router (overlapping captures panic at
 //!   startup); we therefore use the `/view/` prefix and keep the
@@ -33,10 +36,13 @@
 //!
 //!   The optional query parameter `?mode=comment` enables
 //!   "comment mode": each heading sprouts a `+ Comment` link that
-//!   points at the GET form below, and a `Stop commenting` toggle
-//!   sits at the top. The default view (no query param) is the clean
-//!   read-only surface — no per-heading affordance — so a reader
-//!   opting only to consume the page does not get a noisy UI.
+//!   points at the GET form below, a `+ Comment on this page` link sits
+//!   above the body for a remark about the page as a whole (the only
+//!   way in on a page written without headings, and legitimate on any
+//!   other), and a `Stop commenting` toggle sits at the top. The
+//!   default view (no query param) is the clean read-only surface — no
+//!   comment affordance — so a reader opting only to consume the page
+//!   does not get a noisy UI.
 //! - GET `/dashboard/wiki/:id/edit/*path`      — textual editor for
 //!   the page at `path`. The raw free-text editor is a
 //!   **discouraged escape hatch**: **hard-
@@ -58,17 +64,20 @@
 //!   [`mwe_core::wiki_admin::ActorKind::Dashboard`] so the write
 //!   lands in `wiki_admin_op_log` exactly like an MCP push — same
 //!   audit machinery, same receipt downstream.
-//! - GET `/dashboard/wiki/:id/comment/*path?anchor=<slug>` — render
+//! - GET `/dashboard/wiki/:id/comment/*path[?anchor=<slug>]` — render
 //!   the small "leave a comment" form for the heading addressed by
-//!   `?anchor=`. Read-access required on the wiki, asked per family:
+//!   `?anchor=`, or for the whole page when the parameter is absent.
+//!   Read-access required on the wiki, asked per family:
 //!   on a standard wiki anyone who can read at least one fact in it, on
 //!   a smart wiki its owner plus the `shared_with` users / groups /
 //!   global — so a team member with a shared smart wiki can feed
 //!   feedback to the smart consumer without owning it.
-//! - POST `/dashboard/wiki/:id/comment/*path?anchor=<slug>` — persist
+//! - POST `/dashboard/wiki/:id/comment/*path[?anchor=<slug>]` — persist
 //!   the comment as a row in `wiki_briefing_items` with
 //!   `source_kind='dashboard_comment'`, `kind='external'`,
-//!   `author_sender_id=<signed-in user>`, `target_cite='wiki://<id>/<path>#<anchor>'`.
+//!   `author_sender_id=<signed-in user>`, and a `target_cite` of
+//!   `wiki://<id>/<path>#<anchor>` — or `wiki://<id>/<path>` when the
+//!   comment is about the whole page.
 //!   On success redirects 302 back to `/dashboard/wiki/:id/view/*path`
 //!   (read mode, no `?mode=comment`) so the operator sees the
 //!   comment freshly interpolated by the read view.
@@ -945,19 +954,24 @@ struct PageComment {
     /// without a human author.
     source_kind: String,
     /// Slug fragment of the heading the comment is anchored to, or
-    /// `None` when only the page is referenced (no fragment in the
-    /// `target_cite`). `None` lands in the orphaned footer per the
-    /// read-view policy — the spec is silent on this, and rendering at
-    /// the top would conflict with the operator's expectation that an
-    /// inline block sits next to *a heading*.
+    /// `None` when the cite names the page and no heading — a remark
+    /// about the whole page, which opens the body under "On this page".
     anchor: Option<String>,
 }
 
 /// Result of pairing the pending briefing items with the rendered
 /// body. `inline_by_anchor` maps a heading slug present in the body
-/// onto the comments to render right after that heading; `orphaned`
-/// collects everything else (anchor missing from the body, anchor
-/// absent in the cite, or path mismatch).
+/// onto the comments to render right after that heading; `page_level`
+/// holds the ones whose cite names no heading, rendered above the body;
+/// `orphaned` collects what cannot be placed at all (a heading the
+/// current body no longer has, an unparseable cite, or a path
+/// mismatch).
+///
+/// The two buckets are different questions and stay apart: a cite
+/// without an anchor asks about the page, while an anchor the body
+/// does not carry asks about a section that is gone. Merging them
+/// would file a deliberate page remark under a heading somebody
+/// deleted.
 ///
 /// Keyed by heading slug, not by line number: [`md_render`] renders the
 /// markdown preview and fires a per-heading callback with the slug, so nothing
@@ -965,6 +979,7 @@ struct PageComment {
 #[derive(Debug, Default)]
 struct CommentLayout {
     inline_by_anchor: HashMap<String, Vec<PageComment>>,
+    page_level: Vec<PageComment>,
     orphaned: Vec<PageComment>,
 }
 
@@ -1132,9 +1147,6 @@ struct BriefingCommentRow {
     target_cite: Option<String>,
 }
 
-/// Pair each row with the heading-line interpolation slot, or drop it
-/// in the orphaned bucket. Pure function — no IO, no SQL — so it is
-/// the natural place to pin the rendering policy with unit tests.
 /// Load the page's authoritative fact-key → ACL map from the engine DB
 /// (redaction-policy: DB first, inline marker attributes only as the
 /// fallback for unindexed regions). A failed load is a hard error —
@@ -1478,6 +1490,10 @@ fn encode_path_segments(path: &str) -> String {
     out
 }
 
+/// Pair each row with the heading-line interpolation slot, the
+/// page-level block, or the orphaned bucket. Pure function — no IO, no
+/// SQL — so it is the natural place to pin the rendering policy with
+/// unit tests.
 fn lay_out_comments(
     rows: &[BriefingCommentRow],
     current_path: &str,
@@ -1511,11 +1527,12 @@ fn lay_out_comments(
             continue;
         }
         let Some(anchor) = parsed.anchor.as_deref() else {
-            // No anchor in the cite → orphaned by policy (the spec is
-            // silent; we pick the safer bucket so an item without a
-            // specific section does not collide with an unrelated
-            // heading at the top of the file).
-            layout.orphaned.push(PageComment {
+            // No anchor in the cite: the comment is about the page
+            // itself, which is the only thing a heading-less page can
+            // be commented on and a legitimate remark on any other.
+            // It opens the body rather than joining the orphans —
+            // nothing about it is lost or dangling.
+            layout.page_level.push(PageComment {
                 anchor: None,
                 ..comment
             });
@@ -1555,19 +1572,6 @@ fn comment_from_row(row: &BriefingCommentRow) -> PageComment {
     }
 }
 
-/// Build the maud body for the read-only viewer. Renders the page
-/// body as **HTML preview** via [`md_render::render_with_heading_injections`]
-/// — every heading gets `id="<slug>"` (matching the comment
-/// grammar) and the renderer fires a per-heading callback that
-/// interleaves the comment-mode CTA (when `comment_mode=true`) and
-/// the inline comment blocks queued in `layout.inline_by_anchor`.
-///
-/// Earlier behaviour rendered the body line-by-line inside
-/// `<pre class="wiki-page">` blocks so headings stayed as raw
-/// markdown text (`## Boundary tokens`); the preview is the
-/// successor surface where the operator reads + comments on a real
-/// rendered page, and the textual editor moves to the bottom as the
-/// "raw edit" escape hatch.
 /// Display flags threaded into [`render_view_page_body`], grouped so the
 /// signature stays out of bool-soup and call sites read by name instead
 /// of a row of positional `true`/`false`.
@@ -1604,6 +1608,20 @@ struct PageViewFlags {
     smart: bool,
 }
 
+/// Build the maud body for the read-only viewer. Renders the page
+/// body as **HTML preview** via [`md_render::render_with_heading_injections`]
+/// — every heading gets `id="<slug>"` (matching the comment
+/// grammar) and the renderer fires a per-heading callback that
+/// interleaves the comment-mode CTA (when `comment_mode=true`) and
+/// the inline comment blocks queued in `layout.inline_by_anchor`.
+///
+/// Above that body sit the two things that address the page rather
+/// than one of its sections: the "+ Comment on this page" link (in
+/// comment mode) and the "On this page" block holding
+/// `layout.page_level`. They are the whole comment surface of a page
+/// written without headings — an identity card is one — and on a page
+/// that has headings they are what a remark about the page as a whole
+/// gets instead of an arbitrary section.
 #[allow(
     clippy::too_many_arguments,
     clippy::too_many_lines,
@@ -1705,20 +1723,25 @@ fn render_view_page_body(
         @if can_comment {
             p.comment-mode-toggle {
                 @if comment_mode {
-                    span.muted { "Comment mode is ON — click " code { "+ Comment" } " next to a heading to leave feedback. " }
+                    span.muted {
+                        "Comment mode is ON — click " code { "+ Comment" } " next to a "
+                        "heading to leave feedback on that section, or "
+                        code { "+ Comment on this page" } " for the page as a whole. "
+                    }
                     a href=(view_url) { "Stop commenting" }
                 } @else {
                     a href=(comment_mode_url) { "Add comments" }
                     @if smart {
                         span.muted {
-                            " — leaves a note next to a heading for the consumer that "
-                            "writes this wiki. It reads them when it next starts up."
+                            " — leaves a note on the page, or next to one of its headings, "
+                            "for the consumer that writes this wiki. It reads them when it "
+                            "next starts up."
                         }
                     } @else {
                         span.muted {
-                            " — leaves a note next to a heading. The nightly pass reads "
-                            "it and changes the facts you point at: correcting one, "
-                            "removing one, adding one."
+                            " — leaves a note on the page, or next to one of its headings. "
+                            "The nightly pass reads it and changes the facts you point at: "
+                            "correcting one, removing one, adding one."
                         }
                     }
                 }
@@ -1730,6 +1753,23 @@ fn render_view_page_body(
             }
         }
 
+        @if comment_mode && can_comment {
+            (PreEscaped(render_page_comment_cta_html(wiki_id, page_path)))
+        }
+
+        @if !layout.page_level.is_empty() {
+            section.page-comments {
+                h3 { "On this page" }
+                p.muted {
+                    "These comments are about the page as a whole rather than one "
+                    "of its sections."
+                }
+                @for c in &layout.page_level {
+                    (render_comment_block(wiki_id, c, /* orphaned */ false, can_mark_read))
+                }
+            }
+        }
+
         section.wiki-page-view.prose {
             (PreEscaped(rendered_html))
         }
@@ -1738,10 +1778,9 @@ fn render_view_page_body(
             section.orphaned-comments {
                 h3 { "Orphaned comments" }
                 p.muted {
-                    "These comments were anchored to a heading that no longer "
-                    "exists in the current body, or were posted without a "
-                    "section anchor. They are surfaced here so the feedback is "
-                    "not lost when a heading is renamed."
+                    "These comments were anchored to a heading the current body no "
+                    "longer has. They are surfaced here so the feedback is not lost "
+                    "when a heading is renamed."
                 }
                 @for c in &layout.orphaned {
                     (render_comment_block(wiki_id, c, /* orphaned */ true, can_mark_read))
@@ -1828,6 +1867,29 @@ fn render_add_comment_cta_html(wiki_id: &WikiId, page_path: &str, anchor: &str) 
     .into_string()
 }
 
+/// Build the "+ Comment on this page" CTA, the one that addresses the
+/// page instead of a section. Its target carries no `?anchor=`, so the
+/// cite the write path composes carries no heading either.
+///
+/// It renders on every page in comment mode, not only on a heading-less
+/// one: a remark about the page as a whole is legitimate wherever the
+/// reader means the page. On a card — written as heading-less runs of
+/// clauses by design — it is the only way in there is.
+fn render_page_comment_cta_html(wiki_id: &WikiId, page_path: &str) -> String {
+    html! {
+        p.add-comment-cta.page-level {
+            a href=(format!(
+                "/dashboard/wiki/{}/comment/{}",
+                wiki_id.as_str(),
+                page_path,
+            )) {
+                "+ Comment on this page"
+            }
+        }
+    }
+    .into_string()
+}
+
 /// One pending comment, with the control that clears it — offered only
 /// on a smart wiki, where `POST …/briefing-items/:bi_id/process` accepts
 /// one.
@@ -1885,13 +1947,20 @@ fn render_comment_block(
 // ---------- inline-comment write path ----------
 
 /// Query string of the comment form GET + POST handlers. `anchor`
-/// addresses the heading the comment is anchored to. Validated as a
+/// addresses the heading the comment is anchored to, validated as a
 /// non-empty slug shape `[a-z0-9-]+` (no leading / trailing dash) so
 /// it round-trips with [`mwe_core::briefing::slug_from_heading`] and
-/// the existing read-view renderer can pair it back to the heading.
+/// the read-view renderer can pair it back to the heading.
+///
+/// Absent, it addresses the **page**: the comment is about the page as
+/// a whole and its cite carries no fragment. That is a different claim
+/// from a heading that has gone missing, and the two stay
+/// distinguishable in the cite itself — no fragment at all versus a
+/// fragment the body does not match.
 #[derive(Debug, Deserialize)]
-pub struct CommentAnchor {
-    pub anchor: String,
+pub struct CommentTarget {
+    #[serde(default)]
+    pub anchor: Option<String>,
 }
 
 /// Form body of [`submit_comment`]. The single field is the free-form
@@ -1922,7 +1991,7 @@ async fn comment_form(
     State(state): State<DashboardState>,
     user: SessionUser,
     AxumPath((id, page_path)): AxumPath<(String, String)>,
-    Query(q): Query<CommentAnchor>,
+    Query(q): Query<CommentTarget>,
 ) -> Result<Response> {
     let chrome = layout::Chrome::of(&state);
     let memory = require_memory(&state)?;
@@ -1937,7 +2006,7 @@ async fn comment_form(
             "unsafe page path: {page_path}"
         )));
     }
-    let anchor = validate_anchor_shape(&q.anchor)?;
+    let anchor = validate_target_anchor(q.anchor.as_deref())?;
 
     // Read-access check on the wiki — anyone who can read it may comment on
     // it, which on a shared smart wiki is how a teammate feeds feedback to the
@@ -1948,16 +2017,19 @@ async fn comment_form(
     // commenting on. The lookup is best-effort — a missing heading
     // does not block the write (the comment will land in the
     // orphaned bucket in the read view), but we surface a warning
-    // so the operator can fix the cite proactively.
-    let heading_label =
-        resolve_heading_label(&memory.tree, &wiki_id, &rel, &anchor).map_err(map_wiki_err)?;
+    // so the operator can fix the cite proactively. A page-level
+    // comment has no heading to look up.
+    let heading_label = match anchor.as_deref() {
+        Some(a) => resolve_heading_label(&memory.tree, &wiki_id, &rel, a).map_err(map_wiki_err)?,
+        None => None,
+    };
 
     Ok(Html(render_comment_form(
         chrome,
         &user,
         &id,
         &page_path,
-        &anchor,
+        anchor.as_deref(),
         heading_label.as_deref(),
         /* body */ "",
         /* error */ None,
@@ -1970,7 +2042,7 @@ async fn submit_comment(
     State(state): State<DashboardState>,
     user: SessionUser,
     AxumPath((id, page_path)): AxumPath<(String, String)>,
-    Query(q): Query<CommentAnchor>,
+    Query(q): Query<CommentTarget>,
     HtmlForm(form): HtmlForm<CommentSubmission>,
 ) -> Result<Response> {
     let memory = require_memory(&state)?;
@@ -1983,7 +2055,7 @@ async fn submit_comment(
             "unsafe page path: {page_path}"
         )));
     }
-    let anchor = validate_anchor_shape(&q.anchor)?;
+    let anchor = validate_target_anchor(q.anchor.as_deref())?;
 
     enforce_read_access_or_not_found(&state, memory, &wiki_id, &user).await?;
 
@@ -2000,7 +2072,7 @@ async fn submit_comment(
         )));
     }
 
-    let target_cite = compose_cite(&wiki_id, &page_path, Some(&anchor)).map_err(|e| {
+    let target_cite = compose_cite(&wiki_id, &page_path, anchor.as_deref()).map_err(|e| {
         // `compose_cite` re-validates the anchor shape we already
         // checked above — a failure here would indicate a path
         // segment containing `#` or an absurdly long compose. Map to
@@ -2045,7 +2117,7 @@ async fn submit_comment(
         actor = %user.sender_id,
         wiki = %id,
         page = %page_path,
-        anchor = %anchor,
+        anchor = anchor.as_deref().unwrap_or("<whole page>"),
         briefing_item_id = format!("bi_{}", row.0),
         "dashboard inline comment persisted"
     );
@@ -2059,6 +2131,18 @@ async fn submit_comment(
         page_path
     ))
     .into_response())
+}
+
+/// Read what the comment is about out of the `?anchor=` parameter: a
+/// heading slug, or the page itself when the parameter is absent.
+///
+/// A parameter that is present must name a heading, so a blank one is
+/// refused rather than quietly demoted to a page-level comment — the
+/// caller asked for a section and got a URL wrong, and answering a
+/// different question would file the remark somewhere they did not
+/// choose.
+fn validate_target_anchor(raw: Option<&str>) -> Result<Option<String>> {
+    raw.map(validate_anchor_shape).transpose()
 }
 
 /// Validate the anchor query parameter against the canonical slug
@@ -2154,7 +2238,9 @@ fn render_comment_form(
     user: &SessionUser,
     wiki_id: &str,
     page_path: &str,
-    anchor: &str,
+    // The heading the comment is anchored to, or `None` when it is
+    // about the whole page.
+    anchor: Option<&str>,
     heading_label: Option<&str>,
     body: &str,
     error: Option<&str>,
@@ -2164,9 +2250,13 @@ fn render_comment_form(
     // page must not make the wrong one.
     smart: bool,
 ) -> String {
-    let title = format!("Comment — {wiki_id}/{page_path}#{anchor}");
+    // A page-level comment carries no fragment and no query — the same
+    // absence the cite it composes will carry.
+    let fragment = anchor.map_or_else(String::new, |a| format!("#{a}"));
+    let query = anchor.map_or_else(String::new, |a| format!("?anchor={a}"));
+    let title = format!("Comment — {wiki_id}/{page_path}{fragment}");
     let view_url = format!("/dashboard/wiki/{wiki_id}/view/{page_path}");
-    let form_action = format!("/dashboard/wiki/{wiki_id}/comment/{page_path}?anchor={anchor}");
+    let form_action = format!("/dashboard/wiki/{wiki_id}/comment/{page_path}{query}");
     let html_body = html! {
         @if let Some(msg) = error {
             (components::flash("error", msg))
@@ -2175,23 +2265,28 @@ fn render_comment_form(
             dl {
                 dt { "Wiki" } dd { code { (wiki_id) } }
                 dt { "Page" } dd { code { (page_path) } }
-                dt { "Section" } dd { code { "#" (anchor) } }
-                @if let Some(label) = heading_label {
-                    dt { "Heading" } dd { (label) }
-                } @else {
-                    dt { "Heading" }
-                    dd.muted {
-                        "(no current heading produces this slug — the comment "
-                        "will land in the orphaned bucket in the view until "
-                        "the heading is restored or renamed)"
+                @if let Some(a) = anchor {
+                    dt { "Section" } dd { code { "#" (a) } }
+                    @if let Some(label) = heading_label {
+                        dt { "Heading" } dd { (label) }
+                    } @else {
+                        dt { "Heading" }
+                        dd.muted {
+                            "(no current heading produces this slug — the comment "
+                            "will land in the orphaned bucket in the view until "
+                            "the heading is restored or renamed)"
+                        }
                     }
+                } @else {
+                    dt { "Section" }
+                    dd.muted { "the whole page" }
                 }
             }
         }
 
         p.muted {
-            "Saved under your name, " code { (user.sender_id) } ", against this "
-            "heading. "
+            "Saved under your name, " code { (user.sender_id) } ", against "
+            @if anchor.is_some() { "this heading. " } @else { "this page. " }
             @if smart {
                 "The consumer that writes this wiki finds it the next time it "
                 "starts up, and takes it out of its inbox once it has acted. "

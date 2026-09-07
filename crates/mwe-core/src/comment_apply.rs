@@ -5,7 +5,7 @@
 //! `wiki_briefing_items` row — there is no submit button, the operator just
 //! leaves it. The REM full cycle (the batched, nightly-or-admin-triggered dream)
 //! reads **every** pending comment for a wiki *together* and turns each into a
-//! fact-level edit against the facts on the page the comment is anchored to:
+//! fact-level edit against the facts of the page the comment names:
 //! `correct` a claim in place, `remove` it, `add` a new one, or `move` one of
 //! the page's facts to a destination the operator named (another page of this
 //! wiki, or another wiki entirely). The compile pass that runs after the cycle
@@ -16,8 +16,8 @@
 //! Two invariants hold this module to the maintainer's cost rule ("a memory edit
 //! must never re-scan the whole wiki"):
 //!
-//! - **Containment.** A comment only ever acts on the facts of the page it is
-//!   anchored to. `correct` / `remove` / `move` are refused for any `fact_id`
+//! - **Containment.** A comment only ever acts on the facts of the page its
+//!   cite names. `correct` / `remove` / `move` are refused for any `fact_id`
 //!   not on that page (a cross-page / hallucinated id never mutates a stranger's
 //!   fact). `move` relocates such a fact *out* of the page, but only to a
 //!   destination drawn from a bounded list (every other non-smart wiki + this
@@ -79,7 +79,7 @@ pub struct CommentApplyReport {
     pub comments_processed: usize,
     /// Existing facts corrected in place.
     pub facts_corrected: usize,
-    /// New facts added on the anchored page.
+    /// New facts added on the page the comment names.
     pub facts_added: usize,
     /// `add` ops skipped by the write-time dedup (the text was a
     /// near-duplicate of an existing same-subject fact — nothing inserted).
@@ -148,6 +148,13 @@ struct RawOp {
     #[serde(default)]
     #[serde(alias = "owner_id")]
     subject_id: Option<String>,
+    /// `add` only: the NAME of what the fact is about when that is not a
+    /// principal — a non-enrolled person, an animal, a thing. Decided by the
+    /// LLM under the ingest rules, and independent of `subject_id`, which
+    /// keeps saying who answers for the claim. Absent (the ordinary case) →
+    /// `None`.
+    #[serde(default)]
+    subject_external: Option<String>,
     /// `add` only: the new fact's AUDIENCE (extra read principals beyond
     /// subject+sender), decided by the LLM from the page/group scope signals.
     /// Empty (the default) keeps the fact to subject+commenter.
@@ -170,9 +177,11 @@ struct RawOp {
 ///
 /// `bi_ids` are the candidate `wiki_briefing_items` ids the REM cycle already
 /// filtered (non-smart, past the grace period). Each is loaded, grouped by
-/// the page its `target_cite` anchors to, interpreted by `llm`, and applied. A
-/// comment with no resolvable anchor is drained with no action (there is nothing
-/// safe to target).
+/// the page its `target_cite` names, interpreted by `llm`, and applied. A
+/// comment whose cite names no page this pass can reach — absent, malformed, or
+/// another wiki's — is drained with no action (there is nothing safe to
+/// target). A cite that names this page and no heading is not that case: it is
+/// a remark about the page as a whole, and it applies like any other.
 ///
 /// # Errors
 ///
@@ -211,7 +220,7 @@ pub async fn apply_comments(
     let language_directive =
         crate::locale::memory_directive_for_wiki_meta(pool, tree, handle.meta()).await;
 
-    // Group the pending comments by the page their citation anchors to.
+    // Group the pending comments by the page their citation names.
     let mut by_page: std::collections::BTreeMap<String, Vec<(i64, String, Option<String>)>> =
         std::collections::BTreeMap::new();
     for &bi in bi_ids {
@@ -221,8 +230,8 @@ pub async fn apply_comments(
         if let Some(src) = resolve_source_path(tree, &handle, wiki_id, cite.as_deref()) {
             by_page.entry(src).or_default().push((bi, body, author));
         } else {
-            // Unanchored / cross-wiki / orphaned citation: nothing safe to
-            // target. Drain it so it does not pile up forever.
+            // Missing / malformed / cross-wiki citation: no page of this wiki
+            // to act on. Drain it so it does not pile up forever.
             stamp_processed(pool, bi, now).await?;
             report.comments_processed += 1;
         }
@@ -249,7 +258,7 @@ pub async fn apply_comments(
     Ok(report)
 }
 
-/// Apply the comments anchored on one page.
+/// Apply the comments that name one page.
 ///
 /// Gathers the page's active facts, interprets the comments against them, and
 /// applies the resulting ops. Stamps the comments `processed_at` only once the
@@ -272,8 +281,8 @@ async fn apply_page(
 ) -> Result<()> {
     let facts = fact_index::find_active_by_source_path(pool, source_path).await?;
     if facts.is_empty() {
-        // The anchor resolved to a page with no live facts (all forgotten,
-        // or all re-homed). Nothing to act on — drain the comments.
+        // The cite named a page with no live facts (all forgotten, all
+        // re-homed, or no such page). Nothing to act on — drain the comments.
         for (bi, _, _) in comments {
             stamp_processed(pool, *bi, now).await?;
             report.comments_processed += 1;
@@ -476,17 +485,24 @@ async fn apply_remove(
     Ok(())
 }
 
-/// Insert a new fact on the anchored page. A fact is a fact: its subject and
-/// audience follow the same rules as a captured message — the LLM decides
-/// `subject`/`allow` (subject + audience from the comment, the page's wiki scope,
-/// and the commenter's group scopes), and the `sender` is the human who left
-/// the comment (`commenter`, recorded as `author_sender_id`).
+/// Insert a new fact on the page the comment names. A fact is a fact: its
+/// subject and audience follow the same rules as a captured message — the LLM
+/// decides `subject`/`allow` (subject + audience from the comment, the page's
+/// wiki scope, and the commenter's group scopes), and the `sender` is the human
+/// who left the comment (`commenter`, recorded as `author_sender_id`).
 ///
 /// Defaults mirror the message path: an absent/malformed `subject_id` falls back
-/// to the commenter (the fact's author), and if even the commenter is unknown
-/// to `fallback_subject` (the wiki's resolved scope principal) so the fact is
-/// never subjectless. Malformed `allow_ids` entries are dropped — never widen on
-/// a parse slip.
+/// to the commenter (the fact's author), and an add with neither is refused —
+/// the page's wiki does not answer for a claim nobody attributed. Malformed
+/// `allow_ids` entries are dropped — never widen on a parse slip.
+///
+/// The op may also name what the fact is ABOUT when that is not a principal
+/// (`subject_external`), under the same rules ingest applies: a colleague, a
+/// relative, an animal, a car. It is the field that lets a comment repair the
+/// misfiling ingest is most likely to commit — a stranger's facts written onto
+/// an enrolled person's card — by removing each one and adding it back with the
+/// name it is really about. `subject_id` keeps answering the other question:
+/// who answers for it.
 ///
 /// Before the insert the add passes the same write-time dedup the capture path
 /// applies everywhere else ([`crate::capture::best_dedup_candidate`]): an add
@@ -544,6 +560,15 @@ async fn apply_add(
         .iter()
         .filter_map(|s| s.trim().parse::<Principal>().ok())
         .collect();
+    // What the fact is ABOUT when that is not a principal. A blank string is
+    // the model saying "not applicable" in the shape of a present field, so it
+    // reads as absent rather than minting an entity with an empty name.
+    let subject_external = op
+        .subject_external
+        .as_deref()
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+        .map(str::to_owned);
 
     // Write-time dedup, exactly as the capture path applies at every other
     // write site: an `add` that merely rephrases an existing fact is skipped
@@ -612,7 +637,7 @@ async fn apply_add(
         text: text.to_owned(),
         embedding,
         subject_id,
-        subject_external: None,
+        subject_external,
         allow_ids,
         sender_id: commenter.cloned(),
         fact_type: None,
@@ -1054,8 +1079,15 @@ async fn stamp_processed(pool: &SqlitePool, bi: i64, now: &str) -> Result<()> {
 }
 
 /// Resolve a comment's `target_cite` to the workdir-relative `source_path` of
-/// the anchored page, matching the format the compiler stamps on `fact_index`.
+/// the page it names, matching the format the compiler stamps on `fact_index`.
 /// `None` when the citation is absent, malformed, or points at another wiki.
+///
+/// **The `#heading` fragment is not read, and never was part of the answer.**
+/// It locates the comment for a human reading the page; the edit is scoped by
+/// the page, because that is the unit whose facts are gathered and handed to
+/// the interpreter. So a cite that carries no fragment — a remark about the
+/// page as a whole — resolves exactly like one that does, and a fragment
+/// naming a heading the body has since lost resolves too.
 fn resolve_source_path(
     tree: &WikiTree,
     handle: &WikiHandle,
@@ -1353,7 +1385,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn unanchored_comment_is_drained_without_action() {
+    async fn comment_without_a_cite_is_drained_without_action() {
         let (dir, tree, pool) = setup().await;
         insert_fact(&pool, &fid_str(0x31), "Alice likes tea").await;
         let bi = insert_comment(&pool, None, "nice page!").await;
@@ -1379,7 +1411,222 @@ mod tests {
         assert_eq!(report.facts_removed, 0);
         assert_eq!(
             report.comments_processed, 1,
-            "drained even without an anchor"
+            "no cite names no page, so there is nothing to act on — drained"
+        );
+        drop(dir);
+    }
+
+    #[tokio::test]
+    async fn page_level_comment_edits_that_pages_facts() {
+        // A cite that names the page and NO heading is a remark about the whole
+        // page — the only comment a heading-less page (an identity card) can
+        // carry. It is applied like any other, because the fragment never
+        // scoped the edit: the page did.
+        let (dir, tree, pool) = setup().await;
+        let id = fid_str(0x32);
+        insert_fact(&pool, &id, "Alice was born in 1985").await;
+        let bi = insert_comment(
+            &pool,
+            Some("wiki://alice/cucina.md"),
+            "the birth year is wrong, she was born in 1986",
+        )
+        .await;
+
+        let llm = FakeLlmBackend::new(
+            "fake",
+            format!(
+                "{{\"ops\":[{{\"action\":\"correct\",\"fact_id\":\"{id}\",\"text\":\"Alice was born in 1986\"}}]}}"
+            ),
+        );
+        let embedder: Arc<dyn Embedder> = Arc::new(FakeEmbedder::new("fake", 2));
+        let wiki_id = WikiId::parse("alice").unwrap();
+
+        let report = apply_comments(
+            &pool,
+            &tree,
+            &embedder,
+            &llm,
+            &wiki_id,
+            &[bi],
+            "2026-05-31T02:00:00Z",
+        )
+        .await
+        .expect("apply");
+
+        assert_eq!(
+            report.facts_corrected, 1,
+            "a page-level comment is APPLIED, not drained unread"
+        );
+        assert_eq!(report.comments_processed, 1);
+        let row = fact_index::find_by_id(&pool, &FactId::parse(&id).unwrap())
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(row.text, "Alice was born in 1986");
+        drop(dir);
+    }
+
+    #[tokio::test]
+    async fn comment_naming_a_page_with_no_facts_is_drained() {
+        // The other half of the page-level rule: located but empty (or no such
+        // page) is the case that drains, not "carried no heading".
+        let (dir, tree, pool) = setup().await;
+        let id = fid_str(0x33);
+        insert_fact(&pool, &id, "Alice likes tea").await;
+        let bi = insert_comment(
+            &pool,
+            Some("wiki://alice/nowhere.md"),
+            "this page should say more",
+        )
+        .await;
+
+        let llm = FakeLlmBackend::new(
+            "fake",
+            format!(
+                "{{\"ops\":[{{\"action\":\"correct\",\"fact_id\":\"{id}\",\"text\":\"hijacked\"}}]}}"
+            ),
+        );
+        let embedder: Arc<dyn Embedder> = Arc::new(FakeEmbedder::new("fake", 2));
+        let wiki_id = WikiId::parse("alice").unwrap();
+
+        let report = apply_comments(
+            &pool,
+            &tree,
+            &embedder,
+            &llm,
+            &wiki_id,
+            &[bi],
+            "2026-05-31T02:00:00Z",
+        )
+        .await
+        .expect("apply");
+
+        assert_eq!(report.facts_corrected, 0);
+        assert_eq!(report.comments_processed, 1, "drained");
+        let row = fact_index::find_by_id(&pool, &FactId::parse(&id).unwrap())
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(
+            row.text, "Alice likes tea",
+            "a comment on an empty page never reaches another page's facts"
+        );
+        drop(dir);
+    }
+
+    #[tokio::test]
+    async fn add_carries_the_subject_external_the_op_names() {
+        // The repair for a fact the ingest misfiled under an enrolled person:
+        // remove it, add it back with the name it is really about. The added
+        // row carries `subject_external` — who ANSWERS for it stays a separate
+        // answer (`subject_id`, here the commenter).
+        let (dir, tree, pool) = setup().await;
+        let misfiled = fid_str(0x61);
+        insert_fact_with_subject(
+            &pool,
+            &misfiled,
+            "Roberto Sackville is retiring in June",
+            "user:bob",
+        )
+        .await;
+        let bi = insert_comment(
+            &pool,
+            Some("wiki://alice/cucina.md#bio"),
+            "Roberto is a colleague of mine, he has nothing to do with Bob",
+        )
+        .await;
+
+        let llm = FakeLlmBackend::new(
+            "fake",
+            format!(
+                "{{\"ops\":[\
+                   {{\"action\":\"remove\",\"fact_id\":\"{misfiled}\"}},\
+                   {{\"action\":\"add\",\"text\":\"Roberto Sackville is retiring in June\",\
+                     \"subject_id\":\"user:alice\",\"subject_external\":\"Roberto Sackville\",\
+                     \"allow_ids\":[]}}\
+                 ]}}"
+            ),
+        );
+        let embedder: Arc<dyn Embedder> = Arc::new(FakeEmbedder::new("fake", 2));
+        let wiki_id = WikiId::parse("alice").unwrap();
+
+        let report = apply_comments(
+            &pool,
+            &tree,
+            &embedder,
+            &llm,
+            &wiki_id,
+            &[bi],
+            "2026-05-31T02:00:00Z",
+        )
+        .await
+        .expect("apply");
+
+        assert_eq!(report.facts_removed, 1);
+        assert_eq!(report.facts_added, 1, "{:?}", report.errors);
+        let facts = fact_index::find_active_by_source_path(&pool, "wikis/alice/cucina.md")
+            .await
+            .unwrap();
+        let added = facts
+            .iter()
+            .find(|f| f.fact_id.as_str() != misfiled)
+            .expect("the re-added fact is present");
+        assert_eq!(
+            added.subject_external.as_deref(),
+            Some("Roberto Sackville"),
+            "the name of what the fact is about travels onto the row"
+        );
+        assert_eq!(
+            added.subject_id,
+            "user:alice".parse::<Principal>().unwrap(),
+            "who answers for it is the commenter, not the person it is about"
+        );
+        drop(dir);
+    }
+
+    #[tokio::test]
+    async fn add_without_a_subject_external_leaves_it_unset() {
+        // The ordinary case, and the one the field must not disturb: a fact
+        // about an enrolled person names nothing external.
+        let (dir, tree, pool) = setup().await;
+        insert_fact(&pool, &fid_str(0x62), "Alice likes tea").await;
+        let bi = insert_comment(
+            &pool,
+            Some("wiki://alice/cucina.md#bio"),
+            "also note she has a cat",
+        )
+        .await;
+
+        let llm = FakeLlmBackend::new(
+            "fake",
+            "{\"ops\":[{\"action\":\"add\",\"text\":\"Alice has a cat\"}]}",
+        );
+        let embedder: Arc<dyn Embedder> = Arc::new(FakeEmbedder::new("fake", 2));
+        let wiki_id = WikiId::parse("alice").unwrap();
+
+        let report = apply_comments(
+            &pool,
+            &tree,
+            &embedder,
+            &llm,
+            &wiki_id,
+            &[bi],
+            "2026-05-31T02:00:00Z",
+        )
+        .await
+        .expect("apply");
+
+        assert_eq!(report.facts_added, 1);
+        let facts = fact_index::find_active_by_source_path(&pool, "wikis/alice/cucina.md")
+            .await
+            .unwrap();
+        let added = facts
+            .iter()
+            .find(|f| f.text == "Alice has a cat")
+            .expect("the added fact is present");
+        assert_eq!(
+            added.subject_external, None,
+            "an op that names no external subject mints no entity"
         );
         drop(dir);
     }

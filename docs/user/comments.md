@@ -2,20 +2,34 @@
 
 You cannot rewrite a page here, and that is on purpose: the prose of a standard
 wiki is written out of the facts, so an edit to the text would be overwritten
-by the next rewrite. What you leave instead is a **comment**, anchored to a
-heading, and the memory acts on it.
+by the next rewrite. What you leave instead is a **comment**, on a heading or
+on the page as a whole, and the memory acts on it.
 
 ## Leaving one
 
 Open a page. Near the top of it there is a small framed box that reads **Add
 comments**: press it and the page comes back in comment mode, the box now
 reading *"Comment mode is ON — click `+ Comment` next to a heading to leave
-feedback"*. Every heading has grown a **+ Comment** link — press the one over
-the part you mean.
+feedback on that section, or `+ Comment on this page` for the page as a
+whole"*. Every heading has grown a **+ Comment** link — press the one over the
+part you mean.
 
-The form says who it will be saved under — you — and against which heading.
-Write what should change, why, and where the evidence for it is. **Save**.
-**Stop commenting**, in the same box, leaves comment mode.
+Above the page there is also a **+ Comment on this page** link, for a remark
+about the page rather than about one of its sections; on a page written
+without headings, such as somebody's card, it is the only one there is, and
+comments left through it are shown together at the top of the page under **On
+this page**.
+
+The form says who it will be saved under — you — and whether it is against a
+heading or the whole page. Write what should change, why, and where the
+evidence for it is. **Save**. **Stop commenting**, in the same box, leaves
+comment mode.
+
+Among the things a comment can ask for is that a fact be **put on the right
+person**: say that what the page attributes to somebody is really about
+someone else — a colleague, a relative, anyone who has no account here — and
+the nightly pass files it under that name instead, keeping the words of the
+claim.
 
 The comment stays visible on the page until it is acted on.
 

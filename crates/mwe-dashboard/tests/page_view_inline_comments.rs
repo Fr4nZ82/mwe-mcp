@@ -10,7 +10,7 @@
 //! shape.
 //!
 //! The comment write path is exercised on the same fixtures: GET
-//! `/wiki/:id/comment/*path?anchor=...` renders a form,
+//! `/wiki/:id/comment/*path[?anchor=...]` renders a form,
 //! POST persists a `wiki_briefing_items` row with the correct
 //! `source_kind` / `kind` / `author_sender_id` / `target_cite`
 //! columns, round-trips into the inline render on the next
@@ -288,16 +288,23 @@ async fn page_view_renders_orphaned_comments_in_footer_when_anchor_missing() {
         html.contains("removed-section"),
         "missing anchor must be surfaced in the orphan meta: {html}"
     );
+    // And it stays orphaned: a heading the body no longer has is a
+    // different claim from a remark about the page as a whole.
+    assert!(
+        !html.contains("On this page"),
+        "a vanished heading is orphaned, never filed as a page-level remark: {html}"
+    );
 }
 
 #[tokio::test]
-async fn page_view_renders_comment_without_anchor_in_orphaned_section_if_only_path_in_cite() {
+async fn page_view_renders_a_cite_without_anchor_under_on_this_page() {
     let (app, pool, tree, _dir) = make_app_with_memory().await;
     let cookie = login_as_admin(&app).await;
     seed_alice_with_page(&tree, "modules/parser.md", TWO_HEADING_BODY);
 
-    // Path-only cite: no `#anchor`. The current policy is to
-    // surface as orphaned rather than guess a heading to attach it to.
+    // Path-only cite: no `#anchor`. That is a remark about the page as
+    // a whole — it opens the body under its own heading, and nothing
+    // about it is orphaned.
     let id = seed_briefing_item(
         &pool,
         "alice",
@@ -322,12 +329,185 @@ async fn page_view_renders_comment_without_anchor_in_orphaned_section_if_only_pa
     assert_eq!(response.status(), StatusCode::OK);
     let html = body_string(response).await;
     let bi_id = format!("bi_{id}");
-    let pos_header = must_find(&html, "Orphaned comments");
+    assert!(
+        !html.contains("Orphaned comments"),
+        "a cite without an anchor is not orphaned: {html}"
+    );
+    let pos_header = must_find(&html, "On this page");
     let pos_comment = must_find(&html, &bi_id);
+    let pos_body = must_find(&html, "id=\"boundary-tokens\"");
     assert!(
         pos_header < pos_comment,
-        "page-level comment must land in the orphan section, not inline"
+        "the page-level comment must render under its own heading; \
+         header={pos_header} comment={pos_comment}"
     );
+    assert!(
+        pos_comment < pos_body,
+        "the page-level block sits above the page body; \
+         comment={pos_comment} body={pos_body}"
+    );
+}
+
+/// A page written without a single heading — an identity card is one,
+/// by design. Before the page-level link there was nowhere at all to
+/// comment on such a page.
+const HEADING_LESS_CARD: &str = "Alice, born 1985, lives in Turin.\n\n\
+                                 Works as a translator; keeps early hours.\n";
+
+#[tokio::test]
+async fn a_page_without_headings_offers_the_page_level_comment_link() {
+    let (app, _pool, tree, _dir) = make_app_with_memory().await;
+    let cookie = login_as_admin(&app).await;
+    seed_alice_with_page(&tree, "@profile.md", HEADING_LESS_CARD);
+
+    let response = send(
+        &app,
+        Request::builder()
+            .uri("/wiki/alice/view/@profile.md?mode=comment")
+            .header(header::COOKIE, &cookie)
+            .body(Body::empty())
+            .unwrap(),
+    )
+    .await;
+    assert_eq!(response.status(), StatusCode::OK);
+    let html = body_string(response).await;
+
+    assert!(
+        html.contains("+ Comment on this page"),
+        "a heading-less page must still offer a way in: {html}"
+    );
+    assert!(
+        html.contains("/dashboard/wiki/alice/comment/@profile.md\""),
+        "the page-level link carries no ?anchor=: {html}"
+    );
+
+    // Read mode stays clean: the page-level link is part of comment
+    // mode like every other comment affordance.
+    let response = send(
+        &app,
+        Request::builder()
+            .uri("/wiki/alice/view/@profile.md")
+            .header(header::COOKIE, &cookie)
+            .body(Body::empty())
+            .unwrap(),
+    )
+    .await;
+    assert_eq!(response.status(), StatusCode::OK);
+    let html_read_mode = body_string(response).await;
+    assert!(
+        !html_read_mode.contains("+ Comment on this page"),
+        "read mode must not render the page-level affordance: {html_read_mode}"
+    );
+}
+
+#[tokio::test]
+async fn a_comment_posted_through_the_page_level_link_renders_under_on_this_page() {
+    let (app, pool, tree, _dir) = make_app_with_memory().await;
+    let cookie = login_as_admin(&app).await;
+    seed_alice_with_page(&tree, "@profile.md", HEADING_LESS_CARD);
+
+    // POST with no `?anchor=` — the form the page-level link opens.
+    let response = send(
+        &app,
+        Request::builder()
+            .method("POST")
+            .uri("/wiki/alice/comment/@profile.md")
+            .header(header::COOKIE, &cookie)
+            .header(header::CONTENT_TYPE, "application/x-www-form-urlencoded")
+            .body(Body::from("body=She+moved+to+Genoa+last+month."))
+            .unwrap(),
+    )
+    .await;
+    assert!(response.status().is_redirection(), "{}", response.status());
+
+    let cite: Option<String> = sqlx::query_scalar(
+        "SELECT target_cite FROM wiki_briefing_items WHERE wiki_id = 'alice' ORDER BY id DESC LIMIT 1",
+    )
+    .fetch_one(&pool)
+    .await
+    .expect("briefing row");
+    assert_eq!(
+        cite.as_deref(),
+        Some("wiki://alice/@profile.md"),
+        "a page-level comment stores a cite with no heading fragment"
+    );
+
+    let response = send(
+        &app,
+        Request::builder()
+            .uri("/wiki/alice/view/@profile.md")
+            .header(header::COOKIE, &cookie)
+            .body(Body::empty())
+            .unwrap(),
+    )
+    .await;
+    assert_eq!(response.status(), StatusCode::OK);
+    let html = body_string(response).await;
+    assert!(
+        html.contains("She moved to Genoa last month."),
+        "the comment must round-trip into the page view: {html}"
+    );
+    assert!(
+        !html.contains("Orphaned comments"),
+        "a comment left on the page is not an orphan: {html}"
+    );
+    let pos_header = must_find(&html, "On this page");
+    let pos_comment = must_find(&html, "She moved to Genoa last month.");
+    assert!(
+        pos_header < pos_comment,
+        "the comment renders under the page-level heading; \
+         header={pos_header} comment={pos_comment}"
+    );
+}
+
+#[tokio::test]
+async fn the_page_level_comment_form_says_it_is_about_the_whole_page() {
+    let (app, _pool, tree, _dir) = make_app_with_memory().await;
+    let cookie = login_as_admin(&app).await;
+    seed_alice_with_page(&tree, "@profile.md", HEADING_LESS_CARD);
+
+    let response = send(
+        &app,
+        Request::builder()
+            .uri("/wiki/alice/comment/@profile.md")
+            .header(header::COOKIE, &cookie)
+            .body(Body::empty())
+            .unwrap(),
+    )
+    .await;
+    assert_eq!(response.status(), StatusCode::OK);
+    let html = body_string(response).await;
+    assert!(
+        html.contains("the whole page"),
+        "the form must say what the comment is about: {html}"
+    );
+    assert!(
+        !html.contains("orphaned bucket"),
+        "there is no missing heading to warn about: {html}"
+    );
+}
+
+#[tokio::test]
+async fn a_blank_anchor_parameter_is_still_refused() {
+    let (app, _pool, tree, _dir) = make_app_with_memory().await;
+    let cookie = login_as_admin(&app).await;
+    seed_alice_with_page(&tree, "modules/parser.md", TWO_HEADING_BODY);
+
+    // Absent means "the whole page"; present-but-blank is a malformed
+    // URL for a section, and answering the other question would file
+    // the remark somewhere the writer did not choose.
+    let response = send(
+        &app,
+        Request::builder()
+            .method("POST")
+            .uri("/wiki/alice/comment/modules/parser.md?anchor=")
+            .header(header::COOKIE, &cookie)
+            .header(header::CONTENT_TYPE, "application/x-www-form-urlencoded")
+            .body(Body::from("body=Anything."))
+            .unwrap(),
+    )
+    .await;
+    assert_eq!(response.status(), StatusCode::UNPROCESSABLE_ENTITY);
 }
 
 #[tokio::test]

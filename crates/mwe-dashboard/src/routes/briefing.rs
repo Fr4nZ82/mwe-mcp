@@ -5,7 +5,7 @@
 //! On a **smart** wiki the handler calls the shared
 //! [`mwe_core::rem::briefing_processor::process_briefing_item`] core
 //! function (the same one REM's mark-passive path calls) and lands the
-//! reader back on the page the comment is anchored to, where the block
+//! reader back on the page the comment names, where the block
 //! they just cleared is gone from the inline list.
 //!
 //! The button that calls it is the "Mark as read" control on each

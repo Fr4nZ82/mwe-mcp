@@ -1504,6 +1504,14 @@
     border-top: 1px solid var(--border);
   }
   section.orphaned-comments h3 { margin-top: 0; }
+  /* Comments about the page as a whole, above the body they belong to. */
+  section.page-comments {
+    margin-bottom: 1.5rem;
+    padding-bottom: 1rem;
+    border-bottom: 1px solid var(--border);
+  }
+  section.page-comments h3 { margin-top: 0; }
+  section.page-comments .comment-block { margin-left: 0; }
 
   /* C.11.f — inline comment write affordance. */
   .comment-mode-toggle {
@@ -1517,6 +1525,11 @@
   .add-comment-cta {
     margin: 0.25rem 0 0.5rem 1.5rem;
     font-size: 0.85rem;
+  }
+  /* The page-level one addresses the page, not a section, so it sits
+     flush with the body instead of indented under a heading. */
+  .add-comment-cta.page-level {
+    margin-left: 0;
   }
   .add-comment-cta a {
     display: inline-block;

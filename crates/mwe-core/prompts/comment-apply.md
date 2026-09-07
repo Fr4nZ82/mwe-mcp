@@ -1,7 +1,7 @@
 ---
 name: comment-apply
-description: turns parked dashboard comments on a narrative page into precise fact ops (correct / remove / add / move) over that page's facts; an `add` carries its own subject_id/allow_ids decided under the ingest rules (subject + audience from the comment, the page's wiki scope, and the commenter's group scopes)
-version: 1.7
+description: turns parked dashboard comments on a narrative page into precise fact ops (correct / remove / add / move) over that page's facts; an `add` carries its own subject_id/allow_ids/subject_external decided under the ingest rules (subject + audience from the comment, the page's wiki scope, and the commenter's group scopes), so a comment can also refile a fact onto the person it is really about
+version: 1.8
 default_version_at_bootstrap: v1.5
 ---
 
@@ -20,11 +20,14 @@ an operator override at `<workdir>/prompts/comment-apply.md` wins.
 - **Model**: a **strong** model — the **ingest** tier (turning a free-text
   correction into precise fact ops is the same class of judgment as ingesting a
   message). `temperature` low, JSON output.
-- **Placeholders**: `{facts}` (the anchored page's current facts, one per line as
+- **Placeholders**: `{facts}` (the page's current facts, one per line as
   `<fact_id>: <claim>`), `{comments}` (the operator's pending comments on that
-  page, numbered), `{scope}` (the commenter's id, this page's wiki `scope` prose,
+  page, numbered — a comment reaches this page through the page its cite names,
+  whether or not that cite also carries a `#heading`), `{scope}` (the
+  commenter's id, this page's wiki `scope` prose,
   and the commenter's group scopes — the audience signals an `add`'s
-  `subject_id`/`allow_ids` are decided from, mirroring `ingest`'s assembly),
+  `subject_id`/`subject_external`/`allow_ids` are decided from, mirroring
+  `ingest`'s assembly),
   `{destinations}` (the wikis + pages a `move` op may target — every other
   non-smart wiki, **each followed by the pages it already holds**, and this
   wiki's other pages; a wiki is structure, so no shelf is off limits because
@@ -32,7 +35,8 @@ an operator override at `<workdir>/prompts/comment-apply.md` wins.
 - **Output**: one strict JSON object — `{ "ops": [...] }` — parsed into
   `crate::comment_apply::InterpretedOps`. Each op is `correct` (with `fact_id`
   + full `text`), `remove` (with `fact_id`), `add` (with `text` + its own
-  `subject_id`/`allow_ids`), or `move`
+  `subject_id`/`allow_ids`, and `subject_external` when what the fact is about
+  is not a principal), or `move`
   (with `fact_id` + a destination chosen from `{destinations}`). The caller
   refuses any `fact_id` not present on the page (containment guard); an `add`'s
   `subject`/`allow` are the LLM's (subject + audience under the ingest rules,
@@ -67,7 +71,10 @@ RULES:
 - A comment that says a fact is wrong, private, or should be forgotten → "remove" that fact.
 - A comment that supplies genuinely NEW information not covered by any listed fact → "add", with the new claim in "text" as a complete standalone sentence. An "add" also carries its ACL, decided like a captured message fact:
   - "subject_id": WHO the new fact is ABOUT — the subject, NOT who may read it. "user:<commenter>" (the comment's author, shown in CONTEXT below) is the DEFAULT; "user:<X>" for a different named person the comment is about; "group:<id>" ONLY when the subject is the collective itself; "global" for a world fact. The subject stays the subject even when the fact is shared.
+  - "subject_external": the NAME of WHAT the fact is about, when that is not a principal — a person with no account (a relative, a colleague, a doctor), an animal, a car, a company, a school. OMIT it for the ordinary case: a fact about the commenter, about another enrolled user, about a group, or about the world. It is NOT an alternative to "subject_id" — a fact carries both, and they answer different questions: "subject_external" says WHAT IT IS ABOUT, "subject_id" says WHO ANSWERS FOR IT (the group whose scope covers the material, else "user:<commenter>"). Never mint a "user:<id>" for somebody who is not a principal, and a name that merely RESEMBLES an enrolled id is a different person. Write the name as the comment writes it, and keep it in "text" too, so the claim reads on its own.
   - "allow_ids": WHO may read it — independent of subject_id. The fact is ALWAYS readable by its subject and the commenter, so [] (the DEFAULT) means exactly "only them". Widen it from the CONTEXT scopes below and the comment's own cues, the more specific overriding the more general: a group whose scope names the kind of thing the fact is → add that "group:<id>", matching on meaning rather than on shared wording, and never withholding the group because the fact strikes you as too private — that call belongs to the commenter's cue, below, not to you; the page's wiki scope (the category's audience); an explicit cue in the comment — public → add "global", private/"just us" → []. allow_ids only ever WIDENS reading, and naming a group does not make the fact public — it makes it private to that group; only "global" opens it to everyone.
+- A comment saying a fact is ABOUT SOMEBODY ELSE than the person it is filed under ("this isn't about me, it's about a colleague of mine", "Roberto is a workmate, not the Bob you know") → "remove" that fact and "add" it again with the right subject, KEEPING THE CLAIM'S WORDS as they stand. "correct" cannot do this: it rewrites a claim's text and leaves its subject exactly as it was, so the fact would go on being filed under the wrong person. On the new "add": when the person really meant is NOT enrolled, their name goes in "subject_external" and "subject_id" is who answers for it (the group whose scope covers the material, else "user:<commenter>"); when they ARE in the roster, name them in "subject_id" and leave "subject_external" out.
+  - Worked example, commenter alice, on a page of bob's carrying `f1: Roberto Sackville is retiring in June` — Roberto Sackville is a colleague nobody enrolled, and the comment says "Roberto is from the office, he has nothing to do with Bob": emit `{ "action": "remove", "fact_id": "f1" }` and `{ "action": "add", "text": "Roberto Sackville is retiring in June", "subject_external": "Roberto Sackville", "subject_id": "user:alice", "allow_ids": [] }`.
 - A comment saying a fact BELONGS SOMEWHERE ELSE → "move" that fact (e.g. "this would be better on the health wiki", "this is really about work", "move this to the contacts page"). Choose the destination ONLY from the DESTINATIONS list:
   - to move it into ANOTHER WIKI: set "dest_wiki_id" to that wiki's id AND "dest_page" to one of the pages listed under it, copied character for character. A page is where a fact lands, so a cross-wiki move without one is refused; a wiki whose pages line says "(none yet)" has nowhere for the fact to go — do not name it.
   - to move it to ANOTHER PAGE of this same wiki: leave "dest_wiki_id" null and set "dest_page" to that page.
@@ -80,7 +87,7 @@ OUTPUT — one strict JSON object, no prose around it:
   "ops": [
     { "action": "correct", "fact_id": "<id from the list>", "text": "<full corrected claim>" },
     { "action": "remove",  "fact_id": "<id from the list>" },
-    { "action": "add",     "text": "<new claim>", "subject_id": "user:<commenter>", "allow_ids": [] },
+    { "action": "add",     "text": "<new claim>", "subject_id": "user:<commenter>", "subject_external": "<the NAME of what the fact is about when that is not a principal; omit otherwise>", "allow_ids": [] },
     { "action": "move",    "fact_id": "<id from the list>", "dest_wiki_id": "<wiki id from DESTINATIONS | null = this wiki>", "dest_page": "<page from DESTINATIONS, under that wiki>" }
   ]
 }

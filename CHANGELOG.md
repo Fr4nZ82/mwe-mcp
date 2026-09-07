@@ -858,6 +858,28 @@ one for whoever the memory is about.
   by both names from that moment on. A name of several words is one name,
   matched whole and in the order it was declared.
 
+- **A page can be commented on even when it has no headings, and a comment can
+  say a fact is about somebody else.** Comment mode offered one way in — a
+  **+ Comment** link beside each heading — and a person's always-on card is
+  written without headings on purpose, so on the most important page of a
+  memory there was nowhere to press: the box announced comment mode and nothing
+  followed. Every page now also carries **+ Comment on this page**, above the
+  text, for a remark about the page as a whole; comments left that way are
+  shown together at the top of the page under **On this page**, and the nightly
+  pass acts on them exactly as it acts on one left beside a heading — the
+  heading only ever said *where on the page*, never *which facts*. The footer
+  headed **Orphaned comments** now holds only what it was meant to: a comment
+  whose heading the page no longer has.
+
+  The second half is what such a comment may ask for. The pass could correct a
+  claim, remove it, add one or move it to another page, but it could not change
+  **who a fact is about** — so facts the memory had filed under an enrolled
+  person while they were about somebody else, a colleague or a relative with no
+  account here, could not be put right from the page. Now they can: say so in a
+  comment and the claim is filed again under the name it really concerns,
+  keeping its words, with who answers for it decided the same way the memory
+  decides it when it first hears the fact.
+
 ### Security
 
 - **A dashboard session is only a token minted for the browser.** Every JWT in

@@ -42,7 +42,8 @@ text of the page directly."*
 Two things you can do from here:
 
 - **Add comments** — a switch that puts a **+ Comment** link beside every
-  heading, so you can leave a note anchored to one. See
+  heading, so you can leave a note on one, and a **+ Comment on this page**
+  link above the text for a note about the page as a whole. See
   [Comments](comments.md).
 - **Edit page description** — the one line that says what this page is for. It
   steers where a new fact lands, and it is read when deciding whether to open
