@@ -6,24 +6,39 @@ served over MCP. Rust server, AGPL-3.0-or-later.
 Work happens **directly on `main`, in this directory**. Never create a branch
 without asking. Pick the right way, not the easy one.
 
-## The code is the source of truth, and there is no second copy
+## The code is the source of truth, and the guide is not a second copy
 
-**There is no `docs/` tree.** It was deleted on 2026-08-21, fifty pages of it,
-and the reason is the one the owner wrote when he ordered it: *a page nobody
-maintains is worse than a page that does not exist, because it has the air of
-knowing something.* Five false sentences in two days were traced to it, each
-read back to him as the state of the product.
+**Behaviour is answered from the code path, never from prose.** When you state
+how the engine behaves, open the function. If you are reporting something you
+read in a comment rather than verified, say so in that sentence — they are two
+different kinds of claim, and mixing them is how five false sentences reached
+the owner in two days, each read back to him as the state of the product.
 
-So: **answer from the code path, not from prose.** When you state how the
-engine behaves, open the function. If you are reporting something you read in
-a comment rather than verified, say so in that sentence — they are two
-different kinds of claim and mixing them is how the five got through.
+**Where the durable explanation goes.** The *why* of a design lives in the doc
+comment beside the thing it explains, where a reader arrives with the code
+already open and where a rename drags it along. History and decisions live in
+`planning/logs.md`, dated, one entry each. Neither is a second description of
+the system.
 
-**Where the durable explanation goes instead.** The *why* of a design lives in
-the doc comment beside the thing it explains, where a reader arrives with the
-code already open and where a rename drags it along. History and decisions live
-in `planning/logs.md`, dated, one entry each. Neither is a second description
-of the system.
+**`docs/` is the guide for people, and only that.** Two halves — `operator/`
+for whoever installs and runs the server, `user/` for whoever the memory is
+about — describing what a person **sees and does**: the screens, their labels,
+the buttons, what happens after you press one, in the dashboard's own words. It
+is not an engineering wiki, and no page in it explains how the engine works
+inside; that answer comes from the code, and a second copy of it is the thing
+that goes stale first. Where the guide must state a number — a token's
+lifetime, a retention window, the percentage the budget warns at — it is taken
+from `config.rs` and the module that reads it, not from another document. Where
+the dashboard already has a word for a thing, the guide repeats that word: one
+name per thing across the dashboard, the skills and the guide.
+
+**The rule that keeps it true, and the whole reason the folder is allowed to
+exist:** *before every release, every page of the guide is re-verified on the
+running dashboard, and a page nobody can verify is deleted, not kept.* It is
+written at the top of `docs/README.md`, because it binds whoever writes there
+next. A page nobody maintains is worse than a page that does not exist, since
+it has the air of knowing something — which is what those five sentences were
+made of.
 
 **Prompts and skills are not prose.** `crates/mwe-core/prompts/` and
 `crates/mwe-core/skills/` are read by a model at runtime and handed to the
@@ -33,7 +48,7 @@ with the code, always, in the same commit.
 ## "Wiki" means the memory, and nothing else
 
 A **memory wiki** is the Markdown memory the product maintains at runtime under
-`<workdir>/wikis/`. That is the product, and it is now the only thing in this
+`<workdir>/wikis/`. That is the product, and it is the only thing in this
 repository that the word names.
 
 ## A change leaves no trace of what it removed
@@ -158,8 +173,9 @@ read like alternatives when you meet them in the code, and they are not.
 - A production build needs **`--features local-embedder`**. Without it the
   binary starts, runs the migrations, and dies on
   `backend 'bundled' requires a build with the 'local-embedder' feature` — while
-  the service manager still reports it as active. Sanity check: a correct binary
-  is ~34 MB, a featureless one ~28 MB.
+  the service manager still reports it as active. Sanity check: the right binary
+  is ~38 MB; the Candle stack is around 6 MB of that, so a build that dropped
+  the flag comes out that much smaller.
 
 ## Commits, pushes and deploys
 
