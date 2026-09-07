@@ -459,6 +459,30 @@ pub struct EnrolledUserLite {
 /// `enrollment_users.aliases` JSON column (a malformed value degrades to an
 /// empty alias list rather than failing the lookup).
 ///
+/// # The resolution contract this roster carries
+///
+/// **A name in a message reaches an entry only when it IS that entry's
+/// `user_id` or one of its declared `aliases`**, compared whole-token with
+/// case and accents folded ([`is_valid_user_id`] allows lowercase ASCII only,
+/// so `eowyn` is how "Éowyn" is enrolled). Nothing else folds. A longer or a
+/// shorter form of an id, a translation of it, a diminutive nobody declared,
+/// and a full name whose surname no entry carries are all a **different
+/// person**: their name belongs in a fact's `subject_external`, never under a
+/// `user:` principal.
+///
+/// Two things make the rule load-bearing rather than pedantic. This roster is
+/// the *only* thing the classifier can tell people apart by — it carries no
+/// surnames and no display names — and the `aliases` column is therefore the
+/// operator's one way to say "she is also called that"; leave it empty and a
+/// household name reaches nobody. And the cost of the classifier finishing a
+/// resemblance on its own is not a missed fact but a false one: a stranger's
+/// life written onto an enrolled person's own card, where every later reader
+/// takes it as being about them.
+///
+/// The rule is stated to the model in `crates/mwe-core/prompts/ingest.md` (the
+/// `subject_id` section) and enforced under it by
+/// `ingest::people_the_turn_names`.
+///
 /// # Errors
 ///
 /// Propagates the underlying `sqlx` error.

@@ -1361,6 +1361,71 @@ fn subject_is_the_wikis_own_principal(subject: &Principal, wiki_id: &str) -> boo
     }
 }
 
+/// The enrolled people this turn's own words NAME, by id.
+///
+/// The engine's floor under the resolution contract stated beside
+/// [`enrollment::list_users`]: a name resolves to an enrolled user only when
+/// it IS that user's id or one of the aliases the operator declared for them.
+/// The classifier is shown the roster, and a roster of bare ids invites it to
+/// finish a resemblance itself — a colleague called Roberto onto an enrolled
+/// `robert`, a full name whose surname the roster does not carry onto the one
+/// entry that shares a first name. The fact then lands on that person's own
+/// card, and everybody who reads the card takes it as being about them.
+///
+/// The words weighed are the turn's: the current message plus the recent
+/// window the prompt showed alongside it, so a name said one turn earlier
+/// still names its person on the next. The match is
+/// [`recall::turn_subjects`] — the same whole-token, case- and accent-folded
+/// comparison that decides whose identity card the turn is served, so the two
+/// answers cannot disagree.
+fn people_the_turn_names(
+    request: &IngestRequest,
+    known_users: &[enrollment::EnrolledUserLite],
+    policy: &IngestPolicy,
+) -> Vec<String> {
+    let mut words = request.text.clone();
+    let take_from = request
+        .recent_messages
+        .len()
+        .saturating_sub(policy.max_recent_messages);
+    for m in &request.recent_messages[take_from..] {
+        words.push('\n');
+        words.push_str(&m.text);
+    }
+    recall::turn_subjects(&words, &request.sender_id, known_users)
+}
+
+/// Is `user_id` a subject the turn's words cannot settle either way?
+///
+/// Three roster entries are outside what [`people_the_turn_names`] can
+/// answer, and on each of them the classifier's own call stands:
+///
+/// - **the assistant** (`is_agent`) — its id is a principal, not a name
+///   anybody writes in a message, and a fact about the assistant is not a case
+///   of two people being confused for each other;
+/// - **an id carrying the collision suffix `°N`** ([`enrollment::is_valid_user_id`])
+///   — two enrolled people share a name there, so the words alone were never
+///   going to tell them apart;
+/// - **a turn carrying media** — the classifier is handed the images
+///   themselves, so it can read a name the words of the turn do not carry.
+///
+/// A subject the roster does not hold at all belongs to the guard above this
+/// one, which re-owns it for not being an enrolled principal; this one lets
+/// it through untouched.
+fn subject_is_beyond_the_words(
+    request: &IngestRequest,
+    known_users: &[enrollment::EnrolledUserLite],
+    user_id: &str,
+) -> bool {
+    if !request.attachments.is_empty() {
+        return true;
+    }
+    known_users
+        .iter()
+        .find(|u| u.user_id == user_id)
+        .is_none_or(|u| u.is_agent || u.user_id.contains('°'))
+}
+
 /// Resolve the wiki a capture is filed into, in four descending preferences.
 ///
 /// The classifier is not shown the wiki tree — it cannot choose from a list it
@@ -4266,15 +4331,18 @@ fn build_prompt(
     // known_users: the enrolled people the classifier can attribute facts to
     // by canonical name. A message from one user about another ("Bob
     // prefers tea") routes `subject_id` to the named person via this roster
-    // rather than filing it under the sender. Aliases let the model resolve
-    // informal references to the canonical `user_id`.
+    // rather than filing it under the sender. An id and the aliases printed
+    // beside it are the ONLY names that reach a person — the resolution
+    // contract stated beside `enrollment::list_users`, with
+    // `people_the_turn_names` as its floor — because a roster of bare ids
+    // otherwise reads as an invitation to finish a resemblance.
     //
     // The assistant is in this roster too — it is an enrolled user like any
     // other (the diagonal identity model) — and `is_agent: true` says which
     // entry it is. Without it the classifier reads its own id as one more
     // person: the "you" of every turn is then a stranger in the list, and a
     // sentence addressed TO the assistant looks like a sentence ABOUT a
-    // third party. Emitted only when set, like `available_wikis` below.
+    // third party. Emitted only when set.
     out.push_str("\nknown_users:\n");
     if known_users.is_empty() {
         out.push_str("  (none)\n");
@@ -5950,8 +6018,8 @@ const HDR_RELEVANT_MEMORY: &str =
 ///   render* shows a promoted hit, never whether recall found one.
 ///
 /// `relevance_floor <= 0.0` is the off switch — same idiom as
-/// [`recall::admitted_smart_wikis`] — and renders every promoted hit
-/// exactly as before the floor existed.
+/// [`recall::admitted_smart_wikis`] — and renders every promoted hit,
+/// however weak.
 ///
 /// `None` when nothing survives — the section is omitted entirely.
 /// Floor of the classifier's vote, and its ceiling
@@ -6967,7 +7035,7 @@ pub async fn wiki_ingest_message(
     }
     // The named things this memory already holds, so the classifier reuses the
     // answer instead of re-deciding it. Best-effort: an unreadable roster
-    // leaves the block empty and the classifier judges as it did before.
+    // leaves the block empty and the classifier decides the name for itself.
     let known_entities = fact_index::known_entities(
         pool,
         &crate::acl::reader_principals(&sender_ctx.sender_id, &sender_ctx.sender_groups),
@@ -7244,6 +7312,10 @@ pub async fn wiki_ingest_message(
                 plan.capture_units()
             };
             let mut captured_any = false;
+            // Who this turn's words actually name, read once for every
+            // extraction it yields — the floor under cross-user attribution
+            // (`people_the_turn_names`).
+            let named_in_turn = people_the_turn_names(&request, &known_users, policy);
             // Reverse-channel accumulator (the server half of the
             // consumer-push contract, INTEGRATING step 8): facts this turn
             // filed for an enrolled user who is NOT the human of the
@@ -7467,6 +7539,29 @@ pub async fn wiki_ingest_message(
                         subject = raw,
                         sender_id = request.sender_id.as_str(),
                         "ingest: subject is not an enrolled principal — re-owned to the sender"
+                    );
+                    unit.subject_id = None;
+                }
+
+                // The other half of the same ruling, and the mistake the
+                // roster itself invites: a subject who IS enrolled but whom
+                // this turn never named. Resemblance is not identity — an id
+                // and its declared aliases are the only names that reach a
+                // principal (`people_the_turn_names`) — so a look-alike
+                // resolved onto a real person writes a stranger's life onto
+                // that person's own card. Re-owning to the sender leaves the
+                // name in the prose where the fact reads correctly; claiming
+                // the card does not.
+                if let Some(raw) = unit.subject_id
+                    && let Ok(Principal::User(subject)) = Principal::from_str(raw)
+                    && subject != request.sender_id
+                    && !subject_is_beyond_the_words(&request, &known_users, &subject)
+                    && !named_in_turn.contains(&subject)
+                {
+                    tracing::warn!(
+                        subject = raw,
+                        sender_id = request.sender_id.as_str(),
+                        "ingest: the turn never named this enrolled user — re-owned to the sender"
                     );
                     unit.subject_id = None;
                 }
@@ -8639,6 +8734,14 @@ mod tests {
         std::fs::write(dir.join("cucina.md"), "# cucina\n").unwrap();
     }
 
+    fn enrolled_lite(id: &str, aliases: &[&str]) -> enrollment::EnrolledUserLite {
+        enrollment::EnrolledUserLite {
+            user_id: id.to_owned(),
+            aliases: aliases.iter().map(|a| (*a).to_owned()).collect(),
+            is_agent: false,
+        }
+    }
+
     fn req(text: &str, sender: &str) -> IngestRequest {
         IngestRequest {
             text: text.to_owned(),
@@ -8795,7 +8898,7 @@ mod tests {
         )
     }
 
-    /// Frontmatter for a wiki that emerged, with a creation stamp so the
+    /// Frontmatter for a topic wiki, with a creation stamp so the
     /// oldest-first ordering is testable. It hangs under nothing; what keeps
     /// it out of the identity set is its `wiki_type`.
     fn emerged_meta_yaml(id: &str, created: &str) -> String {
@@ -12316,10 +12419,10 @@ mod tests {
     const TEST_FLOOR: f32 = 0.45;
 
     /// `relevance_floor <= 0.0` is the off switch (same idiom as
-    /// [`recall::admitted_smart_wikis`]): every promoted hit renders
-    /// exactly as it did before the floor existed, however weak.
+    /// [`recall::admitted_smart_wikis`]): every promoted hit renders in full,
+    /// however weak.
     #[test]
-    fn format_snippet_a_floor_of_zero_renders_every_hit_as_before_the_gate_existed() {
+    fn format_snippet_a_floor_of_zero_renders_every_hit_however_weak() {
         let mut weak = sample_recall_hit("018f1234-5678-7abc-9def-0000000000f5");
         weak.text = "an extremely weak hit".into();
         weak.score = 0.01;
@@ -12602,6 +12705,152 @@ mod tests {
         drop(dir);
     }
 
+    /// The other half of the roster contract: a name that only RESEMBLES an
+    /// enrolled id is a different person, and the fact re-owns to the sender
+    /// rather than landing on that person's own card.
+    ///
+    /// Left to the classifier alone the cost is not a missed fact but a false
+    /// one: on the live deployment a single conversation about a colleague
+    /// whose first name is a longer form of an enrolled id — and whose
+    /// surname no roster entry holds — put seven `bio` facts under that
+    /// enrolled user, six of them on their own card.
+    #[tokio::test]
+    async fn ingest_look_alike_of_an_enrolled_name_reowns_to_sender() {
+        let (dir, tree, pool) = setup_workdir().await;
+        // `bob` is enrolled and declares NO alias, so nothing in the roster
+        // answers to "Roberto".
+        sqlx::query(
+            "INSERT INTO enrollment_users (user_id, aliases, is_admin) VALUES ('bob','[]',0)",
+        )
+        .execute(&pool)
+        .await
+        .unwrap();
+        let json = "{\"intent\":\"capture\",\"target_wiki_id\":\"alice\",\"target_page\":\"preferenze.md\",\"subject_id\":\"user:bob\",\"body\":\"Roberto Sackville is retiring in June\",\"fact_type\":\"bio\",\"topics\":[\"work\"],\"requested_container\":true,\"suggested_seed\":\"Noted.\"}";
+        let llm = FakeLlmBackend::new("fake", json);
+        let policy = IngestPolicy::default();
+        let resp = wiki_ingest_message(
+            &pool,
+            &tree,
+            fake_embedder(),
+            &llm,
+            None,
+            req(
+                "Roberto Sackville from the third floor is retiring in June",
+                "alice",
+            ),
+            &policy,
+        )
+        .await
+        .expect("ingest");
+        let cap_id = resp.capture_id.expect("captured");
+        let row = fact_index::find_by_id(&pool, &cap_id)
+            .await
+            .expect("find")
+            .expect("inserted row");
+        assert_eq!(
+            row.subject_id,
+            Principal::User("alice".to_owned()),
+            "a look-alike of an enrolled id is a stranger, not that user"
+        );
+        drop(dir);
+    }
+
+    /// The positive twin of [`ingest_look_alike_of_an_enrolled_name_reowns_to_sender`],
+    /// and the operator's remedy: declare the name as an alias and it reaches
+    /// its person, from the same turn and the same plan.
+    #[tokio::test]
+    async fn ingest_keeps_a_subject_the_turn_names_by_a_declared_alias() {
+        let (dir, tree, pool) = setup_workdir().await;
+        sqlx::query(
+            "INSERT INTO enrollment_users (user_id, aliases, is_admin) VALUES ('bob','[\"Roberto\"]',0)",
+        )
+        .execute(&pool)
+        .await
+        .unwrap();
+        let json = "{\"intent\":\"capture\",\"target_wiki_id\":\"alice\",\"target_page\":\"preferenze.md\",\"subject_id\":\"user:bob\",\"body\":\"Roberto is retiring in June\",\"fact_type\":\"bio\",\"topics\":[\"work\"],\"requested_container\":true,\"suggested_seed\":\"Noted.\"}";
+        let llm = FakeLlmBackend::new("fake", json);
+        let policy = IngestPolicy::default();
+        let resp = wiki_ingest_message(
+            &pool,
+            &tree,
+            fake_embedder(),
+            &llm,
+            None,
+            req("Roberto is retiring in June", "alice"),
+            &policy,
+        )
+        .await
+        .expect("ingest");
+        let cap_id = resp.capture_id.expect("captured");
+        let row = fact_index::find_by_id(&pool, &cap_id)
+            .await
+            .expect("find")
+            .expect("inserted row");
+        assert_eq!(
+            row.subject_id,
+            Principal::User("bob".to_owned()),
+            "a declared alias is exactly what makes a name reach its person"
+        );
+        drop(dir);
+    }
+
+    /// A name said one turn earlier still names its person on the next: the
+    /// words weighed are the turn's message AND the recent window the prompt
+    /// was shown, or every follow-up sentence would lose its subject.
+    #[test]
+    fn a_name_from_the_recent_window_still_names_its_person() {
+        let roster = vec![enrolled_lite("bob", &[])];
+        let policy = IngestPolicy::default();
+        let mut request = req("he starts on Monday", "alice");
+        assert!(
+            !people_the_turn_names(&request, &roster, &policy).contains(&"bob".to_owned()),
+            "the message alone names nobody"
+        );
+        request.recent_messages.push(RecentMessage {
+            role: MessageRole::User,
+            text: "bob is starting at AcmeCorp".to_owned(),
+            timestamp: None,
+        });
+        assert!(
+            people_the_turn_names(&request, &roster, &policy).contains(&"bob".to_owned()),
+            "the window is part of the turn's words"
+        );
+    }
+
+    /// Three subjects the words were never going to settle, where the
+    /// classifier's own call stands: the assistant, a name two enrolled people
+    /// share, and a turn whose images the classifier was handed.
+    #[test]
+    fn the_words_do_not_arbitrate_the_agent_a_shared_name_or_a_photo() {
+        let roster = vec![
+            enrollment::EnrolledUserLite {
+                user_id: "assistant".to_owned(),
+                aliases: Vec::new(),
+                is_agent: true,
+            },
+            enrolled_lite("bob°2", &[]),
+            enrolled_lite("bob", &[]),
+        ];
+        let text = req("nothing here names anybody", "alice");
+        assert!(subject_is_beyond_the_words(&text, &roster, "assistant"));
+        assert!(subject_is_beyond_the_words(&text, &roster, "bob°2"));
+        assert!(
+            !subject_is_beyond_the_words(&text, &roster, "bob"),
+            "an ordinary person is exactly what the words do arbitrate"
+        );
+        let mut with_photo = req("guarda", "alice");
+        with_photo.attachments.push(IngestAttachment {
+            catalog_id: CatalogId::parse("c-2026-09-07-photo-001.jpg").expect("catalog id"),
+            kind: "photo".to_owned(),
+            caption: None,
+            description: None,
+        });
+        assert!(
+            subject_is_beyond_the_words(&with_photo, &roster, "bob"),
+            "the classifier reads the image, so the words are not everything it saw"
+        );
+    }
+
     /// The assistant-turn face of the same contract (prompt v2.43: the
     /// subject axis is the subject, not the interlocutor): advice the agent
     /// synthesised FOR an enrolled third user — the necessity test — files
@@ -12616,7 +12865,10 @@ mod tests {
         let json = "{\"intent\":\"capture\",\"target_wiki_id\":\"alice\",\"target_page\":\"preferenze.md\",\"subject_id\":\"user:morgana\",\"body\":\"the agent walked alice through what morgana must check at the viewing\",\"fact_type\":\"plan\",\"topics\":[\"viewing\"],\"requested_container\":true,\"suggested_seed\":\"ok\"}";
         let llm = FakeLlmBackend::new("fake", json);
         let policy = IngestPolicy::default();
-        let mut request = req("checklist for the used-car viewing", "alice");
+        let mut request = req(
+            "Here is what Morgana must check at the viewing: oil leaks, the clutch, the state of the wheels",
+            "alice",
+        );
         request.author = MessageRole::Assistant;
         let resp = wiki_ingest_message(&pool, &tree, fake_embedder(), &llm, None, request, &policy)
             .await
@@ -12678,7 +12930,10 @@ mod tests {
             fake_embedder(),
             &llm,
             None,
-            req("viewing logistics", "alice"),
+            req(
+                "morgana is handling the viewing on Friday and she has to bring the service booklet",
+                "alice",
+            ),
             &policy,
         )
         .await

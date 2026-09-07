@@ -465,6 +465,7 @@ fn render_new_form(
                 "no email and no login."
             }
             (components::text_field("aliases", "Aliases (comma-separated)", "text", &form.aliases, false))
+            (aliases_help())
             (components::text_field("timezone", "Timezone (IANA, optional)", "text", &form.timezone, false))
             (components::text_field("locale", "Language (BCP-47, e.g. en-GB or it)", "text", &form.locale, false))
             p.help.muted {
@@ -748,6 +749,7 @@ fn render_edit_form(
             (components::text_field_ac("email", "Email", "email", &form.email, true, "off"))
             p.help.muted { "The user's sign-in email. You are the only one who can change it." }
             (components::text_field("aliases", "Aliases (comma-separated)", "text", &form.aliases, false))
+            (aliases_help())
             (components::text_field("timezone", "Timezone (IANA, optional)", "text", &form.timezone, false))
             (components::text_field("locale", "Language (BCP-47, e.g. en-GB or it)", "text", &form.locale, false))
             p.help.muted {
@@ -1345,6 +1347,28 @@ fn deliver_invitation(
         }
     });
     Delivery::Sent(to_owned)
+}
+
+/// What the operator has to know before leaving the aliases field empty.
+///
+/// The roster the ingest classifier is shown is ids and these aliases and
+/// nothing else — no surnames, no display names
+/// (`mwe_core::enrollment::list_users` states the resolution contract, and
+/// the match is exact). So this field is the operator's only way to say "she
+/// is also called that", and an empty one means every household name for that
+/// person reaches nobody at all.
+fn aliases_help() -> Markup {
+    html! {
+        p.help.muted {
+            "The other names this person answers to, separated by commas. The "
+            "memory recognises somebody by their user id and by these names, "
+            "and by nothing else — it holds no surnames, and it matches a name "
+            "exactly, so a name that merely resembles one belongs to somebody "
+            "else. A nickname, a full first name, whatever the household "
+            "actually calls them: put it here, or a message using that name "
+            "reaches nobody."
+        }
+    }
 }
 
 fn parse_aliases(raw: &str) -> Vec<String> {

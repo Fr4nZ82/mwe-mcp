@@ -15,7 +15,15 @@ One account per person. The table lists **User id**, **Email**, **Role**,
   it is worth agreeing on before you type it.
 - **Email** — required. The person signs in with it, and only you can change
   it later.
-- **Aliases** — other names the memory should recognise for them.
+- **Aliases** — the other names this person answers to, separated by commas.
+  The memory recognises somebody by their user id and by these names, and by
+  nothing else: it holds no surnames and no display names, and it matches a
+  name exactly. So a nickname, a full first name, whatever the household
+  actually calls them all belong here — leave the field empty and a message
+  using any of those names reaches nobody. The same exactness is what keeps
+  somebody outside the memory from being taken for the person inside it: a
+  name that merely resembles a user id is a different person, and what is said
+  about them is kept under their own name instead.
 - **Timezone** (IANA, e.g. `Europe/Rome`) — times they speak, like *"tomorrow
   at 9"*, are read in this zone. Empty falls back to the deployment default on
   the [Settings](settings.md) page.
@@ -41,7 +49,8 @@ creates its identity and its wiki, with no email and no login.
 
 ## Edit a person
 
-**edit** opens their account: email, aliases, timezone, language, and
+**edit** opens their account: email, aliases (worth revisiting whenever the
+household starts calling somebody something new), timezone, language, and
 **Require two-factor authentication** for that one person. The user id and the
 admin role cannot be changed — to give somebody a different id you forget them
 and enrol them again.

@@ -152,6 +152,27 @@ schedule, house gear).
 | 24 | galadriel | "Sono incinta del quinto mese, la bambina sta bene, ma ho la pressione un po' alta e forse mi ricoverano." | **3**: pregnant 5mo / baby fine / high blood pressure→possible admission | `user:galadriel` + `group:famiglia` |
 | 25 | frodo | "La macchina del caffè si chiama Kamira, il robot dei pavimenti è Willie, e il Ficus Grande va annaffiato diversamente dalle altre piante." | **3**: Kamira / Willie / Ficus | `group:famiglia` (house gear) |
 
+### 10 — Cross-user attribution (resemblance is not identity)
+
+The roster the classifier is shown holds ids and the aliases the operator
+declared, and nothing else — no surnames, no display names. So a name reaches
+an enrolled person only when it **is** their id or one of those aliases; a
+name that merely looks like one, and a full name whose surname nobody on the
+roster carries, is a different person and belongs in `subject_external`. Get
+this wrong and a stranger's life is written onto an enrolled person's own
+card.
+
+The engine re-owns to the sender any fact whose subject is an enrolled user
+the turn's words never named (`ingest::people_the_turn_names`), so line 26 has
+a floor under it. Line 27's mirror image — a full name whose FIRST name **is**
+a declared alias — only the prompt can decide, which is why it is here.
+
+| # | as | message (IT) | expect: split | expect: scope |
+|---|---|---|---|---|
+| 26 | frodo | "Ho pranzato con Brunello Sackville, il commercialista dello studio di sotto: va in pensione a giugno." | **1-2** (about Brunello Sackville) | `subject_external: "Brunello Sackville"` — **never** `user:bilbo`, whose declared alias is *Bruno*: a longer form of a name is somebody else. Subject falls to the scope that covers it, else `user:frodo` |
+| 27 | frodo | "Matteo Sackville, il commercialista, ha due figli." | **1-2** (about Matteo Sackville) | `subject_external: "Matteo Sackville"` — **never** `user:gollum`, even though *Matteo* is his declared alias: the surname is nobody's on the roster and an eight-year-old is not an accountant |
+| 28 | galadriel | "Matteo adesso porta gli occhiali." | **1** | `user:gollum` (bio) — *Matteo* is a **declared alias**, and that is exactly what makes the name reach him |
+
 ## Add your own (the human part)
 
 Drop realistic lines here — the messier the better. Same columns. Put the split
@@ -172,7 +193,7 @@ After ingesting the corpus + a `light` dream (promote + compile) + a `full` REM
 
 - **Person wikis** — frodo (bio + Martinelli/Ferrara job, Big Mac, the private
   lumen-bug episode), galadriel (bio, loves books), gollum (bio, karate
-  Mon/Thu, McDonald's / no-pesto, lost tooth), bilbo (bio).
+  Mon/Thu, McDonald's / no-pesto, lost tooth, glasses), bilbo (bio).
 - **`famiglia` group wiki** — a **shopping list with ~7 items** (latte,
   formaggio, salame, pane, caffè, zucchero, biscotti) added by three different
   senders → the **emergence substrate**; plus plans (Sat dinner, Sun
@@ -180,6 +201,9 @@ After ingesting the corpus + a `light` dream (promote + compile) + a `full` REM
   alle 20, no-smoking), the karate run.
 - **`amici` group wiki** — the fishing trip (invisible to famiglia).
 - **A `global` fact** — the Martinelli address.
+- **Two `subject_external` people** — Brunello Sackville and Matteo Sackville,
+  the accountants from §10, filed with their names and owned by whoever the
+  scope says, never under `bilbo` or `gollum`.
 
 Downstream corpora reference this baseline: e.g. an emergence test asks "does
 the ~7-item famiglia shopping topic become its own topic wiki?", a REM
@@ -191,8 +215,8 @@ Per line I record the **observed** split (count + bodies) and the subject each
 fact landed under; I flag any collapse (N→1), over-split, or mis-route, and note
 where the LLM was borderline (probabilistic — a re-run gauges stability). Pass
 bar for the v2.6 fix: **every multi-fact line splits into several atomic facts,
-never one** (line 10 is the canonical check). Findings fold back into
-and the roadmap P1 status, and the run is committed alongside this file.
+never one** (line 10 is the canonical check). The run is committed alongside
+this file.
 
 ### First run (2026-06-01) — PASS
 

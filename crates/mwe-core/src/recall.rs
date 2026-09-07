@@ -36,6 +36,7 @@ use std::sync::Arc;
 
 use sqlx::SqlitePool;
 use thiserror::Error;
+use unicode_normalization::UnicodeNormalization;
 
 use crate::acl::can_read;
 use crate::capture_buffer::{self, BufferedCapture, CaptureBufferError};
@@ -340,19 +341,42 @@ const FIRST_PERSON: &[&str] = &[
 /// share of Italian turns.
 const FIRST_PERSON_CASED: &str = "I";
 
-/// Lowercased word tokens — the unit every name match works on, so none
-/// ever fires on a substring (`bobby` must not answer for `bob`).
-fn word_set(s: &str) -> std::collections::BTreeSet<String> {
-    s.split(|c: char| !c.is_alphanumeric())
-        .filter(|w| !w.is_empty())
-        .map(str::to_lowercase)
+/// Fold one word to the letters an enrolled id is spelled with.
+///
+/// Lowercase, then NFKD-decompose and drop the combining marks — the same
+/// accent fold [`crate::slug::derive_slug`] applies to a page title.
+/// [`crate::enrollment::is_valid_user_id`] allows lowercase ASCII only, so a
+/// person whose name carries an accent is enrolled under the plain spelling
+/// and writes the accented one all day: without the fold, `eowyn` never
+/// answers to «Éowyn».
+///
+/// Case and accents are the whole of it. `roberto` and `robert` fold to two
+/// different words because they are two different names — that is the point
+/// of matching a name at all.
+fn fold_name(word: &str) -> String {
+    word.to_lowercase()
+        .nfkd()
+        .filter(|c| !unicode_normalization::char::is_combining_mark(*c))
         .collect()
 }
 
-/// Every name a person answers to, lowercased.
+/// Word tokens, each folded by [`fold_name`] — the unit every name match
+/// works on, so none ever fires on a substring (`bobby` must not answer for
+/// `bob`).
+fn word_set(s: &str) -> std::collections::BTreeSet<String> {
+    s.split(|c: char| !c.is_alphanumeric())
+        .filter(|w| !w.is_empty())
+        .map(fold_name)
+        .collect()
+}
+
+/// Every name a person answers to: their id and the aliases the operator
+/// declared for them, folded for comparison. Nothing else — a name that is
+/// neither is somebody else (`crates/mwe-core/prompts/ingest.md`, the
+/// `subject_id` section).
 fn names_of(user: &EnrolledUserLite) -> Vec<String> {
-    let mut v = vec![user.user_id.to_lowercase()];
-    v.extend(user.aliases.iter().map(|a| a.to_lowercase()));
+    let mut v = vec![fold_name(&user.user_id)];
+    v.extend(user.aliases.iter().map(|a| fold_name(a)));
     v
 }
 
@@ -379,8 +403,8 @@ pub fn turn_subjects(query: &str, sender_id: &str, roster: &[EnrolledUserLite]) 
         .split(|c: char| !c.is_alphanumeric())
         .filter(|w| !w.is_empty())
         .collect();
-    let lower: Vec<String> = raw.iter().map(|w| w.to_lowercase()).collect();
-    let at = |name: &str| lower.iter().position(|w| w == name);
+    let folded: Vec<String> = raw.iter().map(|w| fold_name(w)).collect();
+    let at = |name: &str| folded.iter().position(|w| w == name);
     let mut found: Vec<(usize, String)> = Vec::new();
     let first_person = raw
         .iter()
@@ -2943,8 +2967,8 @@ mod tests {
             "everything whose origin is NOT in context still surfaces: {texts:?}"
         );
 
-        // With nothing in context — a consumer that carries no window — the
-        // slot behaves exactly as it did before the suppression existed.
+        // With nothing in context — a consumer that carries no window —
+        // there is nothing to suppress and both captures surface.
         let all = recall_fresh_captures(
             &pool,
             embedder.as_ref(),
@@ -3528,6 +3552,35 @@ mod tests {
         assert_eq!(by_alias, vec!["bob"], "{by_alias:?}");
         let substring = turn_subjects("bobsleigh practice", "alice", &roster());
         assert!(substring.is_empty(), "{substring:?}");
+    }
+
+    /// An id is lowercase ASCII ([`crate::enrollment::is_valid_user_id`]), so
+    /// the accented spelling the household writes every day has to reach it:
+    /// `eowyn` IS «Éowyn».
+    #[test]
+    fn turn_subjects_matches_the_accented_spelling_of_an_id() {
+        let roster = vec![person("eowyn", &[])];
+        assert_eq!(
+            turn_subjects("Éowyn ha cambiato lavoro", "alice", &roster),
+            vec!["eowyn"]
+        );
+    }
+
+    /// Case and accents are all that fold. A longer form of an id is a
+    /// different name, and a different name is a different person until an
+    /// alias says otherwise — which is the whole of the resolution contract
+    /// beside [`crate::enrollment::list_users`].
+    #[test]
+    fn turn_subjects_refuses_a_name_that_merely_resembles_an_id() {
+        let bare = vec![person("bob", &[])];
+        let none = turn_subjects("Roberto Sackville is retiring in June", "alice", &bare);
+        assert!(none.is_empty(), "{none:?}");
+        let declared = vec![person("bob", &["Roberto"])];
+        assert_eq!(
+            turn_subjects("Roberto is retiring in June", "alice", &declared),
+            vec!["bob"],
+            "the declared alias is what makes the name reach him"
+        );
     }
 
     #[test]

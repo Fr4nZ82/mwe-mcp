@@ -820,6 +820,35 @@ one for whoever the memory is about.
   wrong model fails at startup with the provider's own words about what
   it refused.
 
+- **A person the memory has never enrolled is no longer mistaken for one it
+  has.** Tell your assistant about a colleague whose first name is a longer
+  form of an enrolled person's user id — and carrying a surname nobody on the
+  deployment has — and every fact of that conversation was filed as being
+  about the enrolled person, most of them onto their own always-on card, where
+  anybody reading it takes them as true of them. The roster the memory matches
+  names against is user ids and the **aliases** an operator declared, with no
+  surnames in it at all, and nothing said that a resemblance is not a match:
+  the classifier finished the resemblance itself.
+
+  A name now reaches an enrolled person only when it **is** their user id or
+  one of their declared aliases, compared whole and ignoring case and accents
+  (an id is plain lowercase letters, so `eowyn` is how "Éowyn" is enrolled —
+  and writing the accented name now also brings that person's card into the
+  turn, which it did not before). Anything else — a longer or shorter form, a translation, an undeclared
+  nickname, a full name whose surname the deployment does not carry — is
+  somebody else: the memory keeps the name as said, as a fact **about** that
+  person, and files it under whoever answers for them. Underneath the rule
+  there is a floor that does not depend on the model: a fact owned by an
+  enrolled user the conversation never named is re-filed onto the person
+  speaking, so it can never claim somebody else's card. Three cases the words
+  cannot settle are left to the classifier — the assistant's own principal,
+  two enrolled people sharing a name, and a turn whose photographs the
+  classifier is shown.
+
+  This makes the **Aliases** field on a user's page load-bearing: it is the
+  only way to tell the memory that somebody is also called something, and both
+  the field and [the guide](docs/operator/users.md) now say so.
+
 ### Security
 
 - **A dashboard session is only a token minted for the browser.** Every JWT in
