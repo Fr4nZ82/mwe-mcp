@@ -1,6 +1,6 @@
 name: release
 
-# Build the download-and-run binaries (roadmap 5m). On a `v*` tag this
+# Build the download-and-run binaries. On a `v*` tag this
 # publishes the artifacts to the GitHub Release; `workflow_dispatch` runs the
 # same build matrix as a DRY RUN (no upload) so the cross-OS bundled-embedder
 # build — candle + the onig C dependency on Windows/macOS — can be verified

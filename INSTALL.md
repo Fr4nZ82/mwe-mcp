@@ -211,8 +211,8 @@ through everything — no YAML to hand-edit, no credentials to hand to anyone el
    **Embeddings always run locally and are free** — independent of this choice.
    Already running Ollama with an embedder? Switch the embedding backend to
    `ollama` from **Admin → Embedding** to avoid keeping a second model. That is
-   the one embedder that leaves the process, so its calls are counted on the
-   Usage & spend page; the bundled one runs inside the binary and is not.
+   the one embedder that leaves the process, so its calls are counted on
+   **Admin → Usage**; the bundled one runs inside the binary and is not.
 
    > **How capable does the internal LLM need to be?** The `ingest` slot is a
    > structured router: it must emit valid plans with exact wiki ids, every

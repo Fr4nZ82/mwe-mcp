@@ -101,8 +101,8 @@ frodo's father). Groups: **famiglia** = {frodo, galadriel, gollum}; **amici** =
 ### 4 — Shopping list — accumulates across senders (emergence substrate)
 
 These deliberately pile facts onto one topic from **different** people, so a
-later emergence test can check whether a dedicated "lista spesa" sub-wiki gets
-proposed.
+later emergence test can check whether a dedicated "lista spesa" topic wiki
+is raised.
 
 | # | as | message (IT) | expect: split | expect: scope |
 |---|---|---|---|---|
@@ -182,7 +182,7 @@ After ingesting the corpus + a `light` dream (promote + compile) + a `full` REM
 - **A `global` fact** — the Martinelli address.
 
 Downstream corpora reference this baseline: e.g. an emergence test asks "does
-the ~7-item famiglia shopping topic get proposed as its own sub-wiki?", a REM
+the ~7-item famiglia shopping topic become its own topic wiki?", a REM
 test exercises dedup/reorg over the accumulated facts.
 
 ## After the run

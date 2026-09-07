@@ -100,7 +100,7 @@ follow from that.
 |---|---|---|
 | **Who** | a coding agent maintaining a project / smart wiki on one developer's machine | a conversational assistant (Telegram, home automation, mail) serving several people |
 | **`sender_id` is** | the **human owner** (an account with login credentials) | a **system user** — the bot's own credential-less identity, with its own wiki |
-| **JWT claims** | `sender_id = <human-user-id>` + `consumer_id = <device-label>` + `consumer_class = smart` | `sender_id = <bot-system-user-id>` + `consumer_id = <deployment-id>` (`consumer_class = standard` is the default, wire-omitted) |
+| **JWT claims** | `sender_id = <human-user-id>` + `consumer_id = <device-label>` + `consumer_class = smart` | `sender_id = <consumer-system-user-id>` + `consumer_id` = that same id when the token is minted from the dashboard, a separate deployment label when minted with `token-issue` (`consumer_class = standard` is the default, wire-omitted) |
 | **`X-MWE-Act-As` header** | Never set. Setting it returns `403 act_as_requires_standard`. | Optional per-call. Set to act on behalf of a real user; omit to act as the bot itself. |
 | **Where captures land** | `wikis/<human-user-id>/` | With header: `wikis/<real-user-id>/`. Without: `wikis/<bot-system-user-id>/`. |
 | **Prerequisite** | Your human user exists in `enrollment_users` *with* a `user_credentials` account. | The bot's identity exists as a **system user** in `enrollment_users` (no credentials), is bound to the consumer (`consumers.system_user_id`, set at `consumer_register`), and the dashboard records the **delegation list** (which real users the bot may act as). |
@@ -168,7 +168,7 @@ email a consumer has not got:
    id is minted as a credential-less system user with its own wiki, and
    it becomes the token's `sender_id`. Tick every human the consumer may
    act as — plus **`guest`**, which is the enable switch for the
-   unidentified-human path below. The token is shown **once**: copy it
+   unidentified-human path above. The token is shown **once**: copy it
    there and then.
 2. **Hand the token to the consumer dev.** That JWT goes in
    `Authorization: Bearer …` on every MCP call.

@@ -51,10 +51,11 @@ you hold a bearer token minted from its dashboard, an integration is two pieces:
 **Prerequisites — all set up in [`INSTALL.md`](INSTALL.md):**
 
 1. a **running server** (`mwe-mcp serve`) exposing `/mcp` and `/dashboard/*`;
-2. the **internal LLM wired** from the dashboard (Anthropic / Gemini / a local
-   Ollama workhorse / a mix — embeddings always run locally);
-3. a **bearer token** minted for your agent (Admin → users / tokens). A consumer's
-   class (`standard` vs. `smart`) and its identity claims are decided at mint time.
+2. the **six model slots wired** from the dashboard (Anthropic, Gemini,
+   OpenAI, OpenRouter, a local Ollama workhorse, or a mix — all six are
+   required, and embeddings always run locally);
+3. a **bearer token** minted for your consumer (Admin → Tokens). Its class
+   (`standard` vs. `smart`) and its identity claims are decided at mint time.
 
 The rest of this guide is the per-turn contract a bridge implements, plus where to
 run the consumer safely.
