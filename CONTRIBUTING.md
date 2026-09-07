@@ -23,10 +23,21 @@ cargo build --workspace --examples --features local-embedder
 ```
 
 CI runs those on Linux, macOS and Windows, adds a `cargo check` on the
-declared minimum Rust version (`rust-version` in `Cargo.toml`) and `cargo
-deny check`, on every push — keep it green locally before opening a PR. The
-lint bar (clippy pedantic and nursery) is declared in the workspace manifest,
-so a plain `cargo clippy` already applies it.
+declared minimum Rust version and `cargo deny check`, on every push — keep it
+green locally before opening a PR. The lint bar (clippy pedantic and nursery)
+is declared in the workspace manifest, so a plain `cargo clippy` already
+applies it.
+
+Two version numbers, and only one of them is a promise: development happens
+on the `stable` channel pinned in `rust-toolchain.toml`, while
+`rust-version` in `Cargo.toml` is the **floor** the MSRV job compiles
+against. Raising the floor is a decision, not a side effect. The workspace is
+edition 2024 and every crate carries `#![forbid(unsafe_code)]`.
+
+A new dependency has to pass `cargo deny`: its licence must be on the allow
+list in `deny.toml` (permissive only — the copyleft entry is for our own
+crates), it is pinned in `[workspace.dependencies]`, and TLS is `rustls`
+everywhere, never OpenSSL.
 
 ## Licensing of contributions
 

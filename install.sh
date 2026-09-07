@@ -1,5 +1,5 @@
 #!/bin/sh
-# mwe-mcp installer — download-and-run (roadmap 5m).
+# mwe-mcp installer — download-and-run.
 #
 #   curl -fsSL https://raw.githubusercontent.com/Fr4nZ82/mwe-mcp/main/install.sh | sh
 #
@@ -93,6 +93,6 @@ case ":$PATH:" in
 esac
 
 say ""
-say "Next:  mwe-mcp serve --workdir ./work"
+say "Next:  mwe-mcp serve"
 say "Then open the dashboard URL it prints and finish setup in the browser."
 say "(First run downloads the bge-m3 embedding model ~2.2 GB, once.)"
