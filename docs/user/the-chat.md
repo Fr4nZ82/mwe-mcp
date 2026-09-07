@@ -1,0 +1,49 @@
+# The chat
+
+A panel on the right of every page, and its own page at `/dashboard/chat`.
+
+It is an **operative surface**: it acts on the memory through the same tools an
+assistant uses, and it does **not** capture or recall what you type into it.
+Talking to the panel does not teach the memory anything about you. The
+scrollback stays in your browser, and each message is a fresh turn.
+
+Say what you want in plain language. Before anything is written, the chat asks
+you to confirm.
+
+## What people ask it
+
+The **Help** button in the panel lists the five it is built for, with an
+example each:
+
+| You say | It does |
+|---|---|
+| *"what do you know about the car?"* | Searches the memory you are allowed to read. |
+| *"that is wrong — I moved to Bologna in March"* | Replaces a fact with a corrected version. |
+| *"forget everything I said about the old job"* | Lists the matching facts, then forgets the ones you confirm. |
+| *"move this fact onto the health page"* | Moves one fact to another page or wiki (admin only). |
+| *"what have I got pending?"* | Reviews what is still waiting on you, and casts your vote on a forget request. |
+
+## Things waiting on you
+
+When something needs your answer, a badge lights up in the top bar. Clicking it
+opens the chat on exactly those items — it is the same door as *Review pending
+changes in the chat* on [your home page](your-home.md).
+
+Two kinds of thing arrive there. A **change somebody made to a fact of yours**
+comes with a summary of what happened. A **request to forget a fact you can
+read, made by somebody who did not say it**, comes as a vote: you are one of
+the people it was readable by, so you are asked.
+
+## The one exception
+
+The chat's own page warns about it: with JavaScript off, the box posts to the
+page instead of the panel, and **that path behaves differently** — it runs your
+message through the ordinary capture and recall, exactly as a message to an
+assistant would be, and prints below what the engine made of it. So on that
+path what you type *can* become a fact.
+
+## When the memory is out of budget
+
+If the deployment has spent its daily budget, the chat says so instead of
+answering: the amount, the limit, and that paid model calls resume at midnight
+UTC or when the operator raises the budget. Nothing is lost; it is a pause.
