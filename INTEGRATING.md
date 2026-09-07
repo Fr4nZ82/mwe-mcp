@@ -240,6 +240,119 @@ credential, and retrying immediately only spends the next window as well.
 
 ---
 
+## Error classes — the string to branch on
+
+A refusal carries its class **in the error body**, as `data.error_class`,
+and nowhere else: there is no response header to read, and the JSON-RPC
+code is coarse on purpose (`invalid_input` maps to *invalid params*,
+`not_found` to *method not found*, everything else to *internal error*).
+Branch on the class string; the human message beside it is for a log, and
+it always ends with the same class string so a raw log carries both.
+
+The dispatcher declares these, and only these
+(`crates/mwe-mcp-server/src/mcp/error.rs`):
+
+| Class | What it means |
+|---|---|
+| `invalid_input` | A malformed, missing or **unknown** argument. Every schema is closed, so a misspelt parameter is refused by name rather than dropped. |
+| `sender_unauthorized` | The effective sender may not do this — including every permanent-state and operator tool on a `guest` turn. |
+| `sender_token_mismatch` | A `sender_id` argument that disagrees with the token's claim. |
+| `consumer_not_registered` | The `consumer_id` has no row in `consumers`; call `consumer_register` first. |
+| `not_found` | No such entity — and the answer for a tool name that is not on the roster. |
+| `rate_limited` | A call ceiling was reached; `data.retry_after` says how many seconds to wait. |
+| `requires_consumer_class_smart` | A smart-only tool (the `wiki_admin_*` writes, the K family) on a standard token. `wiki_admin_notify` is not one of them — it is open to any token that can read the target wiki. |
+| `wiki_owned_by_other_user` | A smart consumer wrote at a wiki its owner does not own. |
+| `wiki_not_smart` | The target wiki's `_meta` smart flag is `false`, so it takes neither an admin write nor a briefing. A standard wiki is written through `wiki_ingest_message`. **One code for both gates** — a wiki's `wiki_type` is a free-form label and decides nothing here. |
+| `smart_does_not_notify_own_wiki` | A smart consumer notified the wiki it administers itself. |
+| `standard_uses_ingest_for_memory` | A standard consumer took the notify path to a standard wiki; the turn loop is the channel. |
+| `consumer_class_wiki_family_mismatch` | The forward-compatible fallback for a consumer-class × wiki-family pair with no cell of its own. |
+| `conflicting_op_log_head` | `wiki_admin_push` carried an `expected_op_log_head` that is no longer the head: pull, re-diff, retry. |
+| `wiki_locked_by_lease` | Another smart consumer holds the cooperative lease on that wiki. |
+| `unknown_briefing_item_id` | A `mark_processed` id that does not exist, or belongs to another wiki. The whole push is rolled back. |
+| `too_many_briefing_items` | More than 50 `mark_processed` ids in one push; split them. |
+| `instance_read_only` | The deployment runs frozen (`instance.read_only`) and this tool changes memory or configuration. Reading, searching and navigating are unaffected, and no token, role or class lifts it. |
+| `wiki_type_requires_parent` | A child-only `wiki_type` was asked for with no `parent_wiki_id`. |
+| `service_unavailable` | The backing infrastructure is down. |
+| `not_implemented_phase_c` | The tool exists and this branch of it does not — the `file` / `git` / `url` document sources answer this. |
+| `internal_error` | A bug on our side; the message is deliberately generic. |
+
+Four more are **HTTP** refusals from the auth middleware, before any tool
+runs, and they are all about the `X-MWE-Act-As` header:
+`act_as_requires_standard` (set on a smart token),
+`act_as_requires_consumer` (no `consumer_id` in the token),
+`act_as_not_delegated` (that pair is not in the delegation roster) and
+`act_as_malformed`. On a `401` the `WWW-Authenticate` challenge names the
+OAuth discovery document; the auth classes are `missing_bearer`,
+`invalid_token` and `token_revoked`, and an expired token or one signed
+with a rotated secret arrives as `invalid_token`.
+
+---
+
+## Forgetting a fact, and forgetting a person
+
+**A fact** is forgotten over MCP, by the person it belongs to, through the
+L family. `wiki_forget` takes a `fact_id` and answers with an `outcome`:
+
+- `forgotten` — the caller **wrote** the fact, so it is tombstoned there
+  and then;
+- `request_from_dashboard` — the caller **owns** it (they are its subject,
+  or in an owning group) but did not write it, so forgetting it needs a
+  vote among the fact's audience. **Opening that vote and casting one are
+  both dashboard-only**: there is no consumer path that starts a vote in
+  the background. Tell the person to open it there — a `dashboard_link`
+  hands them the address — and expect the `pending_votes` block on the
+  turns of every member who owes a vote;
+- `already_forgotten` — idempotent success.
+
+A caller who can neither delete nor request gets `sender_unauthorized`.
+`wiki_forget_bulk` is the same authority in bulk — every fact the caller
+**authored**, across everything (`scope: "all"`), in one wiki, or on one
+page; another author's facts are never reached and no vote is ever
+opened. It is destructive and wide, so call it only when the person asked
+for exactly that in the turn you are answering. Both tools take an
+optional `reason`, kept for the audit trail.
+
+**A person** is forgotten from the dashboard, by an admin, on that
+person's page — with **Export** beside it, which builds a tar archive of
+their wiki, the facts other people's wikis hold about them, the files they
+uploaded and their card. Neither is an MCP tool, and a consumer must not
+offer to do it: point the person at their operator.
+
+What a consumer sees **after** an erasure matters, though, because none of
+it announces itself on the wire:
+
+- **Facts other people said about them survive**, and change hands: the
+  speaker becomes the principal that answers for the fact, and the erased
+  person stays on it as a plain name in **`subject_external`** — a name,
+  not a principal, so it grants nothing and addresses nobody. Recall keeps
+  returning those facts, worded with the name. `subject_external` is not a
+  tool argument and not a response field: you meet it in an export
+  archive, where the full marker carries it as `external=…` beside
+  `subject=`, `sender=` and `allow=`.
+- **What they said about others stays where it is**, with the author
+  replaced by `user:_removed` — an id no account can hold.
+- **Their id is struck out of every delegation roster**, so a bridge that
+  still maps a chat to that id starts getting
+  `403 act_as_not_delegated`. Map the sender to `guest` or drop the
+  mapping.
+- **The id is never reissued.** The same human coming back gets a
+  different one, and a consumer that cached the old id will not find them
+  under it.
+
+---
+
+## A wiki nobody owns
+
+`wiki_read` answers with the page's `wiki_id`, `page`, `title`,
+`wiki_type`, `owner` and the body rendered for the caller. **`owner` is
+`null`** whenever the wiki stands for nobody — a *topic wiki*, the kind
+the nightly grouping raises around a subject that has outgrown a single
+page. It is an ordinary answer, not a fault: what may be read there was
+decided fact by fact, exactly as everywhere else. A consumer that treats a
+missing owner as an error closes those pages to its user for no reason.
+
+---
+
 ## Per-project isolation (smart consumers)
 
 A smart consumer like **Claude Code** registers mwe-mcp **globally** (the MCP
@@ -439,7 +552,10 @@ below directly.
    also emits notices when *it* acts and the user should know: a
    structural change it applied (`structure_applied`), a document that
    finished ingest (`document_ingested`), a dated commitment that is due
-   (`reminder_due`), and — the one notice addressed to a *different*
+   (`reminder_due` — `recipient_id`, `due_at`, `fires_at`, the `facts[]`
+   with their bodies, and a `dashboard_path`; it names **no subject**, so
+   deliver it as a commitment falling due, never as something the person
+   in front of you promised), and — the one notice addressed to a *different*
    human than the one who spoke — a turn or upload that minted facts
    whose subject is another enrolled user (`fact_minted_for_you`: the
    payload carries the fact bodies, so your agent delivers the content
@@ -496,10 +612,11 @@ below directly.
    misattribution `guest` exists to prevent.
 
 Structural intent (`dashboard_link`) and the *smart*-consumer
-`wiki_admin_*` family sit on top of this; the full surface is catalogued
-in , and the
-consumer-agent runtime contract (what *the agent itself* must do with
-these fields) is in [`AGENT_INSTRUCTIONS.md`](AGENT_INSTRUCTIONS.md).
+`wiki_admin_*` family sit on top of this; the full surface is whatever
+`tools/list` returns on your own server, each tool carrying its own
+schema, and the consumer-agent runtime contract (what *the agent
+itself* must do with these fields) is in
+[`AGENT_INSTRUCTIONS.md`](AGENT_INSTRUCTIONS.md).
 
 **Latency note.** The recall block is computed in-line: a classifier
 completion plus — on capture/recall turns — a small number of navigator
@@ -509,10 +626,10 @@ per hop, budgets).
 
 ### Still being hardened
 
-Copy-paste client configs now ship for the three hosts in the `/bridges`
-catalog; the exact identity-claim handshake from the consumer's
-perspective, error/retry semantics, and versioning/compatibility
-guarantees are still being driven by real consumers. The
+The three hosts in the `/bridges` catalog have copy-paste setup, and the
+wire classes above are stable. What is still being driven by real
+consumers is the identity-claim handshake seen from the consumer's side,
+and the compatibility guarantee across contract versions. The
 **proactive out-of-turn delivery** in step 8 ships in both bridges
 (hermes drains `fact_minted_for_you` per-recipient in the `mwe-events`
 gateway hook and batches the system kinds in a daily-digest cron script;
