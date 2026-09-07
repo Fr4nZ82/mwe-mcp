@@ -12,6 +12,20 @@ use axum::http::StatusCode;
 use axum::response::{Html, IntoResponse, Response};
 use thiserror::Error;
 
+/// The page that lifts a refusal, offered next to the sentence that
+/// explains it.
+///
+/// Only ever set to a page the reader can actually open: an operator
+/// console handed to somebody who is not an admin is a 403, which is a
+/// worse answer than no link at all.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Fix {
+    /// Where to go.
+    pub href: &'static str,
+    /// What the link says.
+    pub label: &'static str,
+}
+
 /// Handler-level error variants. The discriminants drive both the
 /// HTTP status and the user-facing copy.
 #[derive(Debug, Error)]
@@ -68,6 +82,24 @@ pub enum DashboardError {
     #[error("password error: {0}")]
     Password(String),
 
+    /// A model call the deployment refused for a reason the reader can
+    /// act on: the daily budget stopped it, the provider is refusing
+    /// more calls for now, the model could not be reached, or its key
+    /// was rejected.
+    ///
+    /// Distinct from [`Self::Internal`] because nothing is broken — the
+    /// generic "something went wrong, check the logs" is both false and
+    /// useless here, and the person reading it can usually clear the
+    /// condition themselves. `message` is written for them, and `fix`
+    /// names the page that lifts it when one exists.
+    #[error("unavailable: {message}")]
+    Unavailable {
+        /// The sentence shown to the reader.
+        message: String,
+        /// Where they go to lift it, when there is such a page.
+        fix: Option<Fix>,
+    },
+
     /// Catch-all for unrecoverable failures we did not predict.
     /// Rendered as 500 with a generic message.
     #[error("internal: {0}")]
@@ -82,6 +114,7 @@ impl DashboardError {
             Self::Unauthenticated => StatusCode::UNAUTHORIZED,
             Self::Forbidden | Self::NoAccess => StatusCode::FORBIDDEN,
             Self::NotFound => StatusCode::NOT_FOUND,
+            Self::Unavailable { .. } => StatusCode::SERVICE_UNAVAILABLE,
             Self::Db(_) | Self::Token(_) | Self::Password(_) | Self::Internal(_) => {
                 StatusCode::INTERNAL_SERVER_ERROR
             },
@@ -98,16 +131,22 @@ impl DashboardError {
             Self::NoAccess => "You don't have access to this item.".to_owned(),
             Self::NotFound => "Page not found.".to_owned(),
             Self::Enrollment(e) => e.to_string(),
+            Self::Unavailable { message, .. } => message.clone(),
             Self::Db(_) | Self::Token(_) | Self::Internal(_) => {
                 "Something went wrong on the server. Check the server logs.".to_owned()
             },
         }
     }
-}
 
-impl IntoResponse for DashboardError {
-    fn into_response(self) -> Response {
-        let status = self.status();
+    /// The page that lifts this refusal, when there is one.
+    const fn fix(&self) -> Option<Fix> {
+        match self {
+            Self::Unavailable { fix, .. } => *fix,
+            _ => None,
+        }
+    }
+
+    fn log(&self, status: StatusCode) {
         if status.is_server_error() {
             // Server-side failures get the full chain in the logs so
             // an operator can debug from the terminal where mwe-mcp
@@ -116,8 +155,32 @@ impl IntoResponse for DashboardError {
         } else {
             tracing::debug!(error = %self, status = status.as_u16(), "dashboard handler rejected");
         }
+    }
 
-        let body = crate::ui::layout::error_page(status, &self.user_facing_message());
+    /// The same refusal as [`Self::into_response`], as the JSON envelope
+    /// `{ error, fix: { href, label } }`.
+    ///
+    /// The chat panel posts with `Accept: application/json` and prints
+    /// `error` in the conversation; handing it the HTML error page
+    /// instead would leave it with nothing to say but the status code.
+    #[must_use]
+    pub fn into_json_response(self) -> Response {
+        let status = self.status();
+        self.log(status);
+        let fix = self.fix();
+        let body = serde_json::json!({
+            "error": self.user_facing_message(),
+            "fix": fix.map(|f| serde_json::json!({ "href": f.href, "label": f.label })),
+        });
+        (status, axum::Json(body)).into_response()
+    }
+}
+
+impl IntoResponse for DashboardError {
+    fn into_response(self) -> Response {
+        let status = self.status();
+        self.log(status);
+        let body = crate::ui::layout::error_page(status, &self.user_facing_message(), self.fix());
         (status, Html(body)).into_response()
     }
 }

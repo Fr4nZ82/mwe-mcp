@@ -682,8 +682,12 @@ fn help_row(example: &str, effect: &str) -> Markup {
 
 /// Render the canonical error page used by
 /// [`crate::error::DashboardError::into_response`].
+///
+/// `fix` is the page that lifts the refusal, shown ahead of the way
+/// back: somebody stopped by a spent budget wants the Usage page, not
+/// the home they just came from.
 #[must_use]
-pub fn error_page(status: StatusCode, message: &str) -> String {
+pub fn error_page(status: StatusCode, message: &str, fix: Option<crate::error::Fix>) -> String {
     let title = format!(
         "{} {}",
         status.as_u16(),
@@ -694,6 +698,10 @@ pub fn error_page(status: StatusCode, message: &str) -> String {
             p class="status text-2xl font-bold text-rose m-0" { (title) }
             p class="message text-text mt-2 mb-0" { (message) }
             p class="mt-4 mb-0" {
+                @if let Some(fix) = fix {
+                    a href=(fix.href) class="text-phosphor hover:text-phosphor-bright" { (fix.label) }
+                    " · "
+                }
                 a href="/dashboard/" class="text-phosphor hover:text-phosphor-bright" { "Back to dashboard home" }
             }
         }

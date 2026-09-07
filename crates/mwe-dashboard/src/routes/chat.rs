@@ -52,7 +52,7 @@ use serde_json::json;
 
 use crate::agentic::{self, AgenticContext, MAX_AGENTIC_ITERATIONS};
 use crate::auth::SessionUser;
-use crate::error::{DashboardError, Result};
+use crate::error::{DashboardError, Fix, Result};
 use crate::state::{BackendForError, DashboardState};
 use crate::ui::{components, layout};
 
@@ -444,8 +444,8 @@ pub struct AgenticTurn {
 /// Returns [`DashboardError::Internal`] when `memory` is not wired,
 /// [`DashboardError::Validation`] when the `llm.operator_chat` slot is not
 /// configured (same UX treatment as the `llm.ingest` slot in
-/// [`process_submission`]), or when
-/// the chat backend itself surfaces an unrecoverable error.
+/// [`process_submission`]), and whatever [`model_refusal`] decides when
+/// the model itself turns the call down.
 #[allow(clippy::too_many_lines, reason = "one linear LLM-orchestration setup")]
 pub async fn agentic_submission(
     state: &DashboardState,
@@ -541,7 +541,7 @@ pub async fn agentic_submission(
         let response = backend
             .chat(request)
             .await
-            .map_err(|e| DashboardError::Internal(format!("operator_chat: {e}")))?;
+            .map_err(|e| model_refusal(&e, user.is_admin))?;
 
         if response.message.tool_calls.is_empty() {
             // No tool calls — this is the model's final textual reply.
@@ -597,6 +597,63 @@ pub async fn agentic_submission(
     })
 }
 
+/// Turn a refusal from the model into the sentence the person in the
+/// chat reads, and the page that lifts it.
+///
+/// Four of the seven [`LlmError`] variants have a cause the reader can
+/// understand and usually clear; the other three (a malformed request, a
+/// provider 5xx, an unparseable answer) are faults with nothing for them
+/// to do, and stay a 500.
+///
+/// The provider's own text travels only for a budget stop, where it *is*
+/// [`mwe_core::budget::BudgetState::stop_message`] — written for this
+/// reader. The rest is replaced: an auth failure names the environment
+/// variable holding the key, which is not something to print to whoever
+/// happens to be typing in the panel.
+///
+/// `is_admin` gates the link, not the sentence. Everybody is told why
+/// the chat stopped; only the person who can open the operator console
+/// is pointed at it.
+fn model_refusal(error: &mwe_core::llm::LlmError, is_admin: bool) -> DashboardError {
+    use mwe_core::llm::LlmError;
+
+    const USAGE: Fix = Fix {
+        href: "/dashboard/admin/usage",
+        label: "Usage & spend →",
+    };
+    const MODELS: Fix = Fix {
+        href: "/dashboard/admin/llm-config",
+        label: "Models & keys →",
+    };
+    let admin_only = |fix: Fix| if is_admin { Some(fix) } else { None };
+
+    let (message, fix) = match error {
+        LlmError::Budget(stop) => (stop.clone(), admin_only(USAGE)),
+        LlmError::RateLimit(_) => (
+            "The model provider is refusing more calls for the moment — too many in too \
+             short a time. Wait a little and send the message again."
+                .to_owned(),
+            None,
+        ),
+        LlmError::Transport(_) => (
+            "The model did not answer: this server could not reach it. Check it is running \
+             and reachable, then send the message again."
+                .to_owned(),
+            admin_only(MODELS),
+        ),
+        LlmError::Auth(_) => (
+            "The model provider refused this server's credentials for the operator-chat \
+             model. It needs a working key before the chat can answer."
+                .to_owned(),
+            admin_only(MODELS),
+        ),
+        LlmError::Invalid(_) | LlmError::Backend(_) | LlmError::Protocol(_) => {
+            return DashboardError::Internal(format!("operator_chat: {error}"));
+        },
+    };
+    DashboardError::Unavailable { message, fix }
+}
+
 /// Dispatch a single tool call and return the JSON-stringified result
 /// that will be fed back to the model. Errors are wrapped as
 /// `{"error": "..."}` JSON so the model can read them as ordinary
@@ -612,27 +669,31 @@ async fn dispatch_for_trace(call: &ToolCall, ctx: &AgenticContext<'_>) -> (Strin
     }
 }
 
-/// `POST /dashboard/chat/agentic` handler. Always returns JSON (the
-/// chat panel is the only caller and it sends `Accept:
-/// application/json`); a no-JS fallback for this endpoint is not
-/// planned because the loop's intermediate states would not render
-/// well in a single static page anyway.
+/// `POST /dashboard/chat/agentic` handler. Always returns JSON, on the
+/// way in and on the way out (the chat panel is the only caller and it
+/// sends `Accept: application/json`); a no-JS fallback for this endpoint
+/// is not planned because the loop's intermediate states would not
+/// render well in a single static page anyway.
 async fn post_agentic(
     State(state): State<DashboardState>,
     user: SessionUser,
     jar: axum_extra::extract::cookie::CookieJar,
     axum::Form(form): axum::Form<ChatSubmission>,
-) -> Result<axum::Json<AgenticTurn>> {
+) -> Response {
     let text = form.text.trim();
     if text.is_empty() {
-        return Err(DashboardError::Validation(
-            "Type a message before sending.".into(),
-        ));
+        return DashboardError::Validation("Type a message before sending.".into())
+            .into_json_response();
     }
     let history = parse_chat_history(form.history.as_deref());
     let reveal = crate::reveal::active(&state, &user, &jar);
-    let turn = agentic_submission(&state, &user, text, &history, reveal).await?;
-    Ok(axum::Json(turn))
+    match agentic_submission(&state, &user, text, &history, reveal).await {
+        Ok(turn) => axum::Json(turn).into_response(),
+        // The panel reads `error` out of the body and prints it in the
+        // conversation, so a refusal has to arrive as JSON: the HTML
+        // error page would leave it with nothing but the status code.
+        Err(e) => e.into_json_response(),
+    }
 }
 
 /// Rendered representation of an [`IngestResponse`]. Exposed because
@@ -643,17 +704,6 @@ pub fn response_panel(response: &IngestResponse) -> Markup {
     html! {
         section.chat-response {
             h2 { "Response" }
-            dl {
-                dt { "intent" } dd { code { (response.intent.as_str()) } }
-                dt { "llm_used" } dd { (response.llm_used) }
-                dt { "took_ms" } dd { (response.took_ms) }
-                @if let Some(id) = &response.capture_id {
-                    dt { "capture_id" } dd { code { (id.as_str()) } }
-                }
-                @if response.needs_disambig {
-                    dt { "needs_disambig" } dd { "true" }
-                }
-            }
 
             @if let Some(seed) = &response.suggested_seed {
                 h3 { "Suggested reply seed" }
@@ -670,16 +720,24 @@ pub fn response_panel(response: &IngestResponse) -> Markup {
                 pre.context-snippet { (snippet) }
             }
 
-            @if response.needs_disambig && !response.disambig_candidates.is_empty() {
-                h3 { "Disambiguation candidates" }
-                ul {
-                    @for c in &response.disambig_candidates {
-                        li { code { (c.candidate_id) } " — " (c.description) }
+            @if response.needs_disambig {
+                h3 { "Who or what did you mean?" }
+                @if response.disambig_candidates.is_empty() {
+                    p.muted {
+                        "The message named somebody or something the engine could not "
+                        "pin down, and it found no candidates to offer. Say it again "
+                        "naming them in full."
                     }
-                }
-                p.muted {
-                    "The engine could not tell which of these the message meant. "
-                    "Say which one in your next message, naming it in words."
+                } @else {
+                    ul {
+                        @for c in &response.disambig_candidates {
+                            li { code { (c.candidate_id) } " — " (c.description) }
+                        }
+                    }
+                    p.muted {
+                        "The engine could not tell which of these the message meant. "
+                        "Say which one in your next message, naming it in words."
+                    }
                 }
             }
 
@@ -692,13 +750,118 @@ pub fn response_panel(response: &IngestResponse) -> Markup {
                     " to see where things stand."
                 }
             }
+
+            // The engine's own account of the turn. A reader wants the
+            // answer; the machine reading of it is one click away for
+            // whoever is debugging a turn that went the wrong way.
+            details.chat-response-detail {
+                summary { "How this turn was handled" }
+                dl {
+                    dt { "Read as" } dd { (intent_in_words(response.intent)) }
+                    dt { "Model called" } dd { (if response.llm_used { "yes" } else { "no" }) }
+                    dt { "Took" } dd { (response.took_ms) " ms" }
+                    @if let Some(id) = &response.capture_id {
+                        dt { "Saved as" } dd { code { (id.as_str()) } }
+                    }
+                }
+            }
         }
+    }
+}
+
+/// What the engine decided the turn was, in the reader's words.
+///
+/// [`IntentKind::as_str`] is the wire token, for a log or a test; this
+/// is the same decision said to somebody who has never read the engine.
+const fn intent_in_words(intent: IntentKind) -> &'static str {
+    match intent {
+        IntentKind::Capture => "something to remember",
+        IntentKind::Recall => "a question about what is remembered",
+        IntentKind::Structural => "a request to change how the memory is arranged",
+        IntentKind::Skip => "nothing to remember",
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A spend stop is not a fault, and the chat must not report it as
+    /// one: the reader gets the budget's own sentence, and the admin
+    /// gets the page that lifts it.
+    #[test]
+    fn budget_stop_is_told_in_words_not_as_a_server_fault() {
+        let stop = "The daily budget for 2026-09-07 is spent (4.00 EUR of 4.00 EUR).";
+        let err = model_refusal(&mwe_core::llm::LlmError::Budget(stop.to_owned()), true);
+        let DashboardError::Unavailable { message, fix } = err else {
+            panic!("a spend stop must not be an Internal error: {err:?}");
+        };
+        assert_eq!(message, stop, "the budget's own sentence travels verbatim");
+        assert_eq!(
+            fix.map(|f| f.href),
+            Some("/dashboard/admin/usage"),
+            "an admin is pointed at the page that lifts the stop"
+        );
+    }
+
+    /// The sentence is for everybody; the operator console is not. A
+    /// person who is not an admin would get a 403 from it.
+    #[test]
+    fn a_member_is_told_why_but_not_sent_to_an_operator_console() {
+        let stop = "The daily budget for 2026-09-07 is spent.";
+        let err = model_refusal(&mwe_core::llm::LlmError::Budget(stop.to_owned()), false);
+        let DashboardError::Unavailable { message, fix } = err else {
+            panic!("expected Unavailable, got {err:?}");
+        };
+        assert_eq!(message, stop);
+        assert!(fix.is_none(), "no link a member cannot open");
+    }
+
+    /// An unreachable model and a rate limit are causes a reader can
+    /// understand; a malformed request or an unparseable answer is a
+    /// fault and stays one.
+    #[test]
+    fn understandable_causes_are_named_and_faults_stay_faults() {
+        use mwe_core::llm::LlmError;
+        for e in [
+            LlmError::Transport("dns".into()),
+            LlmError::RateLimit("429".into()),
+            LlmError::Auth("ANTHROPIC_API_KEY".into()),
+        ] {
+            assert!(
+                matches!(model_refusal(&e, true), DashboardError::Unavailable { .. }),
+                "{e} must be explained, not swallowed into a 500"
+            );
+        }
+        for e in [
+            LlmError::Invalid("bad params".into()),
+            LlmError::Backend("provider 500".into()),
+            LlmError::Protocol("unparseable".into()),
+        ] {
+            assert!(
+                matches!(model_refusal(&e, true), DashboardError::Internal(_)),
+                "{e} is a fault with nothing for the reader to do"
+            );
+        }
+    }
+
+    /// The provider's own words travel only for a budget stop. An auth
+    /// failure names the environment variable holding the key, and that
+    /// is not for whoever happens to be typing in the panel.
+    #[test]
+    fn provider_text_does_not_leak_into_the_panel() {
+        let err = model_refusal(
+            &mwe_core::llm::LlmError::Auth("MWE_ANTHROPIC_API_KEY rejected".into()),
+            true,
+        );
+        let DashboardError::Unavailable { message, .. } = err else {
+            panic!("expected Unavailable");
+        };
+        assert!(
+            !message.contains("MWE_ANTHROPIC_API_KEY"),
+            "auth detail must not reach the reader: {message}"
+        );
+    }
 
     #[test]
     fn parse_chat_history_absent_or_blank_is_empty() {

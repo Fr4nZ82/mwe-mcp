@@ -212,6 +212,37 @@
     return r;
   }
 
+  // The server answers a refused turn with `{ error, fix }` — the
+  // sentence to print, and the page that lifts it when the reader can
+  // open one. Anything else (a proxy 502, a dropped connection) leaves
+  // only the status line.
+  async function refusal(res) {
+    let message = 'HTTP ' + res.status;
+    let fix = null;
+    try {
+      const j = await res.json();
+      if (j && j.error) message = j.error;
+      if (j && j.fix && j.fix.href) fix = j.fix;
+    } catch (_e) { /* keep status-only */ }
+    const e = new Error(message);
+    e.fix = fix;
+    return e;
+  }
+
+  function renderRefusal(e) {
+    const w = document.createElement('div');
+    w.className = 'chat-panel-error';
+    w.textContent = (e && e.message) || 'The request did not go through.';
+    if (e && e.fix) {
+      w.appendChild(document.createTextNode(' '));
+      const a = document.createElement('a');
+      a.href = e.fix.href;
+      a.textContent = e.fix.label || 'Open';
+      w.appendChild(a);
+    }
+    return w;
+  }
+
   function renderBudgetExhaustedBubble() {
     const w = document.createElement('div');
     w.className = 'chat-panel-error';
@@ -325,12 +356,7 @@
         credentials: 'same-origin',
       });
       if (!res.ok) {
-        let detail = 'HTTP ' + res.status;
-        try {
-          const j = await res.json();
-          if (j && j.error) detail = j.error;
-        } catch (_e) { /* keep status-only */ }
-        throw new Error(detail);
+        throw await refusal(res);
       }
       const data = await res.json();
       const entry = {
@@ -349,10 +375,7 @@
       scrollToBottom();
       textarea.value = '';
     } catch (e) {
-      const err = document.createElement('div');
-      err.className = 'chat-panel-error';
-      err.textContent = 'Error: ' + (e && e.message ? e.message : 'request failed');
-      messages.appendChild(err);
+      messages.appendChild(renderRefusal(e));
       scrollToBottom();
     } finally {
       submitBtn.disabled = false;
@@ -397,7 +420,7 @@
         cache: 'no-store',
       })
         .then(function (res) {
-          if (!res.ok) throw new Error('HTTP ' + res.status);
+          if (!res.ok) return refusal(res).then(function (e) { throw e; });
           return res.json();
         })
         .then(function (data) {
@@ -421,10 +444,7 @@
         })
         .catch(function (e) {
           if (pending.parentNode) messages.removeChild(pending);
-          const err = document.createElement('div');
-          err.className = 'chat-panel-error';
-          err.textContent = 'Error: ' + (e && e.message ? e.message : 'request failed');
-          messages.appendChild(err);
+          messages.appendChild(renderRefusal(e));
           scrollToBottom();
         })
         .finally(function () {

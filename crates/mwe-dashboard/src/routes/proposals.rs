@@ -201,10 +201,15 @@ async fn in_flight_chat_turn(
     State(state): State<DashboardState>,
     user: SessionUser,
     jar: CookieJar,
-) -> Result<axum::Json<chat::AgenticTurn>> {
+) -> Response {
     let reveal = crate::reveal::active(&state, &user, &jar);
-    let turn = chat::agentic_submission(&state, &user, IN_FLIGHT_PRIMER, &[], reveal).await?;
-    Ok(axum::Json(turn))
+    match chat::agentic_submission(&state, &user, IN_FLIGHT_PRIMER, &[], reveal).await {
+        Ok(turn) => axum::Json(turn).into_response(),
+        // Same envelope the chat submit answers with: the badge renders
+        // the refusal in the panel, so it needs the sentence, not a
+        // status code.
+        Err(e) => e.into_json_response(),
+    }
 }
 
 /// Read-only primer the in-flight badge injects: enumerate the proposals

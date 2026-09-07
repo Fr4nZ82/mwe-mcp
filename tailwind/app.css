@@ -798,6 +798,20 @@
   }
   .chat-response dt { color: var(--text-dim); font-size: 0.85rem; }
   .chat-response dd { margin: 0; }
+  /* The engine's own account of a turn, folded away: the reader wants
+     the answer, and the machine reading of it is for whoever is
+     debugging a turn that went the wrong way. */
+  .chat-response-detail {
+    margin-top: 0.75rem;
+    padding-top: 0.5rem;
+    border-top: 1px solid var(--border);
+  }
+  .chat-response-detail > summary {
+    cursor: pointer;
+    color: var(--text-dim);
+    font-size: 0.8rem;
+  }
+  .chat-response-detail dl { margin: 0.5rem 0 0; }
 
   /* Chat-panel bubbles + tool-call traces. */
   .chat-panel-turn {
@@ -903,6 +917,15 @@
     padding: 0.4rem 0.6rem;
     border-radius: var(--radius);
     font-size: 0.85rem;
+  }
+  /* The page that lifts the refusal, offered inside the notice. It
+     inherits the rose, so underline it: otherwise it reads as more of
+     the same sentence and nobody clicks it. */
+  .chat-panel-error a {
+    color: inherit;
+    text-decoration: underline;
+    font-weight: 700;
+    white-space: nowrap;
   }
   .chat-panel-tool {
     background: var(--bg);
