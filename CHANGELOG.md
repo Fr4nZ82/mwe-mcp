@@ -205,6 +205,48 @@ and in the dashboard's session check. Ten migrations, `0068` through `0077`.
   three things: **slot** everywhere, where the LLM page said role, function
   and slot in one screen.
 
+- **The dashboard is usable by the people it is for, and on the phone they
+  open it on.** The previous pass fixed what the pages *said*; this one fixed
+  what they *do*. Somebody who is not the admin arrived on a home page of eight
+  counters, five of them counting rows on consoles that answer them with a 403,
+  and an "Issue a token" link into one of those consoles — with nothing about
+  their own memory anywhere on it. The home page leads with that now (their own
+  wiki, the facts it holds, their standing rules, what was recalled for them),
+  the operator's counts are read for an operator, and a test walks every page a
+  reader passes through and fails on any link that would refuse them.
+
+  Columns and knobs stopped being database fields read aloud. The fact browser
+  headed its columns `fact_id`, `wiki_id`, `salience`, `allow_ids`,
+  `decay_reason`; they now say what they hold — About, Said by, Also readable
+  by, Holds from / Holds until. A recall trace said `Hits`, `Hops`, `Stop` and
+  printed `done`; it says how many facts were found, how many steps the walk
+  took, and that it stopped because it had collected enough. A REM knob asked
+  about "min page mass" and "husk-page GC"; it asks how many facts a page must
+  hold before it is split, and how many emptied pages to remove per cycle.
+
+  The same thing had four names — an agent on the bridges catalog, a bot on the
+  Tokens page, an application on the OAuth consent screen, an assistant in the
+  onboarding wizard. It is a **consumer** everywhere, glossed on first mention.
+
+  Three dead ends closed. A model refusal in the chat — a spend stop, a rate
+  limit, an unreachable model, a rejected key — was "Something went wrong on the
+  server. Check the server logs."; the panel now prints the reason, carries the
+  budget's own sentence verbatim for a stop, and offers the page that lifts it to
+  whoever can open it. The route that clears a pending comment had no button
+  anywhere and was reachable only by crafting the request; every comment on a
+  smart wiki now carries "Mark as read", and clearing one returns to the page it
+  was on instead of the wiki index. The Claude Code login carried a callback
+  route the browser is never sent to, because that OAuth client refuses a
+  `redirect_uri` of ours — it is gone, and the page says the code is carried
+  across by hand.
+
+  On a phone: every one of the 52 rendered pages now fits 390 px with no
+  sideways scroll — the `curl … | sh` install line scrolls inside its own box
+  instead of pushing the page out — and a column heading stays on one line
+  rather than breaking into four stacked words. A refused save on the recall or
+  REM panel hands the form back with what was typed still in it, instead of an
+  error page and eighteen fields to fill again.
+
 - **A forget-request vote is raised near its deadline, not every turn.** The
   `pending_votes` block rides every turn of its seven-day window, and both
   bridges told the agent to raise it once and then judge from the thread

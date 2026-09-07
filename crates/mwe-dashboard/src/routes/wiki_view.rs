@@ -1821,8 +1821,9 @@ fn render_add_comment_cta_html(wiki_id: &WikiId, page_path: &str, anchor: &str) 
     .into_string()
 }
 
-/// One pending comment, with the control that clears it when this wiki
-/// is one the reader may clear from ([`PageViewFlags::can_mark_read`]).
+/// One pending comment, with the control that clears it — offered only
+/// on a smart wiki, where `POST …/briefing-items/:bi_id/process` accepts
+/// one.
 fn render_comment_block(
     wiki_id: &WikiId,
     c: &PageComment,
@@ -1919,7 +1920,9 @@ async fn comment_form(
     let chrome = layout::Chrome::of(&state);
     let memory = require_memory(&state)?;
     let wiki_id = WikiId::parse(&id).map_err(|e| DashboardError::BadRequest(format!("{e}")))?;
-    let _meta = wiki_get_meta(&memory.tree, &wiki_id).map_err(map_wiki_err)?;
+    let smart = wiki_get_meta(&memory.tree, &wiki_id)
+        .map_err(map_wiki_err)?
+        .smart;
 
     let rel = std::path::PathBuf::from(&page_path);
     if !mwe_core::wiki::is_safe_page_path(&rel) {
@@ -1953,6 +1956,7 @@ async fn comment_form(
         heading_label.as_deref(),
         /* body */ "",
         /* error */ None,
+        smart,
     ))
     .into_response())
 }
@@ -2145,6 +2149,11 @@ fn render_comment_form(
     heading_label: Option<&str>,
     body: &str,
     error: Option<&str>,
+    // The wiki is smart, so the comment is a note in the inbox of the
+    // consumer that writes it. On a standard wiki the nightly pass reads
+    // it and changes the facts instead — a different promise, and the
+    // page must not make the wrong one.
+    smart: bool,
 ) -> String {
     let title = format!("Comment — {wiki_id}/{page_path}#{anchor}");
     let view_url = format!("/dashboard/wiki/{wiki_id}/view/{page_path}");
@@ -2157,11 +2166,11 @@ fn render_comment_form(
             dl {
                 dt { "Wiki" } dd { code { (wiki_id) } }
                 dt { "Page" } dd { code { (page_path) } }
-                dt { "anchor" }  dd { code { "#" (anchor) } }
+                dt { "Section" } dd { code { "#" (anchor) } }
                 @if let Some(label) = heading_label {
-                    dt { "heading" } dd { (label) }
+                    dt { "Heading" } dd { (label) }
                 } @else {
-                    dt { "heading" }
+                    dt { "Heading" }
                     dd.muted {
                         "(no current heading produces this slug — the comment "
                         "will land in the orphaned bucket in the view until "
@@ -2172,18 +2181,19 @@ fn render_comment_form(
         }
 
         p.muted {
-            "The comment is persisted as a "
-            code { "wiki_briefing_items" }
-            " row with "
-            code { "source_kind=dashboard_comment" }
-            ", "
-            code { "kind=external" }
-            ", "
-            code { "author_sender_id=" (user.sender_id) }
-            ". The smart consumer recipient sees it at the next "
-            code { "smart_bootstrap" }
-            " and can mark it processed via "
-            code { "wiki_admin_push.mark_processed" } "."
+            "Saved under your name, " code { (user.sender_id) } ", against this "
+            "heading. "
+            @if smart {
+                "The consumer that writes this wiki finds it the next time it "
+                "starts up, and takes it out of its inbox once it has acted. "
+                "You can take it out yourself from the page, with "
+                strong { "Mark as read" } "."
+            } @else {
+                "The nightly pass reads it and changes the facts you point at — "
+                "correcting one, removing one, adding one — and it stays here "
+                "until then. Nothing you write is applied to the page text as "
+                "you wrote it."
+            }
         }
 
         form action=(form_action) method="post" {
@@ -2196,7 +2206,7 @@ fn render_comment_form(
                     cols="80"
                     required
                     maxlength=(COMMENT_BODY_MAX_BYTES)
-                    placeholder="Leave feedback for the smart consumer — what should change, why, where the supporting evidence lives." {
+                    placeholder="What should change, why, and where the evidence for it is." {
                     (body)
                 }
             }

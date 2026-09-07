@@ -91,12 +91,16 @@ pub const DEMO_ENTER: &str = "/demo/enter";
 
 /// Mutating `GET`s that must still be refused.
 ///
-/// The guard's rule of thumb is "safe methods pass", which holds for
-/// every dashboard route but these: they are `GET` only because they are
-/// redirect targets a browser is sent to, and they store credentials.
-/// `/auth/link` is the other mutating `GET` and is deliberately *not*
-/// here — it redeems a magic link into a session, which is identity.
-pub const REFUSED_READS: &[&str] = &["/admin/claude-login/callback"];
+/// The guard's rule of thumb is "safe methods pass", and today every
+/// dashboard `GET` earns it. **Empty is not the same as absent**: a `GET`
+/// that stores something — a redirect target a provider sends a browser
+/// back to, carrying a credential — belongs here the day it is written,
+/// or the freeze will wave it through on the strength of its method.
+///
+/// `/auth/link` is a mutating `GET` and is deliberately *not* here: it
+/// redeems a magic link into a session, which is identity, and a frozen
+/// instance still lets people in.
+pub const REFUSED_READS: &[&str] = &[];
 
 /// Message shown to a human, and logged, when the mode refuses.
 pub const REFUSAL: &str =
@@ -251,11 +255,17 @@ mod tests {
         }
     }
 
+    /// Redeeming a magic link is a mutating `GET`, and it passes: a
+    /// frozen instance still lets people in. The point of the exception
+    /// list is that admitting somebody is the *only* mutating `GET` we
+    /// are willing to admit.
     #[test]
-    fn a_mutating_get_is_refused_even_though_get_is_safe() {
-        assert!(refused(&Method::GET, "/admin/claude-login/callback"));
-        // …and the other mutating GET is not, because it is identity.
+    fn the_one_mutating_get_that_passes_is_the_one_that_admits_somebody() {
         assert!(!refused(&Method::GET, "/auth/link"));
+        assert!(
+            REFUSED_READS.is_empty(),
+            "a mutating GET was added to the list without a test saying why"
+        );
     }
 
     #[test]

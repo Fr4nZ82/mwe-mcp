@@ -1570,3 +1570,45 @@ async fn clearing_a_comment_returns_to_the_page_it_was_on() {
             .unwrap();
     assert!(processed.is_some(), "the row must be drained");
 }
+
+/// A comment means two different things depending on the wiki it is
+/// left on, and the page that takes it says which. Getting this wrong
+/// tells a person their note is going to a consumer that will never see
+/// it — or that a consumer will read what the nightly pass will.
+#[tokio::test]
+async fn the_comment_form_says_who_will_read_it() {
+    let (app, _pool, tree, _dir) = make_app_with_memory().await;
+    let cookie = login_as_admin(&app).await;
+    seed_alice_with_page(&tree, "cucina.md", "# Cucina\n\n## Colazione\n\nCoffee.\n");
+    seed_smart_casa_with_page(&tree, "impianti.md", "# Impianti\n\n## Boiler\n\nServiced.\n");
+
+    for (uri, expected, refused) in [
+        (
+            "/wiki/alice/comment/cucina.md?anchor=colazione",
+            "The nightly pass reads it and changes the facts you point at",
+            "consumer that writes this wiki",
+        ),
+        (
+            "/wiki/casa/comment/impianti.md?anchor=boiler",
+            "The consumer that writes this wiki finds it",
+            "nightly pass",
+        ),
+    ] {
+        let response = send(
+            &app,
+            Request::builder()
+                .uri(uri)
+                .header(header::COOKIE, &cookie)
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await;
+        assert_eq!(response.status(), StatusCode::OK, "{uri}");
+        let html = body_string(response).await;
+        assert!(html.contains(expected), "{uri} does not say `{expected}`");
+        assert!(
+            !html.contains(refused),
+            "{uri} also claims `{refused}`, which is the other family's promise"
+        );
+    }
+}

@@ -1020,7 +1020,8 @@
   }
 
   /* Page-meta dl block (wiki view, edit form, comment form). */
-  section.meta dl {
+  section.meta dl,
+  .token-card dl {
     display: grid;
     grid-template-columns: max-content 1fr;
     gap: 0.25rem 0.75rem;
@@ -1030,8 +1031,10 @@
     border-radius: var(--radius);
     padding: 0.75rem 1rem;
   }
-  section.meta dt { color: var(--text-dim); font-size: 0.85rem; }
-  section.meta dd {
+  section.meta dt,
+  .token-card dt { color: var(--text-dim); font-size: 0.85rem; }
+  section.meta dd,
+  .token-card dd {
     margin: 0;
     color: var(--text);
     /* `min-width: 0` lets the grid item shrink below its content
