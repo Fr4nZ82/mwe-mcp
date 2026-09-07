@@ -3070,13 +3070,9 @@ fn briefing_error_to_tool_error(err: &mwe_core::briefing::BriefingError) -> Tool
             err.to_string(),
         ),
         E::NotFound(_) => (ToolErrorClass::NotFound, err.to_string()),
-        // Read-access denial + ambiguous-owner both map to
-        // `sender_unauthorized` (the canonical 403 for "you can't
-        // touch this wiki"). The distinct message preserves the
-        // diagnostic.
-        E::ReadAccessDenied { .. } | E::AmbiguousOwner { .. } => {
-            (ToolErrorClass::SenderUnauthorized, err.to_string())
-        },
+        // A read-access denial is `sender_unauthorized`, the canonical 403
+        // for "you can't touch this wiki". The message keeps the diagnostic.
+        E::ReadAccessDenied { .. } => (ToolErrorClass::SenderUnauthorized, err.to_string()),
         E::RateLimited(_) => (ToolErrorClass::RateLimited, err.to_string()),
         E::InvalidInput(_) => (ToolErrorClass::InvalidInput, err.to_string()),
         E::Wiki(_) | E::Db(_) | E::Io(_) => (ToolErrorClass::InternalError, err.to_string()),
@@ -3099,9 +3095,10 @@ fn admin_error_to_tool_error(err: &mwe_core::wiki_admin::AdminError) -> ToolErro
             ToolErrorClass::RequiresConsumerClassSmart,
             "requires consumer_class=smart".to_owned(),
         ),
-        // AmbiguousOwner shares the wire code with WikiOwnedByOtherUser:
-        // both signal that the smart consumer cannot write here. The
-        // distinct error message preserves the diagnostic.
+        // `WikiOwnedByOtherUser` is what a smart consumer gets when the wiki
+        // answers to somebody else. `AmbiguousOwner` is a signal internal to
+        // `wiki_admin` — the group-ownership gate resolves it there — so it
+        // never arrives, and the match names it only to stay exhaustive.
         E::WikiOwnedByOtherUser { .. } | E::AmbiguousOwner { .. } => {
             (ToolErrorClass::WikiOwnedByOtherUser, err.to_string())
         },

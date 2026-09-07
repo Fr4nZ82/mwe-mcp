@@ -154,9 +154,15 @@ pub enum AdminError {
         /// The slug the caller tried to label.
         slug: String,
     },
-    /// Target wiki's derived scope principal is something other than a
-    /// single user (Global or Group). MVP smart-wikis require a user owner.
-    #[error("wiki {wiki_id} has owner {acl_default:?}; smart-wikis require a user owner")]
+    /// The wiki's derived scope principal is a group, so no single user
+    /// answers for it.
+    ///
+    /// A signal inside this module, not a refusal a caller sees:
+    /// `resolve_owner_user` raises it and `enforce_admin_auth` decides what it
+    /// means — a member of that group is owner-equivalent and writes, anybody
+    /// else is refused with [`AdminError::WikiOwnedByOtherUser`]. It reaches
+    /// no caller, so it reaches no wire.
+    #[error("wiki {wiki_id} answers to {acl_default:?}, not to a single user")]
     AmbiguousOwner {
         /// Target wiki id.
         wiki_id: WikiId,

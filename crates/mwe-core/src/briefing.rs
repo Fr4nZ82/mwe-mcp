@@ -128,15 +128,6 @@ pub enum BriefingError {
         /// User id derived from `token.sender_id`.
         caller_owner: String,
     },
-    /// Wiki's derived scope principal is something other than a single
-    /// user (Global or Group). MVP smart-wikis require a user owner.
-    #[error("wiki {wiki_id} has owner {acl_default:?}; smart-wikis require a user owner")]
-    AmbiguousOwner {
-        /// Target wiki id.
-        wiki_id: WikiId,
-        /// The derived scope principal that wasn't a single user.
-        acl_default: String,
-    },
     /// `50 notify/wiki/h` cap exceeded.
     #[error("rate limit exceeded: {0} notify/wiki/h cap")]
     RateLimited(i64),
@@ -697,13 +688,6 @@ pub async fn notify(
 fn map_admin_error(err: crate::wiki_admin::AdminError) -> BriefingError {
     use crate::wiki_admin::AdminError;
     match err {
-        AdminError::AmbiguousOwner {
-            wiki_id,
-            acl_default,
-        } => BriefingError::AmbiguousOwner {
-            wiki_id,
-            acl_default,
-        },
         AdminError::Wiki(w) => BriefingError::Wiki(w),
         AdminError::Db(db) => BriefingError::Db(db),
         other => BriefingError::InvalidInput(format!("read access resolution: {other}")),
