@@ -9,6 +9,15 @@ From 1.0, the public interface — the MCP tool surface, family by family, as
 the dispatcher in `crates/mwe-mcp-server/src/mcp/` declares it — is a stable,
 semver-governed surface: breaking changes are called out explicitly.
 
+## Unreleased
+
+### Added
+
+- **The release archive carries the guide.** Every published archive
+  (`mwe-mcp-<tag>-<target>.tar.gz`, `.zip` on Windows) unpacks with `docs/`
+  beside the binary, so an operator who downloads a release has the same
+  pages the dashboard serves under **Guide** without a network connection.
+
 ## 2.0.0 — 2026-09-07
 
 The dashboard is rewritten, in what it says and in what it does. A person can

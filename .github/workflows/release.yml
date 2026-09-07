@@ -86,8 +86,10 @@ jobs:
           archive: mwe-mcp-$tag-$target
           checksum: sha256
           # `packaging/` carries the launchd plist and the Windows scheduled
-          # task INSTALL.md tells the operator to register; they are no use
-          # to somebody who only has the archive unless they are in it.
-          include: README.md,LICENSE,LICENSING.md,INSTALL.md,packaging
+          # task INSTALL.md tells the operator to register, and `docs/` is the
+          # guide; they are no use to somebody who only has the archive unless
+          # they are in it. A directory entry is copied whole (the action runs
+          # `cp -r`), and a glob is refused, so each one is named literally.
+          include: README.md,LICENSE,LICENSING.md,INSTALL.md,packaging,docs
           token: ${{ secrets.GITHUB_TOKEN }}
           dry-run: ${{ github.ref_type != 'tag' }}
