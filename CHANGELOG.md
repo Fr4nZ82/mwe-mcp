@@ -9,19 +9,26 @@ From 1.0, the public interface — the MCP tool surface, family by family, as
 the dispatcher in `crates/mwe-mcp-server/src/mcp/` declares it — is a stable,
 semver-governed surface: breaking changes are called out explicitly.
 
-## Unreleased
+## 2.0.0 — 2026-09-07
 
 The dashboard is rewritten, in what it says and in what it does. A person can
 ask for everything the memory holds about them, and for its removal. Spending
-has a daily ceiling that stops it. Linux, macOS and Windows are all the gate,
-each with a way to run the server under an account nobody logs in with. And a
-memory now ships with an assistant to talk to, installed with one command.
+has a daily ceiling that stops it, and **Admin → Usage** is where the day is
+read against that ceiling and where the price list is edited. Linux, macOS and
+Windows are all the gate, each with a way to run the server under an account
+nobody logs in with. And a memory now ships with an assistant to talk to,
+installed with one command.
 
 Underneath, the memory learned to say what a fact is *about* when that is not
-a person, to link its pages on purpose, and to open the wikis its own nightly
-grouping raises. Ten migrations, `0068` through `0077`, and three breaking
-changes on the tool surface — plus a fourth that behaves like one: an unknown
-argument is refused instead of dropped.
+a person, to link its pages on purpose, and to open the pages of the topic
+wikis its own nightly grouping raises, which every gate had been refusing. Ten
+migrations, `0068` through `0077`, and three breaking changes on the tool
+surface — plus a fourth that behaves like one: an unknown argument is refused
+instead of dropped.
+
+Everything a person sees on the dashboard is written down in the guide,
+[`docs/`](docs/): one half for the operator who installs and runs the server,
+one for whoever the memory is about.
 
 ### Added
 
@@ -210,6 +217,22 @@ argument is refused instead of dropped.
   know about me — is answered before they ask it, with **Everything I can
   read** one click away and carried through the pager. An admin opens on the
   deployment, as the console always did.
+
+- **The guide, in [`docs/`](docs/).** Every screen of the dashboard written
+  down for the person in front of it, in two halves. `operator/` is for
+  whoever installs and runs the server: first start, the six model slots, the
+  embedder, server settings, users, groups, tokens, skills, bridges, wikis,
+  usage and spend, the Dream console, recall and REM settings, prompts,
+  health, backups, the training spool, exporting and forgetting a person, and
+  what to settle before the server is exposed. `user/` is for whoever the
+  memory is about: what this memory is, their first sign-in, their home page,
+  their facts, who can read what, wikis and pages, the chat, comments,
+  reminders and notices, what was recalled for them, their account, and how to
+  ask for a copy of their memory or for its removal. It says what a person
+  **sees and does** and never how the engine works inside; the rule at the top
+  of it is that every page is opened again against the running dashboard
+  before a release ships, and a page nobody can verify is deleted rather than
+  kept.
 
 ### Changed
 
@@ -498,20 +521,19 @@ argument is refused instead of dropped.
 
 ### Fixed
 
-- **The pages of a wiki that emerged from the nightly grouping open again.** A
-  wiki the nightly grouping raises is named for its subject and stands on its
-  own, so nobody owns it — and every gate that opened a page by first asking
-  *who owns this wiki* read that as a broken wiki file and refused. In the
-  dashboard every page view of such a wiki was a server error; over MCP the
-  page-reading tool failed the same way, and so did leaving a comment on one of
-  those pages. A wiki nobody owns is now an ordinary answer rather than a fault:
-  what may be read there is decided fact by fact, exactly as it already was
-  everywhere else. Three consequences you can see: the `owner` field the
-  page-reading tool returns is `null` for such a wiki instead of naming
-  somebody; its pages are editable by hand from the dashboard by an
-  administrator, since there is no owner to be; and the nightly structural
-  review is shown these wikis in the forest it weighs, where before they were
-  missing from it altogether.
+- **The pages of a topic wiki open again.** A *topic wiki* is the kind the
+  nightly grouping raises: named for its subject, standing on its own, owned by
+  nobody. Every gate that opened a page by first asking *who owns this wiki*
+  read that as a broken wiki file and refused. In the dashboard every page view
+  of such a wiki was a server error; over MCP the page-reading tool failed the
+  same way, and so did leaving a comment on one of those pages. A wiki nobody
+  owns is now an ordinary answer rather than a fault: what may be read there is
+  decided fact by fact, exactly as it already was everywhere else. Three
+  consequences you can see: the `owner` field the page-reading tool returns is
+  `null` for such a wiki instead of naming somebody; its pages are editable by
+  hand from the dashboard by an administrator, since there is no owner to be;
+  and the nightly structural review is shown these wikis in the forest it
+  weighs, where before they were missing from it altogether.
 
 - **Commenting on a page now follows the same rule as reading it.** The
   dashboard asked two different questions about the same page: whether you may
