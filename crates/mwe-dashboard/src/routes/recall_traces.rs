@@ -243,7 +243,7 @@ fn render_index_row(row: &TraceRow) -> Markup {
     let href = format!("/dashboard/recall-traces/{}", row.id);
     html! {
         tr {
-            td { (compact_stamp(&row.created_at)) }
+            td { (crate::ui::components::compact_stamp(&row.created_at)) }
             td { (source_badge(row.source)) }
             td { (row.sender_id) }
             td class="trace-turn-cell" {
@@ -356,14 +356,6 @@ fn origin_in_words(origin: &str) -> &str {
     }
 }
 
-/// `2026-07-03T21:04:05.123+00:00` → `2026-07-03 21:04:05` (fallback: as-is).
-fn compact_stamp(iso: &str) -> String {
-    match (iso.get(..10), iso.get(11..19)) {
-        (Some(d), Some(t)) => format!("{d} {t}"),
-        _ => iso.to_owned(),
-    }
-}
-
 // ---------- Rendering: the viewer ----------
 
 fn render_viewer_body(row: &TraceRow, trace: &RecallTrace, reveal: bool) -> Markup {
@@ -393,7 +385,7 @@ fn render_meta(row: &TraceRow, trace: &RecallTrace) -> Markup {
             p class="whitespace-pre-wrap" { (trace.turn_text) }
             table class="config-table" {
                 tbody {
-                    tr { th { "When" } td { (compact_stamp(&row.created_at)) } }
+                    tr { th { "When" } td { (crate::ui::components::compact_stamp(&row.created_at)) } }
                     tr { th { "What ran" } td { (source_badge(row.source)) } }
                     tr { th { "Who it was for" } td { (row.sender_id) } }
                     @if let Some(consumer) = &trace.consumer {

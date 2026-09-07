@@ -1072,13 +1072,14 @@ async fn view_page(
     // Whether to offer the "✎ page description" affordance: standard wiki +
     // owner-or-admin. A non-owner reader never sees a link that would 404.
     let can_edit_meta = !frozen && may_edit_page_meta(&state.pool, memory, &wiki_id, &user).await?;
-    // Whether to offer "Mark as read" on a pending comment. Smart wikis
-    // only — the same gate `POST …/briefing-items/:bi_id/process`
-    // enforces, so the button is never rendered where it would 400.
-    let can_mark_read = !frozen
-        && wiki_get_meta(&memory.tree, &wiki_id)
-            .map_err(map_wiki_err)?
-            .smart;
+    // A smart wiki is a consumer's, and a comment on one is a note in
+    // its inbox; on a standard wiki a comment is what the nightly pass
+    // reads to change the facts. The page says which, and only the first
+    // offers "Mark as read" — the same gate
+    // `POST …/briefing-items/:bi_id/process` enforces.
+    let smart = wiki_get_meta(&memory.tree, &wiki_id)
+        .map_err(map_wiki_err)?
+        .smart;
 
     // Relative markdown links resolve against this page's directory,
     // same as the browser would — but rewritten to the canonical view
@@ -1098,7 +1099,7 @@ async fn view_page(
             can_edit_meta,
             reveal,
             frozen,
-            can_mark_read,
+            smart,
         },
         &|target| resolve_wikilink_href(&link_index, Some(wiki_id.as_str()), target),
         &|dest| {
@@ -1592,12 +1593,13 @@ struct PageViewFlags {
     /// `can_comment` and `can_edit_meta` are false, and changes the
     /// *reason* the page gives for it.
     frozen: bool,
-    /// The viewer may clear a pending comment off this page — a smart
-    /// wiki on a deployment that is not frozen. On a standard wiki the
-    /// nightly cycle reads the comment and changes the facts from it, so
-    /// clearing it by hand would drop the change on the floor, and
-    /// `POST …/process` refuses it: the button is not offered.
-    can_mark_read: bool,
+    /// This wiki is **smart** — a consumer authors it, and a comment
+    /// left here is a note in that consumer's inbox. On a standard wiki
+    /// a comment is what the nightly pass reads to change the facts
+    /// instead, which is a different promise to the reader and a
+    /// different set of controls: only a smart wiki offers "Mark as
+    /// read", because only there does `POST …/process` accept one.
+    smart: bool,
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -1619,8 +1621,11 @@ fn render_view_page_body(
         can_edit_meta,
         reveal,
         frozen,
-        can_mark_read,
+        smart,
     } = flags;
+    // Clearing a comment is a write, so a frozen deployment offers it
+    // no more than it offers the comment box itself.
+    let can_mark_read = smart && !frozen;
     let view_url = format!("/dashboard/wiki/{}/view/{}", wiki_id.as_str(), page_path);
     let comment_mode_url = format!("{view_url}?mode=comment");
 
@@ -1698,7 +1703,18 @@ fn render_view_page_body(
                     a href=(view_url) { "Stop commenting" }
                 } @else {
                     a href=(comment_mode_url) { "Add comments" }
-                    span.muted { " — opens a per-heading affordance to leave feedback for the smart consumer." }
+                    @if smart {
+                        span.muted {
+                            " — leaves a note next to a heading for the consumer that "
+                            "writes this wiki. It reads them when it next starts up."
+                        }
+                    } @else {
+                        span.muted {
+                            " — leaves a note next to a heading. The nightly pass reads "
+                            "it and changes the facts you point at: correcting one, "
+                            "removing one, adding one."
+                        }
+                    }
                 }
             }
         } @else if !frozen {
@@ -1823,7 +1839,7 @@ fn render_comment_block(
             header.comment-meta {
                 span.comment-attribution { (attribution) }
                 ", "
-                time { (c.ts) }
+                time { (components::compact_stamp(&c.ts)) }
                 " · "
                 code.comment-id { (c.briefing_item_id) }
                 @if let Some(anchor) = c.anchor.as_deref()

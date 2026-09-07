@@ -221,6 +221,20 @@ fn json_quote(s: &str) -> String {
     out
 }
 
+/// A stored timestamp, cut to the second: `2026-07-03T21:04:05.123+00:00`
+/// → `2026-07-03 21:04:05` (anything else is passed through as it is).
+///
+/// The engine writes RFC 3339 with nanoseconds, which is right for a
+/// column and unreadable in a sentence — nine digits of precision on a
+/// comment somebody left this morning.
+#[must_use]
+pub fn compact_stamp(iso: &str) -> String {
+    match (iso.get(..10), iso.get(11..19)) {
+        (Some(d), Some(t)) => format!("{d} {t}"),
+        _ => iso.to_owned(),
+    }
+}
+
 /// What the engine decided a turn was, in the reader's words.
 ///
 /// The argument is the wire token [`mwe_core::ingest::IntentKind::as_str`]

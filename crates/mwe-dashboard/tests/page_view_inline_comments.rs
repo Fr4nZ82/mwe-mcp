@@ -197,9 +197,15 @@ async fn page_view_renders_inline_comment_below_matching_heading() {
         html.contains("Stale: switched to the new tokenizer."),
         "comment body missing: {html}"
     );
+    // Cut to the second: nine digits of precision on a note somebody
+    // left this morning is a column value, not a sentence.
     assert!(
-        html.contains("2026-05-26T13:42:00Z"),
-        "comment timestamp missing: {html}"
+        html.contains("2026-05-26 13:42:00"),
+        "comment timestamp missing or not readable"
+    );
+    assert!(
+        !html.contains("2026-05-26T13:42:00Z"),
+        "the stored form is not what the reader is shown"
     );
 
     // Inline ordering: the comment block must sit AFTER the "Boundary
