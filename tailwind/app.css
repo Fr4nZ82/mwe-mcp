@@ -626,6 +626,23 @@
     }
   }
 
+  /* No preformatted block pushes the page sideways. A command or a
+     code line must not wrap — a broken command pastes broken — so it
+     scrolls inside its own box instead, at every width. */
+  main pre {
+    max-width: 100%;
+    overflow-x: auto;
+  }
+  /* A command or an endpoint the reader is meant to copy: framed, so it
+     reads as one thing to select. */
+  .endpoint-display {
+    background: var(--bg-1);
+    border: 1px solid var(--border);
+    border-radius: var(--radius);
+    padding: 0.5rem 0.7rem;
+    font-size: 0.85rem;
+  }
+
   /* Error page status label. */
   .error .status { font-weight: 600; color: var(--rose); }
 
