@@ -113,7 +113,6 @@ fn render(
     db: &DbDiagnostics,
 ) -> String {
     let body = html! {
-        h2 { "Health" }
         p.muted {
             "Live diagnostics for the running server — the lockfile-free "
             "subset of " code { "mwe-mcp doctor" } ", read against the live "

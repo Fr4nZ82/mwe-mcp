@@ -122,7 +122,6 @@ fn render(
             (components::flash(f.kind, f.msg))
         }
 
-        h2 { "Training spool" }
         p.muted {
             "Records every internal-LLM exchange — slot, model, full "
             "prompt, full completion — as one JSON line per call into "

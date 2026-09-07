@@ -319,7 +319,6 @@ async fn render_settings(
 
     let body = html! {
         @if let Some((kind, msg)) = flash { (components::flash(kind, msg)) }
-        h2 { "Two-factor authentication" }
         p.muted {
             "Protect your sign-in with a time-based code from an authenticator app "
             "(Aegis, Google Authenticator, 1Password, …)."

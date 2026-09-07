@@ -258,7 +258,6 @@ fn render(
             "no restart needed."
         }
 
-        h2 { "REM settings" }
         p.muted {
             "What the night is allowed to do, and how much of it per cycle: how "
             "big a page has to get before it is split, how many changes each "

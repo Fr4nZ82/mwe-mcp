@@ -938,7 +938,6 @@ fn render(v: &View<'_>) -> Markup {
     };
 
     html! {
-        h2 { "Usage & spend" }
         p.muted {
             "Every call this deployment made to a model or to the embedder, counted per "
             "call. Tokens are the measurement; money is an estimate against the rates you "

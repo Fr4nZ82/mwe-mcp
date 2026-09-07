@@ -264,7 +264,6 @@ fn render(
             "the dashboard chat read them per turn, no restart needed."
         }
 
-        h2 { "Recall settings" }
         p.muted {
             "Resource knobs of the per-turn recall block (flat slot, "
             "navigator funnel, due-soon slot), backing the "

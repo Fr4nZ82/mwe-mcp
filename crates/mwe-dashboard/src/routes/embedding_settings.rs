@@ -95,7 +95,6 @@ fn render(
             "(the embedder-identity guard warns on the next startup)."
         }
 
-        h2 { "Embedding settings" }
         p.muted {
             "Which embedder backs recall, capture-time dedup and search — the "
             code { "embedding:" } " section of " code { (CONFIG_FILENAME) }

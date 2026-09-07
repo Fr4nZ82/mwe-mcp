@@ -142,6 +142,22 @@ fn origin_from_host(host: &str) -> String {
 // Shared page bodies (rendered under both the public root and /dashboard)
 // ---------------------------------------------------------------------
 
+/// The Tokens page, named the same way everywhere it is mentioned.
+///
+/// A link only for a reader the console will let in: it is admin-only,
+/// so pointing anybody else at it is a 403 with extra steps, and on the
+/// anonymous public page there is no session to judge by at all. The
+/// sentence around it reads the same either way, so nothing is lost.
+fn tokens_page(linked: bool) -> Markup {
+    html! {
+        @if linked {
+            a href="/dashboard/tokens" { "Tokens" } " page"
+        } @else {
+            strong { "Tokens" } " page of this dashboard (an admin's)"
+        }
+    }
+}
+
 /// Front page body. `base` prefixes the in-app catalog link.
 fn front_body(base: &str) -> Markup {
     html! {
@@ -169,7 +185,7 @@ fn front_body(base: &str) -> Markup {
 /// "instructions for the consumer" link always points at the public
 /// `install.md`.
 /// `origin` (`scheme://host`) is shown in the bridge-less claude.ai section.
-fn catalog_body(base: &str, origin: &str) -> Markup {
+fn catalog_body(base: &str, origin: &str, may_mint: bool) -> Markup {
     html! {
         p.muted {
             "A bridge connects a consumer — the bot or assistant that talks to "
@@ -209,7 +225,7 @@ fn catalog_body(base: &str, origin: &str) -> Markup {
             }
         }
 
-        (claude_ai_section(origin))
+        (claude_ai_section(origin, may_mint))
     }
 }
 
@@ -218,7 +234,7 @@ fn catalog_body(base: &str, origin: &str) -> Markup {
 /// OAuth flow (no token to copy). Authors its own dedicated wiki; recalls and
 /// saves on request. The exact field names in claude.ai's UI may differ — this
 /// is the manual path until it is verified live against the public endpoint.
-fn claude_ai_section(origin: &str) -> Markup {
+fn claude_ai_section(origin: &str, may_mint: bool) -> Markup {
     html! {
         h2 { "Connect the claude.ai web app" }
         p.muted {
@@ -251,7 +267,7 @@ fn claude_ai_section(origin: &str) -> Markup {
         }
         p.muted {
             "Approved connections — and a Disconnect button — live on the "
-            a href="/dashboard/tokens" { "Tokens" } " page."
+            (tokens_page(may_mint)) "."
         }
     }
 }
@@ -261,11 +277,11 @@ fn claude_ai_section(origin: &str) -> Markup {
 /// consumer: nanoclaw and hermes ship a `curl … | sh` installer;
 /// claude-code is an agent-driven `install.md` (no files, no shell
 /// installer).
-fn guide_body(consumer: &str, origin: &str) -> Markup {
+fn guide_body(consumer: &str, origin: &str, may_mint: bool) -> Markup {
     match consumer {
-        "nanoclaw" => nanoclaw_guide_body(origin),
+        "nanoclaw" => nanoclaw_guide_body(origin, may_mint),
         "claude-code" => claude_code_guide_body(origin),
-        _ => hermes_guide_body(consumer, origin),
+        _ => hermes_guide_body(consumer, origin, may_mint),
     }
 }
 
@@ -277,7 +293,7 @@ fn guide_body(consumer: &str, origin: &str) -> Markup {
 /// No PowerShell here on purpose: nanoclaw runs on Windows only inside
 /// WSL2, so the Windows path is the same `sh` command in a WSL2 shell —
 /// see [`render_install_ps1`].
-fn nanoclaw_guide_body(origin: &str) -> Markup {
+fn nanoclaw_guide_body(origin: &str, may_mint: bool) -> Markup {
     let curl = format!("curl -fsSL {origin}/bridges/nanoclaw/install.sh | sh");
     let agent_line = format!(
         "Read {origin}/bridges/nanoclaw/install.md and follow the instructions to connect me to this memory."
@@ -354,7 +370,7 @@ fn nanoclaw_guide_body(origin: &str) -> Markup {
             }
             li {
                 "Issue a " strong { "standard" } " consumer token from the "
-                a href="/dashboard/tokens" { "Tokens" } " page and set it as "
+                (tokens_page(may_mint)) " and set it as "
                 code { "MWE_TOKEN" } " in the checkout's " code { ".env" }
                 ". In that consumer's delegations tick every person it will "
                 "speak for, plus " code { "guest" } " — without " code { "guest" }
@@ -462,7 +478,7 @@ fn claude_code_guide_body(origin: &str) -> Markup {
 /// Human guide for the **hermes** standard-consumer bridge — the
 /// `curl … | sh` plugin installer. No token here — that lives on the
 /// dashboard home's "Connect a consumer" card.
-fn hermes_guide_body(consumer: &str, origin: &str) -> Markup {
+fn hermes_guide_body(consumer: &str, origin: &str, may_mint: bool) -> Markup {
     let curl = format!("curl -fsSL {origin}/bridges/{consumer}/install.sh | sh");
     let ps = format!("irm {origin}/bridges/{consumer}/install.ps1 | iex");
     let agent_line = format!(
@@ -511,7 +527,7 @@ fn hermes_guide_body(consumer: &str, origin: &str) -> Markup {
         }
         ul {
             li { "Issue a " strong { "standard" } " consumer token from the "
-                a href="/dashboard/tokens" { "Tokens" } " page and set it as "
+                (tokens_page(may_mint)) " and set it as "
                 code { "MWE_TOKEN" } " in hermes's " code { ".env" } "." }
             li { "Set " code { "memory_enabled: false" } " and "
                 code { "user_profile_enabled: false" } " in hermes's "
@@ -1227,7 +1243,7 @@ async fn front_page() -> Html<String> {
 async fn public_bridges_index(Host(host): Host) -> Html<String> {
     Html(layout::anonymous_reading_page(
         "Bridges",
-        &catalog_body("", &origin_from_host(&host)),
+        &catalog_body("", &origin_from_host(&host), /* may_mint */ false),
     ))
 }
 
@@ -1237,7 +1253,11 @@ async fn public_bridge_page(Path(consumer): Path<String>, Host(host): Host) -> R
         |label| {
             Html(layout::anonymous_reading_page(
                 &format!("{label} bridge"),
-                &guide_body(&consumer, &origin_from_host(&host)),
+                &guide_body(
+                    &consumer,
+                    &origin_from_host(&host),
+                    /* may_mint */ false,
+                ),
             ))
             .into_response()
         },
@@ -1256,7 +1276,7 @@ async fn tab_bridges_index(
         chrome,
         "Bridges",
         &user,
-        &catalog_body("/dashboard", &origin_from_host(&host)),
+        &catalog_body("/dashboard", &origin_from_host(&host), user.is_admin),
     ))
 }
 
@@ -1274,7 +1294,7 @@ async fn tab_bridge_page(
                 chrome,
                 &format!("{label} bridge"),
                 &user,
-                &guide_body(&consumer, &origin_from_host(&host)),
+                &guide_body(&consumer, &origin_from_host(&host), user.is_admin),
             ))
             .into_response()
         },
@@ -1560,7 +1580,12 @@ mod tests {
     #[test]
     fn nanoclaw_has_no_powershell_installer_and_the_guide_says_why() {
         assert!(render_install_ps1("nanoclaw").is_none());
-        let html = guide_body("nanoclaw", "https://memory.anna.dev").into_string();
+        let html = guide_body(
+            "nanoclaw",
+            "https://memory.anna.dev",
+            /* may_mint */ true,
+        )
+        .into_string();
         assert!(html.contains("WSL2"));
         assert!(!html.contains("install.ps1"));
         let md = render_install_md("nanoclaw", "https://memory.anna.dev").expect("nanoclaw md");
@@ -1589,7 +1614,7 @@ mod tests {
         assert_eq!(BRIDGES[0].0, "nanoclaw");
         assert_eq!(bridge_label("nanoclaw"), Some("NanoClaw (nanoco)"));
 
-        let html = catalog_body("", "https://memory.anna.dev").into_string();
+        let html = catalog_body("", "https://memory.anna.dev", /* may_mint */ true).into_string();
         let nano = html
             .find("/bridges/nanoclaw")
             .expect("nanoclaw in the catalog");
@@ -1598,11 +1623,21 @@ mod tests {
         assert!(html.contains("ready-made assistant"));
         assert!(html.contains("/bridges/nanoclaw/install.md"));
         // Under the dashboard the guide link is prefixed, the install.md is not.
-        let tab_html = catalog_body("/dashboard", "https://memory.anna.dev").into_string();
+        let tab_html = catalog_body(
+            "/dashboard",
+            "https://memory.anna.dev",
+            /* may_mint */ true,
+        )
+        .into_string();
         assert!(tab_html.contains("href=\"/dashboard/bridges/nanoclaw\""));
         assert!(tab_html.contains("/bridges/nanoclaw/install.md"));
 
-        let guide = guide_body("nanoclaw", "https://memory.anna.dev").into_string();
+        let guide = guide_body(
+            "nanoclaw",
+            "https://memory.anna.dev",
+            /* may_mint */ true,
+        )
+        .into_string();
         assert!(
             guide.contains("https://memory.anna.dev/bridges/nanoclaw/install.sh | sh"),
             "the guide must show the served install command"
@@ -1681,7 +1716,8 @@ mod tests {
 
     #[test]
     fn catalog_lists_hermes_with_agent_instructions_link() {
-        let pub_html = catalog_body("", "https://memory.anna.dev").into_string();
+        let pub_html =
+            catalog_body("", "https://memory.anna.dev", /* may_mint */ true).into_string();
         assert!(pub_html.contains("hermes"));
         assert!(pub_html.contains("instructions it can follow"));
         assert!(pub_html.contains("/bridges/hermes/install.md"));
@@ -1692,14 +1728,24 @@ mod tests {
         assert!(pub_html.contains("https://memory.anna.dev/mcp"));
         assert!(pub_html.contains("/webagentoauth/skill.md"));
         // Under the dashboard the guide link is prefixed, the install.md is not.
-        let tab_html = catalog_body("/dashboard", "https://memory.anna.dev").into_string();
+        let tab_html = catalog_body(
+            "/dashboard",
+            "https://memory.anna.dev",
+            /* may_mint */ true,
+        )
+        .into_string();
         assert!(tab_html.contains("href=\"/dashboard/bridges/hermes\""));
         assert!(tab_html.contains("/bridges/hermes/install.md"));
     }
 
     #[test]
     fn guide_has_install_command_and_no_inline_token_mint() {
-        let html = guide_body("hermes", "https://memory.anna.dev").into_string();
+        let html = guide_body(
+            "hermes",
+            "https://memory.anna.dev",
+            /* may_mint */ true,
+        )
+        .into_string();
         assert!(html.contains("https://memory.anna.dev/bridges/hermes/install.sh"));
         assert!(html.contains("install.md"));
         assert!(html.contains("memory_enabled: false"));
@@ -1719,7 +1765,12 @@ mod tests {
 
     #[test]
     fn claude_code_guide_is_smart_and_has_no_curl_installer() {
-        let html = guide_body("claude-code", "https://memory.anna.dev").into_string();
+        let html = guide_body(
+            "claude-code",
+            "https://memory.anna.dev",
+            /* may_mint */ true,
+        )
+        .into_string();
         assert!(html.contains("smart consumer"));
         assert!(html.contains("claude mcp add"));
         assert!(html.contains("--scope user"));
@@ -1753,7 +1804,7 @@ mod tests {
 
     #[test]
     fn catalog_lists_claude_code_with_agent_instructions() {
-        let html = catalog_body("", "https://memory.anna.dev").into_string();
+        let html = catalog_body("", "https://memory.anna.dev", /* may_mint */ true).into_string();
         assert!(html.contains("Claude Code (Anthropic)"));
         assert!(html.contains("href=\"/bridges/claude-code\""));
         assert!(html.contains("/bridges/claude-code/install.md"));
@@ -1862,5 +1913,27 @@ mod tests {
             assert!(body_string(resp).await.contains(needle), "{uri}");
         }
         assert!(bridge_label("nanoclaw").is_some(), "the tab needs a label");
+    }
+
+    /// The Tokens page is admin-only, so the guide links to it for
+    /// whoever may open it and names it in plain words for everybody
+    /// else — a reader following that link would meet a 403.
+    #[test]
+    fn the_tokens_page_is_a_link_only_where_it_opens() {
+        let for_admin = guide_body("nanoclaw", "https://memory.anna.dev", true).into_string();
+        assert!(
+            for_admin.contains("href=\"/dashboard/tokens\""),
+            "{for_admin}"
+        );
+
+        let for_reader = guide_body("nanoclaw", "https://memory.anna.dev", false).into_string();
+        assert!(
+            !for_reader.contains("href=\"/dashboard/tokens\""),
+            "a reader must not be pointed at a console that refuses them: {for_reader}"
+        );
+        assert!(
+            for_reader.contains("Tokens</strong> page of this dashboard (an admin\'s)"),
+            "and must still be told where the token comes from: {for_reader}"
+        );
     }
 }
