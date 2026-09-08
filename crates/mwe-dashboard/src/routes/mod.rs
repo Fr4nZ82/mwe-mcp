@@ -46,6 +46,7 @@ mod recall_settings;
 mod recall_traces;
 mod redirect;
 mod rem_settings;
+pub(crate) mod search;
 mod sections_view;
 mod server_settings;
 mod settings;
@@ -72,6 +73,7 @@ pub fn build(state: DashboardState) -> Router {
         .merge(skills_view::router())
         .merge(bridges::dashboard_tab_router())
         .merge(facts::router())
+        .merge(search::router())
         .merge(sections_view::router())
         .merge(media::router())
         .merge(help::router())

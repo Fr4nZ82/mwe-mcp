@@ -187,6 +187,7 @@ The dashboard is also **where you correct the memory**. On a standard wiki the c
 
 - **Your own memory first.** Everyone lands on their wiki, the facts about them, the rules they set and what was recalled for them. The whole-deployment counters are the operator's and are shown to an admin alone.
 - **Memory explorer.** Browse every wiki you can read: rendered Markdown redacted to *your* eyes, page list, metadata, active-fact counts, smart wikis.
+- **Search.** One box in the top bar: a word, and back come the pages that carry it, grouped by wiki, each with the line it appears in. Words and not similarity — no model runs — and only what you may read: on a standard wiki the facts you can read, on a smart wiki the pages of a wiki you can open.
 - **Fact browser.** Every fact you may read, filtered by who it is about, with the superseded and deleted rows one filter away. A person arrives filtered on themselves — *what does this thing know about me* is the question people come with — and an admin arrives on the whole deployment.
 - **Operative chat.** A floating panel that *operates on* the memory, with explicit write confirmations. It is also where a change waiting for you is reviewed, and where a vote on a forget request is cast.
 - **Identity console.** Users, groups and tokens, consumer delegation, a welcome flow that seeds each user's identity, rules and preferences, and the two GDPR actions on a person's page: **export** everything the memory holds about them, **forget** them.

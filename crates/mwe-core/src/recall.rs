@@ -341,19 +341,21 @@ const FIRST_PERSON: &[&str] = &[
 /// share of Italian turns.
 const FIRST_PERSON_CASED: &str = "I";
 
-/// Fold one word to the letters an enrolled id is spelled with.
+/// Fold one word to the letters a match is made on.
 ///
 /// Lowercase, then NFKD-decompose and drop the combining marks — the same
 /// accent fold [`crate::slug::derive_slug`] applies to a page title.
 /// [`crate::enrollment::is_valid_user_id`] allows lowercase ASCII only, so a
 /// person whose name carries an accent is enrolled under the plain spelling
 /// and writes the accented one all day: without the fold, `eowyn` never
-/// answers to «Éowyn».
+/// answers to «Éowyn». [`crate::page_search`] folds a searched word and the
+/// prose it looks through with this same function, so what somebody typing
+/// «citta» finds and what a name answers to are one rule and not two.
 ///
 /// Case and accents are the whole of it. `roberto` and `robert` fold to two
 /// different words because they are two different names — that is the point
 /// of matching a name at all.
-fn fold_name(word: &str) -> String {
+pub(crate) fn fold_name(word: &str) -> String {
     word.to_lowercase()
         .nfkd()
         .filter(|c| !unicode_normalization::char::is_combining_mark(*c))

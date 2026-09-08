@@ -6,6 +6,9 @@ The memory is also readable as ordinary pages of text. The list shows every
 wiki you can read, with its **Wiki id**, **Title**, **Type** and the number of
 **Active facts** it holds.
 
+To go the other way — from a word to the pages that carry it — use
+[Search](search.md), the box in the top bar.
+
 There are two families, on two tabs.
 
 **Standard** — the memory the engine writes: one wiki per person, one per

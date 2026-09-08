@@ -2747,6 +2747,75 @@ type ListPageAccumulator = std::collections::BTreeMap<(String, String), (Option<
 /// So there is no waiting list to union in from `capture_buffer`: that state
 /// cannot arise, and a buffered claim names no page to find one by.
 ///
+/// One live fact reduced to what a text search reads: the page it sits on
+/// and its prose.
+///
+/// Deliberately without the embedding. A search over words has no use for
+/// the vector, and a query that carried it would ship a kilobyte per fact
+/// off disk to throw it away — which is the whole reason
+/// [`FactFilters::readable_by`] exists on the recall path.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct FactText {
+    /// The wiki the fact lives in.
+    pub wiki_id: String,
+    /// Workdir-relative page the fact is written on (`wikis/alice/cucina.md`).
+    pub source_path: String,
+    /// The fact's prose, as stored.
+    pub text: String,
+}
+
+/// Every live fact `readable_by` may read, as page + prose.
+///
+/// The corpus behind [`crate::page_search`]: the ACL is applied here, in the
+/// store, so a fact the searcher may not read never leaves the database and
+/// cannot reach a result by any later mistake. The matching itself happens in
+/// Rust, because the fold a person expects from a search box — case **and**
+/// accents — is not something `LIKE` can do.
+///
+/// `readable_by` is [`crate::acl::reader_principals`] for the searcher.
+/// `None` means **no ACL predicate at all** and belongs to exactly one
+/// caller: the dashboard's admin reveal, which is the same bypass the wiki
+/// page view applies when it shows every fragment. An empty slice is treated
+/// as `None` by [`find_by_filters`]'s rule and would leak, so it is refused
+/// here and answers nothing.
+///
+/// # Errors
+///
+/// `sqlx::Error`.
+pub async fn readable_fact_texts(
+    pool: &SqlitePool,
+    readable_by: Option<&[String]>,
+) -> Result<Vec<FactText>> {
+    let mut sql = String::from(
+        "SELECT wiki_id, source_path, \"text\" FROM fact_index \
+          WHERE superseded_at IS NULL AND deleted_at IS NULL",
+    );
+    let principals: &[String] = match readable_by {
+        None => &[],
+        Some([]) => return Ok(Vec::new()),
+        Some(p) => {
+            sql.push_str(" AND ");
+            sql.push_str(&readable_by_sql("fact_index", p.len()));
+            p
+        },
+    };
+    let mut q = sqlx::query_as::<_, (String, String, String)>(&sql);
+    for _ in 0..3 {
+        for principal in principals {
+            q = q.bind(principal.clone());
+        }
+    }
+    Ok(q.fetch_all(pool)
+        .await?
+        .into_iter()
+        .map(|(wiki_id, source_path, text)| FactText {
+            wiki_id,
+            source_path,
+            text,
+        })
+        .collect())
+}
+
 /// `principals` is [`crate::acl::reader_principals`] for the sender; an
 /// empty slice returns nothing rather than everything, because unlike a
 /// recall query this one has no per-row check behind it.

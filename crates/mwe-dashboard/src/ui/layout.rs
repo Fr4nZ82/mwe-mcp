@@ -388,8 +388,25 @@ fn shell(
     }
 }
 
+/// The top-bar search box — the way in to
+/// [`crate::routes::search`], on every authenticated page.
+///
+/// It carries no value: the box in the bar is where a search *starts*, and
+/// the results page renders its own with the words still in it. A `GET`
+/// form, so a search is a link somebody can bookmark and go back to.
+fn search_box() -> Markup {
+    html! {
+        form class="topbar-search" method="get"
+            action=(crate::routes::search::PATH) role="search" {
+            input type="search" name="q" placeholder="Search pages"
+                aria-label="Search pages";
+        }
+    }
+}
+
 /// Top navigation. Always shows the brand; for logged-in users adds
-/// the nav links + the "logged in as <id>" badge + a logout form.
+/// the search box + the nav links + the "logged in as <id>" badge + a
+/// logout form.
 ///
 /// Mobile-first layout: under the `md` breakpoint the nav collapses
 /// behind a hamburger button (`#nav-toggle`). The button toggles a
@@ -424,6 +441,13 @@ fn header(read_only: bool, demo_identities: &[String], user: Option<&SessionUser
                 }
                 nav id="site-nav"
                     class="site-nav md:flex md:flex-row md:flex-wrap md:items-center md:gap-1 md:ml-3 basis-full md:basis-auto order-last md:order-none" {
+                    // The search box, first in the nav and therefore on
+                    // every page: "where does this word appear" is asked
+                    // from wherever the reader happens to be, and a box
+                    // that lived on one page would make them navigate to
+                    // it first. Inside the nav so a narrow screen collapses
+                    // it behind the same hamburger as the links.
+                    (search_box())
                     (nav_link("/dashboard/home", "Home"))
                     // Single "Wikis" entry; the Standard / Smart split is a
                     // tab bar on the page itself (`wiki_view::wiki_family_tabs`),

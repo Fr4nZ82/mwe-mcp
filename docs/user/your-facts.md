@@ -64,7 +64,7 @@ read it — see [The chat](the-chat.md).
 
 The **Sections** tab beside Facts is a different thing and says so: what the
 engine indexed out of the documentation wikis a coding assistant keeps. Each
-page is cut into sections at its headings, and each section is what a search
-can match. They are **not** facts — no subject, no validity, no history,
+page is cut into sections at its headings, and each section is what a
+consumer's own deep search can match. They are **not** facts — no subject, no validity, no history,
 because they are re-derived from the page every time it changes. Read-only: to
 change what is indexed, edit the page.

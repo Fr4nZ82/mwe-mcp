@@ -317,6 +317,7 @@ fn rewrite_link(from_dir: &str, target: &str) -> Option<String> {
 const SCREEN_PAGES: &[(&str, &str)] = &[
     ("Home", "user/your-home"),
     ("Wikis", "user/wikis-and-pages"),
+    ("Search", "user/search"),
     ("Facts", "user/your-facts"),
     ("Recall traces", "user/traces"),
     ("Skills", "operator/skills"),

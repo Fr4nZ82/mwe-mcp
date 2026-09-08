@@ -203,6 +203,58 @@
     }
   }
 
+  /* ── Top-bar search ─────────────────────────────────────
+     One box in the nav, so it collapses with the links on a
+     narrow screen. The shared input rule sizes a field for a
+     form column (full width, capped at 32rem); in the bar it
+     has to be a control among controls instead. */
+  form.topbar-search {
+    /* The shared `form` rule dresses a form as a card — background,
+       border, padding, a bottom margin. In the bar the form is not a
+       card, it is one control, so all of that comes back off. */
+    display: flex;
+    align-items: center;
+    background: none;
+    border: 0;
+    border-radius: 0;
+    padding: 0;
+    margin: 0 0.5rem 0 0;
+    max-width: none;
+  }
+  form.topbar-search input[type="search"] {
+    width: 11rem;
+    padding: 0.3rem 0.5rem;
+    font-size: 0.8rem;
+  }
+  @media (max-width: 767px) {
+    form.topbar-search {
+      margin: 0.25rem 0;
+    }
+    form.topbar-search input[type="search"] {
+      width: 100%;
+    }
+  }
+
+  /* ── Search results ─────────────────────────────────────
+     One page per item: its path, and under it the line the
+     words were found in. No bullets — the path is the marker. */
+  ul.search-hits {
+    list-style: none;
+    padding-left: 0;
+    margin: 0;
+  }
+  ul.search-hits > li {
+    padding: 0.5rem 0;
+    border-bottom: 1px solid var(--border);
+  }
+  ul.search-hits > li:last-child {
+    border-bottom: none;
+  }
+  ul.search-hits > li > div {
+    font-size: 0.85rem;
+    margin-top: 0.15rem;
+  }
+
   /* ── Chat panel state machine ───────────────────────────
      Two body classes drive it:
        .has-chat-panel  — server-rendered on every

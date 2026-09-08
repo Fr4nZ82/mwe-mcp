@@ -60,6 +60,7 @@ pub mod oauth_server;
 pub mod operator_edits;
 pub mod page;
 pub mod page_card;
+pub mod page_search;
 pub mod parser;
 pub mod planner;
 pub mod promote;

@@ -11,6 +11,24 @@ semver-governed surface: breaking changes are called out explicitly.
 
 ## Unreleased
 
+### Added
+
+- **A search box, in the top bar, for the pages a word appears on.** There was
+  no way to ask *where does this word appear* — you could read a page you had
+  found some other way, or filter the facts table by who and when, but not by a
+  word. Now every page carries a box: type a word, and back come the pages that
+  carry it, grouped by wiki, each with the line the word appears in and a link
+  that opens the page. A word finds the words that begin with it, so *pediatr*
+  finds *pediatra*; capitals and accents make no difference, so *citta* finds
+  *città*; give two words and a page comes back only if it carries both. It is
+  a search for words and not a question: no model runs, and nothing is ranked
+  or guessed. **What it searches is what you are allowed to read** — on a
+  standard wiki the facts you may read, one of which has to carry the words for
+  its page to appear; on a smart wiki, the pages of a wiki you may open at all.
+  Two people searching the same word get two different answers, and neither
+  learns that the other's page exists. The screen has its own page in the
+  guide, reachable from the **?** beside its title.
+
 ### Changed
 
 - **Traces shows only the recalls a person was actually given.** When an

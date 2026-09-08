@@ -2,7 +2,9 @@
 
 **Nav: Embedding.** `/dashboard/admin/embedding`
 
-One embedder backs recall, the dedup check at capture time, and search. The
+One embedder backs recall, the dedup check at capture time, and the deep
+search a consumer asks for. It backs no part of **Search** in the top bar,
+which matches words and runs no model. The
 page states its own default: Ollama `bge-m3` on localhost.
 
 **Backend** offers three:

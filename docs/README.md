@@ -102,6 +102,7 @@ Then running it day to day:
 - [Who can read what](user/who-can-read-what.md) — the three questions every
   fact answers.
 - [Wikis and pages](user/wikis-and-pages.md) — browsing the memory as text.
+- [Search](user/search.md) — finding the pages a word appears on.
 - [Comments](user/comments.md) — the way to change a page.
 - [The chat](user/the-chat.md) — asking the memory to do something.
 - [What was recalled for you](user/traces.md) — the record of every answer.
