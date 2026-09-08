@@ -38,9 +38,10 @@ The system prompt for the document-ingest **extraction (map)** phase
   `CandidateFact`). In code: an unknown `target_wiki_id` is re-routed to the
   job's anchor wiki, a fact with no body is skipped, everything past
   `{max_facts}` is dropped, a `subject_id` owning the fact to an enrolled
-  person the segment's words never named is dropped so the fact re-owns to the
-  uploader (`document::subject_the_segment_never_named` — the floor under the
-  resolution rule in line 1 of `subject_id`), a `target_page` naming a reserved
+  person the segment's words never named — by their own name, or by the name of
+  a `known_entities` row filed under them — is dropped so the fact re-owns to
+  the uploader (`document::subject_the_segment_never_named` — the floor under
+  the resolution rule in line 1 of `subject_id`), a `target_page` naming a reserved
   page leaves the claim for the queue to place, and `topics` is cut to the two
   words every fact carries (`ingest::normalize_fact_topics`).
 

@@ -1617,13 +1617,15 @@ filler and pleasantries; keep facts, preferences, episodes, commitments, decisio
 /// The match is [`crate::recall::turn_subjects`] — the same whole-token, case-
 /// and accent-folded comparison the conversational road weighs a turn by
 /// ([`crate::ingest`]), so the two roads cannot answer differently about the
-/// same name.
+/// same name. A name reaches a person through the entity roster too, by the
+/// same shared rule ([`crate::ingest::principals_the_entities_name`]).
 fn people_the_segment_names(
     job: &DocumentJob,
     summary_shown: Option<&str>,
     seg_heading: Option<&str>,
     seg_content: &str,
     known_users: &[crate::enrollment::EnrolledUserLite],
+    known_entities: &[crate::fact_index::KnownEntity],
 ) -> Vec<String> {
     let mut words = String::new();
     for w in [
@@ -1638,7 +1640,13 @@ fn people_the_segment_names(
         words.push_str(w);
         words.push('\n');
     }
-    crate::recall::turn_subjects(&words, job.uploader(), known_users)
+    let mut named = crate::recall::turn_subjects(&words, job.uploader(), known_users);
+    for id in crate::ingest::principals_the_entities_name(&words, known_entities) {
+        if !named.contains(&id) {
+            named.push(id);
+        }
+    }
+    named
 }
 
 /// The subject this candidate claims when it is an enrolled person the
@@ -1770,6 +1778,7 @@ async fn extract_segment(
         seg_heading,
         seg_content,
         known_users,
+        known_entities,
     );
     Ok(accept_segment_facts(
         parsed.facts,
@@ -3597,6 +3606,107 @@ mod tests {
         assert!(
             notices.is_empty(),
             "nobody is told a stranger's news is theirs: {notices:?}"
+        );
+        drop(dir);
+    }
+
+    /// The same rule read the other way round: a document that writes the
+    /// name of a thing the memory ALREADY files under somebody has named that
+    /// person, so the extraction keeps them.
+    ///
+    /// `known_entities` is shown to the extractor precisely so it reuses the
+    /// answer already given about «la serra» instead of deciding again. The
+    /// guard under it reads the same roster
+    /// ([`crate::ingest::principals_the_entities_name`]) — without that, the
+    /// two pull against each other and every fact about the greenhouse comes
+    /// back to whoever uploaded the file.
+    #[tokio::test]
+    async fn document_keeps_a_subject_an_entity_in_the_words_is_filed_under() {
+        let dir = tempfile::tempdir().unwrap();
+        let pool = crate::db::open_or_init(dir.path()).await.expect("db");
+        let wikis = dir.path().join("wikis");
+        std::fs::create_dir_all(&wikis).unwrap();
+        write_wiki(&wikis, "alice", "Alice", "wiki-user");
+        let tree = WikiTree::open(dir.path()).expect("tree");
+        let embedder: Arc<dyn Embedder> = Arc::new(
+            crate::embedder::FakeEmbedder::with_fixed_embedding("fake", vec![0.1, 0.2, 0.3, 0.4]),
+        );
+        sqlx::query(
+            "INSERT INTO enrollment_users (user_id, aliases, is_admin)
+             VALUES ('alice','[]',0), ('carol','[]',0)",
+        )
+        .execute(&pool)
+        .await
+        .unwrap();
+        // The answer already given: the greenhouse's facts are carol's, and
+        // alice may read them — so the roster the extractor is shown carries
+        // «la serra» → `user:carol`.
+        crate::fact_index::insert(
+            &pool,
+            &crate::fact_index::NewFact {
+                subject_external: Some("la serra".to_owned()),
+                fact_id: crate::types::FactId::parse("018f1234-5678-7abc-9def-0123456789ab")
+                    .unwrap(),
+                wiki_id: "alice".to_owned(),
+                source_path: "wikis/alice/orto.md".to_owned(),
+                region_start: None,
+                region_end: None,
+                text: "La serra sta in fondo all\u{2019}orto.".to_owned(),
+                embedding: vec![0.1, 0.2, 0.3, 0.4],
+                subject_id: "user:carol".parse().unwrap(),
+                allow_ids: vec!["user:alice".parse().unwrap()],
+                sender_id: None,
+                fact_type: None,
+                topics: Vec::new(),
+                valid_from: None,
+                valid_to: None,
+                salience: None,
+                target_page: None,
+                style: None,
+                source_ref: None,
+                authored_refs: Vec::new(),
+            },
+        )
+        .await
+        .expect("seed the entity roster");
+
+        let llm = ScriptedLlm::new(&[
+            r#"{"disposition":"dossier","format":"prose","title":"Verbale orto","page_slug":"verbale_orto.md","target_wiki_id":"alice","summary":"Note sull'orto.","page_description":"il verbale dell'orto","style":"prosa","topics":["orto"]}"#,
+            r#"{"facts":[{"body":"La serra ha bisogno di un vetro nuovo entro giugno.","target_wiki_id":"alice","target_page":"orto.md","subject_id":"user:carol","subject_external":"la serra","allow_ids":[],"fact_type":"episode","topics":["orto"]}]}"#,
+        ]);
+        enqueue(
+            &pool,
+            &policy(),
+            EnqueueRequest {
+                source_kind: "inline".into(),
+                source_ref: None,
+                text: "Verbale dell'orto: la serra ha bisogno di un vetro nuovo entro giugno."
+                    .into(),
+                title_hint: None,
+                disposition: None,
+                format: None,
+                occurred_at: Some("2026-06-12T10:00:00Z".into()),
+                subject: "user:alice".parse().unwrap(),
+                allow: Vec::new(),
+                sender: None,
+                force: false,
+            },
+        )
+        .await
+        .expect("enqueue");
+        assert!(
+            run_one_job(&pool, &tree, &embedder, &llm, dir.path(), &policy())
+                .await
+                .expect("run")
+        );
+        let buffered = capture_buffer::find_all_buffered(&pool, 100)
+            .await
+            .expect("buffered");
+        assert_eq!(buffered.len(), 1);
+        assert_eq!(
+            buffered[0].subject,
+            "user:carol".parse::<Principal>().unwrap(),
+            "the words wrote the entity's name, and the roster says who answers for it"
         );
         drop(dir);
     }

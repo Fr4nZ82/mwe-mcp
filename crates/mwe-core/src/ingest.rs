@@ -1378,11 +1378,28 @@ fn subject_is_the_wikis_own_principal(subject: &Principal, wiki_id: &str) -> boo
 /// [`recall::turn_subjects`] — the same whole-token, case- and accent-folded
 /// comparison that decides whose identity card the turn is served, so the two
 /// answers cannot disagree.
+///
+/// A name reaches a person through the entity roster too — see
+/// [`principals_the_entities_name`].
 fn people_the_turn_names(
     request: &IngestRequest,
     known_users: &[enrollment::EnrolledUserLite],
+    known_entities: &[fact_index::KnownEntity],
     policy: &IngestPolicy,
 ) -> Vec<String> {
+    let words = turn_words(request, policy);
+    let mut named = recall::turn_subjects(&words, &request.sender_id, known_users);
+    for id in principals_the_entities_name(&words, known_entities) {
+        if !named.contains(&id) {
+            named.push(id);
+        }
+    }
+    named
+}
+
+/// The turn's own words: the current message, then the recent window the
+/// prompt showed alongside it, capped the same way the prompt caps it.
+fn turn_words(request: &IngestRequest, policy: &IngestPolicy) -> String {
     let mut words = request.text.clone();
     let take_from = request
         .recent_messages
@@ -1392,7 +1409,46 @@ fn people_the_turn_names(
         words.push('\n');
         words.push_str(&m.text);
     }
-    recall::turn_subjects(&words, &request.sender_id, known_users)
+    words
+}
+
+/// The enrolled people an already-filed **entity name** in `words` reaches.
+///
+/// `known_entities` is the roster of named things this memory already holds
+/// facts about, each with the principal those facts are filed under, and both
+/// roads show it to the model for one reason: choosing who answers for a fact
+/// about a non-principal is a judgement, and it is made once and then reused
+/// ([`fact_index::KnownEntity`]). So a person who writes the entity's name has
+/// named that principal as surely as if they had written its id — the name is
+/// the reference, and the roster is the answer it already resolved to.
+///
+/// Without this the two rosters pull against each other: one tells the model to
+/// file the greenhouse under `carol`, the other re-owns the fact to whoever
+/// spoke, because the words never spelled `carol`. The fact then reads as the
+/// speaker's, and the entity's history splits in two.
+///
+/// The match is [`recall::query_names`], the single-name half of the
+/// comparison that weighs a person's name, so a name of several words matches
+/// as the phrase it is and never as a piece of a longer word. Only a
+/// `user:` principal is returned: a group or `global` is not a subject this
+/// guard ever re-owns.
+pub(crate) fn principals_the_entities_name(
+    words: &str,
+    known_entities: &[fact_index::KnownEntity],
+) -> Vec<String> {
+    let mut out: Vec<String> = Vec::new();
+    for e in known_entities {
+        if !recall::query_names(words, &e.name) {
+            continue;
+        }
+        if let Ok(Principal::User(id)) = Principal::from_str(&e.subject_id) {
+            let id = id.to_lowercase();
+            if !out.contains(&id) {
+                out.push(id);
+            }
+        }
+    }
+    out
 }
 
 /// The declared aliases as the roster shows them to a model: each name in its
@@ -7349,7 +7405,8 @@ pub async fn wiki_ingest_message(
             // Who this turn's words actually name, read once for every
             // extraction it yields — the floor under cross-user attribution
             // (`people_the_turn_names`).
-            let named_in_turn = people_the_turn_names(&request, &known_users, policy);
+            let named_in_turn =
+                people_the_turn_names(&request, &known_users, &known_entities, policy);
             // Reverse-channel accumulator (the server half of the
             // consumer-push contract, INTEGRATING step 8): facts this turn
             // filed for an enrolled user who is NOT the human of the
@@ -12870,7 +12927,7 @@ mod tests {
         let policy = IngestPolicy::default();
         let mut request = req("he starts on Monday", "alice");
         assert!(
-            !people_the_turn_names(&request, &roster, &policy).contains(&"bob".to_owned()),
+            !people_the_turn_names(&request, &roster, &[], &policy).contains(&"bob".to_owned()),
             "the message alone names nobody"
         );
         request.recent_messages.push(RecentMessage {
@@ -12879,9 +12936,65 @@ mod tests {
             timestamp: None,
         });
         assert!(
-            people_the_turn_names(&request, &roster, &policy).contains(&"bob".to_owned()),
+            people_the_turn_names(&request, &roster, &[], &policy).contains(&"bob".to_owned()),
             "the window is part of the turn's words"
         );
+    }
+
+    /// An entity the memory already files under somebody is a way of naming
+    /// them.
+    ///
+    /// `known_entities` exists so the classifier reuses the answer already
+    /// given about a thing rather than deciding again, and the guard under it
+    /// has to read the same roster: a person who writes «la serra» has named
+    /// whoever answers for it. Without this the two rosters pull against each
+    /// other — one files the greenhouse under carol, the other hands the fact
+    /// back to whoever spoke, and the greenhouse's history splits in two.
+    #[test]
+    fn an_entity_name_reaches_the_person_its_facts_are_filed_under() {
+        let roster = vec![enrolled_lite("carol", &[])];
+        let policy = IngestPolicy::default();
+        let entities = vec![fact_index::KnownEntity {
+            name: "la serra".to_owned(),
+            subject_id: "user:carol".to_owned(),
+            facts: 7,
+        }];
+        let request = req("la serra ha bisogno di un vetro nuovo", "alice");
+        assert!(
+            !people_the_turn_names(&request, &roster, &[], &policy).contains(&"carol".to_owned()),
+            "the words spell no enrolled name of their own"
+        );
+        assert!(
+            people_the_turn_names(&request, &roster, &entities, &policy)
+                .contains(&"carol".to_owned()),
+            "the entity's own name reaches the principal its facts are filed under"
+        );
+    }
+
+    /// The other half of the same rule: an entity the words never wrote
+    /// reaches nobody, so a subject the classifier put there anyway is still
+    /// handed back to the sender. A name matches whole, on word boundaries —
+    /// «serramenti» is not «la serra».
+    #[test]
+    fn an_entity_the_words_never_wrote_reaches_nobody() {
+        let roster = vec![enrolled_lite("carol", &[])];
+        let policy = IngestPolicy::default();
+        let entities = vec![fact_index::KnownEntity {
+            name: "la serra".to_owned(),
+            subject_id: "user:carol".to_owned(),
+            facts: 7,
+        }];
+        for text in [
+            "domani ordino i semi di pomodoro",
+            "ho chiamato i serramenti per un preventivo",
+        ] {
+            let request = req(text, "alice");
+            assert!(
+                !people_the_turn_names(&request, &roster, &entities, &policy)
+                    .contains(&"carol".to_owned()),
+                "nothing here writes the entity's name: {text}"
+            );
+        }
     }
 
     /// Three subjects the words were never going to settle, where the

@@ -404,6 +404,18 @@ fn name_at(tokens: &[String], name: &[String]) -> Option<usize> {
     (0..=tokens.len() - name.len()).find(|i| tokens[*i..*i + name.len()] == *name)
 }
 
+/// Whether `query` writes `name` — the whole of it, bounded at both ends,
+/// case- and accent-folded.
+///
+/// The single-name half of [`turn_subjects`]: same tokenisation, same folding,
+/// same all-or-nothing phrase match. A caller weighing a name that is not a
+/// roster entry — the name of a thing the memory already holds facts about,
+/// say — therefore cannot answer differently from the one weighing a person's.
+#[must_use]
+pub fn query_names(query: &str, name: &str) -> bool {
+    name_at(&folded_words(query), &folded_words(name)).is_some()
+}
+
 /// The people a turn is **about**: the speaker when the first person puts
 /// them in the question, plus every enrolled person the turn names —
 /// **in the order the turn names them**.

@@ -43,6 +43,20 @@ semver-governed surface: breaking changes are called out explicitly.
   it was said by somebody, and that somebody is nobody. Facts in a person's
   or a group's wiki are unaffected.
 
+### Fixed
+
+- **Naming a thing the memory already knows names whoever answers for it.**
+  The memory keeps a list of the named things it holds facts about — a
+  greenhouse, a car, a relative who does not use the product — and who
+  answers for each, so that the answer is given once and reused. The guard
+  that stops a fact landing on the wrong person's card did not read that
+  list: it asked only whether the words spelled somebody's own name, so a
+  fact about the greenhouse, correctly filed under the person who answers
+  for it, was handed back to whoever spoke or uploaded the file. Writing the
+  thing's name now counts as naming that person, on both roads — a
+  conversation and an uploaded document — and the fact stays where the rest
+  of that thing's history is.
+
 ## 2.0.0 — 2026-09-07
 
 The dashboard is rewritten, in what it says and in what it does. A person can

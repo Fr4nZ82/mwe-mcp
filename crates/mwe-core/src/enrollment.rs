@@ -500,6 +500,12 @@ pub struct EnrolledUserLite {
 /// `crates/mwe-core/prompts/document-extract.md` (the `subject_id` list) and
 /// `document::subject_the_segment_never_named`.
 ///
+/// This roster is not the only one a name can reach a person through. The
+/// **entity** roster ([`crate::fact_index::KnownEntity`]) carries the names of
+/// things the memory already holds facts about and the principal each was
+/// filed under, so writing the thing's name names that principal —
+/// `ingest::principals_the_entities_name`, read by both roads.
+///
 /// # Errors
 ///
 /// Propagates the underlying `sqlx` error.
