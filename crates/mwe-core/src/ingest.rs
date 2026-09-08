@@ -7021,6 +7021,24 @@ pub async fn wiki_ingest_message(
         "ingest: start"
     );
 
+    // Whether this turn has anyone to hand a recall block to.
+    //
+    // A turn the consumer feeds back as its OWN prior reply (`author:
+    // assistant`) is an extraction pass and nothing else: the reply has
+    // already reached the person, there is no prompt left to inject, and both
+    // ready-made bridges drop the response the moment the call comes back. So
+    // every section whose only product is that block — the identity cards,
+    // the navigator's walk and the completions it pays for, the flat slot,
+    // the due-soon one — is skipped on such a turn, and so is the trace row:
+    // the Traces page is a person's record of what the memory found FOR THEM,
+    // and the agent's own turn found nothing for them.
+    //
+    // What the classifier consumes is untouched: the flat search below runs
+    // before the call and fills the `recalled_memory` section of its prompt,
+    // which the assistant-turn rules read as "what is already stored" — their
+    // anti-loop test is written against exactly that list.
+    let serves_a_block = request.author != MessageRole::Assistant;
+
     // Step 1 — recall context. Soft-fail to empty hits so a transient
     // index issue does not kill the entire turn.
     // One search, two consumers with different appetites: the block takes the
@@ -7210,36 +7228,41 @@ pub async fn wiki_ingest_message(
             "ingest: guest turn — ephemeral, classifier skipped, nothing filed"
         );
         let stage = std::time::Instant::now();
-        let context_snippet =
-            format_snippet(&recall_hits, &[], &project_docs, policy.relevance_floor);
+        let context_snippet = if serves_a_block {
+            format_snippet(&recall_hits, &[], &project_docs, policy.relevance_floor)
+        } else {
+            None
+        };
         recall_clock.charge(stage);
         // No classifier ran, so nothing voted: the verdicts are the drop
         // reasons of the very list `format_snippet` was handed.
         let verdicts = flat_verdicts(&recall_hits, &recall_hits, &[], policy.relevance_floor);
-        record_ingest_trace(
-            pool,
-            policy,
-            IngestTraceParts {
-                request: &request,
-                intent: IntentKind::Skip,
-                seed_mode: "guest",
-                seeds: &NavSeeds::default(),
-                completed_message: None,
-                flat_hits_from_completed: false,
-                recall_hits: &recall_hits,
-                flat_verdicts: &verdicts,
-                project_docs: &project_docs,
-                named_docs,
-                served_pages: &[],
-                nav_tail: None,
-                due_soon: None,
-                injected_block: context_snippet.as_deref(),
-                rules_block: Some(GUEST_RULES_NOTICE),
-                recall_clock,
-                took: start.elapsed(),
-            },
-        )
-        .await;
+        if serves_a_block {
+            record_ingest_trace(
+                pool,
+                policy,
+                IngestTraceParts {
+                    request: &request,
+                    intent: IntentKind::Skip,
+                    seed_mode: "guest",
+                    seeds: &NavSeeds::default(),
+                    completed_message: None,
+                    flat_hits_from_completed: false,
+                    recall_hits: &recall_hits,
+                    flat_verdicts: &verdicts,
+                    project_docs: &project_docs,
+                    named_docs,
+                    served_pages: &[],
+                    nav_tail: None,
+                    due_soon: None,
+                    injected_block: context_snippet.as_deref(),
+                    rules_block: Some(GUEST_RULES_NOTICE),
+                    recall_clock,
+                    took: start.elapsed(),
+                },
+            )
+            .await;
+        }
         return Ok(IngestResponse {
             intent: IntentKind::Skip,
             context_snippet,
@@ -8502,12 +8525,12 @@ pub async fn wiki_ingest_message(
     }
 
     // Step 5 — the recall-block tail. Navigation costs a navigator
-    // completion, so it runs only when the turn's intent justifies it
-    // (capture / recall / disambig — a pure skip or a structural nudge
-    // must not pay an LLM call), only when the call site wired a
-    // navigator backend, and only when the turn asked for the full depth.
-    // Every failure in the tail is soft: the turn survives on whatever the
-    // flat path already produced.
+    // completion, so it runs only on a turn that serves a block, only when
+    // the turn's intent justifies it (capture / recall / disambig — a pure
+    // skip or a structural nudge must not pay an LLM call), only when the
+    // call site wired a navigator backend, and only when the turn asked for
+    // the full depth. Every failure in the tail is soft: the turn survives
+    // on whatever the flat path already produced.
     let seeds = nav_seeds(&plan);
     let stage = std::time::Instant::now();
     // `WHO IS SPEAKING` — the sender's identity card, served from their
@@ -8515,7 +8538,11 @@ pub async fn wiki_ingest_message(
     // deterministic slot the other two defer to: it costs no completion, it
     // arrives whatever the navigator decides, and the page it serves must
     // then be injected nowhere else.
-    let speaker = who_is_speaking_section(pool, tree, &sender_ctx, policy).await;
+    let speaker = if serves_a_block {
+        who_is_speaking_section(pool, tree, &sender_ctx, policy).await
+    } else {
+        None
+    };
     let identity_path = speaker.as_ref().and_then(|c| c.page_path.as_deref());
     // The same page in the funnel's own `(wiki, page)` terms, so the walk
     // treats it as already visited. The wiki id *is* the sender
@@ -8539,9 +8566,11 @@ pub async fn wiki_ingest_message(
     // speaker's card and before the walk, for the same three reasons: no
     // completion, arrives whatever the navigator decides, and the pages it
     // serves must then be injected nowhere else.
-    let mentioned =
-        people_mentioned_section(pool, tree, &sender_ctx, &request.text, &recall_hits, policy)
-            .await;
+    let mentioned = if serves_a_block {
+        people_mentioned_section(pool, tree, &sender_ctx, &request.text, &recall_hits, policy).await
+    } else {
+        None
+    };
     if let Some(m) = &mentioned {
         served_identity.extend(m.served.iter().cloned());
         served_trace.extend(
@@ -8564,7 +8593,7 @@ pub async fn wiki_ingest_message(
         served_cards.extend(m.rails.iter().cloned());
     }
     recall_clock.charge(stage);
-    // The third condition is the turn's own: a consumer on a latency-bound
+    // The depth condition is the turn's own: a consumer on a latency-bound
     // channel asks for the block without the walk
     // (`metadata.recall: "light"`), because the walk is the part that opens
     // pages and costs seconds, and a voice satellite in a room is waiting for
@@ -8572,7 +8601,8 @@ pub async fn wiki_ingest_message(
     let stage = std::time::Instant::now();
     let nav_tail = match navigator {
         Some(nav_llm)
-            if request.metadata.recall == RecallDepth::Full
+            if serves_a_block
+                && request.metadata.recall == RecallDepth::Full
                 && (matches!(intent, IntentKind::Capture | IntentKind::Recall)
                     || plan.needs_disambig) =>
         {
@@ -8707,7 +8737,7 @@ pub async fn wiki_ingest_message(
     // distance from the corpus. This costs no extra LLM call: the field
     // rides the JSON the classifier already returns. Whatever the named
     // half already pulled is excluded, and it keeps the budget it spent.
-    if plan.needs_project_docs {
+    if serves_a_block && plan.needs_project_docs {
         let stage = std::time::Instant::now();
         let named_wikis: Vec<String> = project_docs.iter().map(|d| d.wiki_id.clone()).collect();
         match recall::recall_signposted_project_docs(
@@ -8736,7 +8766,7 @@ pub async fn wiki_ingest_message(
     // section, or from the identity card the deterministic slot serves
     // (69a: a `bio` fact on `@profile.md` is on both routes by construction).
     let stage = std::time::Instant::now();
-    let (relevant, verdicts) = if include_flat {
+    let (relevant, verdicts) = if serves_a_block && include_flat {
         // The classifier's own reading of the hits, applied HERE and nowhere
         // else: navigation has already run above from the unrevised list, so
         // this turn's walk is untouched by construction as well as by
@@ -8763,9 +8793,14 @@ pub async fn wiki_ingest_message(
         (None, flat_verdicts_skipped(&recall_hits))
     };
     // The due-soon slot is a cheap deterministic pull (no LLM call), so it
-    // runs on every LLM-routed turn regardless of intent: an imminent
-    // commitment must surface even when the message itself asks nothing.
-    let due_soon_tail = due_soon_section(pool, &sender_ctx, policy, turn_now).await;
+    // runs on every LLM-routed turn that serves a block, regardless of
+    // intent: an imminent commitment must surface even when the message
+    // itself asks nothing.
+    let due_soon_tail = if serves_a_block {
+        due_soon_section(pool, &sender_ctx, policy, turn_now).await
+    } else {
+        None
+    };
     recall_clock.charge(stage);
     let due_soon = due_soon_tail.as_ref().map(|(section, _)| section.clone());
 
@@ -8859,7 +8894,11 @@ pub async fn wiki_ingest_message(
     // composes its reply conscious of itself and the relationship, not
     // just of the user. Read from the agent's own wiki; best-effort,
     // never blocks the turn.
-    let agent_self = recall_agent_self(pool, tree, &request).await;
+    let agent_self = if serves_a_block {
+        recall_agent_self(pool, tree, &request).await
+    } else {
+        AgentSelf::default()
+    };
     let who_you_are = format_who_you_are(&agent_self, policy);
     let history = format_history_with_user(&agent_self, policy);
     // `WHO IS SPEAKING` — the sender's identity card, built at the top of
@@ -8929,31 +8968,35 @@ pub async fn wiki_ingest_message(
     }
 
     // Journal the route this recall took (the admin Traces page). Best-effort
-    // telemetry: a journal failure is logged and never touches the turn.
-    record_ingest_trace(
-        pool,
-        policy,
-        IngestTraceParts {
-            request: &request,
-            intent,
-            seed_mode: "classifier",
-            seeds: &seeds,
-            completed_message,
-            flat_hits_from_completed,
-            recall_hits: &recall_hits,
-            flat_verdicts: &verdicts,
-            project_docs: &project_docs,
-            named_docs,
-            served_pages: &served_trace,
-            nav_tail: nav_tail.as_ref(),
-            due_soon: due_soon_tail.as_ref().map(|(_, hits)| hits.as_slice()),
-            injected_block: context_snippet.as_deref(),
-            rules_block: rules.as_deref(),
-            recall_clock,
-            took: start.elapsed(),
-        },
-    )
-    .await;
+    // telemetry: a journal failure is logged and never touches the turn. A
+    // turn that served no block took no route, and a row for it would read on
+    // the page as a recall the person never got.
+    if serves_a_block {
+        record_ingest_trace(
+            pool,
+            policy,
+            IngestTraceParts {
+                request: &request,
+                intent,
+                seed_mode: "classifier",
+                seeds: &seeds,
+                completed_message,
+                flat_hits_from_completed,
+                recall_hits: &recall_hits,
+                flat_verdicts: &verdicts,
+                project_docs: &project_docs,
+                named_docs,
+                served_pages: &served_trace,
+                nav_tail: nav_tail.as_ref(),
+                due_soon: due_soon_tail.as_ref().map(|(_, hits)| hits.as_slice()),
+                injected_block: context_snippet.as_deref(),
+                rules_block: rules.as_deref(),
+                recall_clock,
+                took: start.elapsed(),
+            },
+        )
+        .await;
+    }
 
     tracing::info!(
         intent = intent.as_str(),
@@ -17907,6 +17950,102 @@ mod tests {
             "no consumer binding ⇒ no distinct agent ⇒ sender materialized to the subject (the user), never an agent"
         );
         drop(dir);
+    }
+
+    /// One turn over a memory that already holds a fact, flavoured by
+    /// `author`, reported as (the block the consumer got, trace rows the turn
+    /// added, facts in the wiki afterwards).
+    ///
+    /// Both callers hand it the same classifier reply and the same words, so
+    /// `author` is the only thing that differs between them.
+    async fn turn_over_seeded_memory(author: MessageRole) -> (Option<String>, usize, usize) {
+        let (dir, tree, pool) = setup_agent_workdir().await;
+        let policy = IngestPolicy::default();
+        // Something for the search to find on the turn under test.
+        let seed = "{\"intent\":\"capture\",\"extractions\":[{\
+            \"target_wiki_id\":\"alice\",\"target_page\":\"salute.md\",\"subject_id\":\"user:alice\",\
+            \"body\":\"Il pediatra di Alice è il dottor Bianchi.\",\"fact_type\":\"bio\",\
+            \"style\":\"prosa-tecnica\",\"requested_container\":true}]}";
+        wiki_ingest_message(
+            &pool,
+            &tree,
+            fake_embedder(),
+            &FakeLlmBackend::new("fake", seed),
+            None,
+            req_consumer("il pediatra è il dottor Bianchi", "alice", "botdeploy"),
+            &policy,
+        )
+        .await
+        .expect("seed turn");
+        let traces_before = crate::recall_trace::recent_traces(&pool, 100)
+            .await
+            .expect("traces")
+            .len();
+
+        let plan = "{\"intent\":\"capture\",\"extractions\":[{\
+            \"target_wiki_id\":\"alice\",\"target_page\":\"salute.md\",\"subject_id\":\"user:alice\",\
+            \"body\":\"La visita di controllo di Alice è il 14 maggio 2026.\",\"fact_type\":\"plan\",\
+            \"style\":\"prosa-tecnica\",\"requested_container\":true}]}";
+        let resp = wiki_ingest_message(
+            &pool,
+            &tree,
+            fake_embedder(),
+            &FakeLlmBackend::new("fake", plan),
+            None,
+            IngestRequest {
+                author,
+                ..req_consumer(
+                    "la visita di controllo è il 14 maggio 2026",
+                    "alice",
+                    "botdeploy",
+                )
+            },
+            &policy,
+        )
+        .await
+        .expect("turn under test");
+        let traces_after = crate::recall_trace::recent_traces(&pool, 100)
+            .await
+            .expect("traces")
+            .len();
+        let facts = fact_index::find_active_in_wiki(&pool, "alice")
+            .await
+            .expect("fact_index")
+            .len();
+        drop(dir);
+        (resp.context_snippet, traces_after - traces_before, facts)
+    }
+
+    /// The agent's own reply, fed back with `author: assistant`, is an
+    /// extraction pass and nothing else: no recall block is composed for it
+    /// (the reply already reached the person — there is no prompt left to
+    /// inject) and no row reaches the Traces page, which is a person's record
+    /// of what the memory found FOR THEM. The capture is untouched: the fact
+    /// the reply synthesised is filed exactly as before.
+    #[tokio::test]
+    async fn ingest_assistant_turn_serves_no_block_and_leaves_no_trace() {
+        let (snippet, traces, facts) = turn_over_seeded_memory(MessageRole::Assistant).await;
+        assert!(
+            snippet.is_none(),
+            "the agent's own turn gets no recall block: {snippet:?}"
+        );
+        assert_eq!(traces, 0, "and no row on the Traces page");
+        assert_eq!(facts, 2, "while its synthesis is filed like any other");
+    }
+
+    /// The control, one variable apart: the same words and the same classifier
+    /// reply from the PERSON get the block the consumer injects and the trace
+    /// row the person reads back.
+    #[tokio::test]
+    async fn ingest_user_turn_serves_the_block_and_leaves_its_trace() {
+        let (snippet, traces, facts) = turn_over_seeded_memory(MessageRole::User).await;
+        let snippet = snippet.expect("a user turn gets its recall block");
+        assert!(
+            snippet.contains("dottor Bianchi"),
+            "and the block carries what the search found: {snippet}"
+        );
+        assert_eq!(traces, 1, "one row on the Traces page, for this one turn");
+        assert_eq!(facts, 2, "the capture is the same on both turns");
     }
 
     /// `build_prompt` arms Part 9 only on an assistant-authored turn: the

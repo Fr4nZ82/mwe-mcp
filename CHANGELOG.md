@@ -11,6 +11,21 @@ semver-governed surface: breaking changes are called out explicitly.
 
 ## Unreleased
 
+### Changed
+
+- **Traces shows only the recalls a person was actually given.** When an
+  assistant answers, its reply is sent back to the memory so that the memory
+  keeps the assistant's half of the conversation as well as yours. That second
+  call was treated like any other turn: it searched, it put together a block of
+  recalled memory, and it left a row on the **Traces** page beside your own —
+  two rows per exchange, the second of them a recall nobody ever read, since
+  the reply had already reached you and there was nothing left to hand it to.
+  A turn the assistant feeds back is now read for what is worth storing and
+  nothing else: no block is put together for it, no row is written, and the
+  page-by-page search it used to walk for no reader does not run. What gets
+  remembered out of the assistant's replies is exactly what it was, and a turn
+  of your own is untouched.
+
 ### Fixed
 
 - **A new release shows its new dashboard at once.** The stylesheet and the

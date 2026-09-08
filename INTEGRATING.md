@@ -658,6 +658,20 @@ below directly.
    a real user instead would file a stranger's words as that user's
    facts and hand the stranger that user's recall — the exact
    misattribution `guest` exists to prevent.
+10. **Feed the agent's own reply back, once the person has it.** Call
+   `wiki_ingest_message` a second time with the reply as `text` and
+   `author: "assistant"`, carrying the same window — so the memory keeps the
+   agent's half of the exchange: a deadline it worked out, a recommendation it
+   gave, a decision reached together. Everything the *user* said is already in
+   the first call; this one exists for what only the reply contains, and the
+   server keeps the durable sediment of it and drops the rest.
+   **Its response is not for injecting.** The turn is an extraction pass — the
+   person has already been answered, so there is nothing left to hand a recall
+   block to: none is composed, nothing is journalled, and the turn leaves no
+   row on the dashboard's Traces page, which is the person's record of what the
+   memory found for *them*. Fire it after the delivery, off the turn's critical
+   path, and treat a failure the way obligation 2 treats one: the reply is
+   already out, and the conversation is yours.
 
 Structural intent (`dashboard_link`) and the *smart*-consumer
 `wiki_admin_*` family sit on top of this; the full surface is whatever
