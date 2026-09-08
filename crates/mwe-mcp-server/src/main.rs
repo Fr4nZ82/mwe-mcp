@@ -1739,6 +1739,10 @@ async fn cmd_serve_http(
     // chosen bind/port also bake into the systemd unit if the dedicated-user
     // gate provisions one below.
     let (bind, port) = resolve_exposure(bind, port);
+    // Where the uptime gauge counts from. Taken here, at the top of the
+    // command, so it measures the process an operator restarted rather
+    // than the moment the router happened to be assembled.
+    let serving_since = std::time::Instant::now();
     info!(workdir = %workdir.display(), %bind, port, transport = "http", "mwe-mcp serve: starting");
 
     // Production trust boundary: boot only under a dedicated
@@ -1897,6 +1901,19 @@ async fn cmd_serve_http(
         // credential. Its body carries a fixed vocabulary and nothing
         // about this deployment; see `http_health` for why.
         .merge(mwe_mcp_server::http_health::router(state.pool.clone()))
+        // The operator's own scrape, at the root because that is the
+        // address a scrape configuration expects, and behind an admin
+        // bearer because the exposition describes the deployment: which
+        // models it calls, what they cost, which credentials talk to it.
+        .merge(mwe_mcp_server::http_metrics::router(
+            mwe_mcp_server::http_metrics::MetricsState {
+                pool: state.pool.clone(),
+                secret: state.secret.clone(),
+                blacklist: state.blacklist.clone(),
+                db_path: mwe_core::db::engine_db_path(workdir),
+                started_at: serving_since,
+            },
+        ))
         // Public, anonymous bridge-distribution surface mounted at the
         // root: the slim front page (`/`, an agent line + a human
         // sign-in), the bridge catalog (`/bridges`), and the

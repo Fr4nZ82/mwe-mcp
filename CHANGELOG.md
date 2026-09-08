@@ -13,6 +13,19 @@ semver-governed surface: breaking changes are called out explicitly.
 
 ### Added
 
+- **The numbers your own monitoring can graph.** `GET /metrics` serves a
+  Prometheus scrape of what this deployment is doing: turns and tool calls and
+  failures per credential, model calls and errors and latency and tokens per
+  slot, today's spend against the budget, how long recall is taking, when the
+  night pass last ran and whether it worked, the database size and the uptime.
+  It is **never public** — it takes an admin token
+  (`mwe-mcp token-issue --is-admin`), the same credential family `/mcp` uses,
+  revocable from **Tokens**. Every number is read from a table at scrape time,
+  so no model is called and a scrape can never spend money. The volume figures
+  are scoped to the UTC day and say so in their names, because the tables they
+  come from are pruned and a total that silently drops is worse than no total.
+  Documented metric by metric in the guide, under **Watching it from outside**.
+
 - **A one-line answer to "is it up?", for whatever is watching.** `GET /health`
   at the root of the server's address answers `200 {"status":"ok"}` when the
   process is serving and its database is reachable, and `503

@@ -15,6 +15,7 @@ pub mod housekeeping_scheduler;
 pub mod http_connect;
 pub mod http_health;
 pub mod http_media;
+pub mod http_metrics;
 pub mod http_skills;
 pub mod mcp;
 pub mod rem_scheduler;

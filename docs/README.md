@@ -81,7 +81,10 @@ Then running it day to day:
 - [Prompts](operator/prompts.md) — override the operational prompts.
 - [The training spool](operator/training-spool.md) — record the model
   exchanges.
-- [Health](operator/health.md) — live diagnostics of the running server.
+- [Health](operator/health.md) — live diagnostics of the running server, and
+  the open one-line answer to "is it up?".
+- [Watching it from outside](operator/observability.md) — the numbers your own
+  monitoring reads, and what each of them means.
 - [Export and forget a person](operator/export-and-forget.md) — the two things
   somebody can ask you for.
 - [Before you expose it](operator/security.md) — the checklist for a

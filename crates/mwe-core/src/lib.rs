@@ -53,6 +53,7 @@ pub mod locale;
 pub mod lockfile;
 pub mod media;
 pub mod meta_annotate;
+pub mod metrics;
 pub mod model_catalog;
 pub mod oauth;
 pub mod oauth_server;

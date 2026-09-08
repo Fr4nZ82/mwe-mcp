@@ -358,6 +358,32 @@ mod tests {
             .collect()
     }
 
+    /// The metrics page is the one page of the guide whose contents are
+    /// generated elsewhere: `/metrics` publishes a fixed roster of names,
+    /// and an operator writes alerts against those names. So the page
+    /// documents every one of them and invents none — a family added to
+    /// the engine without a sentence for the operator fails here, which
+    /// is the only place it can fail before a reader finds it.
+    #[test]
+    fn the_metrics_page_documents_every_published_metric() {
+        let page = read("operator/observability.md").expect("the metrics page is embedded");
+
+        for name in mwe_core::metrics::FAMILIES {
+            assert!(
+                page.contains(name),
+                "`{name}` is published by /metrics and explained nowhere in the guide"
+            );
+        }
+        for line in page.lines() {
+            for word in line.split(['`', ' ', '{', '|']) {
+                assert!(
+                    !word.starts_with("mwe_") || mwe_core::metrics::FAMILIES.contains(&word),
+                    "the guide documents `{word}`, which /metrics does not publish"
+                );
+            }
+        }
+    }
+
     #[test]
     fn the_repository_docs_folder_is_embedded() {
         let pages = embedded_pages();
