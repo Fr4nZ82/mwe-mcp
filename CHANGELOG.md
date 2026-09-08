@@ -47,11 +47,13 @@ semver-governed surface: breaking changes are called out explicitly.
 ### Fixed
 
 - **A new release shows its new dashboard at once.** The stylesheet and the
-  scripts the dashboard embeds are served with a four-hour cache, so a browser
-  that had visited the dashboard before a release kept the old ones for an
-  afternoon — the redesigned Traces page looked like the previous one until
-  the cache expired. Every asset URL now carries the build's version, so a
-  release changes the URL and the browser fetches the new file at once.
+  scripts the dashboard embeds are asked for at an address that carries a
+  fingerprint of the file's own content, so a build that changes one of them
+  changes its address too: the browser has no copy of it and fetches the new
+  file at once, while a file that did not change keeps the address it had and
+  is read from the copy already on the machine. The dashboard now also tells
+  browsers they may keep any of these files for a year, which is safe exactly
+  because a changed file arrives under a different address.
 
 - **The ready-made assistant remembers what it just answered.** On the nanoclaw
   bridge the agent's own reply was read back out of the text the provider hands
