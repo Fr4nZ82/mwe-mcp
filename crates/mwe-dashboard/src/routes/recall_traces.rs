@@ -49,7 +49,7 @@ use axum::routing::get;
 use axum_extra::extract::cookie::CookieJar;
 use maud::{Markup, PreEscaped, html};
 use mwe_core::recall_nav::HopTrace;
-use mwe_core::recall_trace::{self, RecallTrace, TraceHit, TraceRow, TraceSource};
+use mwe_core::recall_trace::{self, RecallTrace, TraceRow, TraceSource};
 
 use crate::auth::SessionUser;
 use crate::error::{DashboardError, Result};
@@ -276,7 +276,7 @@ fn hit_counts(t: &RecallTrace) -> String {
         parts.push(format!("{} not yet on a page", t.fresh_hits.len()));
     }
     if !t.due_soon.is_empty() {
-        parts.push(format!("{} ending soon", t.due_soon.len()));
+        parts.push(format!("{} closing soon", t.due_soon.len()));
     }
     parts.join(" · ")
 }
@@ -302,7 +302,7 @@ fn nav_stop_short(stop: &str) -> &str {
         "budget" => "text budget spent",
         "hop_cap" => "depth limit reached",
         "llm_degraded" => "navigator failed",
-        "nothing_opened" => "nothing passed vetting",
+        "nothing_opened" => "every page refused",
         "pool_exhausted" => "no pages left",
         "empty_fan" => "no doors to walk",
         other => other,
@@ -310,17 +310,17 @@ fn nav_stop_short(stop: &str) -> &str {
 }
 
 /// The same reason said in full. Kept word for word in step with
-/// `STOP_CAPTIONS` in `assets/recall-trace.js`, which prints it over the
+/// `STOP_SENTENCES` in `assets/recall-trace.js`, which prints it over the
 /// replay of the same walk.
 fn nav_stop_sentence(stop: &str) -> &str {
     match stop {
-        "done" => "the navigator judged the collection sufficient",
+        "done" => "the navigator judged what it had collected enough",
         "budget" => "the prose budget ran out",
-        "hop_cap" => "the depth dial ran out",
-        "llm_degraded" => "the navigator LLM failed — the turn survived on what was collected",
-        "nothing_opened" => "every pick was vetted away — the funnel stopped",
-        "pool_exhausted" => "no unvisited candidates remained",
-        "empty_fan" => "the fan was empty — nothing to walk",
+        "hop_cap" => "the walk reached its depth limit",
+        "llm_degraded" => "the navigator model failed — the turn went on with what was collected",
+        "nothing_opened" => "every page it asked for was refused",
+        "pool_exhausted" => "no unvisited candidate was left",
+        "empty_fan" => "there was no door to start from",
         other => other,
     }
 }
@@ -343,7 +343,7 @@ fn seed_mode_in_words(mode: &str) -> &str {
 
 /// How a page came to be offered to the navigator.
 ///
-/// The wire tokens are the `origin` strings the funnel writes
+/// The wire tokens are the `origin` strings the gatherer and the walk write
 /// ([`mwe_core::recall_nav`]); an unknown one shows as itself.
 fn origin_in_words(origin: &str) -> &str {
     match origin {
@@ -351,14 +351,82 @@ fn origin_in_words(origin: &str) -> &str {
         "topic" => "a topic of the message",
         "situational" => "the situation the consumer described",
         "link" => "a link from a page already open",
-        "principal" => "who the message is about",
+        "card" => "a card rail of an open page",
         other => other,
     }
+}
+
+/// The seat a recalled fact took in the block — two of the three put a
+/// fact there *against* similarity, and the score alone cannot say so.
+fn seat_in_words(seat: &str) -> &str {
+    match seat {
+        "similarity" => "similarity",
+        "macrotopic_quota" => "a seat kept for its macrotopic",
+        "one_fact_per_kind" => "one fact of its kind",
+        other => other,
+    }
+}
+
+/// Why a fact the search returned never reached the consumer.
+fn drop_in_words(reason: &str) -> &str {
+    match reason {
+        "rules_page" => "it sits on a rules page, which is never recalled as a fact",
+        "on_an_injected_page" => "the page it sits on was read whole by the walk",
+        "relevance_floor" => "below the relevance floor",
+        "intent_skipped_the_slot" => "this turn did not open the facts slot",
+        other => other,
+    }
+}
+
+/// Why a page the navigator asked for did not open.
+fn refusal_in_words(reason: &str) -> &str {
+    match reason {
+        "not_offered" => "not among the pages it was shown",
+        "wiki_vanished" => "the wiki is gone",
+        "rules_page" => "a rules page, closed to the walk",
+        "already_read" => "asked for twice in one decision",
+        "acl_unreadable" => "this reader may not open it",
+        "unreadable" => "the page could not be read",
+        other => other,
+    }
+}
+
+/// Which slot of the block served an identity card whole.
+fn role_in_words(role: &str) -> &str {
+    match role {
+        "speaker" => "the person speaking",
+        "mentioned" => "named in the message",
+        other => other,
+    }
+}
+
+/// Which half of the project-documentation slot a section came from.
+fn half_in_words(half: &str) -> &str {
+    match half {
+        "named" => "the project the message names",
+        "signposted" => "a project the memory signposts",
+        other => other,
+    }
+}
+
+/// The text of a recalled fact, looked up by id — the fan names the fact
+/// that opened each door by its id.
+fn fact_text<'a>(trace: &'a RecallTrace, fact_id: &str) -> Option<&'a str> {
+    trace
+        .flat_hits
+        .iter()
+        .find(|h| h.fact_id == fact_id)
+        .map(|h| h.text.as_str())
+}
+
+fn page_or_none(page: Option<&str>) -> &str {
+    page.unwrap_or("no page named")
 }
 
 // ---------- Rendering: the viewer ----------
 
 fn render_viewer_body(row: &TraceRow, trace: &RecallTrace, reveal: bool) -> Markup {
+    let navigate = row.source == TraceSource::Navigate;
     html! {
         @if reveal { (crate::reveal::banner()) }
         // Stage mount for the 3D replay. recall-trace.js (an ES module — it
@@ -368,21 +436,38 @@ fn render_viewer_body(row: &TraceRow, trace: &RecallTrace, reveal: bool) -> Mark
         div id="trace-stage" class="trace-stage" data-trace-id=(row.id) {}
         script src="/dashboard/static/recall-trace.js" type="module" {}
 
-        (render_meta(row, trace))
-        (render_hits_section("Found by similarity", &trace.flat_hits, true))
-        (render_hits_section("Not yet on a page", &trace.fresh_hits, false))
-        (render_hits_section("Ending soon", &trace.due_soon, false))
+        (render_meta(row, trace, navigate))
+        (render_served(trace))
+        (render_facts(trace, navigate))
+        (render_fresh(trace))
+        (render_due(trace))
+        (render_docs(trace))
         (render_fan(trace))
         (render_hops(trace))
-        (render_injected(trace))
+        (render_injected(trace, navigate))
     }
 }
 
-fn render_meta(row: &TraceRow, trace: &RecallTrace) -> Markup {
+fn render_meta(row: &TraceRow, trace: &RecallTrace, navigate: bool) -> Markup {
+    let light = trace.recall_depth.as_deref() == Some("light");
     html! {
         section class="term-panel mt-4 p-4" {
             h2 class="mt-0" { "What was asked" }
             p class="whitespace-pre-wrap" { (trace.turn_text) }
+            @if let Some(completed) = &trace.completed_message {
+                @if completed != &trace.turn_text {
+                    p class="mb-1" { strong { "The completed message" } }
+                    p class="whitespace-pre-wrap" { (completed) }
+                    p.muted {
+                        "The engine filled in what the sentence left implicit. "
+                        @if trace.flat_hits_from_completed {
+                            "The facts below answer this sentence, not the words as written."
+                        } @else {
+                            "The search on it found nothing: the facts below answer the words as written."
+                        }
+                    }
+                }
+            }
             table class="config-table" {
                 tbody {
                     tr { th { "When" } td { (crate::ui::components::compact_stamp(&row.created_at)) } }
@@ -399,6 +484,15 @@ fn render_meta(row: &TraceRow, trace: &RecallTrace) -> Markup {
                             (crate::ui::components::intent_in_words(intent))
                         } }
                     }
+                    @if !navigate {
+                        tr { th { "How deep" } td {
+                            @if light {
+                                "light — the consumer asked for a shorter recall, so the walk was skipped"
+                            } @else {
+                                "full — the walk was allowed to run"
+                            }
+                        } }
+                    }
                     tr { th { "Search started from" } td {
                         (seed_mode_in_words(&trace.seed_mode))
                         @if !trace.topics.is_empty() { " · topics: " (trace.topics.join(", ")) }
@@ -410,47 +504,181 @@ fn render_meta(row: &TraceRow, trace: &RecallTrace) -> Markup {
                                 (trace.hops.len()) " step(s), stopped because "
                                 (nav_stop_sentence(stop)) " · "
                                 (trace.chars_collected) " of " (trace.char_budget)
-                                " characters collected"
-                                @if trace.truncated { " (cut short)" }
+                                " characters of prose collected"
+                                @if trace.truncated { " (the budget cut the last page)" }
                             },
-                            None => { "did not run — the answer came from similarity alone" },
+                            None => {
+                                @if light { "skipped by request" }
+                                @else { "did not run this turn" }
+                            },
                         }
                     } }
-                    tr { th { "Took" } td { (trace.took_ms) " ms" } }
+                    tr { th { "Time" } td {
+                        @if navigate {
+                            (trace.took_ms) " ms"
+                        } @else {
+                            "recall " (trace.recall_ms) " ms of a " (trace.took_ms) " ms turn"
+                            span.muted { " — the turn also classifies, reconciles and writes" }
+                        }
+                    } }
                 }
             }
         }
     }
 }
 
-fn render_hits_section(title: &str, hits: &[TraceHit], show_region: bool) -> Markup {
-    if hits.is_empty() {
+fn render_served(trace: &RecallTrace) -> Markup {
+    if trace.served_pages.is_empty() {
         return html! {};
     }
     html! {
         section class="term-panel mt-4 p-4" {
+            h2 class="mt-0" { "Handed over whole" }
+            p.muted {
+                "Identity cards the consumer received in full. The walk never "
+                "opens these pages: it already has them."
+            }
+            table class="config-table" {
+                thead { tr { th { "Wiki" } th { "Page" } th { "Why" } } }
+                tbody {
+                    @for s in &trace.served_pages {
+                        tr {
+                            td { (s.wiki_id) }
+                            td { (s.page) }
+                            td { (role_in_words(&s.role)) }
+                        }
+                    }
+                }
+            }
+        }
+    }
+}
+
+fn render_facts(trace: &RecallTrace, navigate: bool) -> Markup {
+    if trace.flat_hits.is_empty() {
+        return html! {};
+    }
+    let title = if navigate {
+        "Fragments the search returned"
+    } else {
+        "Facts the search returned"
+    };
+    html! {
+        section class="term-panel mt-4 p-4" {
             h2 class="mt-0" { (title) }
+            p.muted {
+                "Each fact says which seat it took: similarity ranks most of them, "
+                "but a seat kept for the macrotopic and the one-fact-of-each-kind "
+                "seat put a fact here against the score."
+            }
             table class="config-table" {
                 thead {
                     tr {
                         th { "Score" }
+                        th { "Seat" }
+                        th { "Kind" }
                         th { "Wiki / page" }
-                        @if show_region { th { "Region" } }
+                        th { "Region" }
                         th { "Text" }
+                        th { "After the search" }
                     }
                 }
                 tbody {
-                    @for h in hits {
+                    @for h in &trace.flat_hits {
+                        tr {
+                            td {
+                                (format!("{:.3}", h.score))
+                                @if h.link_key_win { br; span class="text-text-dim text-xs" { "on the link key" } }
+                            }
+                            td { (h.seat.as_deref().map_or("similarity", seat_in_words)) }
+                            td { (h.fact_type.as_deref().unwrap_or("—")) }
+                            td { (h.wiki_id) br; span class="text-text-dim text-xs" { (h.source_path) } }
+                            td { @match (h.region_start, h.region_end) {
+                                (Some(s), Some(e)) => { (s) "–" (e) },
+                                _ => { "—" },
+                            } }
+                            td class="whitespace-pre-wrap" { (h.text) }
+                            td class="text-xs" {
+                                @if let Some(v) = h.voted_score { "voted " (format!("{v:.3}")) br; }
+                                @match &h.dropped {
+                                    Some(reason) => { span class="text-amber" { "dropped: " (drop_in_words(reason)) } },
+                                    None => { "handed over" },
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+}
+
+fn render_fresh(trace: &RecallTrace) -> Markup {
+    if trace.fresh_hits.is_empty() {
+        return html! {};
+    }
+    html! {
+        section class="term-panel mt-4 p-4" {
+            h2 class="mt-0" { "Not yet on a page" }
+            p.muted { "Captured recently and still waiting to be filed: no wiki, no page, handed over as they are." }
+            table class="config-table" {
+                thead { tr { th { "Score" } th { "Kind" } th { "Text" } } }
+                tbody {
+                    @for h in &trace.fresh_hits {
                         tr {
                             td { (format!("{:.3}", h.score)) }
-                            td { (h.wiki_id) br; span class="text-text-dim text-xs" { (h.source_path) } }
-                            @if show_region {
-                                td { @match (h.region_start, h.region_end) {
-                                    (Some(s), Some(e)) => { (s) "–" (e) },
-                                    _ => { "—" },
-                                } }
-                            }
+                            td { (h.fact_type.as_deref().unwrap_or("—")) }
                             td class="whitespace-pre-wrap" { (h.text) }
+                        }
+                    }
+                }
+            }
+        }
+    }
+}
+
+fn render_due(trace: &RecallTrace) -> Markup {
+    if trace.due_soon.is_empty() {
+        return html! {};
+    }
+    html! {
+        section class="term-panel mt-4 p-4" {
+            h2 class="mt-0" { "Closing soon" }
+            p.muted { "Dated items that close within the horizon — the date is what put them here, not a score." }
+            table class="config-table" {
+                thead { tr { th { "Due" } th { "Wiki / page" } th { "Text" } } }
+                tbody {
+                    @for h in &trace.due_soon {
+                        tr {
+                            td { (h.valid_to.as_deref().unwrap_or("—")) }
+                            td { (h.wiki_id) br; span class="text-text-dim text-xs" { (h.source_path) } }
+                            td class="whitespace-pre-wrap" { (h.text) }
+                        }
+                    }
+                }
+            }
+        }
+    }
+}
+
+fn render_docs(trace: &RecallTrace) -> Markup {
+    if trace.project_docs.is_empty() {
+        return html! {};
+    }
+    html! {
+        section class="term-panel mt-4 p-4" {
+            h2 class="mt-0" { "Project notes" }
+            p.muted { "Documentation a coding assistant keeps, handed over as reference — never filed as a fact." }
+            table class="config-table" {
+                thead { tr { th { "Score" } th { "Which project" } th { "Wiki / page" } th { "Section" } th { "Text" } } }
+                tbody {
+                    @for d in &trace.project_docs {
+                        tr {
+                            td { (format!("{:.3}", d.score)) }
+                            td { (half_in_words(&d.half)) }
+                            td { (d.wiki_id) br; span class="text-text-dim text-xs" { (d.source_path) } }
+                            td { (d.heading_path.as_deref().unwrap_or("—")) }
+                            td class="whitespace-pre-wrap" { (d.text) }
                         }
                     }
                 }
@@ -468,17 +696,23 @@ fn render_fan(trace: &RecallTrace) -> Markup {
             h2 class="mt-0" { "Doors the walk could start from" }
             p.muted {
                 "The pages the search offered the navigator as a starting point, "
-                "strongest first."
+                "strongest first. A similarity door names the fact that opened it."
             }
             table class="config-table" {
-                thead { tr { th { "Strength" } th { "Found by" } th { "Wiki" } th { "Page" } } }
+                thead { tr { th { "Strength" } th { "Found by" } th { "Wiki" } th { "Page" } th { "Opened by" } } }
                 tbody {
                     @for ep in &trace.entry_points {
                         tr {
                             td { (format!("{:.2}", ep.weight)) }
                             td { (origin_in_words(&ep.origin)) }
                             td { (ep.wiki_id) }
-                            td { (ep.page.as_deref().unwrap_or("(overview)")) }
+                            td { (page_or_none(ep.page.as_deref())) }
+                            td class="text-xs whitespace-pre-wrap" {
+                                @match ep.matched_fact.as_deref().and_then(|id| fact_text(trace, id)) {
+                                    Some(text) => { (text) },
+                                    None => { "—" },
+                                }
+                            }
                         }
                     }
                 }
@@ -515,7 +749,7 @@ fn render_hop(i: usize, hop: &HopTrace) -> Markup {
                             tr {
                                 td { (origin_in_words(&c.origin)) }
                                 td { (c.wiki_id) }
-                                td { (c.page.as_deref().unwrap_or("(overview)")) }
+                                td { (page_or_none(c.page.as_deref())) }
                                 td class="text-xs" {
                                     @if let Some(s) = &c.summary { (s) br; }
                                     span class="text-text-dim" { (c.keywords.join(", ")) }
@@ -526,18 +760,18 @@ fn render_hop(i: usize, hop: &HopTrace) -> Markup {
                 }
             }
             @if !hop.requested.is_empty() {
-                p class="mb-1" { "Opened:" }
+                p class="mb-1" { "It asked for:" }
                 ul class="mt-0" {
                     @for r in &hop.requested {
                         li {
-                            (r.wiki_id) "/" (r.page.as_deref().unwrap_or("(overview)"))
-                            // Several things refuse a pick: it was not one of
-                            // the pages offered, it named a wiki and no page,
-                            // it is the reserved rules page, or it could not
-                            // be read. The trace does not record which, so the
-                            // line does not claim one.
-                            @if !r.opened {
-                                span class="text-amber" { " — not opened" }
+                            (r.wiki_id) "/" (page_or_none(r.page.as_deref()))
+                            @if r.opened {
+                                span class="text-text-dim" { " — opened" }
+                            } @else {
+                                span class="text-amber" {
+                                    " — not opened"
+                                    @if let Some(reason) = &r.reason { ": " (refusal_in_words(reason)) }
+                                }
                             }
                         }
                     }
@@ -559,11 +793,16 @@ fn render_hop(i: usize, hop: &HopTrace) -> Markup {
     }
 }
 
-fn render_injected(trace: &RecallTrace) -> Markup {
+fn render_injected(trace: &RecallTrace, navigate: bool) -> Markup {
     html! {
         @if let Some(block) = &trace.injected_block {
             section class="term-panel mt-4 p-4" {
-                h2 class="mt-0" { "Handed to the consumer" }
+                @if navigate {
+                    h2 class="mt-0" { "Answered to the caller" }
+                    p.muted { "A deep search answers with fragments, as data, not with a block of memory." }
+                } @else {
+                    h2 class="mt-0" { "Handed to the consumer" }
+                }
                 pre class="whitespace-pre-wrap" { (block) }
             }
         }

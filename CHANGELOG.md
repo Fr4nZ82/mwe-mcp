@@ -13,6 +13,20 @@ semver-governed surface: breaking changes are called out explicitly.
 
 ### Added
 
+- **The Traces page tells the recall the way the engine runs it.** A trace now
+  opens with the completed message the engine answered (and says whether the
+  facts answer that sentence or the words as written), how deep the turn was
+  allowed to look, the identity cards handed over whole, the seat every fact
+  took in the block and why some were dropped, the fact that opened each door,
+  the reason for every page the walk was refused, the date of each item
+  closing soon, the project notes, and the recall's own time inside the turn.
+  The 3D replay above the text follows the same order — the sentence rewrites
+  itself, the facts rise with their seats, the fresh captures drift without a
+  page, the clock ticks, the cards are barred, the doors line up on three
+  rails, the navigator is shown its pool each step and is refused with a
+  reason, the prose budget drains as it reads, and the block assembles band by
+  band while the dropped facts fall away — and sleeps through a light turn.
+
 - **The release archive carries the guide.** Every published archive
   (`mwe-mcp-<tag>-<target>.tar.gz`, `.zip` on Windows) unpacks with `docs/`
   beside the binary, so an operator who downloads a release has the same

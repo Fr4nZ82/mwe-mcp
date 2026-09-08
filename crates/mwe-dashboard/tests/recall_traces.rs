@@ -128,6 +128,9 @@ fn sample_trace() -> RecallTrace {
         version: recall_trace::TRACE_PAYLOAD_VERSION,
         consumer: Some("hermes1".to_owned()),
         turn_text: "cosa cucino stasera per gli ospiti?".to_owned(),
+        completed_message: Some("cosa cucino stasera per galadriel e gli altri ospiti?".to_owned()),
+        flat_hits_from_completed: true,
+        recall_depth: Some("full".to_owned()),
         intent: Some("recall".to_owned()),
         seed_mode: "classifier".to_owned(),
         topics: vec!["cucina".to_owned()],
@@ -148,9 +151,9 @@ fn sample_trace() -> RecallTrace {
         entry_points: vec![
             TraceEntryPoint {
                 wiki_id: "franz".to_owned(),
-                page: None,
-                origin: "principal".to_owned(),
-                weight: 0.6,
+                page: Some("cucina.md".to_owned()),
+                origin: "topic".to_owned(),
+                weight: 0.8,
                 ..TraceEntryPoint::default()
             },
             TraceEntryPoint {
@@ -320,10 +323,15 @@ async fn journal_lists_and_viewer_replays_a_recorded_trace() {
         "Doors the walk could start from",
         "Step 1",
         "the guest's page holds the dietary constraints",
-        "not opened",
+        "not opened: not among the pages it was shown",
         "Handed to the consumer",
         "celiaca",
         "hermes1",
+        "The completed message",
+        "galadriel e gli altri ospiti",
+        "full — the walk was allowed to run",
+        "a topic of the message",
+        "Opened by",
     ] {
         assert!(html.contains(needle), "missing `{needle}`: {html}");
     }
@@ -332,6 +340,8 @@ async fn journal_lists_and_viewer_replays_a_recorded_trace() {
         "Hop 1",
         "Injected into the consumer",
         "Family",
+        "(overview)",
+        "principal",
     ] {
         assert!(
             !html.contains(jargon),

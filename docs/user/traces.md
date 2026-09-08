@@ -13,21 +13,51 @@ it stopped**, and how much text was handed over.
 
 ## Opening one
 
-A trace opens into the whole walk:
+A trace opens into the whole recall, in the order the engine ran it. At the
+top, the **replay**: an animated route of the same recall, phase by phase, with
+transport controls (restart, back, play/pause, forward, speed). Every phase is
+drawn from the record below it; nothing in it is invented. Below the replay,
+the same recall as text:
 
-- **What was asked**, when, and which consumer asked it.
-- **Read as** — what the engine took the message to be.
-- **Search started from** — what it read the message to be about: the topics
-  and the people it resolved.
-- **The walk** — how many steps, why it stopped, how much text it collected
-  against its budget, and how long it took.
-- **Found by similarity** — the fragments the search matched directly, each
-  with a score and the page it came from.
+- **What was asked**, when, which consumer asked it, and — when the engine
+  filled in what the sentence left implicit — **The completed message**, with
+  a line saying whether the facts answer that sentence or the words as
+  written.
+- **Read as** — what the engine took the message to be. **How deep** — whether
+  the walk was allowed to run, or the consumer asked for a light recall and it
+  was skipped. **Search started from** — the topics and the people it
+  resolved.
+- **The walk** — how many steps, why it stopped, how much prose it collected
+  against its budget. **Time** — the recall alone, inside the whole turn.
+- **Handed over whole** — the identity cards the consumer received in full;
+  the walk never opens those pages.
+- **Facts the search returned** — each with its score, the **seat** it took in
+  the block (similarity, a seat kept for its macrotopic, or one fact of its
+  kind), its kind, and what happened after the search: handed over, or dropped
+  and why.
+- **Not yet on a page** — captures still waiting to be filed. **Closing
+  soon** — dated items, with their date. **Project notes** — documentation a
+  coding assistant keeps, handed over as reference.
 - **Doors the walk could start from** — the pages the search offered as a
-  starting point, strongest first.
-- **Each step**, with the reason given for opening a page, which pages were on
-  offer, which were opened and which were not.
-- **Handed to the consumer** — the text that actually reached your assistant.
+  starting point, strongest first, and the fact that opened each door.
+- **Each step**, with the navigator's reason, which pages were on offer, which
+  it asked for, which opened and — for each refusal — why not.
+- **Handed to the consumer** — the text that actually reached your assistant
+  (a deep search shows **Answered to the caller** instead).
+
+## The replay
+
+The stage tells the recall as a scene: the sentence types itself and, when the
+engine completed it, rewrites itself with the filled-in words lit; the facts the
+search returned rise as cards, each carrying its seat; fresh captures drift
+above them because they have no page; dated items tick on a clock; the identity
+cards are handed over and barred; the doors line up on three rails
+(similarity, topic, situation); the navigator — an orb with an eye — is shown a
+pool of cards each step, asks, is refused or reads, while the prose budget
+drains on the left; and the block assembles band by band from those sources,
+the dropped facts falling away with their reason. On a light turn the
+navigator sleeps. Without WebGL the stage disappears and the text is the whole
+record; with reduced motion it starts paused.
 
 ## Why this exists
 
