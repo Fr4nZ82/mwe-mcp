@@ -9,7 +9,26 @@ From 1.0, the public interface — the MCP tool surface, family by family, as
 the dispatcher in `crates/mwe-mcp-server/src/mcp/` declares it — is a stable,
 semver-governed surface: breaking changes are called out explicitly.
 
-## Unreleased
+## 2.1.0 — 2026-09-08
+
+**Traces** now tells the recall the way the engine runs it: the question the
+memory actually answered, the seat every fact took in the block and why some
+were dropped, the fact that opened each door, the reason for every page the
+walk was refused, and the recall's own time inside the turn — with the replay
+above the text following the same order, phase by phase.
+
+The server also answers a machine. `GET /health` gives a watchdog one parsable
+line and asks for no credential, `GET /metrics` gives your own monitoring a
+Prometheus scrape behind an admin token, and **Format: json** in the Logging
+block turns every log line into one JSON object a shipper can index.
+
+And four things whoever writes a consumer will notice: a note is left where a
+fact is read, so the topic wikis nobody owns take one at last; a deleted
+group's name stops sitting on the facts it said in one; naming a thing the
+memory already knows — the greenhouse, the car — files the fact under
+whoever answers for it, on the conversation road and the uploaded-document
+road alike; and `metadata.recall: "light"` lets a single turn on a channel
+that is waiting to speak skip the navigation step.
 
 ### Added
 
@@ -30,12 +49,12 @@ semver-governed surface: breaking changes are called out explicitly.
   slot, today's spend against the budget, how long recall is taking, when each
   of the Dream console's runs last finished and whether it worked, the database
   size and the uptime.
-  It is **never public** — it takes an admin token
-  (`mwe-mcp token-issue --is-admin`), the same credential family `/mcp` uses,
-  revocable from **Tokens**. Every number is read from a table at scrape time,
-  so no model is called and a scrape can never spend money. The volume figures
-  are scoped to the UTC day and say so in their names, because the tables they
-  come from are pruned and a total that silently drops is worse than no total.
+  It is **never public** — it takes an admin token, the same credential family
+  `/mcp` uses, issued and revoked from **Tokens**. Every number is read from a
+  table at scrape time, so no model is called and a scrape can never spend
+  money. The volume figures are scoped to the UTC day and say so in their
+  names, because the tables they come from are pruned and a total that silently
+  drops is worse than no total.
   Documented metric by metric in the guide, under **Watching it from outside**.
 
 - **A one-line answer to "is it up?", for whatever is watching.** `GET /health`
@@ -54,7 +73,7 @@ semver-governed surface: breaking changes are called out explicitly.
   took in the block and why some were dropped, the fact that opened each door,
   the reason for every page the walk was refused, the date of each item
   closing soon, the project notes, and the recall's own time inside the turn.
-  The 3D replay above the text follows the same order — the sentence rewrites
+  The replay above the text follows the same order — the sentence rewrites
   itself, the facts rise with their seats, the fresh captures drift without a
   page, the clock ticks, the cards are barred, the doors line up on three
   rails, the navigator is shown its pool each step and is refused with a
