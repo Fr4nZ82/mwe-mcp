@@ -13,6 +13,13 @@ semver-governed surface: breaking changes are called out explicitly.
 
 ### Fixed
 
+- **A new release shows its new dashboard at once.** The stylesheet and the
+  scripts the dashboard embeds are served with a four-hour cache, so a browser
+  that had visited the dashboard before a release kept the old ones for an
+  afternoon — the redesigned Traces page looked like the previous one until
+  the cache expired. Every asset URL now carries the build's version, so a
+  release changes the URL and the browser fetches the new file at once.
+
 - **The ready-made assistant remembers what it just answered.** On the nanoclaw
   bridge the agent's own reply was read back out of the text the provider hands
   over when a turn finishes, and there are two everyday turns where that text
