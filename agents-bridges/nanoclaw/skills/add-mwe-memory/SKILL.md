@@ -139,8 +139,10 @@ memory work and opens a fresh session each time, the memory scaffold and its
 session-start hook stand down, the system prompt stops naming the agent, the
 `CLAUDE.md` composer hands a memory group a base without the sections that
 teach an on-disk store, and two barrels pick up the new modules. Each edit is
-anchored on exact upstream text and applied at most once, so running this again
-after an upgrade is safe and says so.
+anchored on exact upstream text and applied at most once, and an edit whose own
+lines changed shape since your fork was installed is brought forward instead of
+landing beside the old ones — so running this again after an upgrade is safe
+and says so.
 
 ```nc:run effect:wire
 pnpm exec tsx .claude/skills/add-mwe-memory/apply-fork-patches.ts

@@ -5,7 +5,8 @@ Every step is idempotent — safe to run even if some were never applied.
 ## 1. Undo the reach-ins
 
 The same script that made them takes them back out, anchored on the exact text
-it wrote:
+it wrote — the text an earlier version of the skill wrote included, for a fork
+installed before an upgrade:
 
 ```bash
 pnpm exec tsx .claude/skills/add-mwe-memory/apply-fork-patches.ts --remove

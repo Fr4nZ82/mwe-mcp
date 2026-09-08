@@ -52,8 +52,8 @@ const { MweClient } = await import(path.join(HOST_MODULE, 'client.js'));
 // module registers them with nanoclaw's tool server too, which starts nothing:
 // only the barrel's `startMcpServer()` does that.
 const { MWE_TOOLS } = await import(path.join(RUNNER, 'mcp-tools/mwe.js'));
-// The window as the container itself reads it back — the state turn 2's
-// assertions are really about.
+// The window as the container itself reads it back — the file the assertions
+// about the thread are really about.
 const { windowMessages } = await import(path.join(RUNNER, 'mwe/window.js'));
 
 // ---------------------------------------------------------------------------
@@ -127,6 +127,16 @@ let hostRequests = 0;
 let hostLatencyMs = 0;
 
 /**
+ * How long the host takes over the turn-boundary ingest in particular — the
+ * one `endTurn` sends after the reply is already in the person's chat. A
+ * memory running a full recall takes seconds over it, and the next turn does
+ * not wait: above zero this runs the next turn's prompt and the previous
+ * turn's ingest in the same seconds, which is where the window either has the
+ * agent's own last answer in it or does not.
+ */
+let assistantLatencyMs = 0;
+
+/**
  * One pass of the host's delivery poll, restricted to what this bridge adds:
  * pick up `mwe_request` rows, answer them with the real handler, write the
  * frame back where the mailbox lookup finds it.
@@ -143,7 +153,9 @@ async function pumpHost(): Promise<void> {
     if (content.action !== 'mwe_request') continue;
     answered.add(row.id);
     hostRequests++;
-    if (hostLatencyMs > 0) await Bun.sleep(hostLatencyMs);
+    const args = (content.args ?? {}) as Record<string, unknown>;
+    const latency = args.author === 'assistant' ? Math.max(hostLatencyMs, assistantLatencyMs) : hostLatencyMs;
+    if (latency > 0) await Bun.sleep(latency);
     const frame = await handleMweRequest(
       { op: content.op, args: content.args ?? {} },
       { config, token: 'test-jwt' },
@@ -355,16 +367,11 @@ async function main(): Promise<void> {
     seenPrompts.push(prompt);
     return '<message to="famiglia">bentornata</message>';
   });
-  // Wait for turn 1's assistant half to reach the WINDOW, not merely for its
-  // ingest to be recorded: `endTurn` awaits that ingest and appends to the
-  // window only once the host's answer has travelled back through the mailbox,
-  // so an ingest count says the turn is nearly done, not done. Turn 2 asserts
-  // on the window, and stopping the loop in that gap emptied it.
-  await runTurn(
-    provider,
-    () => outboundChat().length > 0 && windowMessages().some((m) => m.role === 'assistant'),
-    'turn 1',
-  );
+  // Wait for turn 1's assistant half to reach the STUB, not merely the window:
+  // the window has it the moment the reply is delivered, and the ingest the
+  // assertions below count is a host round trip behind that. Stopping the loop
+  // in between leaves the turn one call short.
+  await runTurn(provider, () => outboundChat().length > 0 && ingests().length >= 2, 'turn 1');
 
   const turn1 = ingests();
   ok('one ingest for the user turn, one for the reply', turn1.length === 2, `got ${turn1.length}`);
@@ -752,7 +759,10 @@ async function main(): Promise<void> {
   insertChat('r1', 'Alice', '1', 'che ore sono?');
   await runTurn(
     recordingProvider('<message to="famiglia">le cinque</message>').provider,
-    () => windowMessages().some((m) => m.role === 'assistant' && m.text === 'le cinque'),
+    () =>
+      ingests()
+        .slice(beforeRepeat)
+        .some((c) => c.arguments.author === 'assistant' && c.arguments.text === 'le cinque'),
     'a reply repeated in the result',
   );
   ok(
@@ -775,7 +785,10 @@ async function main(): Promise<void> {
   ]);
   await runTurn(
     unrepeated,
-    () => windowMessages().some((m) => m.role === 'assistant' && m.text === 'le chiavi sono in cucina'),
+    () =>
+      ingests()
+        .slice(beforeUnrepeated)
+        .some((c) => c.arguments.author === 'assistant' && c.arguments.text === 'le chiavi sono in cucina'),
     'a reply the result never repeats',
   );
   ok('the reply reached the person', outboundChat().at(-1)?.text === 'le chiavi sono in cucina');
@@ -805,7 +818,10 @@ async function main(): Promise<void> {
   });
   await runTurn(
     nudged,
-    () => windowMessages().some((m) => m.role === 'assistant' && m.text === 'va nella carbonara'),
+    () =>
+      ingests()
+        .slice(beforeNudge)
+        .some((c) => c.arguments.author === 'assistant' && c.arguments.text === 'va nella carbonara'),
     'a turn nudged into wrapping its answer',
   );
   ok('the nudged answer reached the person', outboundChat().at(-1)?.text === 'va nella carbonara');
@@ -839,7 +855,7 @@ async function main(): Promise<void> {
   await runTurn(
     interrupted.provider,
     () =>
-      windowMessages().some((m) => m.role === 'assistant' && m.text === 'arrivo') &&
+      ingests().some((c) => c.arguments.author === 'assistant' && c.arguments.text === 'arrivo') &&
       ingests().some((c) => c.arguments.text === 'e la spesa?'),
     'a query ended before its result',
   );
@@ -855,6 +871,89 @@ async function main(): Promise<void> {
     'and the person who wrote in still gets a turn of their own',
     ingests().slice(beforeHalt).some((c) => c.arguments.text === 'e la spesa?'),
   );
+
+  // -- the window does not wait for the memory ------------------------------
+  // The window is the bridge's own and the next turn's prompt is built from
+  // it; the memory is told what the agent said afterwards. A recall with
+  // navigation takes seconds, so the next turn routinely starts while that
+  // ingest is still in flight — and what the person sees is whether the agent
+  // still knows what it answered one message ago.
+  const beforeLate = ingests().length;
+  assistantLatencyMs = 4_000;
+  insertChat('l1', 'Alice', '1', 'qual è la capitale della Norvegia?');
+  await runTurn(
+    recordingProvider('<message to="famiglia">Oslo</message>').provider,
+    () => outboundChat().some((m) => m.text === 'Oslo'),
+    'the reply to reach the person',
+  );
+  ok(
+    'the reply is in the window the moment it is delivered',
+    windowMessages().some((m) => m.role === 'assistant' && m.text === 'Oslo'),
+    JSON.stringify(windowMessages().slice(-2)),
+  );
+  ok(
+    'and the memory has not been told yet — the window did not wait for it',
+    !ingests().slice(beforeLate).some((c) => c.arguments.author === 'assistant'),
+  );
+  insertChat('l2', 'Alice', '1', 'e quanti abitanti ha quella città?');
+  const overtaking = recordingProvider('<message to="famiglia">circa settecentomila</message>');
+  await runTurn(
+    overtaking.provider,
+    () => overtaking.prompts.length > 0,
+    'the next turn, while the memory is still working on the one before it',
+  );
+  const overtakingPrompt = overtaking.prompts[0] ?? '';
+  ok(
+    'the next turn is shown the answer the memory has not stored yet',
+    overtakingPrompt.includes('<recent-conversation>') && overtakingPrompt.includes('Oslo'),
+    overtakingPrompt.slice(0, 300),
+  );
+  await waitFor(
+    () =>
+      ingests()
+        .slice(beforeLate)
+        .some((c) => c.arguments.author === 'assistant' && c.arguments.text === 'Oslo'),
+    15_000,
+    'the slow assistant ingest to land',
+  );
+  ok(
+    'the memory gets that reply too, late and whole',
+    ingests()
+      .slice(beforeLate)
+      .some((c) => c.arguments.author === 'assistant' && c.arguments.text === 'Oslo'),
+  );
+  assistantLatencyMs = 0;
+
+  // -- a memory that cannot answer does not cost the thread -----------------
+  // The recall block is the memory's, and a turn it could not answer has
+  // none. The conversation is the bridge's own, so it is there either way:
+  // without it the agent reads a question with no answer beside it and asks
+  // again what it has just been told.
+  scriptStub({ wiki_ingest_message: '__fail__' });
+  insertChat('l3', 'Alice', '1', 'e la capitale della Svezia?');
+  await runTurn(
+    recordingProvider('<message to="famiglia">Stoccolma</message>').provider,
+    () => outboundChat().some((m) => m.text === 'Stoccolma'),
+    'a turn the memory refused',
+  );
+  ok(
+    'a reply the memory refused is in the window all the same',
+    windowMessages().some((m) => m.role === 'assistant' && m.text === 'Stoccolma'),
+    JSON.stringify(windowMessages().slice(-2)),
+  );
+  insertChat('l4', 'Alice', '1', 'e la sua popolazione?');
+  const blind = recordingProvider('<message to="famiglia">circa un milione</message>');
+  await runTurn(blind.provider, () => blind.prompts.length > 0, 'the next turn with the memory still down');
+  const blindPrompt = blind.prompts[0] ?? '';
+  ok(
+    'a turn with no recall block still carries the exchange before it',
+    blindPrompt.includes('<recent-conversation>') &&
+      blindPrompt.includes('e la capitale della Svezia?') &&
+      blindPrompt.includes('Stoccolma'),
+    blindPrompt.slice(0, 300),
+  );
+  ok('and nothing is invented in place of the recall block', !blindPrompt.includes('<memory-context>'));
+  scriptStub({});
 
   // -- degradation: the memory falls over and the turn still answers --------
   scriptStub({ wiki_ingest_message: '__fail__' });

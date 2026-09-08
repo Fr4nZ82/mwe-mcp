@@ -49,6 +49,13 @@ per-turn contract **v1**
   message the person was actually handed — whether it was streamed out while
   the agent was still working or came back with the turn's final text. A turn a
   follow-up cuts short keeps what it had already said.
+- **The window is written on this side, and it never waits for the memory.**
+  The reply enters it as the person receives it; the memory is told afterwards
+  and may take as long as a full recall takes, because the next turn can open
+  meanwhile and its prompt is built from the window. The window then rides that
+  prompt whether the memory answered or not: a turn the memory was too slow or
+  too broken to serve loses its recall block, which is the memory's, and keeps
+  the conversation, which is the bridge's.
 - **The memory can start a conversation, once.** A fact minted for somebody
   else, or a commitment coming due, is delivered to that person's own chat,
   phrased by the agent, in their language — a fact as news, a commitment as a
@@ -447,11 +454,17 @@ python3 ../_harness/run_smokes.py      # every bridge, from agents-bridges/
 
 The offline smoke needs `bun`, `pnpm`, `python3` and `git`, and no network
 beyond the clone. It fetches nanoclaw at the pin, installs the skill and the
-template the way an operator does, applies it a second time with a module
-changed — the upgrade case, where the fork must end up on the new bytes — and
-then drives **nanoclaw's own poll loop** with the mock provider against a
-recording stub of the MCP endpoint. What it asserts: one ingest per turn and one per reply; the window threaded, trimmed
-and persisted; act-as per sender and `guest` for the unmapped; the recall block
+template the way an operator does, and covers the upgrade from both sides: a
+module changed since the last apply must reach the fork, and a fork written by
+an **older** version of the skill must come out identical to a freshly applied
+one — its earlier lines brought forward, not left beside the new ones — with
+`--remove` giving nanoclaw's own files back from either shape. It also runs
+nanoclaw's skill-conformance suite over this skill, which drives `SKILL.md`'s
+fences against the fixtures beside them. Then it drives **nanoclaw's own poll
+loop** with the mock provider against a recording stub of the MCP endpoint.
+
+What it asserts: one ingest per turn and one per reply; the window threaded,
+trimmed and persisted; act-as per sender and `guest` for the unmapped; the recall block
 ahead of the formatted batch; the disambiguation and its commit; the owed
 forget-request vote and the promoted document reaching the agent, neither
 line showing up on a turn that did not earn it, and the vote raised because
@@ -469,6 +482,15 @@ from the note the model left behind; a first answer that comes back without its
 delivery wrapper is nudged, and it is the second answer, the one that reached
 the person, that lands in the window; and a query a follow-up ends before the
 turn formally finishes still remembers what it had already said.
+
+Two more turns hold the window apart from the memory. With the host taking four
+seconds over the turn-boundary ingest, the reply is in the window as soon as it
+is delivered, the next turn opens while that ingest is still in flight and is
+shown the answer anyway, and the memory gets it late and whole. With the server
+refusing every call, the reply is in the window all the same and the turn after
+it arrives with the exchange before it and no recall block — the block is the
+memory's and there is nothing to invent, the conversation is the bridge's and
+it is on disk.
 
 Four of the turns run **on the clock**: a provider that takes longer to answer
 than the follow-up poller's interval, with the host answering slowly too. A
@@ -518,10 +540,11 @@ somebody else's name. The recall block shown is the one for whoever spoke last
 would tell the model two different things about who it is talking to.
 
 **Stateless per turn.** The provider gets no continuation, so a turn's context
-is exactly: the system prompt (persona + destinations), the recall block, the
-recent window, this turn's messages. Long-range continuity is recall's job, not
-a summary's. The visible consequence is that the memory, not a transcript,
-decides what the agent remembers — which is the whole product.
+is exactly: the system prompt (persona + destinations), the recall block when
+the memory answered, the recent window always, this turn's messages. Long-range
+continuity is recall's job, not a summary's. The visible consequence is that
+the memory, not a transcript, decides what the agent remembers — which is the
+whole product.
 
 **An unmapped sender is a guest, never the owner.** Falling back to a real
 identity would file a stranger's words as that person's facts and hand the

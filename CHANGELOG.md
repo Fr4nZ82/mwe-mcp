@@ -34,6 +34,20 @@ semver-governed surface: breaking changes are called out explicitly.
   from the delivery itself, however the turn sent it, and a turn cut short by a
   follow-up before it formally ends keeps what it had already said.
 
+- **And it keeps the thread when the memory is slow or unreachable.** Two
+  messages eight seconds apart — *"what is the capital of Norway?"*, then *"and
+  how many people live there?"* — still came back as *"I'm not sure which city
+  you mean"*. Two things on the nanoclaw bridge were waiting on the memory that
+  had no business waiting on it. The reply the person had just been handed
+  entered the recent conversation only once the memory had been told about it,
+  and a memory that takes seconds over a turn is a memory the next message
+  arrives ahead of, with the answer not yet there. And a turn the memory did
+  not answer in time went to the model with no recent conversation at all,
+  although the bridge keeps that conversation on its own side and had it. Now
+  the reply enters the recent conversation the moment the person receives it,
+  and the conversation goes in front of every turn whether the memory answered
+  or not — the memory is told afterwards and may take as long as it needs.
+
 ## 2.1.0 — 2026-09-08
 
 **Traces** now tells the recall the way the engine runs it: the question the

@@ -6,8 +6,13 @@
  * into upstream code, across seven files, so they live here rather than in
  * prose: each is an exact anchor plus a replacement carrying an `// mwe:`
  * marker, applied at most once and removable by the same script with
- * `--remove`. Run it twice and the second run changes nothing and says so;
- * that is what makes the skill survive an upgrade.
+ * `--remove`. Run it twice and the second run changes nothing and says so.
+ *
+ * An upgrade is this same run over a fork an **older** version of the skill
+ * wrote, so an edit also carries the earlier forms of its own lines (see
+ * `Upgrade`): those are brought to the current shape first, and only then is
+ * anything applied. Without that step a changed edit is spliced in beside
+ * the shape it replaces and the fork ends up carrying both.
  *
  *     npx tsx .claude/skills/add-mwe-memory/apply-fork-patches.ts [--remove]
  *
@@ -17,8 +22,32 @@
  */
 import fs from 'fs';
 import path from 'path';
+import { fileURLToPath } from 'url';
 
 const ROOT = process.cwd();
+
+/**
+ * An earlier form of one edit's own lines, as an installed fork still carries
+ * them.
+ *
+ * A fork is upgraded by running this script again, over a file the *previous*
+ * version of the skill wrote. When an edit's lines change shape, the question
+ * "is the new form here?" answers no while the old form sits in the file, and
+ * the anchor it keyed on is gone — so without this the run either fails or
+ * splices the new lines in beside the old ones and the fork ends up with both.
+ *
+ * Each entry names the exact text an older version wrote and what it becomes:
+ * the current form of those same lines, or **nothing at all** when the current
+ * edit writes them itself and this is only the leftover beside them. The
+ * rewrites run first and in both directions, so `--remove` gives an older
+ * fork's files back as well.
+ */
+interface Upgrade {
+  /** The exact text an earlier version of this skill wrote. */
+  from: string;
+  /** What it becomes here — `''` when the current edit re-inserts those lines. */
+  to: string;
+}
 
 interface Patch {
   file: string;
@@ -31,6 +60,8 @@ interface Patch {
    * comment has to be escaped (`\``) — an unescaped one ends the literal and
    * the file stops parsing. */
   replacement: string;
+  /** Earlier forms of this edit, oldest install first. */
+  upgrades?: Upgrade[];
 }
 
 const POLL_LOOP = 'container/agent-runner/src/poll-loop.ts';
@@ -140,14 +171,33 @@ import type { AgentGroup } from './types.js';`,
 import { beginTurn, endTurn, mayEndForFollowUp, recordDelivered } from './mwe/turn.js'; // mwe: the per-turn contract
 import { mweStateless } from './mwe/active.js';
 import { clearWindow } from './mwe/window.js';`,
+    upgrades: [
+      {
+        from: `
+import { beginTurn, endTurn, mayEndForFollowUp } from './mwe/turn.js'; // mwe: the per-turn contract
+import { mweStateless } from './mwe/active.js';
+import { clearWindow } from './mwe/window.js';`,
+        to: '',
+      },
+    ],
   },
   {
     file: POLL_LOOP,
     anchor: `    const prompt = formatMessagesWithCommands(keep, config.provider.supportsNativeSlashCommands);`,
     replacement: `    // mwe: one ingest for this batch, then the recall block and the recent
-    // window in front of it. Returns the formatted batch unchanged when the
-    // memory is off or unreachable.
+    // window in front of it. A memory that did not answer costs the block and
+    // not the window; a group with the memory off gets the batch unchanged.
     const prompt = await beginTurn(keep, formatMessagesWithCommands(keep, config.provider.supportsNativeSlashCommands));`,
+    upgrades: [
+      {
+        from: `    // mwe: one ingest for this batch, then the recall block and the recent
+    // window in front of it. Returns the formatted batch unchanged when the
+    // memory is off or unreachable.`,
+        to: `    // mwe: one ingest for this batch, then the recall block and the recent
+    // window in front of it. A memory that did not answer costs the block and
+    // not the window; a group with the memory off gets the batch unchanged.`,
+      },
+    ],
   },
   {
     file: POLL_LOOP,
@@ -280,6 +330,17 @@ import { clearWindow } from './mwe/window.js';`,
         midTurnSent = 0;
         turnStartSeq = maxOutboundSeq();
         midTurnTail = '';`,
+    upgrades: [
+      {
+        from: `        // mwe: at the turn boundary, once the reply has gone out, feed it back
+        // for extraction so the agent remembers its own half of the exchange —
+        // a deadline it worked out, advice it gave. The host round trip costs
+        // the next turn's start, never this turn's answer.
+        await endTurn(event.text);
+`,
+        to: '',
+      },
+    ],
   },
   {
     file: POLL_LOOP,
@@ -333,6 +394,13 @@ function write(file: string, content: string): void {
   fs.writeFileSync(path.join(ROOT, file), content);
 }
 
+/** Bring every earlier form of one edit to the shape this version writes. */
+function upgraded(patch: Patch, source: string): string {
+  let text = source;
+  for (const upgrade of patch.upgrades ?? []) text = text.split(upgrade.from).join(upgrade.to);
+  return text;
+}
+
 function apply(remove: boolean): number {
   let changed = 0;
   let already = 0;
@@ -344,25 +412,33 @@ function apply(remove: boolean): number {
       console.error(`FAIL ${patch.file}: not found — is the working directory the fork root?`);
       return 1;
     }
-    // One question decides both directions: is the replacement in the file?
-    // It must be the replacement and not the anchor, because a replacement
-    // usually CONTAINS its anchor — keying on the anchor would re-apply an
-    // applied patch and duplicate every added line.
-    const isApplied = source.includes(patch.replacement);
+    // Earlier forms of this same edit come first, so what follows sees a file
+    // written the way this version writes it — whichever version installed it.
+    const text = upgraded(patch, source);
+    // One question then decides both directions: is the replacement in the
+    // file? It must be the replacement and not the anchor, because a
+    // replacement usually CONTAINS its anchor — keying on the anchor would
+    // re-apply an applied patch and duplicate every added line.
+    const isApplied = text.includes(patch.replacement);
     if (remove ? !isApplied : isApplied) {
-      already++;
+      // Nothing to do to the edit itself; a write here is the upgrade above.
+      if (text === source) already++;
+      else {
+        write(patch.file, text);
+        changed++;
+      }
       continue;
     }
     const from = remove ? patch.replacement : patch.anchor;
     const to = remove ? patch.anchor : patch.replacement;
-    if (!source.includes(from)) {
+    if (!text.includes(from)) {
       console.error(
         `FAIL ${patch.file}: the anchor is gone. Upstream moved this seam; ` +
           `re-derive the patch instead of forcing it.\n--- expected ---\n${from}\n----------------`,
       );
       return 1;
     }
-    write(patch.file, source.replace(from, to));
+    write(patch.file, text.replace(from, to));
     changed++;
   }
   console.log(
@@ -371,5 +447,9 @@ function apply(remove: boolean): number {
   return 0;
 }
 
-const remove = process.argv.includes('--remove');
-process.exit(apply(remove));
+export { PATCHES };
+
+// Running the file is what applies it; importing it — the upgrade check in
+// `agents-bridges/nanoclaw/upgrade_check.ts` reads the list — must not.
+const invokedDirectly = !!process.argv[1] && path.resolve(process.argv[1]) === fileURLToPath(import.meta.url);
+if (invokedDirectly) process.exit(apply(process.argv.includes('--remove')));

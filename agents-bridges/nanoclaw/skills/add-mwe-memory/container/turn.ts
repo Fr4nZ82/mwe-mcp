@@ -194,7 +194,7 @@ async function ingestGroup(
     attachments: attachments.length > 0 ? attachments : undefined,
   });
   if (!frame.ok) {
-    log(`ingest failed (${frame.error}) — the turn proceeds without memory`);
+    log(`ingest failed (${frame.error}) — the turn goes on with the recent conversation and no recalled memory`);
     return undefined;
   }
   return { payload: frame.data as IngestPayload, maxWindow: frame.maxWindow };
@@ -260,18 +260,26 @@ export async function beginTurn(messages: MessageInRow[], formatted: string): Pr
       : undefined,
   });
 
-  // The window advances now: the next turn's ingest must see this one.
+  // The window advances whatever the ingest did with the turn: it is the
+  // bridge's own record of the exchange and the next turn's prompt is built
+  // from it. This is also where the operator's bound is adopted — the host
+  // names it on every frame, and `window.ts` keeps it for the appends that
+  // carry none.
   appendToWindow(userMessages, last?.maxWindow);
 
-  if (!last) return formatted;
-  // The recall block shown is the one for the person who spoke last — the one
-  // the agent is answering. Two identity cards in one prompt would tell the
-  // model two different things about who it is talking to.
-  return assemblePrompt(renderRecallBlock(last.payload), renderConversation(window), formatted);
+  // The conversation rides the prompt whether or not the memory answered. The
+  // thread is on this side, so a turn that lost its recall block must not also
+  // lose what was just said — that is the turn where the agent asks again what
+  // it has already been told. The recall block is the memory's and is there
+  // only when the memory spoke; the one shown is for the person who spoke last
+  // — the one the agent is answering — because two identity cards in one
+  // prompt would tell the model two different things about who it is talking to.
+  return assemblePrompt(last ? renderRecallBlock(last.payload) : '', renderConversation(window), formatted);
 }
 
 /**
- * Record one reply this turn has just delivered to the person.
+ * Record one reply this turn has just delivered to the person, and put it in
+ * the window on the spot.
  *
  * Both of the loop's delivery doors call it the moment the message is written
  * to the outbound mailbox: the mid-turn door as each `<message to="…">` block
@@ -281,13 +289,24 @@ export async function beginTurn(messages: MessageInRow[], formatted: string): Pr
  * nobody got (an unknown destination, or a block the result door was told not
  * to send) and can omit one that went out mid-turn and was never repeated.
  *
+ * **The window is the bridge's own, and it is written the moment the reply is
+ * delivered; the memory is told afterwards and may take its time.** A recall
+ * with navigation costs seconds, the next turn starts while the memory is
+ * still working on the one before it, and the prompt of that next turn is
+ * built from this file — so anything that waits for the server here is a turn
+ * where the agent reads back its own question with no answer beside it. The
+ * bound is not named: `window.ts` holds the one the host gave this turn's
+ * ingest, and the next one it gives trims on the append that carries it.
+ *
  * Outside a conversational turn — a task run, a delivery instruction, an agent
- * whose memory is off — there is no turn in flight and nothing is kept.
+ * whose memory is off — there is no turn in flight, and neither the window nor
+ * the memory hears about it.
  */
 export function recordDelivered(body: string): void {
   const reply = body.trim();
   if (!pending || !reply) return;
   pending.delivered.push(reply);
+  appendToWindow([{ role: 'assistant', text: reply, timestamp: new Date().toISOString() }]);
 }
 
 /**
@@ -334,29 +353,29 @@ export function mayEndForFollowUp(): boolean {
 
 /**
  * Feed the agent's own reply back for extraction, so it remembers its half of
- * the turn — a deadline it worked out, advice it gave, a decision reached —
- * and so the next turn's window shows it what it already said.
+ * the turn — a deadline it worked out, advice it gave, a decision reached.
  *
- * **The reply that reached the person is the reply the window and the memory
- * get, however it was delivered.** What this ingests is what the delivery
- * doors recorded through `recordDelivered`, never the shape of the final
- * result text: a reply streamed mid-turn counts whether or not the result
- * repeats it, a block the result carried but nobody delivered does not count,
- * and a turn whose first answer came back unwrapped — nudged, then answered
- * again inside the same query — is remembered from the answer that went out.
+ * **The reply that reached the person is the reply the memory gets, however it
+ * was delivered.** What this ingests is what the delivery doors recorded
+ * through `recordDelivered`, never the shape of the final result text: a reply
+ * streamed mid-turn counts whether or not the result repeats it, a block the
+ * result carried but nobody delivered does not count, and a turn whose first
+ * answer came back unwrapped — nudged, then answered again inside the same
+ * query — is remembered from the answer that went out.
  *
  * `author=assistant` tells the memory to keep only the durable sediment and
- * to attribute it to the agent rather than to the person. The reply has
- * already gone out by the time this runs, so the cost is the next turn's
- * start, never this turn's answer.
+ * to attribute it to the agent rather than to the person. The reply is in the
+ * person's chat and in the window before this runs, so the round trip is free
+ * to take as long as the memory needs: nothing the next turn shows the agent
+ * is waiting on it.
  *
  * A turn that has delivered nothing leaves the slot standing: it has no
  * assistant half yet, and the same turn may still speak — that is exactly what
  * the wrap-nudge asks of it, in the same query. `beginTurn` empties the slot
  * when the next turn opens, so nothing is ever carried across one. An agent
  * that answers only through the `send_message` tool goes through neither door
- * and is such a turn: the person's half is stored either way, so the memory is
- * thinner, never wrong.
+ * and is such a turn: the person's half is stored either way, so the memory
+ * and the window are thinner, never wrong.
  */
 export async function endTurn(): Promise<void> {
   // The turn reached its boundary: whatever it was carrying has been spoken.
@@ -367,7 +386,6 @@ export async function endTurn(): Promise<void> {
   if (!reply) return;
   pending = undefined;
 
-  const now = new Date().toISOString();
   const frame = await callHost('ingest', {
     sender: turn.senderKey,
     text: reply,
@@ -377,7 +395,6 @@ export async function endTurn(): Promise<void> {
     timezone: TIMEZONE,
   });
   if (!frame.ok) log(`assistant-turn ingest failed (${frame.error}) — the reply stays out of memory`);
-  appendToWindow([{ role: 'assistant', text: reply, timestamp: now }], frame.ok ? frame.maxWindow : undefined);
   reapSessionFiles();
 }
 

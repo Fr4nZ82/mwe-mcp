@@ -67,6 +67,13 @@ After each step, check what the memory did on the dashboard
    your questions with none of its answers is exactly what that looks like from
    the chat.
 
+   Then the same thing **without giving it a pause**: ask something, and the
+   second the answer lands send the follow-up that depends on it (*"e quanti
+   abitanti ha quella città?"*). It must follow that too. The memory is still
+   working on the turn before it at that moment — a deep recall takes seconds —
+   and the window is written when the reply is delivered, not when the memory
+   has finished with it.
+
 6. **A photo becomes memory.** Send a photo with a caption. The dashboard shows
    a described media fact; the described text should match the photo.
 

@@ -2,8 +2,9 @@
 # Offline smoke for the nanoclaw bridge: fetch nanoclaw at BRIDGE_UPSTREAM_REF,
 # copy the skill and the template into a scratch fork, apply the skill through
 # the headless driver the bridge ships (the one the served installer runs),
-# apply it a second time the way an upgrade does, then drive the real poll loop
-# against the recording stub endpoint.
+# apply it a second time the way an upgrade does — including over a fork an
+# older version of the skill wrote — then drive the real poll loop against the
+# recording stub endpoint.
 # No mwe-mcp server, no model, no Docker — so the served installer's own half
 # (nanoclaw's setup, Telegram, the restart) is not exercised here.
 #
@@ -98,6 +99,20 @@ echo "checking the reach-ins are idempotent"
     echo "ok   splicing them twice is a no-op, and --remove restores the originals"
 )
 
+# The other half of an upgrade: the fork being re-applied to was written by the
+# PREVIOUS version of the skill, and an edit whose own lines changed shape since
+# then must be brought forward, not spliced in beside the shape it replaces.
+echo "checking an older install upgrades in place"
+(
+    cd "$FORK"
+    bun "$BRIDGE/upgrade_check.ts"
+    # It puts every file back where it found it, so the fork is still applied.
+    bun .claude/skills/add-mwe-memory/apply-fork-patches.ts | grep -q '^applied: 0 edit(s)' || {
+        echo "FAIL: the upgrade check left the fork off its applied state"
+        exit 1
+    }
+)
+
 # An upgrade is a re-apply, and the modules have to come with it. `nc:copy`
 # leaves a destination that already exists, so a skill without its refresh step
 # reports success on every step and leaves the fork on the code it had — which
@@ -149,10 +164,15 @@ echo "checking the group restart step"
     echo "ok   the restart step is a no-op with no mwe group"
 )
 
-# The tests the skill ships, run where they landed.
+# The tests the skill ships, run where they landed. Then nanoclaw's own
+# conformance suite, narrowed to this skill: it drives SKILL.md's fences with
+# the fixtures beside them, so a capture nothing answers or a when:-guard no
+# scenario reaches is red here rather than in the fork's CI. Narrowed, because
+# a red in some other skill's fixtures is nanoclaw's news, not this bridge's.
 echo "running the installed tests"
 (cd "$FORK" && pnpm exec vitest run src/mwe-wiring.test.ts src/modules/mwe/mwe-host.test.ts)
 (cd "$FORK/container/agent-runner" && bun test src/mwe/mwe-turn.test.ts)
+(cd "$FORK" && pnpm exec vitest run scripts/skill-conformance.test.ts -t add-mwe-memory)
 
 # Typecheck both trees: the host module and the container module compile
 # against the real nanoclaw types, which is the cheapest proof that a seam did

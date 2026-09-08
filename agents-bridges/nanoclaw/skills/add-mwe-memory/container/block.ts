@@ -236,6 +236,13 @@ export function renderCommitAnswer(payload: IngestPayload): string {
  * without this the agent would have no memory of the last thing it said. The
  * newest messages — the ones to answer — are the formatted ones below, not
  * these.
+ *
+ * This is **this channel's** thread, kept by the bridge on disk, and it goes
+ * in front of every turn — including a turn the memory could not answer, which
+ * is exactly the turn where the agent would otherwise ask again what it has
+ * just been told. The `recent_window` the memory sends back is a different
+ * thing and rides the recall block above: the same person's live thread from
+ * their *other* surfaces.
  */
 export function renderConversation(messages: WindowMessage[]): string {
   if (messages.length === 0) return '';

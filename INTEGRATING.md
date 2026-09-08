@@ -542,6 +542,19 @@ below directly.
    end, and it keeps blocks the delivery path refused to send. A window
    holding a question with no answer beside it is worse than a short one — the
    agent reads its own silence and asks again what it has just been told.
+
+   **Write each half on your side as it happens, and tell the memory after.**
+   The person's half when the turn opens, the agent's the moment the reply is
+   handed over — then send the ingest. A turn where the recall navigates costs
+   seconds, and the next turn can open while the one before it is still being
+   ingested; a host that appends the reply only once the call comes back builds
+   that next prompt out of a question with no answer beside it. The same holds
+   for the failure: an ingest that times out or fails costs the recall block —
+   that block is the memory's, and there is nothing to inject — and it must not
+   also cost the conversation, which is yours and already on disk. Feed the
+   window into every prompt, answered turn or not. (The response's own
+   `recent_window` field is a different thing and rides *with* the block: the
+   same person's live thread from their **other** surfaces.)
 3. **Inject the recall block after your stable content.** The block
    changes every turn; placing it after the stable system-prompt prefix
    (persona, tools, standing instructions) preserves your LLM provider's

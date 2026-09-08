@@ -1,17 +1,36 @@
 {
-  "notes": "Conformance fixtures for scripts/skill-conformance.test.ts: shaped fake values only, never a real endpoint or a real identity. One scenario is enough — the skill has no when: guards and no branching prompts, so a single install path covers every directive. The exec stubs answer the wiring scripts, the module refresh, the build, the two test runs and the restart; none of them reads stdout, so an empty one is the honest stub. The bearer token is deliberately absent: it is an nc:operator step, never an input.",
+  "notes": "Conformance fixtures for scripts/skill-conformance.test.ts: shaped fake values only, never a real endpoint or a real identity. Two scenarios, because the skill branches once — capture:mwe_token_present reads .env, and the when:mwe_token_present=no operator block prints the token instruction only while it is still owed. Both answer every prompt the same way; only the capture differs. The exec stubs answer the wiring scripts, the module refresh, the config seed, the build, the two test runs and the restart; apart from the capture nothing reads stdout, so an empty one is the honest stub. The bearer token itself is never an input here: somebody puts it in .env, and the skill only asks whether it is there.",
   "scenarios": [
     {
-      "name": "install",
+      "name": "install, the token already in .env",
       "inputs": {
         "mwe_server_url": "http://127.0.0.1:8742/mcp",
         "mwe_admin_sender": "telegram:123456789",
         "mwe_admin_user": "alice"
       },
       "exec": [
-        { "match": "apply-fork-patches.ts", "stdout": "applied: 13 edit(s)" },
+        { "match": "apply-fork-patches.ts", "stdout": "applied: 21 edit(s)" },
         { "match": "refresh-modules.ts", "stdout": "" },
         { "match": "seed-config.ts", "stdout": "mwe.json written: http://127.0.0.1:8742/mcp, 1 sender(s) mapped" },
+        { "match": "grep -qs '^MWE_TOKEN=.' .env", "stdout": "yes" },
+        { "match": "pnpm run build", "stdout": "" },
+        { "match": "vitest run src/mwe-wiring.test.ts", "stdout": "" },
+        { "match": "bun test src/mwe/mwe-turn.test.ts", "stdout": "" },
+        { "match": "systemctl --user restart", "stdout": "" }
+      ]
+    },
+    {
+      "name": "install, the token still owed",
+      "inputs": {
+        "mwe_server_url": "http://127.0.0.1:8742/mcp",
+        "mwe_admin_sender": "telegram:123456789",
+        "mwe_admin_user": "alice"
+      },
+      "exec": [
+        { "match": "apply-fork-patches.ts", "stdout": "applied: 21 edit(s)" },
+        { "match": "refresh-modules.ts", "stdout": "" },
+        { "match": "seed-config.ts", "stdout": "mwe.json written: http://127.0.0.1:8742/mcp, 1 sender(s) mapped" },
+        { "match": "grep -qs '^MWE_TOKEN=.' .env", "stdout": "no" },
         { "match": "pnpm run build", "stdout": "" },
         { "match": "vitest run src/mwe-wiring.test.ts", "stdout": "" },
         { "match": "bun test src/mwe/mwe-turn.test.ts", "stdout": "" },
