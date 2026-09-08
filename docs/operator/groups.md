@@ -26,7 +26,9 @@ group's own wiki stays behind, as a wiki nobody owns — [the Wikis
 page](wikis.md) is where that is deleted — and a fact whose *also readable by*
 names the group keeps naming it, so with the membership gone it is read by
 nobody through that entry. Facts the group itself was recorded as having said
-are handed to the wiki they sit in.
+are handed to the wiki they sit in; in a topic wiki — one that grows around a
+subject and belongs to nobody — there is no owner to hand them to, so they are
+signed with the same anonymous author a forgotten person's facts get.
 
 ## The one group you did not create
 

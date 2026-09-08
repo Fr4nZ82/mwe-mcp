@@ -34,6 +34,15 @@ semver-governed surface: breaking changes are called out explicitly.
   promoted facts yet reads as visible to everyone, so a note may be left in
   it — the same derived answer the dashboard and `wiki_read` already give.
 
+- **Deleting a group no longer leaves its name on the facts it said in a
+  wiki nobody owns.** When a group is deleted, the facts recorded as said by
+  it are handed to whoever the wiki they sit in belongs to. A **topic wiki**
+  belongs to nobody, so there was nobody to hand them to and they kept the
+  name of a group that no longer exists. Those facts are now signed with the
+  same anonymous author a forgotten person's facts carry: the fact still says
+  it was said by somebody, and that somebody is nobody. Facts in a person's
+  or a group's wiki are unaffected.
+
 ## 2.0.0 — 2026-09-07
 
 The dashboard is rewritten, in what it says and in what it does. A person can

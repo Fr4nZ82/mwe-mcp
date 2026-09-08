@@ -395,10 +395,12 @@ async fn delete(
 
     // Reassign any fact whose `sender` is this group (e.g. one a prior pass
     // auto-attributed to the collective) to its wiki's scope principal, so no
-    // active fact points at a vanished sender (the sender-scrub invariant).
-    // Subject and allow-list entries that name this group are out of scope
-    // here — only `sender` is reassigned. Best-effort — a failure (or absent
-    // memory handles) is logged, never blocks the delete.
+    // active fact points at a vanished sender (the sender-scrub invariant). In
+    // a wiki nobody owns there is no scope to pass it to, and the row is
+    // signed with the removed identity instead. Subject and allow-list entries
+    // that name this group are out of scope here — only `sender` is
+    // reassigned. Best-effort — a failure (or absent memory handles) is
+    // logged, never blocks the delete.
     if let Some(memory) = state.memory.as_ref() {
         let gone = mwe_core::types::Principal::Group(group_id.clone());
         match mwe_core::fact_index::reassign_sender_to_scope(&state.pool, &memory.tree, &gone).await

@@ -979,9 +979,12 @@ pub async fn mark_forgotten_in_wiki(pool: &SqlitePool, wiki_id: &str, reason: &s
 /// Facts are grouped by wiki and each wiki's scope is resolved from topology
 /// ([`crate::wiki::WikiTree::resolve_scope_principal`]). A wiki whose scope is
 /// *itself* `gone` is **skipped** — the substitute would not lift the dangle.
-/// So is a **topic wiki** — one named for its subject, standing for nobody —
-/// which has no scope for a contribution to pass to: its rows keep the sender
-/// they carry.
+/// A **topic wiki** — one named for its subject, standing for nobody — has no
+/// scope for the contribution to pass to, so its rows are re-signed with
+/// [`crate::gdpr::removed_sender`] instead: the identity nobody holds, the one
+/// a forgotten author's facts already carry. The provenance slot stays filled
+/// and grants nothing to anybody, and no active fact keeps the name of a
+/// principal that is gone.
 /// A wiki that fails to locate or resolve is logged and skipped, never
 /// aborting the removal. Only active (non-tombstoned) rows are touched.
 /// Returns the number reassigned.
@@ -1015,13 +1018,15 @@ pub async fn reassign_sender_to_scope(
         {
             Ok(Some(scope)) => scope,
             // A topic wiki answers to no principal, so there is nothing for
-            // the contribution to pass to.
+            // the contribution to pass to. The name of the principal that is
+            // gone may not stay on the fact either, so authorship goes to the
+            // identity nobody holds.
             Ok(None) => {
-                tracing::warn!(
+                tracing::info!(
                     wiki_id = %wiki_id,
-                    "wiki answers to no principal — sender left as it is"
+                    "wiki answers to no principal — authorship goes to the removed identity"
                 );
-                continue;
+                crate::gdpr::removed_sender()
             },
             Err(e) => {
                 tracing::warn!(
@@ -3795,6 +3800,57 @@ mod tests {
         assert_eq!(n, 0, "scope == gone is skipped");
         let back = find_by_id(&pool, &f.fact_id).await.unwrap().unwrap();
         assert_eq!(back.sender_id, Some("user:franz".parse().unwrap()));
+    }
+
+    /// The other road out of the same call. A **topic wiki** stands for
+    /// nobody, so there is no scope principal to pass the contribution to —
+    /// and the vanished group's name may not stay on the fact either, which is
+    /// what leaving the row alone would do. Authorship goes to the identity
+    /// nobody holds, the one a forgotten author's facts already carry.
+    #[tokio::test]
+    async fn reassign_sender_signs_a_topic_wiki_fact_with_the_removed_identity() {
+        use crate::wiki::WikiTree;
+        let pool = make_pool().await;
+
+        // The shape the nightly grouping raises: at the root, no parent, named
+        // for its subject.
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::create_dir_all(dir.path().join("wikis/giardinaggio")).unwrap();
+        std::fs::write(
+            dir.path().join("wikis/giardinaggio/_meta.md"),
+            "---\nwiki_id: giardinaggio\nwiki_type: wiki-tech\nparent_wiki_id: null\n\
+             slug: giardinaggio\ntitle: giardinaggio\n---\n",
+        )
+        .unwrap();
+        let tree = WikiTree::open(dir.path()).unwrap();
+
+        let mut f = sample_new_fact(
+            SAMPLE_UUID_V7_1,
+            "giardinaggio",
+            "user:alice",
+            "the tomatoes go in in May",
+        );
+        f.sender_id = Some("group:famiglia".parse().unwrap());
+        insert(&pool, &f).await.expect("insert");
+
+        let gone = "group:famiglia".parse::<Principal>().unwrap();
+        let n = reassign_sender_to_scope(&pool, &tree, &gone)
+            .await
+            .expect("reassign");
+        assert_eq!(n, 1, "the row is re-signed, not left as it is");
+        let back = find_by_id(&pool, &f.fact_id).await.unwrap().unwrap();
+        assert_eq!(
+            back.sender_id,
+            Some(crate::gdpr::removed_sender()),
+            "authorship goes to the identity nobody holds, never staying on the group that is gone"
+        );
+
+        // Idempotent: the removed identity is not the gone principal, so a
+        // second pass finds nothing.
+        let n2 = reassign_sender_to_scope(&pool, &tree, &gone)
+            .await
+            .expect("reassign2");
+        assert_eq!(n2, 0, "nothing left attributed to the vanished group");
     }
 
     // ---------- bulk self-delete ----------
