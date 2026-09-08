@@ -2302,8 +2302,8 @@ async fn health_check_llm_slots(config: &mwe_core::config::LlmConfig) -> Result<
             SlotStatus::Unconfigured => {
                 warn!(
                     slot = s.slot,
-                    "llm health-check: slot has no model — the feature behind it is off until \
-                     one is set (dashboard → Admin → LLM config)"
+                    "llm health-check: slot has no model — the memory does not work until it \
+                     has one (dashboard → Admin → LLM config)"
                 );
             },
             SlotStatus::LoginPending => {
@@ -2343,7 +2343,8 @@ async fn health_check_llm_slots(config: &mwe_core::config::LlmConfig) -> Result<
             .count();
         if checked == 0 {
             tracing::info!(
-                "llm health-check: no reachable slots (every LLM-driven feature is off or pending)"
+                "llm health-check: no slot answered — every slot is either without a model or \
+                 awaiting its dashboard login"
             );
         } else {
             tracing::info!(

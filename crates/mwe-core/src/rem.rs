@@ -812,8 +812,8 @@ pub struct RemLlms<'a> {
     /// `rem_dedup_semantic` slot — confirms suspicious dedup pairs.
     pub revisor: &'a dyn LlmBackend,
     /// `rem_promotions` slot — decides paragraph/file/wiki promotion.
-    /// `None` disables the auto-promotion sub-job (the operator simply
-    /// doesn't configure the slot).
+    /// `None` ⇒ the slot has no model yet and the auto-promotion sub-job
+    /// cannot run.
     pub auto_promote: Option<&'a dyn LlmBackend>,
     /// `ingest` slot — the cheap (Flash-tier) backend the **light** dream
     /// runs every compile stage on (tier-per-cadence: the strong

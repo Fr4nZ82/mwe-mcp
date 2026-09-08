@@ -104,8 +104,9 @@ pub enum SlotStatus {
         /// Configured model id.
         model: String,
     },
-    /// The slot is absent from `mwe-mcp.config.yaml > llm` — that feature
-    /// is intentionally off, not broken.
+    /// The slot is absent from `mwe-mcp.config.yaml > llm`. All six slots
+    /// are mandatory, so an empty one is an install that is not finished:
+    /// the work behind the slot is refused until a model is set.
     Unconfigured,
     /// A Claude Code login slot that has not been authenticated yet. Boot
     /// continues; the slot's feature is unavailable until the operator

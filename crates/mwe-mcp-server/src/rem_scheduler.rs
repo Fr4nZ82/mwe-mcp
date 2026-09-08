@@ -26,10 +26,11 @@
 //!   still fires. A bug in one sub-job (forge cluster detector, refile
 //!   sweep …) should not take the HTTP server down with it; the
 //!   operator restarts after fixing config / capacity.
-//! - The optional slots (`auto_promote` = `rem_promotions`, `apply` =
-//!   `ingest`) are passed only when the corresponding `llm.*` slot is
-//!   configured; absence means "this sub-job is off", matching the
-//!   per-sub-job documentation in [`mwe_core::rem::RemLlms`].
+//! - `auto_promote` (`rem_promotions`) and `apply` (`ingest`) are passed
+//!   only when the corresponding `llm.*` slot has a model; an empty slot
+//!   is an install that is not finished, and the sub-job behind it cannot
+//!   run until the slot is set ([`mwe_core::rem::RemLlms`] names the slot
+//!   each field is wired to).
 //! - Shutdown is cooperative: the spawned task selects between the
 //!   ticker and the `shutdown` future supplied by the caller. When the
 //!   server's ctrl-c handler resolves, the ticker exits cleanly without
