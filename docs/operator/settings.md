@@ -78,9 +78,17 @@ there is a **Restart now** button on [Backup](backup.md).
 ## Logging
 
 **Level** (`info` — boundary events, or `debug` — plus internal step detail),
-**File rotation** (daily, hourly, never, or disabled for stderr only) and the
-**File path**, relative to the workdir. `debug` is for diagnosis, not steady
-state. Read once at boot, like the cadence above.
+**Format**, **File rotation** (daily, hourly, never, or disabled for stderr
+only) and the **File path**, relative to the workdir. `debug` is for diagnosis,
+not steady state. Read once at boot, like the cadence above.
+
+**Format** is `text` — one line of prose per event, and the default — or
+`json`, one JSON object per line carrying every structured field as a field, so
+a log shipper indexes them instead of matching a regex against prose. It
+applies to **both** places the logs come out: the file under `logs/` and the
+server's standard error, which on a systemd host is what `journalctl` shows
+you. See [Watching it from outside](observability.md) for the rest of what a
+machine can read from this server.
 
 ## Document pipeline
 

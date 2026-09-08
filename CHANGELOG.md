@@ -13,6 +13,17 @@ semver-governed surface: breaking changes are called out explicitly.
 
 ### Added
 
+- **Logs a shipper can ingest.** `logging.format` in `mwe-mcp.config.yaml`, and
+  a **Format** choice in the Logging block of **Server settings**, switches
+  every log line from prose to one JSON object per line: the timestamp, the
+  level, the module and each structured field as a field, instead of a sentence
+  to match a regex against. It applies to **both** places the logs come out, the
+  file under `logs/` and standard error — which on a systemd host is what
+  `journalctl` shows — so the two cannot disagree about their own shape. The
+  default is `text` and nothing changes for an installation that leaves it
+  alone; a misspelt value is refused at boot by name rather than read as the
+  default.
+
 - **The numbers your own monitoring can graph.** `GET /metrics` serves a
   Prometheus scrape of what this deployment is doing: turns and tool calls and
   failures per credential, model calls and errors and latency and tokens per

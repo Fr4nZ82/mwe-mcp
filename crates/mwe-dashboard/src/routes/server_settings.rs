@@ -30,7 +30,7 @@ use axum::routing::post;
 use axum_extra::extract::cookie::CookieJar;
 use maud::{Markup, html};
 use mwe_core::config::{
-    CONFIG_FILENAME, Config, DocumentConfig, LogFileRotation, LogLevel, LoggingConfig,
+    CONFIG_FILENAME, Config, DocumentConfig, LogFileRotation, LogFormat, LogLevel, LoggingConfig,
     RemScheduleConfig, RemScheduleMode,
 };
 use mwe_core::document::DocumentPolicy;
@@ -57,6 +57,12 @@ pub fn router() -> Router<DashboardState> {
 const LOG_LEVELS: &[(&str, &str)] = &[
     ("info", "info — boundary events"),
     ("debug", "debug — plus internal step detail"),
+];
+
+/// Line shapes: `(value, label)`.
+const FORMATS: &[(&str, &str)] = &[
+    ("text", "text — one line of prose per event"),
+    ("json", "json — one JSON object per line"),
 ];
 
 /// File-rotation modes: `(value, label)`.
@@ -267,9 +273,10 @@ fn logging_section(cfg: &LoggingConfig) -> Markup {
         section.logging-settings {
             h2 { "Logging" }
             p.muted {
-                "The " code { "logging:" } " section — verbosity and the rotating "
-                "file sink under " code { "logs/" } ". Tracing always writes to "
-                "stderr too."
+                "The " code { "logging:" } " section — verbosity, the shape of each "
+                "line, and the rotating file sink under " code { "logs/" } ". "
+                "Tracing always writes to stderr too, and both sinks follow "
+                "every setting here."
             }
             form action="/dashboard/settings/logging" method="post" {
                 table.config-table {
@@ -286,6 +293,21 @@ fn logging_section(cfg: &LoggingConfig) -> Markup {
                             td.muted {
                                 code { "debug" } " adds dedup scores, watcher events, slow SQL — "
                                 "for diagnosis, not steady state."
+                            }
+                        }
+                        tr {
+                            td { label for="format" { "Format" } }
+                            td {
+                                select id="format" name="format" {
+                                    @for &(val, lbl) in FORMATS {
+                                        option value=(val) selected[format_value(cfg.format) == val] { (lbl) }
+                                    }
+                                }
+                            }
+                            td.muted {
+                                code { "json" } " is for a log shipper: it carries the "
+                                "structured fields as fields, so nothing has to match a "
+                                "regex against prose."
                             }
                         }
                         tr {
@@ -421,6 +443,14 @@ const fn level_value(l: LogLevel) -> &'static str {
     match l {
         LogLevel::Info => "info",
         LogLevel::Debug => "debug",
+    }
+}
+
+/// Wire value of a [`LogFormat`].
+const fn format_value(f: LogFormat) -> &'static str {
+    match f {
+        LogFormat::Text => "text",
+        LogFormat::Json => "json",
     }
 }
 
@@ -672,6 +702,15 @@ fn parse_logging(form: &HashMap<String, String>) -> Result<LoggingConfig> {
             )));
         },
     };
+    let format = match form.get("format").map(String::as_str) {
+        Some("text") | None => LogFormat::Text,
+        Some("json") => LogFormat::Json,
+        Some(other) => {
+            return Err(DashboardError::Validation(format!(
+                "`format` must be `text` or `json`, got {other:?}"
+            )));
+        },
+    };
     let file_rotation = match form.get("file_rotation").map(String::as_str) {
         Some("daily") | None => LogFileRotation::Daily,
         Some("hourly") => LogFileRotation::Hourly,
@@ -690,6 +729,7 @@ fn parse_logging(form: &HashMap<String, String>) -> Result<LoggingConfig> {
         .map(PathBuf::from);
     Ok(LoggingConfig {
         level,
+        format,
         file_rotation,
         file_path,
     })

@@ -128,3 +128,17 @@ If you set up a single alert, make it
 stops running is the failure that shows up nowhere else — the server keeps
 answering, the memory keeps growing, and nothing tidies it. Everything else on
 this page you will notice eventually; that one you will not.
+
+## Logs a machine can read
+
+The last piece is the log itself. Set **Format** to `json` in the Logging block
+of [Server settings](settings.md) and every line becomes one JSON object —
+timestamp, level, the module it came from, and each structured field the event
+was written with, as a field. A log shipper indexes those directly; nothing has
+to match a regex against a sentence that may be reworded in the next release.
+
+It applies to both places the logs come out, the file under `logs/` and the
+server's standard error, so `journalctl -u mwe-mcp` and `logs/mwe-mcp.log` do
+not disagree about their own shape. The default stays `text`, which is what you
+want while you are reading the log yourself. Like the rest of the Logging
+block, it takes effect at the next restart.

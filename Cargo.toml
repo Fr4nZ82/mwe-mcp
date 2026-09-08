@@ -139,7 +139,11 @@ dotenvy = "=0.15.7"
 # still has a `tail`-able log under `<workdir>/logs/` — stderr stays as
 # the second sink.
 tracing = "0.1"
-tracing-subscriber = { version = "0.3", features = ["env-filter", "fmt", "registry"] }
+# `json` backs `logging.format: json`: one JSON object per line on both
+# sinks, so a log shipper indexes the structured fields instead of
+# matching a regex against prose. It adds `tracing-serde` and nothing
+# else — `serde` and `serde_json` are already here.
+tracing-subscriber = { version = "0.3", features = ["env-filter", "fmt", "json", "registry"] }
 tracing-appender = "0.2"
 
 # HTTP client (LLM/embedding backends)

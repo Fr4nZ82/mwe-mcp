@@ -106,6 +106,13 @@ pub enum ConfigError {
         value: String,
     },
 
+    /// `logging.format` value was not one of the accepted choices.
+    #[error("config logging.format {value:?}: expected `text` or `json`")]
+    InvalidLogFormat {
+        /// The offending value.
+        value: String,
+    },
+
     /// `rem.schedule.mode` value was not one of the accepted choices.
     #[error("config rem.schedule.mode {value:?}: expected `interval` or `disabled`")]
     InvalidRemScheduleMode {
@@ -1216,6 +1223,35 @@ impl LogFileRotation {
     }
 }
 
+/// How each log line is written.
+///
+/// Both sinks obey it, the way both sinks obey `logging.level`: a knob
+/// named for the shape of the logs that reshaped only one of the two
+/// places they are written would be a trap for whoever reads the other.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum LogFormat {
+    /// One line of prose per event, the way a person reads a log while
+    /// it scrolls past.
+    #[default]
+    Text,
+    /// One JSON object per line, carrying the timestamp, the level, the
+    /// target and every structured field the event was written with, so
+    /// a log shipper can index them without a regex to keep in step.
+    Json,
+}
+
+impl LogFormat {
+    /// YAML-side name for this variant.
+    #[must_use]
+    pub const fn yaml_name(self) -> &'static str {
+        match self {
+            Self::Text => "text",
+            Self::Json => "json",
+        }
+    }
+}
+
 /// Default `logging.file_path` value relative to the workdir.
 ///
 /// Resolved against `<workdir>` at runtime in
@@ -1225,15 +1261,18 @@ pub const DEFAULT_LOG_FILE_PATH: &str = "logs/mwe-mcp.log";
 
 /// `logging:` section of `mwe-mcp.config.yaml`.
 ///
-/// Free-form keys other than `level` / `file_rotation` / `file_path`
-/// are ignored — they round-trip through `extra` so a future config
-/// that adds e.g. a `log_format` key does not need a forced restart of
-/// the schema.
+/// A key this struct does not name is ignored rather than refused, so a
+/// config file written for a newer binary still loads on an older one.
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct LoggingConfig {
     /// Log filter level. See [`LogLevel`].
     #[serde(default)]
     pub level: LogLevel,
+    /// Shape of each line, on both sinks. See [`LogFormat`]. Defaults to
+    /// [`LogFormat::Text`] — a fresh install is read by a person before
+    /// it is read by a shipper.
+    #[serde(default)]
+    pub format: LogFormat,
     /// File-sink rotation cadence (see [`LogFileRotation`]). Defaults
     /// to [`LogFileRotation::Daily`] so a fresh workdir comes with a
     /// rotating log file out-of-the-box; the operator can flip to
@@ -3157,6 +3196,7 @@ impl Config {
         Self::validate_public_base_url(&value)?;
         Self::validate_log_level(&value)?;
         Self::validate_log_file_rotation(&value)?;
+        Self::validate_log_format(&value)?;
         Self::validate_rem_schedule_mode(&value)?;
         Self::validate_backup_mode(&value)?;
         Self::warn_unknown_llm_keys(&value);
@@ -3243,6 +3283,29 @@ impl Config {
             Ok(())
         } else {
             Err(ConfigError::InvalidLogFileRotation {
+                value: s.to_owned(),
+            })
+        }
+    }
+
+    fn validate_log_format(value: &serde_yaml::Value) -> Result<()> {
+        let Some(format) = value
+            .as_mapping()
+            .and_then(|m| m.get(serde_yaml::Value::String("logging".into())))
+            .and_then(serde_yaml::Value::as_mapping)
+            .and_then(|m| m.get(serde_yaml::Value::String("format".into())))
+        else {
+            return Ok(());
+        };
+        let Some(s) = format.as_str() else {
+            return Err(ConfigError::InvalidLogFormat {
+                value: format!("{format:?}"),
+            });
+        };
+        if matches!(s, "text" | "json") {
+            Ok(())
+        } else {
+            Err(ConfigError::InvalidLogFormat {
                 value: s.to_owned(),
             })
         }
@@ -3756,6 +3819,51 @@ mod tests {
             ConfigError::InvalidLogFileRotation { value } => assert_eq!(value, "weekly"),
             other => panic!("unexpected error: {other:?}"),
         }
+    }
+
+    #[test]
+    fn load_reads_the_json_log_format() {
+        let dir = tempdir().unwrap();
+        let body = "logging:\n  level: info\n  format: json\n";
+        fs::write(Config::path_in(dir.path()), body).unwrap();
+        let cfg = Config::load(dir.path()).expect("load");
+        assert_eq!(cfg.logging.format, LogFormat::Json);
+    }
+
+    /// A config that says nothing about the format gets the readable
+    /// one, and so does an installation seeded before the key existed:
+    /// the option is opt-in, and adding it changed nobody's logs.
+    #[test]
+    fn the_log_format_defaults_to_text() {
+        let dir = tempdir().unwrap();
+        let body = "logging:\n  level: debug\n";
+        fs::write(Config::path_in(dir.path()), body).unwrap();
+        let cfg = Config::load(dir.path()).expect("load");
+        assert_eq!(cfg.logging.format, LogFormat::Text);
+        assert_eq!(LogFormat::default(), LogFormat::Text);
+    }
+
+    /// A typo is refused by name rather than silently read as the
+    /// default — an operator who wrote `jsonl` wanted structured logs
+    /// and would otherwise find prose and no explanation.
+    #[test]
+    fn load_rejects_an_unknown_log_format_explicitly() {
+        let dir = tempdir().unwrap();
+        let body = "logging:\n  level: info\n  format: jsonl\n";
+        fs::write(Config::path_in(dir.path()), body).unwrap();
+        let err = Config::load(dir.path()).expect_err("must reject");
+        match err {
+            ConfigError::InvalidLogFormat { value } => assert_eq!(value, "jsonl"),
+            other => panic!("unexpected error: {other:?}"),
+        }
+    }
+
+    /// The seeded config shows the key with its default, so an operator
+    /// finds out the option exists by reading the file they were given.
+    #[test]
+    fn the_seeded_config_carries_the_format_key() {
+        let yaml = serde_yaml::to_string(&Config::default()).expect("serialise");
+        assert!(yaml.contains("format: text"), "{yaml}");
     }
 
     #[test]

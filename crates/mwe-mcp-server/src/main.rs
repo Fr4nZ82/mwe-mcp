@@ -390,7 +390,8 @@ async fn main() -> Result<()> {
     //   2. logging.level from mwe-mcp.config.yaml.
     //   3. info (default).
     //
-    // Sinks (both follow the precedence above):
+    // Sinks (both follow the precedence above, and both are written in
+    // the shape `logging.format` names — `text` or `json`):
     //   - `stderr` is always installed (keeps stdout clean; an admin
     //     attaching interactively wants live output).
     //   - `<workdir>/logs/mwe-mcp.log` (or the operator-configured path)
@@ -402,6 +403,7 @@ async fn main() -> Result<()> {
 
     info!(
         log_level = ?config.logging.level,
+        log_format = config.logging.format.yaml_name(),
         file_rotation = config.logging.file_rotation.yaml_name(),
         file_path = ?config.logging.resolved_file_path(&cli.workdir),
         workdir = %cli.workdir.display(),
