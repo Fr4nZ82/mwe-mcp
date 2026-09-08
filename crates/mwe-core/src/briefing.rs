@@ -16,9 +16,11 @@
 //! observation that the smart consumer should pick up next session. The
 //! rate limit below is what keeps that door narrow.
 //!
-//! The MVP defines "read access" as `caller.sender_id ==
-//! resolved_owner_user`. Cross-user notify (`shared_with` members)
-//! lands later alongside the share UI.
+//! **You may leave a note where you may read**, and read is asked of each
+//! family in its own words ([`crate::wiki_admin::wiki_readable_by`]): a
+//! standard wiki derives it from the facts it holds, a smart wiki holds none
+//! and answers from its own roster — owner, owning-group member, or a
+//! `shared_with` entry.
 //!
 //! ## Rate limit
 //!
@@ -115,8 +117,9 @@ pub enum BriefingError {
         /// Human-readable description of which combination was rejected.
         detail: String,
     },
-    /// The caller is on none of the target wiki's read rosters: not its
-    /// owner, not a member of an owning group, not named in `shared_with`.
+    /// The caller cannot read the target wiki, so it cannot leave a note in
+    /// it either: no fact of a standard wiki is legible to them, or a smart
+    /// wiki's roster does not name them.
     #[error("wiki {wiki_id} answers to {owner} and is not readable by {caller_owner}")]
     ReadAccessDenied {
         /// Target wiki id.
@@ -186,15 +189,15 @@ pub struct NotifyCaller {
     /// `wiki_admin_notify` gate matrix routes the call to either the
     /// full smart-wiki path (DB + `_briefing.md`) or the standard-wiki
     /// DB-only path, and refuses two diagonal combinations (smart on
-    /// own smart wiki, standard on standard wiki). The previous smart-wiki-
-    /// only HARD gate is superseded by the per-cell matrix.
+    /// own smart wiki, standard on standard wiki).
     pub consumer_class: crate::jwt::ConsumerClass,
 }
 
 /// Inputs of one [`notify`] call. Mirrors `wiki_admin_notify`.
 #[derive(Debug, Clone)]
 pub struct NotifyRequest {
-    /// Target smart-wiki.
+    /// Target wiki — of either family; the gate matrix says which
+    /// consumer class may reach which.
     pub wiki_id: WikiId,
     /// Short topic line (≤ 200 chars). Whitespace-trimmed on entry.
     pub topic: String,
@@ -662,16 +665,21 @@ pub async fn notify(
     req: NotifyRequest,
 ) -> Result<NotifyResponse, BriefingError> {
     let (handle, outcome) = gate_notify_target_matrix(tree, &req.wiki_id, caller.consumer_class)?;
-    // Owner always passes; otherwise resolve_read_access
-    // checks the `shared_with` roster (direct user → SharedUser,
-    // group via enrollment::groups_for → SharedGroup, Global →
-    // Global). A topic wiki has no owner to pass as, so only its roster
-    // grants. Denial surfaces the canonical 403 with the resolved
-    // owner for diagnostics.
-    let access = crate::wiki_admin::resolve_read_access(pool, tree, &handle, &caller.sender_id)
-        .await
-        .map_err(map_admin_error)?;
-    if let crate::wiki_admin::ReadAccessOutcome::Denied { owner } = access {
+    // You may leave a note where you may read. `wiki_readable_by` asks each
+    // family its own question — a standard wiki derives visibility from the
+    // facts in it, a smart wiki holds none and answers from its own roster
+    // (owner, owning-group member, `shared_with`) — which is the one rule the
+    // dashboard's comment gate follows too. It is what lets a note reach a
+    // topic wiki at all: nobody owns one, so an owner question refuses
+    // everybody, while whoever reads a fact in it can say something about it.
+    let sender_groups = crate::enrollment::groups_for(pool, &caller.sender_id).await?;
+    let readable =
+        crate::wiki_admin::wiki_readable_by(pool, tree, &handle, &caller.sender_id, &sender_groups)
+            .await
+            .map_err(map_admin_error)?;
+    if !readable {
+        // The refusal still names whose wiki it is, for diagnostics.
+        let owner = crate::wiki_admin::wiki_owner_label(tree, &handle).map_err(map_admin_error)?;
         return Err(BriefingError::ReadAccessDenied {
             wiki_id: req.wiki_id.clone(),
             owner: owner.unwrap_or_else(|| "nobody".to_owned()),
@@ -1468,6 +1476,13 @@ mod tests {
         ));
     }
 
+    /// A smart wiki is governed by its roster and by nothing else.
+    ///
+    /// It holds no rows in `fact_index`, so the derived question a standard
+    /// wiki answers — *can you read a fact in here* — falls into its
+    /// empty-wiki branch and says **yes to everybody**. Routing the notify
+    /// gate through `wiki_readable_by` keeps the two families on their own
+    /// questions: a stranger with no `shared_with` entry is still refused.
     #[tokio::test]
     async fn notify_rejects_cross_user_access() {
         let (_dir, tree, pool, wiki_id) = seeded_tree_with_smart_wiki().await;
@@ -1479,6 +1494,130 @@ mod tests {
             .await
             .expect_err("cross-user must reject without shared_with");
         assert!(matches!(err, BriefingError::ReadAccessDenied { .. }));
+    }
+
+    /// The shape the nightly grouping raises: a `wiki-tech` wiki at the root,
+    /// no parent, standing for nobody.
+    fn forge_topic_wiki(tree: &WikiTree, id: &str) {
+        let dir = tree.wikis_dir().join(id);
+        std::fs::create_dir_all(&dir).expect("mkdir");
+        std::fs::write(
+            dir.join(crate::wiki::META_FILENAME),
+            format!(
+                "---\n\
+                 wiki_id: {id}\n\
+                 wiki_type: wiki-tech\n\
+                 parent_wiki_id: null\n\
+                 slug: {id}\n\
+                 title: {id}\n\
+                 ---\n"
+            ),
+        )
+        .expect("write meta");
+    }
+
+    /// One promoted fact, so the wiki is not empty and the derived read
+    /// question has something to answer from.
+    async fn seed_fact(pool: &SqlitePool, id: &str, wiki: &str, subject: &str, allow: &[&str]) {
+        crate::fact_index::insert(
+            pool,
+            &crate::fact_index::NewFact {
+                subject_external: None,
+                fact_id: crate::types::FactId::parse(id).unwrap(),
+                wiki_id: wiki.to_owned(),
+                source_path: format!("wikis/{wiki}/appunti.md"),
+                region_start: None,
+                region_end: None,
+                text: "body".to_owned(),
+                embedding: vec![0.0, 0.0, 0.0, 0.0],
+                subject_id: subject.parse().expect("subject principal"),
+                allow_ids: allow
+                    .iter()
+                    .map(|a| a.parse().expect("allow principal"))
+                    .collect(),
+                sender_id: None,
+                fact_type: None,
+                topics: Vec::new(),
+                valid_from: None,
+                valid_to: None,
+                salience: None,
+                target_page: None,
+                style: None,
+                source_ref: None,
+                authored_refs: Vec::new(),
+            },
+        )
+        .await
+        .expect("seed fact");
+    }
+
+    /// **You may leave a note where you may read.** A topic wiki stands for
+    /// nobody, so an owner question refuses everybody and no consumer could
+    /// ever notify one. The derived question is the right one there: a reader
+    /// of a fact in the wiki may leave a note about it.
+    #[tokio::test]
+    async fn notify_on_a_topic_wiki_lands_for_whoever_reads_a_fact_in_it() {
+        let dir = tempdir().unwrap();
+        let tree = WikiTree::open(dir.path()).unwrap();
+        let pool = make_pool().await;
+        forge_topic_wiki(&tree, "giardinaggio");
+        let tree = WikiTree::open(dir.path()).unwrap();
+        seed_fact(
+            &pool,
+            "018f1234-5678-7abc-9def-0123456789ab",
+            "giardinaggio",
+            "user:alice",
+            &["user:bob"],
+        )
+        .await;
+
+        let wiki_id = WikiId::parse("giardinaggio").unwrap();
+        let bob = NotifyCaller {
+            sender_id: "bob".into(),
+            consumer_class: crate::jwt::ConsumerClass::Smart,
+        };
+        let resp = notify(&pool, &tree, &bob, sample_request(&wiki_id))
+            .await
+            .expect("a reader of a fact in a topic wiki may leave a note there");
+        assert!(resp.briefing_item_id.starts_with("bi_"));
+
+        // `_briefing.md` belongs to smart wikis only: this row is drained by
+        // the nightly briefing processor.
+        let handle = tree.locate(&wiki_id).expect("locate");
+        assert!(!handle.abs_dir().join(BRIEFING_FILENAME).exists());
+    }
+
+    /// The other half of the same rule: reading nothing in the wiki means
+    /// leaving no note in it, and the refusal names no owner because there is
+    /// none to name.
+    #[tokio::test]
+    async fn notify_on_a_topic_wiki_is_refused_to_a_stranger() {
+        let dir = tempdir().unwrap();
+        let tree = WikiTree::open(dir.path()).unwrap();
+        let pool = make_pool().await;
+        forge_topic_wiki(&tree, "giardinaggio");
+        let tree = WikiTree::open(dir.path()).unwrap();
+        seed_fact(
+            &pool,
+            "018f1234-5678-7abc-9def-0123456789ab",
+            "giardinaggio",
+            "user:alice",
+            &["user:bob"],
+        )
+        .await;
+
+        let wiki_id = WikiId::parse("giardinaggio").unwrap();
+        let mallory = NotifyCaller {
+            sender_id: "mallory".into(),
+            consumer_class: crate::jwt::ConsumerClass::Smart,
+        };
+        let err = notify(&pool, &tree, &mallory, sample_request(&wiki_id))
+            .await
+            .expect_err("a stranger reads nothing there, so leaves nothing there");
+        let BriefingError::ReadAccessDenied { owner, .. } = &err else {
+            panic!("expected ReadAccessDenied, got {err:?}");
+        };
+        assert_eq!(owner, "nobody", "a topic wiki has no owner to name");
     }
 
     /// Inject `shared_with: [...]` into the smart wiki's
@@ -1493,8 +1632,8 @@ mod tests {
         for line in raw.lines() {
             out.push_str(line);
             out.push('\n');
-            // Anchor on `title:` (always present); the `acl_default` line is
-            // retired and the canonical order emits `shared_with` after title.
+            // Anchor on `title:` (always present); the canonical order emits
+            // `shared_with` right after it.
             if line.starts_with("title:") {
                 out.push_str("shared_with:\n");
                 for e in entries {

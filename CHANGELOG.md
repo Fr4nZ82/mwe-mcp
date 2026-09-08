@@ -18,6 +18,22 @@ semver-governed surface: breaking changes are called out explicitly.
   beside the binary, so an operator who downloads a release has the same
   pages the dashboard serves under **Guide** without a network connection.
 
+### Changed
+
+- **A note can reach a wiki nobody owns.** `wiki_admin_notify` decided who
+  may leave an item by asking who owns the target wiki. A **topic wiki** —
+  the kind the nightly grouping raises around a subject — is owned by
+  nobody, so the question refused everybody and no consumer could leave a
+  note in one. The gate is now the rule the dashboard's comment box
+  follows: **you may leave a note where you may read**, asked of each
+  family in its own words. On a standard wiki that is whoever can read at
+  least one fact in it; on a smart wiki it stays the wiki's owner, the
+  members of its owning group, and whoever `shared_with` names. Two knock-on
+  effects on standard wikis: somebody who can read a fact in another
+  person's wiki may now leave a note there, and a standard wiki with no
+  promoted facts yet reads as visible to everyone, so a note may be left in
+  it — the same derived answer the dashboard and `wiki_read` already give.
+
 ## 2.0.0 — 2026-09-07
 
 The dashboard is rewritten, in what it says and in what it does. A person can

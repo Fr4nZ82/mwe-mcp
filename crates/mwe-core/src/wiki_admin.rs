@@ -1889,11 +1889,39 @@ pub async fn resolve_read_access(
     if saw_global {
         return Ok(ReadAccessOutcome::Global);
     }
-    let owner = principal.as_ref().map(|p| match p {
+    Ok(ReadAccessOutcome::Denied {
+        owner: owner_label(principal.as_ref()),
+    })
+}
+
+/// A wiki's scope principal as the audit text prints it: a bare user id
+/// (`alice`, never `user:alice`), or `group:<id>` for a wiki a group answers
+/// for. `None` on a **topic wiki** — one that stands for nobody — and a message
+/// built from it says that instead of naming somebody.
+fn owner_label(principal: Option<&Principal>) -> Option<String> {
+    principal.map(|p| match p {
         Principal::User(id) => id.clone(),
         Principal::Group(g) => format!("group:{g}"),
-    });
-    Ok(ReadAccessOutcome::Denied { owner })
+    })
+}
+
+/// [`owner_label`] for a wiki, resolving its scope principal first.
+///
+/// The label a refusal names, for a caller that decided the refusal by some
+/// other question — [`wiki_readable_by`] answers a bare `bool`, and a message
+/// still has to say whose wiki it is.
+///
+/// # Errors
+///
+/// [`AdminError::Wiki`] if the parent chain cannot be resolved.
+pub fn wiki_owner_label(
+    tree: &WikiTree,
+    handle: &WikiHandle,
+) -> Result<Option<String>, AdminError> {
+    let principal = tree
+        .resolve_scope_principal(handle.meta())
+        .map_err(AdminError::Wiki)?;
+    Ok(owner_label(principal.as_ref()))
 }
 
 /// Request-shape validation for the `pages` of a push, run BEFORE any
