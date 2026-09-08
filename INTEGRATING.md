@@ -516,6 +516,18 @@ below directly.
    navigation step reuses the classifier's own routing signals, which a raw
    pre-classification search cannot reproduce. `wiki_search` remains
    available for explicit, user-visible lookups.
+
+   **A latency-bound surface can ask for a shallower turn.** Set
+   `metadata.recall` to `"light"` and the server skips the navigation step:
+   no navigator call, and no `NAVIGATED PAGES` section in the block.
+   Nothing else about the turn changes — the flat hits, the cards, the
+   recent window, `UPCOMING`, the capture and every governance block arrive
+   as they always do. It is a **per-turn** choice, not a deployment
+   setting: the same consumer sends `"light"` from a voice satellite that
+   is waiting to speak in a room, and nothing (or `"full"`, the default)
+   from its text channel where the deeper answer is worth the seconds. An
+   unrecognised value is rejected rather than read as the default, so a
+   typo cannot leave you silently on the deep path.
 2. **You own the transcript.** mwe-mcp keeps no server-side raw-message
    archive; supply the sliding window via `recent_messages` (the server
    reads at most its configured cap, by default the last 16 entries) and

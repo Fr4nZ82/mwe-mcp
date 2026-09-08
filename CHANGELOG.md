@@ -18,6 +18,18 @@ semver-governed surface: breaking changes are called out explicitly.
   beside the binary, so an operator who downloads a release has the same
   pages the dashboard serves under **Guide** without a network connection.
 
+- **A turn can ask for a shallower recall, for a channel that is waiting to
+  speak.** Every turn walks the memory pages the conversation points at, and
+  that walk is a second model call and the seconds it takes. A consumer on a
+  latency-bound surface — a voice satellite in a room — now sends
+  `metadata.recall: "light"` on `wiki_ingest_message` and the server skips
+  exactly that step: no walk, no **NAVIGATED PAGES** in the recall block, and
+  nothing else about the turn different. It is a per-turn choice, so the same
+  consumer keeps the deep answer on its text channel; the default, and every
+  turn that says nothing, is the full depth. An unrecognised value is
+  refused rather than read as the default. The ready-made bridges do not send
+  it — a consumer opts in.
+
 ### Changed
 
 - **A note can reach a wiki nobody owns.** `wiki_admin_notify` decided who

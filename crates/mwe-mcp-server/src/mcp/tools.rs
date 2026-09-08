@@ -245,7 +245,7 @@ async fn resolve_attachments(
 /// Pull the dispatcher-honoured keys out of the free-form `metadata`
 /// object: `disambig_choice` (returned separately — it rides on the
 /// request itself) plus the [`IngestMetadata`] signals (`locale`,
-/// `occurred_at`).
+/// `occurred_at`, `authored_refs`, `channel`, `recall`).
 fn parse_ingest_metadata(
     metadata: Option<&Value>,
 ) -> Result<(Option<String>, IngestMetadata), ToolError> {
@@ -308,6 +308,19 @@ fn parse_ingest_metadata(
         .filter(|s| !s.is_empty())
         .map(str::to_owned);
 
+    // How deep this turn's recall goes. Absent → the full depth, which is
+    // every turn that does not ask for anything else. An unrecognised token is
+    // refused, like `context_hint`'s and `author`'s: a consumer that asks for
+    // a shallower turn and silently gets the deep one cannot tell.
+    let recall = match metadata
+        .and_then(|m| m.get("recall"))
+        .and_then(Value::as_str)
+    {
+        Some(token) => ingest::RecallDepth::parse(token.trim())
+            .ok_or_else(|| invalid_input(format!("unknown metadata.recall: {token}")))?,
+        None => ingest::RecallDepth::default(),
+    };
+
     Ok((
         disambig_choice,
         IngestMetadata {
@@ -315,6 +328,7 @@ fn parse_ingest_metadata(
             occurred_at,
             authored_refs,
             channel,
+            recall,
         },
     ))
 }
@@ -3767,5 +3781,24 @@ mod tests {
         assert!(parsed.channel.is_none());
         let (_d, parsed) = parse_ingest_metadata(None).expect("parse");
         assert!(parsed.channel.is_none());
+    }
+
+    /// The recall-depth knob on the wire: absent is the full depth, `light`
+    /// is honoured, and a token that is neither is refused — a consumer that
+    /// asked for a shallower turn and silently got the deep one has no way
+    /// to tell, which is the failure the knob exists to avoid.
+    #[test]
+    fn parse_ingest_metadata_reads_the_recall_depth() {
+        let (_d, parsed) = parse_ingest_metadata(None).expect("parse");
+        assert_eq!(parsed.recall, ingest::RecallDepth::Full);
+        let (_d, parsed) =
+            parse_ingest_metadata(Some(&json!({ "recall": " light " }))).expect("parse");
+        assert_eq!(parsed.recall, ingest::RecallDepth::Light);
+        let (_d, parsed) =
+            parse_ingest_metadata(Some(&json!({ "recall": "full" }))).expect("parse");
+        assert_eq!(parsed.recall, ingest::RecallDepth::Full);
+        let err = parse_ingest_metadata(Some(&json!({ "recall": "ligth" })))
+            .expect_err("a typo must not read as the default");
+        assert!(err.message.contains("unknown metadata.recall"), "{err:?}");
     }
 }

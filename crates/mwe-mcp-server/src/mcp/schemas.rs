@@ -174,13 +174,14 @@ fn wiki_ingest_message() -> Tool {
                 },
                 "metadata": {
                     "type": "object",
-                    "description": "Free-form. The dispatcher honours `disambig_choice` for the second-turn commit, `locale` (BCP-47 tag, explicit LANGUAGE directive — overrides the per-user `enrollment_users.locale` default), `occurred_at` (the turn's semantic clock for backlog replays), `authored_refs` (provenance breadcrumbs from a preceding wiki_admin_push) and `channel` (which surface this turn arrived on).",
+                    "description": "Free-form. The dispatcher honours `disambig_choice` for the second-turn commit, `locale` (BCP-47 tag, explicit LANGUAGE directive — overrides the per-user `enrollment_users.locale` default), `occurred_at` (the turn's semantic clock for backlog replays), `authored_refs` (provenance breadcrumbs from a preceding wiki_admin_push), `channel` (which surface this turn arrived on) and `recall` (how deep this turn's recall goes).",
                     "properties": {
                         "disambig_choice": { "type": "string" },
                         "locale": { "type": "string", "description": "BCP-47 tag (`it-IT`, `en-US`, ...). Wins over `enrollment_users.locale`." },
                         "occurred_at": { "type": "string", "description": "ISO-8601/RFC-3339 instant the message was originally uttered (backlog replay / import). Relative dates, validity windows and the due-soon horizon resolve against it instead of the server clock; operational timestamps stay wall-clock. A malformed value is rejected." },
                         "authored_refs": { "type": "array", "items": { "type": "string" }, "description": "Smart consumers only: plain `[[wiki_id/page]]` wikilinks for project-wiki pages this turn just authored (echo `wiki_admin_push`'s `authored_refs`). Lets personal memory record a reference to that page instead of duplicating its body. Blank entries / non-strings are ignored." },
-                        "channel": { "type": "string", "description": "Opaque label for the surface this turn arrived on (`telegram`, `cli:`, …). A multi-channel consumer tags its surfaces apart so the cross-consumer recent window serves back every OTHER surface's turns and not this one's." }
+                        "channel": { "type": "string", "description": "Opaque label for the surface this turn arrived on (`telegram`, `cli:`, …). A multi-channel consumer tags its surfaces apart so the cross-consumer recent window serves back every OTHER surface's turns and not this one's." },
+                        "recall": { "type": "string", "enum": ["full", "light"], "default": "full", "description": "How deep this turn's recall goes. `full` (the default, and every turn that does not say otherwise) runs the navigator's walk over memory pages and returns the NAVIGATED PAGES section. `light` skips that one step — no navigator call, no NAVIGATED PAGES — and changes nothing else: the flat hits, the cards, the recent window, the upcoming commitments and the capture are all as usual. Ask for it per turn on a latency-bound surface (a voice satellite waiting to speak), not deployment-wide. An unknown value is rejected."}
                     }
                 },
                 "attachments": {

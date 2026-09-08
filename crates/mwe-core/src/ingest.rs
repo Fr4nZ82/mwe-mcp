@@ -156,6 +156,56 @@ impl ContextHint {
     }
 }
 
+/// How deep this turn's recall is allowed to go.
+///
+/// One knob, and it governs one thing: the navigator's walk
+/// ([`navigated_tail`]), which opens memory pages and is the only part of the
+/// recall block that costs a second model call and the seconds that come with
+/// it. Everything else a turn does is unchanged either way — the flat hits,
+/// the cards, the recent window, the upcoming commitments, the capture itself.
+///
+/// It exists because a channel can be latency-bound rather than
+/// answer-bound: a voice satellite in a room is waiting for a spoken reply
+/// while the walk is still opening pages, and there the shallower answer is
+/// the better one. **The consumer opts in per turn** — the same consumer's
+/// text channel keeps the full walk, so this is not a deployment setting and
+/// not a tier.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum RecallDepth {
+    /// Everything the recall block carries, the navigator's walk included.
+    #[default]
+    Full,
+    /// The same block without the walk: no navigator call, no `NAVIGATED
+    /// PAGES` section, nothing else different.
+    Light,
+}
+
+impl RecallDepth {
+    /// Wire token: `"full" | "light"`.
+    #[must_use]
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::Full => "full",
+            Self::Light => "light",
+        }
+    }
+
+    /// The depth a wire token names, `None` for anything else.
+    ///
+    /// An unrecognised token is refused at the boundary rather than read as
+    /// the default: a consumer that asks for a shallower turn and silently
+    /// gets the deep one has no way to notice, which is the whole failure
+    /// this knob exists to avoid.
+    #[must_use]
+    pub fn parse(token: &str) -> Option<Self> {
+        match token {
+            "full" => Some(Self::Full),
+            "light" => Some(Self::Light),
+            _ => None,
+        }
+    }
+}
+
 /// Input to [`wiki_ingest_message`].
 #[derive(Debug, Clone)]
 pub struct IngestRequest {
@@ -280,6 +330,10 @@ pub struct IngestMetadata {
     /// requesting one from what it serves back. Unset → the consumer is
     /// treated as a single surface.
     pub channel: Option<String>,
+    /// How deep this turn's recall goes ([`RecallDepth`]). Absent on the
+    /// wire → [`RecallDepth::Full`], which is every turn that does not ask
+    /// for anything else.
+    pub recall: RecallDepth,
 }
 
 // ---------- Public output types ----------
@@ -8210,9 +8264,10 @@ pub async fn wiki_ingest_message(
     // Step 5 — the recall-block tail. Navigation costs a navigator
     // completion, so it runs only when the turn's intent justifies it
     // (capture / recall / disambig — a pure skip or a structural nudge
-    // must not pay an LLM call) and only when the call site wired a
-    // navigator backend. Every failure in the tail is soft: the turn
-    // survives on whatever the flat path already produced.
+    // must not pay an LLM call), only when the call site wired a
+    // navigator backend, and only when the turn asked for the full depth.
+    // Every failure in the tail is soft: the turn survives on whatever the
+    // flat path already produced.
     let seeds = nav_seeds(&plan);
     // `WHO IS SPEAKING` — the sender's identity card, served from their
     // `@profile.md`. It runs FIRST of the tail because it is the
@@ -8253,10 +8308,16 @@ pub async fn wiki_ingest_message(
     if let Some(m) = &mentioned {
         served_cards.extend(m.rails.iter().cloned());
     }
+    // The third condition is the turn's own: a consumer on a latency-bound
+    // channel asks for the block without the walk
+    // (`metadata.recall: "light"`), because the walk is the part that opens
+    // pages and costs seconds, and a voice satellite in a room is waiting for
+    // a spoken answer while it runs. Nothing else about the turn changes.
     let nav_tail = match navigator {
         Some(nav_llm)
-            if matches!(intent, IntentKind::Capture | IntentKind::Recall)
-                || plan.needs_disambig =>
+            if request.metadata.recall == RecallDepth::Full
+                && (matches!(intent, IntentKind::Capture | IntentKind::Recall)
+                    || plan.needs_disambig) =>
         {
             navigated_tail(
                 pool,
@@ -18810,6 +18871,88 @@ mod tests {
             "a hit homed on a navigated page must not arrive twice: {snippet}"
         );
         drop(dir);
+    }
+
+    /// The turn that asks for a shallower recall gets exactly one thing
+    /// less.
+    ///
+    /// Same corpus, same message and same intent as
+    /// [`ingest_recall_turn_appends_navigated_memory_section`], which walks
+    /// the page — here `metadata.recall` is `light`, so the navigator is
+    /// never called at all (`PanickingLlm` would blow the test up if it
+    /// were) and the block carries no `NAVIGATED PAGES`. Everything else
+    /// stands: the flat hit that the walk would have swallowed is served, so
+    /// the turn still answers from memory.
+    #[tokio::test]
+    async fn a_light_turn_skips_the_walk_and_changes_nothing_else() {
+        let (dir, tree, pool) = setup_workdir().await;
+        std::fs::write(
+            dir.path().join("wikis/alice/bologna.md"),
+            "# bologna\nalice's city page\n",
+        )
+        .unwrap();
+        let fact = fact_index::NewFact {
+            subject_external: None,
+            authored_refs: Vec::new(),
+            fact_id: FactId::parse("018f1234-5678-7abc-9def-00000000f002").unwrap(),
+            wiki_id: "alice".to_owned(),
+            source_path: "wikis/alice/bologna.md".to_owned(),
+            region_start: None,
+            region_end: None,
+            text: "alice lives in Bologna".to_owned(),
+            embedding: vec![0.9, -0.3, 0.2, -0.1],
+            subject_id: Principal::User("alice".into()),
+            allow_ids: Vec::new(),
+            sender_id: None,
+            fact_type: Some("bio".to_owned()),
+            topics: Vec::new(),
+            valid_from: None,
+            valid_to: None,
+            salience: None,
+            target_page: None,
+            style: None,
+            source_ref: None,
+        };
+        fact_index::insert(&pool, &fact).await.expect("insert fact");
+
+        let llm = FakeLlmBackend::new("fake", "{\"intent\":\"recall\"}");
+        let mut request = req("what do you know about me?", "alice");
+        request.metadata.recall = RecallDepth::Light;
+        let policy = IngestPolicy::default();
+        let resp = wiki_ingest_message(
+            &pool,
+            &tree,
+            fake_embedder(),
+            &llm,
+            Some(&PanickingLlm),
+            request,
+            &policy,
+        )
+        .await
+        .expect("ingest");
+        assert_eq!(resp.intent, IntentKind::Recall);
+        let snippet = resp.context_snippet.expect("recall block present");
+        assert!(
+            !snippet.contains(HDR_NAVIGATED_PAGES),
+            "the walk is the one thing a light turn drops: {snippet}"
+        );
+        assert!(
+            snippet.contains("alice lives in Bologna"),
+            "the flat hits are untouched, so the turn still answers: {snippet}"
+        );
+        drop(dir);
+    }
+
+    /// The wire tokens, and the refusal that keeps a typo from putting a
+    /// latency-bound consumer back on the deep path without telling it.
+    #[test]
+    fn recall_depth_round_trips_its_wire_tokens() {
+        for d in [RecallDepth::Full, RecallDepth::Light] {
+            assert_eq!(RecallDepth::parse(d.as_str()), Some(d));
+        }
+        assert_eq!(RecallDepth::default(), RecallDepth::Full);
+        assert_eq!(RecallDepth::parse("ligth"), None);
+        assert_eq!(RecallDepth::parse(""), None);
     }
 
     #[tokio::test]
