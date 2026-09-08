@@ -13,6 +13,15 @@ semver-governed surface: breaking changes are called out explicitly.
 
 ### Added
 
+- **A one-line answer to "is it up?", for whatever is watching.** `GET /health`
+  at the root of the server's address answers `200 {"status":"ok"}` when the
+  process is serving and its database is reachable, and `503
+  {"status":"degraded","detail":"database unreachable"}` when it is not — so a
+  reverse proxy, a container orchestrator or a cron `curl` can decide without
+  a credential. It is deliberately mute about the deployment: no version, no
+  path, no model slot, nothing cached. The Health console at **Admin →
+  Health** is unchanged and remains where a person looks.
+
 - **The Traces page tells the recall the way the engine runs it.** A trace now
   opens with the completed message the engine answered (and says whether the
   facts answer that sentence or the words as written), how deep the turn was

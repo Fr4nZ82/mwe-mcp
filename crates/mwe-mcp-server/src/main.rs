@@ -1891,6 +1891,12 @@ async fn cmd_serve_http(
         // landing page (URL + one-shot token + per-consumer links)
         // arrives later alongside the dashboard UI.
         .nest("/connect", mwe_mcp_server::http_connect::router())
+        // The liveness answer a machine reads, at the root and
+        // unauthenticated because the things that poll it — a reverse
+        // proxy, a container orchestrator, a watchdog — hold no
+        // credential. Its body carries a fixed vocabulary and nothing
+        // about this deployment; see `http_health` for why.
+        .merge(mwe_mcp_server::http_health::router(state.pool.clone()))
         // Public, anonymous bridge-distribution surface mounted at the
         // root: the slim front page (`/`, an agent line + a human
         // sign-in), the bridge catalog (`/bridges`), and the

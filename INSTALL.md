@@ -374,6 +374,28 @@ To remove it: `Unregister-ScheduledTask -TaskName mwe-mcp -Confirm:$false`.
 The task file ships in the release archive alongside the binary, so
 `.\packaging\windows\mwe-mcp-task.xml` is where you unzipped it.
 
+### Is it up? — `GET /health`
+
+Whatever started the service, something should be watching it. `/health` sits
+at the root of the server's address, asks for no credential, and answers in one
+line:
+
+```bash
+curl -sS -o /dev/null -w '%{http_code}\n' http://127.0.0.1:8742/health   # 200
+```
+
+`200` with a body of `{"status":"ok"}` means the process answered and its
+database is reachable. `503` with `{"status":"degraded","detail":"database
+unreachable"}` means it answered and the database did not — the one failure a
+restart may fix, which is why the probe reports it separately from being dead.
+No answer at all means the process is gone.
+
+Because it needs no credential, this is the address to give a reverse proxy's
+health check, a container orchestrator's liveness probe, or a plain cron
+`curl`. It names nothing about your deployment — no version, no path, no model
+slot — precisely so it can stay open. What *does* describe your server is
+behind the admin login: the [Health](docs/operator/health.md) page.
+
 ---
 
 ## Where your data lives

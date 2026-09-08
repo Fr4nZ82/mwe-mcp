@@ -13,6 +13,7 @@ pub mod backup_scheduler;
 pub mod env_loader;
 pub mod housekeeping_scheduler;
 pub mod http_connect;
+pub mod http_health;
 pub mod http_media;
 pub mod http_skills;
 pub mod mcp;
