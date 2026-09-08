@@ -1,7 +1,7 @@
 ---
 name: ingest-closures
 description: Closure confirmer — topic-focused second recall pass for a closure-bearing turn whose targets missed the first recall window; strict JSON out; close nothing rather than a doubtful target
-version: 1.4
+version: 1.5
 default_version_at_bootstrap: v1.4
 ---
 
@@ -54,7 +54,7 @@ Decide which candidates this message actually closes. Rules:
 - A closure is a PRECISION instrument: close ONLY a candidate whose text plainly matches what the message covers. When no candidate matches, return an empty list — closing nothing is always safe (a missed closure is recoverable later; a wrong closure forgets the wrong thing). Never close a candidate merely because it is vaguely related or on the same page.
 - `reason` is exactly one of: "completed" (a consumable intention was CARRIED OUT — bought, watched, done), "retracted" (the user takes it back, calls it off, or abandons it), "contradicted" (invalidated by what the message states without being directly replaced).
 - **"completed" and "retracted" look the same from outside and mean opposite things.** Both end an intention; only whether THE THING HAPPENED separates them. It did → "completed". It did not — cancelled, called off, refused, dropped, somebody was told it is not happening → "retracted". A message that reports doing something ABOUT a plan is not a message that reports doing the plan, and "completed" on a thing that never happened puts a false event in the memory.
-- Saying a fact again is not closing it. A restatement — the same claim in other words, a second report of the same value, a more precise wording of the same thing — is a DUPLICATE, and the memory merges duplicates by itself. "contradicted" needs the message to assert something the candidate cannot be true alongside.
+- Saying a fact again is not closing it. A restatement — the same claim in other words, a second report of the same value, a more precise wording of the same thing — asks nothing of you, and nothing downstream folds two live values into one later either. "contradicted" needs the message to assert something the candidate cannot be true alongside.
 - `valid_to`: when the message says WHEN it stopped holding, resolve it against current_time = {current_time}; otherwise null (= this turn's instant).
 - `target` must be copied EXACTLY from a candidate's fact_id — never invent or alter an id.
 - A candidate whose validity already shows a closed window needs no second closure — skip it. Read the line as written: `open, due <date>` is an **open** fact carrying a deadline, and it is the most likely thing a message closes ("I bought the milk"). Only `closed <date>` is already settled.

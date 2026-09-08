@@ -42,6 +42,11 @@ the same recall as text:
   starting point, strongest first, and the fact that opened each door.
 - **Each step**, with the navigator's reason, which pages were on offer, which
   it asked for, which opened and — for each refusal — why not.
+- **Weighed against what was already there** — after the walk, the turn asks
+  one question about the facts it has just read: does this message retire,
+  replace, re-date or re-share any of them? The panel lists the facts that
+  were put to it and shows the answer it gave, word for word. It is the only
+  step that can retire something you had stored, so it is shown raw.
 - **Handed to the consumer** — the text that actually reached your assistant
   (a deep search shows **Answered to the caller** instead).
 - **Standing rules handed over** — your standing rules as they went with it,

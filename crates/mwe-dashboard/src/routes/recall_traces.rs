@@ -444,6 +444,7 @@ fn render_viewer_body(row: &TraceRow, trace: &RecallTrace, reveal: bool) -> Mark
         (render_docs(trace))
         (render_fan(trace))
         (render_hops(trace))
+        (render_reconcile(trace))
         (render_injected(trace, navigate))
     }
 }
@@ -788,6 +789,47 @@ fn render_hop(i: usize, hop: &HopTrace) -> Markup {
                     }
                     pre class="whitespace-pre-wrap text-xs" { (o.excerpt) }
                 }
+            }
+        }
+    }
+}
+
+/// The reconciliation stage: what it was shown and what it answered.
+///
+/// The only call in a turn that can retire a stored fact, and the only one
+/// whose answer is worth reading raw — an entry the guards refused is gone
+/// from the parsed verdict and leaves no other mark.
+fn render_reconcile(trace: &RecallTrace) -> Markup {
+    if trace.reconcile_candidates.is_empty() && trace.reconcile_verdict.is_none() {
+        return html! {};
+    }
+    html! {
+        section class="term-panel mt-4 p-4" {
+            h2 class="mt-0" { "Weighed against what was already there" }
+            p.muted {
+                "After the walk, the turn asks one question about the facts it just "
+                "read: does this message retire, replace, re-date or re-share any of "
+                "them? These were the facts it was shown, and this is what it said."
+            }
+            @if trace.reconcile_candidates.is_empty() {
+                p.muted { "No fact was put to it." }
+            } @else {
+                table class="config-table" {
+                    thead { tr { th { "Fact" } th { "Text" } } }
+                    tbody {
+                        @for c in &trace.reconcile_candidates {
+                            tr {
+                                td { code { (c.fact_id) } }
+                                td { (c.text) }
+                            }
+                        }
+                    }
+                }
+            }
+            @if let Some(verdict) = &trace.reconcile_verdict {
+                pre class="whitespace-pre-wrap text-xs mt-2" { (verdict) }
+            } @else {
+                p.muted { "It gave no answer: the model was unreachable, or no call was made." }
             }
         }
     }

@@ -79,12 +79,22 @@ pub const DEFAULT_TRACE_RETENTION_DAYS: i64 = 90;
 ///   slot served whole; the project-documentation slot; the fact that opened
 ///   each `rag` door; the vetting refusal behind a pick that did not open;
 ///   and a recall-only figure beside the whole-turn one.
-pub const TRACE_PAYLOAD_VERSION: u32 = 2;
+/// - **3** — the reconciliation stage: the candidates it was shown and the
+///   answer it gave, verbatim. It is the one call in the turn that can retire
+///   a stored fact, and until this it was the one call that left no record of
+///   what it was asked or what it said.
+pub const TRACE_PAYLOAD_VERSION: u32 = 3;
 
 /// Byte cap on the journaled turn / query text.
 const TURN_TEXT_CAP: usize = 1_200;
 /// Byte cap on each journaled hit body.
 const HIT_TEXT_CAP: usize = 500;
+/// Byte cap on each journaled reconciliation candidate.
+///
+/// Shorter than a hit's: this list exists to say WHICH facts were put to the
+/// stage, and a turn that read a card puts every fact on it there — so the
+/// list is long and each line only has to be recognisable.
+const RECONCILE_TEXT_CAP: usize = 200;
 
 /// Which surface produced a trace. Stored as [`Self::as_str`].
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -213,6 +223,24 @@ pub struct RecallTrace {
     pub injected_block: Option<String>,
     /// The behaviour-rules field injected alongside (ingest only).
     pub rules_block: Option<String>,
+    /// The facts the reconciliation stage was shown (ingest only) — the union
+    /// of the flat hits, every readable fact on every page the turn injected,
+    /// and the still-buffered captures.
+    ///
+    /// Empty means the stage never ran: a turn that captured nothing, or one
+    /// whose candidate union was empty and made no call. That is a different
+    /// thing from a stage that ran and changed nothing, and the verdict beside
+    /// it is what tells them apart.
+    pub reconcile_candidates: Vec<TraceReconcileCandidate>,
+    /// The reconciler's answer exactly as the model wrote it, before parsing
+    /// (ingest only; `None` when no call was made or the model was
+    /// unreachable).
+    ///
+    /// Raw on purpose. This is the only call in a turn that can retire a
+    /// stored fact, and a parsed summary of it cannot say why an entry was
+    /// refused — a hallucinated id, a missing slot, an owner the speaker is
+    /// not — because the refusal happens after the parse and drops the entry.
+    pub reconcile_verdict: Option<String>,
     /// Milliseconds of [`took_ms`] spent on the recall itself: the searches,
     /// the slots and the walk, summed as the turn ran.
     ///
@@ -229,6 +257,32 @@ pub struct RecallTrace {
     ///
     /// [`recall_ms`]: Self::recall_ms
     pub took_ms: u64,
+}
+
+/// One fact the reconciliation stage was shown, as journaled.
+///
+/// Id and a short text, and deliberately nothing else: what a reader of the
+/// trace asks of this list is *was the fact the message contradicted even put
+/// in front of the stage*, and that question is answered by the id being
+/// there or not.
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[serde(default)]
+pub struct TraceReconcileCandidate {
+    /// Fact id, as the stage saw it.
+    pub fact_id: String,
+    /// Region body, capped at [`RECONCILE_TEXT_CAP`] bytes.
+    pub text: String,
+}
+
+impl TraceReconcileCandidate {
+    /// Journal one candidate, capping the body.
+    #[must_use]
+    pub fn from_hit(h: &RecallHit) -> Self {
+        Self {
+            fact_id: h.fact_id.as_str().to_owned(),
+            text: cap_text(&h.text, RECONCILE_TEXT_CAP),
+        }
+    }
 }
 
 /// One page the identity slot served whole, as journaled.
@@ -832,7 +886,7 @@ mod tests {
     #[test]
     fn the_payload_version_names_every_shape_it_has_had() {
         assert_eq!(
-            TRACE_PAYLOAD_VERSION, 2,
+            TRACE_PAYLOAD_VERSION, 3,
             "bumping this means adding the new version's line to the constant's doc"
         );
     }

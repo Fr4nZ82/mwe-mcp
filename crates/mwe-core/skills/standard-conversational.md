@@ -162,13 +162,23 @@ Verified against
 
 ## Disambiguation
 
-When the server isn't sure which fact the user is referring to
-("the dentist" with multiple dentist entries on file), the response
-has `needs_disambig: true` and a populated `disambig_candidates`.
-Surface the choices to the user. When they pick one, call
-`wiki_ingest_message` **again** with the same text but with
-`metadata.disambig_choice = "<candidate_id>"`. The server picks up
-the chosen candidate and finalizes the turn.
+The response has `needs_disambig: true` and a populated
+`disambig_candidates` for either of two questions the server cannot answer
+by itself. Surface the choices to the user, and when they pick one call
+`wiki_ingest_message` **again** with the same text and
+`metadata.disambig_choice = "<candidate_id>"`. The server picks up the
+chosen candidate and finalizes the turn.
+
+1. **Which fact does the user mean** — "the dentist", with several dentist
+   entries on file. Nothing is held up; the turn is served either way.
+2. **Which of two values is right** — the turn states a birth date, an
+   address or a contact for somebody whose identity card already carries a
+   different one. **The server writes nothing until the user answers**: the
+   two candidates are "keep" the value already on record (quoted, with who
+   said it and when) and "replace with" the value this turn stated.
+   `suggested_seed` carries the same question in prose. A consumer that
+   ignores this leaves the new value unwritten and the card as it was —
+   never both values at once.
 
 ## Locale plumbing
 

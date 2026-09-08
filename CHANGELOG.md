@@ -31,6 +31,28 @@ semver-governed surface: breaking changes are called out explicitly.
 
 ### Changed
 
+- **A second birth date is a question now, not a second line on the card.**
+  An identity card holds a handful of things there can only be one of: when
+  somebody was born, where they live, how to reach them. When a conversation
+  stated a *different* value for one of them, the memory wrote it down beside
+  the one already there and nothing downstream noticed — a child's card ended
+  up carrying two birth dates, five years apart, both live. Now nothing is
+  written: the assistant asks which of the two is right, in the same turn,
+  quoting the value on record with who said it and when, and stores only after
+  the answer. Keep it and nothing changes; replace it and the old value is
+  retired, pointing at the new one. If the person asking is not entitled to
+  rewrite that value — it is somebody else's, and they neither said it nor are
+  it — the question goes to whoever is, as a proposal waiting in the dashboard;
+  until they answer, the card keeps what it had. No model ever chooses between
+  the two, and no value is lost in silence. The engine also stops turning an
+  age into a birth date: *«he is about 14 in July»* is stored as an age, not
+  converted into a day nobody said.
+- **Traces shows what the last step of a turn was asked, and what it answered.**
+  One call at the end of every turn decides whether the message retires,
+  replaces, re-dates or re-shares something already stored — the only call that
+  can take a fact away — and it was the one step of the route that left no
+  record. The **Traces** page now shows the facts it was given and its answer,
+  word for word.
 - **Traces shows only the recalls a person was actually given.** When an
   assistant answers, its reply is sent back to the memory so that the memory
   keeps the assistant's half of the conversation as well as yours. That second

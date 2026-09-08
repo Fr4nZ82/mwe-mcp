@@ -20,7 +20,9 @@ use mwe_core::delegations::DelegationCache;
 use mwe_core::embedder::FakeEmbedder;
 use mwe_core::jwt::{BlacklistCache, TokenSecret};
 use mwe_core::recall_nav::{CandidateCard, HopTrace, OpenedPage, RequestedOpen};
-use mwe_core::recall_trace::{self, RecallTrace, TraceEntryPoint, TraceHit, TraceSource};
+use mwe_core::recall_trace::{
+    self, RecallTrace, TraceEntryPoint, TraceHit, TraceReconcileCandidate, TraceSource,
+};
 use mwe_core::wiki::WikiTree;
 use mwe_dashboard::{DashboardState, MemoryHandles, router};
 use sqlx::SqlitePool;
@@ -202,6 +204,14 @@ fn sample_trace() -> RecallTrace {
         truncated: false,
         injected_block: Some("- (galadriel) Galadriel è celiaca [noted 2026-07-01]".to_owned()),
         rules_block: None,
+        reconcile_candidates: vec![TraceReconcileCandidate {
+            fact_id: "0197fa00-0000-7000-8000-000000000001".to_owned(),
+            text: "Galadriel è celiaca — cucinare senza glutine.".to_owned(),
+        }],
+        reconcile_verdict: Some(
+            "{\"closures\":[],\"supersedes\":[],\"validity_edits\":[],\"acl_changes\":[]}"
+                .to_owned(),
+        ),
         took_ms: 2150,
         ..RecallTrace::default()
     }
@@ -324,6 +334,8 @@ async fn journal_lists_and_viewer_replays_a_recorded_trace() {
         "Step 1",
         "the guest's page holds the dietary constraints",
         "not opened: not among the pages it was shown",
+        "Weighed against what was already there",
+        "&quot;supersedes&quot;:[]",
         "Handed to the consumer",
         "celiaca",
         "hermes1",

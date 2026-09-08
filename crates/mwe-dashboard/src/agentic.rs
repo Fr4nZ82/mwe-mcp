@@ -395,7 +395,7 @@ fn proposal_tool_descriptors() -> Vec<Tool> {
                     },
                     "answers": {
                         "type": "object",
-                        "description": "Per-kind answers object (e.g. {\"target_page\": \"salute.md\"} for wiki_promote, {} for dedup_merge)."
+                        "description": "Per-kind answers object (e.g. {\"target_page\": \"salute.md\"} for wiki_promote, {} for dedup_merge, {\"verdict\": \"keep\"} or {\"verdict\": \"retire\"} for slot_conflict; keep leaves the stored value alone, retire stops the memory asserting it)."
                     }
                 },
                 "required": ["proposal_id", "answers"]

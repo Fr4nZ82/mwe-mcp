@@ -174,7 +174,7 @@ fn wiki_ingest_message() -> Tool {
                 },
                 "metadata": {
                     "type": "object",
-                    "description": "Free-form. The dispatcher honours `disambig_choice` for the second-turn commit, `locale` (BCP-47 tag, explicit LANGUAGE directive — overrides the per-user `enrollment_users.locale` default), `occurred_at` (the turn's semantic clock for backlog replays), `authored_refs` (provenance breadcrumbs from a preceding wiki_admin_push), `channel` (which surface this turn arrived on) and `recall` (how deep this turn's recall goes).",
+                    "description": "Free-form. The dispatcher honours `disambig_choice` for the second-turn commit (both the classifier's 'which fact did you mean' and the engine's 'which of two values is right', where the turn held a write back until the person answers), `locale` (BCP-47 tag, explicit LANGUAGE directive — overrides the per-user `enrollment_users.locale` default), `occurred_at` (the turn's semantic clock for backlog replays), `authored_refs` (provenance breadcrumbs from a preceding wiki_admin_push), `channel` (which surface this turn arrived on) and `recall` (how deep this turn's recall goes).",
                     "properties": {
                         "disambig_choice": { "type": "string" },
                         "locale": { "type": "string", "description": "BCP-47 tag (`it-IT`, `en-US`, ...). Wins over `enrollment_users.locale`." },

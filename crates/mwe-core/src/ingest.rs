@@ -44,14 +44,32 @@
 //! filesystem) still propagate as [`IngestError`] so they reach the
 //! transport layer's error mapping.
 //!
+//! ## The two questions on the disambiguation channel
+//!
+//! `needs_disambig` + `disambig_candidates` carry two different questions
+//! out, and only one of them holds a write.
+//!
+//! **Which fact did you mean** is the classifier's: it could not tell which
+//! stored fact a reference points at. Nothing waits on the answer — the turn's
+//! own captures file as they always do — and when the consumer re-calls with
+//! `metadata.disambig_choice`, the orchestrator forwards it to the prompt as
+//! an explicit "user resolved the ambiguity to `<id>`" line and never
+//! re-surfaces ambiguity, whatever the model then says.
+//!
+//! **Which of two values is right** is the engine's, and it is the one case
+//! where an ingest turn deliberately does not store what it was told. A
+//! `bio` extraction that fills a slot of somebody's identity card with a
+//! DIFFERENT value ([`vet_slot_conflict`]) is held back, and the turn comes
+//! back with *keep* the value on record against *replace with* the new one. A
+//! model does not choose between them, and neither does the engine: two birth
+//! dates cannot both hold, the one already there was stated by somebody
+//! entitled to state it, and arriving later is not an argument. The answer
+//! rides back on the same `disambig_choice`; `keep` writes nothing, `replace`
+//! files and retires the old value where the speaker may rewrite it, and opens
+//! a `slot_conflict` proposal to its owner where they may not.
+//!
 //! ## What is deferred
 //!
-//! - **Disambiguation follow-up** (`disambig_choice`): when the
-//!   consumer re-calls with the candidate the user picked, the
-//!   orchestrator forwards the choice to the LLM prompt as an explicit
-//!   "user resolved the ambiguity to `<id>`" line. The classifier is
-//!   instructed to commit (no `needs_disambig=true` on the second
-//!   turn). Plumbed alongside the dispatcher.
 //! - **Structural proposals**: an `intent=structural` outcome surfaces
 //!   the dashboard suggestion but does not yet emit a
 //!   `structure_proposal` row — that lands with the REM interpreter
@@ -1116,6 +1134,23 @@ struct LlmExtraction {
     body: Option<String>,
     #[serde(default)]
     supersede_target: Option<String>,
+    /// `fact_id` from the turn's `identity_core` block whose SLOT this
+    /// extraction fills with a different value.
+    ///
+    /// Not a supersede: it says the two cannot both hold and the model is not
+    /// deciding which does. The engine holds the extraction back and asks the
+    /// person, in the turn ([`SlotAnswer`]) — which is the whole point, since
+    /// a birth date the memory already carries was stated by somebody, and
+    /// nothing about a new turn makes it the one that is wrong.
+    #[serde(default)]
+    conflicts_with: Option<String>,
+    /// The one thing both values state — "the date of birth", "where they
+    /// live" — in the model's own words, and the same field the reconciler
+    /// fills for the same reason ([`LlmSupersede::slot`]): a pair that really
+    /// is one slot has one name, and a pair that is not has none, so writing
+    /// it down IS the test.
+    #[serde(default)]
+    slot: Option<String>,
     /// Catalog ids (from this turn's `attachments:` window) whose media
     /// this extraction describes. The orchestrator validates each id
     /// against the request's attachment list (anti-hallucination) and
@@ -1180,6 +1215,10 @@ struct CaptureUnit<'a> {
     topics: &'a [String],
     body: Option<&'a str>,
     supersede_target: Option<&'a str>,
+    /// Borrowed view of the identity-slot conflict this fact declares
+    /// (see [`LlmExtraction::conflicts_with`] and [`LlmExtraction::slot`]).
+    conflicts_with: Option<&'a str>,
+    slot: Option<&'a str>,
     /// Catalog ids this fact claims from the turn's attachment window
     /// (see [`LlmExtraction::attachments`]). Empty on the legacy
     /// single-fact shape — unclaimed attachments are filed by the
@@ -1229,6 +1268,8 @@ impl LlmIngestPlan {
                     topics: &e.topics,
                     body: e.body.as_deref(),
                     supersede_target: e.supersede_target.as_deref(),
+                    conflicts_with: e.conflicts_with.as_deref(),
+                    slot: e.slot.as_deref(),
                     attachments: &e.attachments,
                 })
                 .collect();
@@ -1266,6 +1307,11 @@ impl LlmIngestPlan {
                 topics: &self.topics,
                 body: self.body.as_deref(),
                 supersede_target: self.supersede_target.as_deref(),
+                // The legacy shape is what an OLDER prompt emits, and the
+                // identity-core block a conflict is declared against is newer
+                // than every one of them: there is no id it could name.
+                conflicts_with: None,
+                slot: None,
                 attachments: &[],
             }];
         }
@@ -2482,6 +2528,22 @@ impl ReconcileDecision {
     }
 }
 
+/// What the reconciliation stage decided, and what it actually said.
+///
+/// The raw answer travels with the parsed one because the two disagree in
+/// ways nothing else records: an entry the parse dropped, an id the guards
+/// refused, a verb the model spelled wrong. Only the recall trace reads it,
+/// and only so a person can see what the one call that retires facts was
+/// asked and what it replied.
+#[derive(Debug, Default)]
+struct Reconciliation {
+    /// The parsed verdict the apply side acts on.
+    decision: ReconcileDecision,
+    /// The model's answer verbatim, `None` when no call was made or the model
+    /// could not be reached.
+    verdict: Option<String>,
+}
+
 /// One requested supersede: an existing fact is replaced by one this turn
 /// wrote.
 #[derive(Debug, serde::Deserialize)]
@@ -2502,6 +2564,42 @@ struct LlmSupersede {
     /// test that is performed and one that is read past.
     #[serde(default)]
     slot: Option<String>,
+}
+
+/// What [`vet_supersede`] made of one requested supersede.
+///
+/// Three outcomes and not two, because the fourth guard fails differently
+/// from the other three. A malformed pair is **noise** — an id nobody was
+/// shown, a slot nobody named — and dropping it costs nothing. A pair that is
+/// sound but not the speaker's to apply is a **real disagreement between two
+/// people**: the memory holds one value, somebody just asserted another, and
+/// the engine has no standing to pick. Answering both with `continue` left
+/// exactly that case silent — the new fact filed, the old one open beside it,
+/// nothing anywhere saying the two contradict.
+enum VettedSupersede<'a> {
+    /// Apply it: the pair is well-formed and the sender may rewrite the target.
+    Sound {
+        /// The fact being replaced.
+        target: FactId,
+        /// The fact this turn filed that replaces it.
+        successor: FactId,
+        /// The target as recall surfaced it — its audience travels onto the
+        /// successor.
+        prev: &'a RecallHit,
+    },
+    /// The pair is well-formed, and the sender is neither the target's subject
+    /// nor its author. The question goes to whoever is
+    /// ([`proposals::emit_slot_conflict`]).
+    NotTheirs {
+        /// What this turn filed in its place — the successor the owner welds
+        /// to if they agree.
+        successor: FactId,
+        /// The fact the speaker may not rewrite, as recall surfaced it. It
+        /// carries its own id, so the target is not repeated here.
+        prev: &'a RecallHit,
+    },
+    /// Nothing to act on, and nothing to ask anybody.
+    Unsound,
 }
 
 /// Vet one requested supersede, refusing rather than guessing.
@@ -2529,17 +2627,22 @@ struct LlmSupersede {
 ///   audience the fact was shared with ([`crate::acl::sender_may_retract`]),
 ///   while an ACL change discloses the subject's data and stays with the
 ///   subject alone ([`crate::acl::sender_is_subject`]).
+///
+/// The first three drop the entry. The fourth does not: the pair is real and
+/// only the speaker is wrong for it, so it comes back as
+/// [`VettedSupersede::NotTheirs`] and the caller puts it to somebody who can
+/// answer.
 fn vet_supersede<'a>(
     s: &LlmSupersede,
     candidates: &'a [RecallHit],
     turn_facts: &[(FactId, String)],
     sender_id: &str,
     sender_groups: &[String],
-) -> Option<(FactId, FactId, &'a RecallHit)> {
+) -> VettedSupersede<'a> {
     let (Some(target_raw), Some(successor_raw)) = (s.target.as_deref(), s.successor.as_deref())
     else {
         tracing::warn!("ingest: reconcile supersede missing target or successor — skipped");
-        return None;
+        return VettedSupersede::Unsound;
     };
     if s.slot.as_deref().is_none_or(|w| w.trim().is_empty()) {
         tracing::warn!(
@@ -2547,7 +2650,7 @@ fn vet_supersede<'a>(
             successor = successor_raw,
             "ingest: reconcile supersede names no slot the two facts share — refused"
         );
-        return None;
+        return VettedSupersede::Unsound;
     }
     let (Ok(target_id), Ok(successor_id)) =
         (FactId::parse(target_raw), FactId::parse(successor_raw))
@@ -2557,7 +2660,7 @@ fn vet_supersede<'a>(
             successor = successor_raw,
             "ingest: reconcile supersede carries an unparseable id"
         );
-        return None;
+        return VettedSupersede::Unsound;
     };
     // Nothing replaces itself. The two lists the judge picks from are disjoint
     // by construction — [`reconcile_candidates`] keeps the turn's own facts out
@@ -2573,21 +2676,21 @@ fn vet_supersede<'a>(
             target = target_raw,
             "ingest: reconcile supersede names one fact as both the replaced and the replacement — refused"
         );
-        return None;
+        return VettedSupersede::Unsound;
     }
     let Some(prev) = candidates.iter().find(|h| h.fact_id == target_id) else {
         tracing::warn!(
             target = target_raw,
             "ingest: reconcile supersede target is not a candidate — refused"
         );
-        return None;
+        return VettedSupersede::Unsound;
     };
     if !turn_facts.iter().any(|(id, _)| *id == successor_id) {
         tracing::warn!(
             successor = successor_raw,
             "ingest: reconcile supersede successor is not a fact this turn filed — refused"
         );
-        return None;
+        return VettedSupersede::Unsound;
     }
     if !crate::acl::sender_may_rewrite(
         &prev.subject_id,
@@ -2598,11 +2701,43 @@ fn vet_supersede<'a>(
         tracing::warn!(
             target = target_raw,
             subject = %prev.subject_id,
-            "ingest: reconcile supersede refused — the target is neither about the sender nor theirs to correct"
+            "ingest: reconcile supersede refused — the target is neither about the sender nor \
+             theirs to correct; its owner is asked instead"
         );
-        return None;
+        return VettedSupersede::NotTheirs {
+            successor: successor_id,
+            prev,
+        };
     }
-    Some((target_id, successor_id, prev))
+    VettedSupersede::Sound {
+        target: target_id,
+        successor: successor_id,
+        prev,
+    }
+}
+
+/// Put a slot disagreement to the person who can settle it: a pending
+/// dashboard proposal ([`proposals::emit_slot_conflict`]).
+///
+/// Best-effort by contract, like every other write at the end of a turn: a
+/// proposal that cannot be opened is logged and the turn stands. The memory is
+/// then exactly where it was, which is the same place the recommended answer
+/// would have left it.
+async fn ask_the_owner_of_the_slot(pool: &SqlitePool, conflict: proposals::SlotConflict) {
+    match proposals::emit_slot_conflict(pool, &conflict).await {
+        Ok(proposal_id) => tracing::info!(
+            proposal_id,
+            target = conflict.kept_fact_id.as_str(),
+            subject = %conflict.subject,
+            slot = conflict.slot.as_str(),
+            "ingest: a slot holds two values and the speaker cannot choose — asked its owner"
+        ),
+        Err(err) => tracing::warn!(
+            error = %err,
+            target = conflict.kept_fact_id.as_str(),
+            "ingest: slot-conflict proposal not opened (the memory is unchanged)"
+        ),
+    }
 }
 
 /// Carry the superseded fact's audience onto its successor, wherever the
@@ -2634,39 +2769,21 @@ async fn inherit_audience(pool: &SqlitePool, successor: &FactId, allow: &[Princi
     }
 }
 
-/// Apply the reconciler's supersedes: weld each new fact to the one it
-/// replaces, **audience first**.
+/// Apply the reconciler's supersedes: vet each pair, then weld the new fact
+/// onto the one it replaces ([`weld_with_audience`]).
 ///
-/// The order is the whole point. A supersede is a **content update, not a
-/// sharing change**: the new fact inherits the superseded fact's allow list,
-/// `global` excepted. The reconciler can tell that a claim was restated; it
-/// must never be relied on to restate who may read it, because a re-statement
-/// that quietly drops the allow list re-privatises a shared fact and nothing
-/// anywhere says so. `global` is the one reader that does not travel: it is
-/// not a wider audience but the absence of one, and a mis-paired supersede
-/// that carried it would publish a fact somebody had just decided to keep
-/// inside their household.
+/// The reconciler can tell that a claim was restated; it must never be relied
+/// on to restate who may read it, because a re-statement that quietly drops the
+/// allow list re-privatises a shared fact and nothing anywhere says so. So the
+/// audience is carried over by the engine, from the fact being replaced.
+///
 /// Deciding the supersede after the new fact is written makes this a second
 /// write, where inheriting before the write would have been free. That is the
 /// price of asking the question where it can be answered honestly: the
 /// classifier does not see enough to answer it.
 ///
-/// **The allow list, and nothing else.** The successor keeps its own subject and
-/// its own sender: a supersede does not move the subject either. Alice
-/// retiring "Alice is at the dentist Thursday" by saying "it is Bob who goes"
-/// mints a fact owned by Bob — and a reader set is `subject ∪ allow ∪ sender`,
-/// so carrying Alice over as the subject would take the fact about Bob away
-/// from Bob while Alice was trying to tell him. Where the subject does not
-/// change (a restated wifi password) the subject was already the same, which is
-/// why this was invisible.
-///
-/// Inheriting before welding also fails in the recoverable direction: a failed
-/// inheritance leaves the old fact open beside the new one, which is visibly
-/// wrong, where a failed weld after a good inheritance leaves the new fact
-/// already correctly shared. The current sender is stripped from the inherited
-/// list, mirroring `validate_capture_plan`'s `SenderRedundantInAllow` guard.
-/// Every step is soft: a refused or failed supersede is logged and skipped,
-/// never fatal.
+/// A pair the sender may not apply is not dropped: it is put to the person who
+/// can ([`ask_the_owner_of_the_slot`]).
 ///
 /// Returns how many were applied.
 async fn apply_reconciled_supersedes(
@@ -2684,65 +2801,138 @@ async fn apply_reconciled_supersedes(
         .unwrap_or_default();
     let mut applied = 0usize;
     for s in supersedes {
-        let Some((target_id, successor_id, prev)) = vet_supersede(
+        let (target_id, successor_id, prev) = match vet_supersede(
             s,
             candidates,
             turn_facts,
             request.sender_id.as_str(),
             &sender_groups,
-        ) else {
-            continue;
+        ) {
+            VettedSupersede::Sound {
+                target,
+                successor,
+                prev,
+            } => (target, successor, prev),
+            // The speaker restated somebody else's claim and may not rewrite
+            // it. Both values are now in the memory and they cannot both hold,
+            // so the disagreement is put to the person who can settle it
+            // instead of being dropped: the proposal names the slot, both
+            // texts, who said each, and why the replacement did not happen.
+            // Its recommended answer keeps the stored value, so silence
+            // changes nothing.
+            VettedSupersede::NotTheirs { successor, prev } => {
+                let asserted = turn_facts
+                    .iter()
+                    .find(|(id, _)| *id == successor)
+                    .map_or("", |(_, text)| text.as_str());
+                ask_the_owner_of_the_slot(
+                    pool,
+                    StoredValue::from_hit(prev).disagreement(
+                        // Non-empty by the slot guard two screens up: a
+                        // supersede that names none never reaches here.
+                        s.slot.as_deref().unwrap_or_default(),
+                        asserted,
+                        &sender,
+                        Some(&successor),
+                        "they are neither its subject nor the person who said it",
+                    ),
+                )
+                .await;
+                continue;
+            },
+            VettedSupersede::Unsound => continue,
         };
-        // The audience travels, EXCEPT `global`. Inheritance exists so a
-        // restatement cannot quietly hide a fact from people who could
-        // already read it; turning a per-fact decision into a public one is
-        // the opposite failure and it is the worse one — public is not a
-        // wider audience, it is the absence of one. So `global` is only ever
-        // reached by deciding it for THIS fact, on its own merits.
-        //
-        // When stripping it leaves nothing, there is nobody to carry over:
-        // the successor keeps the audience the classifier gave it.
-        let inherited: Vec<Principal> = prev
-            .allow_ids
-            .iter()
-            .filter(|p| **p != sender && !p.is_global())
-            .cloned()
-            .collect();
-        if inherited.is_empty() {
-            if weld_supersede(pool, &target_id, &successor_id, request.turn_now()).await {
-                applied += 1;
-                tracing::info!(
-                    target = target_id.as_str(),
-                    successor = successor_id.as_str(),
-                    "ingest: reconcile superseded a fact; its audience was public, \
-                     so the successor keeps its own"
-                );
-            }
-            continue;
-        }
-        if !inherit_audience(pool, &successor_id, &inherited).await {
-            tracing::warn!(
-                successor = successor_id.as_str(),
-                "ingest: supersede successor not found in either store — not superseding"
-            );
-            continue;
-        }
-        if weld_supersede(pool, &target_id, &successor_id, request.turn_now()).await {
+        if weld_with_audience(
+            pool,
+            &target_id,
+            &successor_id,
+            &prev.allow_ids,
+            &sender,
+            request.turn_now(),
+        )
+        .await
+        {
             applied += 1;
-            tracing::info!(
-                target = target_id.as_str(),
-                successor = successor_id.as_str(),
-                inherited = inherited.len(),
-                "ingest: reconcile superseded a fact, audience carried over"
-            );
-        } else {
-            tracing::warn!(
-                target = target_id.as_str(),
-                "ingest: reconcile supersede target is in neither store as a live row — nothing to do"
-            );
         }
     }
     applied
+}
+
+/// Weld a successor onto the fact it replaces, **audience first**, and say
+/// whether the old fact was actually retired.
+///
+/// The order is the whole point. A supersede is a **content update, not a
+/// sharing change**: the new fact inherits the superseded fact's allow list,
+/// `global` excepted. Inheriting after the weld would leave a window where the
+/// old fact is closed and the new one is readable by fewer people than the
+/// claim it replaced; inheriting first fails in the recoverable direction —
+/// the old fact stays open beside the new one, which is visibly wrong, where a
+/// failed weld after a good inheritance leaves the new fact already correctly
+/// shared.
+///
+/// **`global` does not travel.** It is not a wider audience but the absence of
+/// one, and a supersede that carried it would publish a fact somebody had just
+/// decided to keep inside their household. It is only ever reached by deciding
+/// it for THIS fact, on its own merits. When stripping it (and the current
+/// sender, mirroring `validate_capture_plan`'s `SenderRedundantInAllow` guard)
+/// leaves nothing, there is nobody to carry over and the successor keeps the
+/// audience it was given.
+///
+/// **The allow list, and nothing else.** The successor keeps its own subject
+/// and its own sender: a supersede replaces what a fact says, never whose fact
+/// it is. Alice retiring "Alice is at the dentist Thursday" by saying "it is
+/// Bob who goes" mints a fact owned by Bob — and a reader set is
+/// `subject ∪ allow ∪ sender`, so carrying Alice over as the subject would take
+/// the fact about Bob away from Bob while Alice was trying to tell him.
+///
+/// Every step is soft: a failed inheritance or weld is logged and the supersede
+/// is skipped, never fatal to the turn.
+async fn weld_with_audience(
+    pool: &SqlitePool,
+    target: &FactId,
+    successor: &FactId,
+    audience: &[Principal],
+    sender: &Principal,
+    turn_now: chrono::DateTime<chrono::Utc>,
+) -> bool {
+    let inherited: Vec<Principal> = audience
+        .iter()
+        .filter(|p| *p != sender && !p.is_global())
+        .cloned()
+        .collect();
+    if inherited.is_empty() {
+        if weld_supersede(pool, target, successor, turn_now).await {
+            tracing::info!(
+                target = target.as_str(),
+                successor = successor.as_str(),
+                "ingest: superseded a fact; its audience was public, so the successor keeps its own"
+            );
+            return true;
+        }
+        return false;
+    }
+    if !inherit_audience(pool, successor, &inherited).await {
+        tracing::warn!(
+            successor = successor.as_str(),
+            "ingest: supersede successor not found in either store — not superseding"
+        );
+        return false;
+    }
+    if weld_supersede(pool, target, successor, turn_now).await {
+        tracing::info!(
+            target = target.as_str(),
+            successor = successor.as_str(),
+            inherited = inherited.len(),
+            "ingest: superseded a fact, audience carried over"
+        );
+        true
+    } else {
+        tracing::warn!(
+            target = target.as_str(),
+            "ingest: supersede target is in neither store as a live row — nothing to do"
+        );
+        false
+    }
 }
 
 /// Retire the superseded fact, wherever it lives.
@@ -3053,9 +3243,9 @@ async fn reconcile_after_reading(
     candidates: &[RecallHit],
     turn_facts: &[(FactId, String)],
     completed_message: Option<&str>,
-) -> ReconcileDecision {
+) -> Reconciliation {
     if candidates.is_empty() {
-        return ReconcileDecision::default();
+        return Reconciliation::default();
     }
     let lines = candidates
         .iter()
@@ -3090,14 +3280,14 @@ async fn reconcile_after_reading(
         Ok(p) => p,
         Err(err) => {
             tracing::warn!(error = %err, "ingest: reconcile prompt failed — nothing reconciled");
-            return ReconcileDecision::default();
+            return Reconciliation::default();
         },
     };
     let resp = match complete_a_verdict(llm, prompt, candidates.len(), "reconciler").await {
         Ok(r) => r,
         Err(err) => {
             tracing::warn!(error = %err, "ingest: reconciler unavailable — nothing reconciled");
-            return ReconcileDecision::default();
+            return Reconciliation::default();
         },
     };
     let decision = parse_first_json::<ReconcileDecision>(&resp.text).unwrap_or_else(|| {
@@ -3107,11 +3297,15 @@ async fn reconcile_after_reading(
     tracing::info!(
         candidates = candidates.len(),
         closures = decision.closures.len(),
+        supersedes = decision.supersedes.len(),
         validity_edits = decision.validity_edits.len(),
         acl_changes = decision.acl_changes.len(),
         "ingest: reconciliation stage done"
     );
-    decision
+    Reconciliation {
+        decision,
+        verdict: Some(resp.text),
+    }
 }
 
 /// The focused per-topic recall of [`confirm_topic_closures`]: each
@@ -5793,20 +5987,7 @@ struct MentionedCards {
 /// property of a muffin, never *«Carol è celiaca: non può consumare
 /// glutine»*. That sentence, and the pregnancy, live on the card.
 ///
-/// **Two gates, in this order, and neither costs a model call.**
-///
-/// First, **the turn names them** — [`recall::turn_subjects`], a word match
-/// over the enrolled roster. Deliberately coarse: the card is what is worth
-/// knowing about a person *whenever they come up*, so a passing mention is
-/// not a false positive, it is a cheap piece of context. Mention order is
-/// the selection where the list is cut (founder, 2026-08-09), so these lead.
-///
-/// Then, **the search found facts about them**: every hit carries its
-/// subject, so the people the turn is really about arrive even when it names
-/// none of them. *«Cosa può mangiare mia moglie?»* matches the roster nowhere
-/// — and returns her coeliac facts, which say whose they are. This is the
-/// gate that reads a paraphrase, and it is free: the hits are already in hand
-/// here, ranked, from the search that ran before the classifier.
+/// Who they are is [`card_subjects`], and its two gates cost no model call.
 ///
 /// A person the turn names and the memory knows nothing about spends no seat
 /// on an empty card — they only reach the first gate, and the second fills the
@@ -5843,17 +6024,7 @@ async fn people_mentioned_section(
             return None;
         },
     };
-    let mut subjects = recall::turn_subjects(turn_text, &sender.sender_id, &roster);
-    // The second gate: whoever the returned facts are about, in the order the
-    // search ranked them. A group-owned fact names no person and is skipped.
-    for hit in hits {
-        if let Principal::User(id) = &hit.subject_id {
-            let id = id.to_lowercase();
-            if !subjects.contains(&id) {
-                subjects.push(id);
-            }
-        }
-    }
+    let subjects = card_subjects(turn_text, &sender.sender_id, &roster, hits);
     let mut section = String::from(HDR_PEOPLE_MENTIONED);
     let mut page_paths = Vec::new();
     let mut served = Vec::new();
@@ -5885,6 +6056,48 @@ async fn people_mentioned_section(
         served,
         rails,
     })
+}
+
+/// Who this turn is about, in the order a card slot serves them.
+///
+/// **Two gates, in this order, and neither costs a model call.**
+///
+/// First, **the turn names them** — [`recall::turn_subjects`], a word match
+/// over the enrolled roster. Deliberately coarse: a card is what is worth
+/// knowing about a person *whenever they come up*, so a passing mention is
+/// not a false positive, it is a cheap piece of context. Mention order is
+/// the selection where the list is cut (founder, 2026-08-09), so these lead.
+///
+/// Then, **the search found facts about them**: every hit carries its
+/// subject, so the people the turn is really about arrive even when it names
+/// none of them. *«Cosa può mangiare mia moglie?»* matches the roster nowhere
+/// — and returns her coeliac facts, which say whose they are. This is the
+/// gate that reads a paraphrase, and it is free: the hits are already in hand,
+/// ranked, from the search that ran before the classifier. A group-owned fact
+/// names no person and is skipped.
+///
+/// Shared by the two readers that must agree on it: the `PEOPLE THIS TURN IS
+/// ABOUT` slot ([`people_mentioned_section`]), which serves these people's
+/// cards to the consumer, and the identity-core roster
+/// ([`identity_core_roster`]) the classifier compares a new claim against. Two
+/// separate notions of "who this turn is about" would put a card in front of
+/// the consumer whose facts the classifier was never shown.
+fn card_subjects(
+    turn_text: &str,
+    sender_id: &str,
+    roster: &[enrollment::EnrolledUserLite],
+    hits: &[RecallHit],
+) -> Vec<String> {
+    let mut subjects = recall::turn_subjects(turn_text, sender_id, roster);
+    for hit in hits {
+        if let Principal::User(id) = &hit.subject_id {
+            let id = id.to_lowercase();
+            if !subjects.contains(&id) {
+                subjects.push(id);
+            }
+        }
+    }
+    subjects
 }
 
 /// What one served identity card yields.
@@ -6064,6 +6277,400 @@ fn fit_paragraphs(text: &str, max_chars: usize) -> (String, bool) {
         used += cost;
     }
     (out, true)
+}
+
+// ---------- Internal: the identity core, and the slots it already fills ----------
+
+/// A value the memory already holds for one slot, with everything needed to
+/// put it to a person in a sentence.
+///
+/// Two producers and one shape, because both end as the same question to the
+/// same person: the **identity-core roster** the classifier is shown before it
+/// writes anything, and a fact the **reconciliation stage** was refused
+/// permission to replace.
+#[derive(Debug, Clone)]
+struct StoredValue {
+    /// The fact holding the slot.
+    fact_id: FactId,
+    /// Who it is about — whose card it sits on.
+    subject: Principal,
+    /// What it says, capped.
+    text: String,
+    /// Who said it, when the row records an author.
+    sender: Option<Principal>,
+    /// The DAY it was said. `valid_from` first — when the claim started
+    /// holding is what a reader means by "since when" — falling back to the
+    /// row's creation instant. The hour is dropped: it is noise in a sentence
+    /// whose subject is which of two claims is right.
+    said_on: Option<String>,
+    /// Its audience, so a replacement can inherit it.
+    allow: Vec<Principal>,
+}
+
+/// Ceiling on one stored value quoted back to a model or to a person.
+///
+/// An identity-core fact is one claim by construction — a name, a birth date,
+/// a relation — so this is a guard against a malformed row, not a budget.
+const STORED_VALUE_TEXT_CAP: usize = 300;
+
+impl StoredValue {
+    /// From a stored row (the identity-core roster).
+    fn from_row(row: &fact_index::FactIndexRow) -> Self {
+        Self {
+            fact_id: row.fact_id.clone(),
+            subject: row.subject_id.clone(),
+            text: truncate(row.text.trim(), STORED_VALUE_TEXT_CAP),
+            sender: row.sender_id.clone(),
+            said_on: day_said(row.valid_from.as_deref(), &row.created_at),
+            allow: row.allow_ids.clone(),
+        }
+    }
+
+    /// From a recalled hit (the reconciliation stage's refused target).
+    fn from_hit(hit: &RecallHit) -> Self {
+        Self {
+            fact_id: hit.fact_id.clone(),
+            subject: hit.subject_id.clone(),
+            text: truncate(hit.text.trim(), STORED_VALUE_TEXT_CAP),
+            sender: hit.sender_id.clone(),
+            said_on: day_said(hit.valid_from.as_deref(), &hit.created_at),
+            allow: hit.allow_ids.clone(),
+        }
+    }
+
+    /// The disagreement this value is in, ready for the dashboard.
+    fn disagreement(
+        &self,
+        slot: &str,
+        asserted_text: &str,
+        asserted_by: &Principal,
+        successor: Option<&FactId>,
+        refusal: &str,
+    ) -> proposals::SlotConflict {
+        proposals::SlotConflict {
+            slot: slot.trim().to_owned(),
+            subject: self.subject.clone(),
+            kept_fact_id: self.fact_id.clone(),
+            kept_text: self.text.clone(),
+            kept_sender: self.sender.clone(),
+            kept_said_on: self.said_on.clone(),
+            asserted_text: truncate(asserted_text.trim(), STORED_VALUE_TEXT_CAP),
+            asserted_by: asserted_by.clone(),
+            successor: successor.cloned(),
+            refusal: refusal.to_owned(),
+        }
+    }
+
+    /// Whether `body` says exactly what this value already says.
+    ///
+    /// Word-for-word equality after folding case and whitespace, and nothing
+    /// cleverer on purpose. The question this gates is *"is a person being
+    /// asked to choose"*, and asking somebody to choose between a sentence and
+    /// itself is noise; anything looser would start deciding that two
+    /// differently-worded claims are the same claim, which is the judgement
+    /// this whole path exists to keep away from the engine. A restatement that
+    /// merely reads alike is caught later by the promotion's own duplicate
+    /// scan, where deciding it costs nobody a question.
+    fn is_the_same_value(&self, body: &str) -> bool {
+        fn folded(s: &str) -> String {
+            s.split_whitespace()
+                .collect::<Vec<_>>()
+                .join(" ")
+                .to_lowercase()
+        }
+        folded(&self.text) == folded(body)
+    }
+}
+
+/// The DAY of the first of the two instants that is present.
+fn day_said(preferred: Option<&str>, fallback: &str) -> Option<String> {
+    preferred
+        .filter(|t| !t.is_empty())
+        .unwrap_or(fallback)
+        .split('T')
+        .next()
+        .map(str::to_owned)
+        .filter(|d| !d.is_empty())
+}
+
+/// The identity core of everyone this turn is about, WITH their `fact_id`s.
+///
+/// The classifier is shown these people's cards as PROSE — projected,
+/// wikilinks flattened, markers dropped — which is unreadable as a set of
+/// claims: it cannot name what it is looking at, so it cannot say that the
+/// sentence it is about to write fills a slot one of them already fills. It
+/// wrote a birth date onto a card that already carried one, with that card in
+/// front of it, because there was no id to point at.
+///
+/// So the same facts arrive a second time as a LIST: one line per fact, with
+/// its id, who said it and when. It is a **complete** set per person — every
+/// identity-core fact on their card that this reader may see — which is what
+/// makes it something the classifier may act against rather than a sample it
+/// may only read.
+///
+/// Read **off the card's own page** ([`fact_index::find_active_by_source_path`]
+/// on the same path [`identity_card`] serves), not off the subject: the set
+/// wanted is the one on the card, the page holds a handful of rows where a
+/// person holds hundreds, and this runs on the conversational path in front of
+/// somebody waiting for a reply.
+///
+/// Scope is the identity core and nothing else (`bio` + `high`): the always-on
+/// handful somebody must know FIRST, which is also the only set where a second
+/// live value is a defect rather than a history. Everything else the memory
+/// holds may hold two values at once, and asking about those would be noise.
+///
+/// Best-effort: a person whose card cannot be read contributes none, and the
+/// turn is classified without their slots.
+async fn identity_core_roster(
+    pool: &SqlitePool,
+    tree: &WikiTree,
+    sender: &SenderContext,
+    turn_text: &str,
+    hits: &[RecallHit],
+    roster: &[enrollment::EnrolledUserLite],
+    policy: &IngestPolicy,
+) -> Vec<StoredValue> {
+    // The speaker leads: their own card is the one served on every turn, so
+    // their slots are the ones a turn is likeliest to refill.
+    let mut subjects = vec![sender.sender_id.to_lowercase()];
+    for subject in card_subjects(turn_text, &sender.sender_id, roster, hits) {
+        if !subjects.contains(&subject) {
+            subjects.push(subject);
+        }
+    }
+    // One seat more than the card slot, because the speaker takes one and the
+    // card slot excludes them (`WHO IS SPEAKING` serves theirs).
+    subjects.truncate(policy.max_mentioned_cards.saturating_add(1));
+    let mut out = Vec::new();
+    for subject in subjects {
+        let Some(handle) = WikiId::parse(&subject)
+            .ok()
+            .and_then(|id| tree.locate(&id).ok())
+        else {
+            continue;
+        };
+        let card = crate::wiki::workdir_relative_source_path(
+            tree.workdir(),
+            &handle.abs_dir().join(IDENTITY_PAGE),
+        );
+        let rows = match fact_index::find_active_by_source_path(pool, &card).await {
+            Ok(rows) => rows,
+            Err(err) => {
+                tracing::warn!(error = %err, subject = subject.as_str(),
+                    "ingest: identity core unreadable — classifying without this person's slots");
+                continue;
+            },
+        };
+        out.extend(
+            rows.iter()
+                .filter(|row| row.is_identity_core())
+                .filter(|row| {
+                    crate::acl::can_read(
+                        &crate::types::Acl {
+                            subject: Some(row.subject_id.clone()),
+                            allow: row.allow_ids.clone(),
+                        },
+                        &sender.sender_id,
+                        &sender.sender_groups,
+                        row.sender_id.as_ref(),
+                    )
+                })
+                .map(StoredValue::from_row),
+        );
+    }
+    out
+}
+
+/// Inject the identity core the turn's people already have — WITH their
+/// `fact_id`s — into the classifier prompt, so a claim that refills one of
+/// those slots can NAME the fact it disagrees with
+/// (`conflicts_with` + `slot`) instead of being written beside it.
+///
+/// Mirrors [`push_behaviour_rules_section`], and for the same reason: a set
+/// the model is shown complete is a set it may act against. No-op when empty.
+fn push_identity_core_section(out: &mut String, facts: &[StoredValue]) {
+    if facts.is_empty() {
+        return;
+    }
+    out.push_str(
+        "\nidentity_core (every fact already on these people's identity cards that you may \
+         see — COMPLETE per person, not a sample. If an extraction of yours states a DIFFERENT \
+         value for a slot one of these already fills, set that extraction's conflicts_with to \
+         its fact_id and name the slot; do not write it beside):\n",
+    );
+    let mut current: Option<&Principal> = None;
+    for fact in facts {
+        if current != Some(&fact.subject) {
+            let _ = writeln!(out, "  - {}", fact.subject);
+            current = Some(&fact.subject);
+        }
+        let _ = write!(out, "    - [{}] {}", fact.fact_id.as_str(), fact.text);
+        if let Some(sender) = &fact.sender {
+            let _ = write!(out, " (said by {sender}");
+            match &fact.said_on {
+                Some(day) => {
+                    let _ = write!(out, " on {day})");
+                },
+                None => out.push(')'),
+            }
+        }
+        out.push('\n');
+    }
+}
+
+/// Prefix of the candidate that keeps the value already stored.
+const SLOT_KEEP: &str = "slot-keep:";
+/// Prefix of the candidate that replaces it with what the turn said.
+const SLOT_REPLACE: &str = "slot-replace:";
+
+/// The person's answer to a slot question, as it comes back next turn in
+/// `metadata.disambig_choice`.
+///
+/// The answer names the FACT it is about, so a turn can carry an answer to one
+/// slot and a fresh question about another without the two being confused, and
+/// a `disambig_choice` belonging to some other disambiguation the classifier
+/// raised parses as nothing here and leaves the gate asking.
+#[derive(Debug, PartialEq, Eq)]
+enum SlotAnswer {
+    /// What the memory holds stands; write nothing.
+    Keep(FactId),
+    /// The turn's value wins.
+    Replace(FactId),
+}
+
+impl SlotAnswer {
+    /// The `candidate_id` this answer travels as.
+    fn candidate_id(&self) -> String {
+        match self {
+            Self::Keep(id) => format!("{SLOT_KEEP}{}", id.as_str()),
+            Self::Replace(id) => format!("{SLOT_REPLACE}{}", id.as_str()),
+        }
+    }
+
+    /// Read one back. `None` for a choice that is not one of ours.
+    fn parse(choice: &str) -> Option<Self> {
+        let choice = choice.trim();
+        if let Some(id) = choice.strip_prefix(SLOT_KEEP) {
+            return FactId::parse(id).ok().map(Self::Keep);
+        }
+        choice
+            .strip_prefix(SLOT_REPLACE)
+            .and_then(|id| FactId::parse(id).ok())
+            .map(Self::Replace)
+    }
+
+    /// The fact the answer is about.
+    const fn about(&self) -> &FactId {
+        match self {
+            Self::Keep(id) | Self::Replace(id) => id,
+        }
+    }
+}
+
+/// What this turn does with an extraction that says it refills a slot the
+/// identity core already fills.
+enum SlotVerdict<'a> {
+    /// Nothing declared, nothing recognised, or the same value said again:
+    /// the extraction files exactly as any other would.
+    NotAConflict,
+    /// Hold it back and ask, in this turn.
+    Ask(&'a StoredValue),
+    /// The person kept what was already there. Write nothing — and *nothing*
+    /// means nothing: no fact, no closure, no trace on the page.
+    Kept(&'a StoredValue),
+    /// The person chose the turn's value and is entitled to set it: file, then
+    /// weld the old one to it.
+    Replace(&'a StoredValue),
+    /// The person chose the turn's value and the speaker may not set it. The
+    /// fact is NOT filed and the owner of the slot is asked.
+    NotTheirsToReplace(&'a StoredValue),
+}
+
+/// Decide what to do with one extraction against the identity core.
+///
+/// The perimeter is the fact being CONTRADICTED, not the labels on the new
+/// extraction: `conflicts_with` may only name something in this turn's
+/// `identity_core` block, and that block is already exactly `bio` + `high` on a
+/// subject's `@profile.md`. Testing the new extraction's own `fact_type` and
+/// `salience` instead would hand the perimeter to two more fields the same
+/// model filled in — and a birth date that arrived labelled `normal` is still
+/// a birth date landing beside a birth date.
+///
+/// Same value, no question: a restatement is a duplicate, and the promotion's
+/// own duplicate scan settles it without costing anybody a turn.
+fn vet_slot_conflict<'a>(
+    unit: &CaptureUnit<'_>,
+    identity_core: &'a [StoredValue],
+    answer: Option<&SlotAnswer>,
+    sender_id: &str,
+    sender_groups: &[String],
+) -> SlotVerdict<'a> {
+    let Some(raw) = unit.conflicts_with.map(str::trim).filter(|s| !s.is_empty()) else {
+        return SlotVerdict::NotAConflict;
+    };
+    let Some(body) = unit.body.map(str::trim).filter(|b| !b.is_empty()) else {
+        return SlotVerdict::NotAConflict;
+    };
+    let Some(stored) = FactId::parse(raw)
+        .ok()
+        .and_then(|id| identity_core.iter().find(|v| v.fact_id == id))
+    else {
+        tracing::warn!(
+            conflicts_with = raw,
+            "ingest: extraction names a conflict with a fact outside this turn's identity core — filed normally"
+        );
+        return SlotVerdict::NotAConflict;
+    };
+    if stored.is_the_same_value(body) {
+        return SlotVerdict::NotAConflict;
+    }
+    match answer.filter(|a| *a.about() == stored.fact_id) {
+        Some(SlotAnswer::Keep(_)) => SlotVerdict::Kept(stored),
+        Some(SlotAnswer::Replace(_)) => {
+            if crate::acl::sender_may_rewrite(
+                &stored.subject,
+                stored.sender.as_ref(),
+                sender_id,
+                sender_groups,
+            ) {
+                SlotVerdict::Replace(stored)
+            } else {
+                SlotVerdict::NotTheirsToReplace(stored)
+            }
+        },
+        None => SlotVerdict::Ask(stored),
+    }
+}
+
+/// The two candidates a slot question offers, and the seed that asks it.
+///
+/// The wording is the engine's, in English like everything else on the wire;
+/// the consumer rewrites it in the person's own language, which is what
+/// `suggested_seed` is for.
+fn slot_question(stored: &StoredValue, asserted: &str) -> (Vec<DisambigCandidate>, String) {
+    let attribution = match (&stored.sender, &stored.said_on) {
+        (Some(sender), Some(day)) => format!(", said by {sender} on {day}"),
+        (Some(sender), None) => format!(", said by {sender}"),
+        (None, Some(day)) => format!(", recorded on {day}"),
+        (None, None) => String::new(),
+    };
+    let candidates = vec![
+        DisambigCandidate {
+            candidate_id: SlotAnswer::Keep(stored.fact_id.clone()).candidate_id(),
+            description: format!("keep: \u{ab}{}\u{bb}{attribution}", stored.text),
+        },
+        DisambigCandidate {
+            candidate_id: SlotAnswer::Replace(stored.fact_id.clone()).candidate_id(),
+            description: format!("replace with: \u{ab}{asserted}\u{bb}"),
+        },
+    ];
+    let seed = format!(
+        "The memory already holds \u{ab}{}\u{bb}{attribution} about {}, and this turn says \
+         \u{ab}{asserted}\u{bb}. Both cannot hold. Nothing has been written: ask which of the two \
+         is right, and say who said the one already on record.",
+        stored.text, stored.subject,
+    );
+    (candidates, seed)
 }
 
 /// Inject the behaviour rules in force — WITH their `fact_id`s and scope
@@ -6792,6 +7399,10 @@ struct IngestTraceParts<'a> {
     due_soon: Option<&'a [RecallHit]>,
     injected_block: Option<&'a str>,
     rules_block: Option<&'a str>,
+    /// The facts the reconciliation stage was shown, and the answer it gave
+    /// verbatim. Empty and `None` on a turn where the stage never ran.
+    reconcile_candidates: &'a [crate::recall_trace::TraceReconcileCandidate],
+    reconcile_verdict: Option<&'a str>,
     recall_clock: RecallClock,
     took: std::time::Duration,
 }
@@ -6894,6 +7505,8 @@ async fn record_ingest_trace(
         truncated: parts.nav_tail.is_some_and(|t| t.outcome.truncated),
         injected_block: parts.injected_block.map(str::to_owned),
         rules_block: parts.rules_block.map(str::to_owned),
+        reconcile_candidates: parts.reconcile_candidates.to_vec(),
+        reconcile_verdict: parts.reconcile_verdict.map(recall_trace::cap_turn_text),
         recall_ms: parts.recall_clock.ms(),
         took_ms: u64::try_from(parts.took.as_millis()).unwrap_or(u64::MAX),
     };
@@ -7257,6 +7870,11 @@ pub async fn wiki_ingest_message(
                     due_soon: None,
                     injected_block: context_snippet.as_deref(),
                     rules_block: Some(GUEST_RULES_NOTICE),
+                    // A guest turn runs no classifier and writes nothing, so
+                    // the reconciliation stage has neither candidates nor an
+                    // answer.
+                    reconcile_candidates: &[],
+                    reconcile_verdict: None,
                     recall_clock,
                     took: start.elapsed(),
                 },
@@ -7445,6 +8063,20 @@ pub async fn wiki_ingest_message(
         tracing::warn!(error = %e, "ingest: known entities not read — the block is empty");
         Vec::new()
     });
+    // The identity core of the people this turn is about, WITH ids: the
+    // comparison set a claim about who somebody IS has to be checked against
+    // before it is written. The cards themselves reach the classifier as
+    // prose, which names nothing it can point at.
+    let identity_core = identity_core_roster(
+        pool,
+        tree,
+        &sender_ctx,
+        &request.text,
+        &recall_hits,
+        &known_users,
+        policy,
+    )
+    .await;
     let mut prompt = build_prompt(
         &request,
         &recall_hits,
@@ -7460,6 +8092,7 @@ pub async fn wiki_ingest_message(
         policy,
     );
     push_behaviour_rules_section(&mut prompt, &behaviour_rules);
+    push_identity_core_section(&mut prompt, &identity_core);
     // Media riding the turn: stamp late-arriving caption/description on
     // the catalog rows (fill-only), then load the bytes of undescribed
     // photos so the classifier *looks at them* — the consumer-supplied
@@ -7690,6 +8323,18 @@ pub async fn wiki_ingest_message(
     // the supersede verb needs them all, because a fact that replaces another
     // has to be NAMEABLE before it can inherit that fact's audience.
     let mut turn_facts: Vec<(FactId, String)> = Vec::new();
+    // The person's answer to a slot question asked on an earlier turn, when
+    // this `disambig_choice` is one of ours. Any other choice — the
+    // classifier's own disambiguation — parses as `None` here and leaves the
+    // gate free to ask.
+    let slot_answer = request
+        .disambig_choice
+        .as_deref()
+        .and_then(SlotAnswer::parse);
+    // Slots this turn held a value back on, one entry each: the value already
+    // stored and the value the turn wanted to put in its place. They become
+    // the response's `disambig_candidates`.
+    let mut slot_questions: Vec<(StoredValue, String)> = Vec::new();
 
     match intent {
         IntentKind::Capture | IntentKind::Structural => {
@@ -7972,6 +8617,65 @@ pub async fn wiki_ingest_message(
                         "ingest: the turn never named this enrolled user — re-owned to the sender"
                     );
                     unit.subject_id = None;
+                }
+
+                // A claim that refills a slot of somebody's identity card is
+                // the one capture the engine will not make on its own. Two
+                // birth dates cannot both hold, the one already there was
+                // stated by somebody entitled to state it, and nothing about
+                // arriving later makes this one the true one — so the turn
+                // asks, and writes after the answer. Everything outside the
+                // identity core files exactly as before.
+                let mut weld_onto: Option<StoredValue> = None;
+                match vet_slot_conflict(
+                    &unit,
+                    &identity_core,
+                    slot_answer.as_ref(),
+                    &request.sender_id,
+                    &sender_ctx.sender_groups,
+                ) {
+                    SlotVerdict::NotAConflict => {},
+                    SlotVerdict::Ask(stored) => {
+                        tracing::info!(
+                            target = stored.fact_id.as_str(),
+                            subject = %stored.subject,
+                            slot = unit.slot.unwrap_or("<unnamed>"),
+                            "ingest: the turn refills a filled identity slot — held back, asking in this turn"
+                        );
+                        // One question per slot per turn: a message that
+                        // states the same new value twice is one
+                        // disagreement, not two.
+                        if !slot_questions
+                            .iter()
+                            .any(|(v, _)| v.fact_id == stored.fact_id)
+                        {
+                            slot_questions
+                                .push((stored.clone(), unit.body.unwrap_or_default().to_owned()));
+                        }
+                        continue;
+                    },
+                    SlotVerdict::Kept(stored) => {
+                        tracing::info!(
+                            target = stored.fact_id.as_str(),
+                            "ingest: the person kept the stored value — nothing written"
+                        );
+                        continue;
+                    },
+                    SlotVerdict::NotTheirsToReplace(stored) => {
+                        ask_the_owner_of_the_slot(
+                            pool,
+                            stored.disagreement(
+                                unit.slot.unwrap_or_default(),
+                                unit.body.unwrap_or_default(),
+                                &Principal::User(request.sender_id.clone()),
+                                None,
+                                "they are neither its subject nor the person who said it",
+                            ),
+                        )
+                        .await;
+                        continue;
+                    },
+                    SlotVerdict::Replace(stored) => weld_onto = Some(stored.clone()),
                 }
 
                 let supersede_target = match validate_supersede_target(
@@ -8354,6 +9058,29 @@ pub async fn wiki_ingest_message(
                         .push((this_id.clone(), notice_wiki, notice_body));
                 }
 
+                // The person answered "replace", and they were entitled to.
+                // The old value is retired HERE rather than left to the
+                // reconciliation stage: that stage decides whether a message
+                // replaced something, and this question has already been put
+                // to a person and answered. Asking a model to agree with them
+                // could only overrule them.
+                // `this_id` is the matched fact when write-time dedup
+                // resolved the new body onto one already there, and that can
+                // be the very fact being replaced. A self-supersede closes a
+                // window and writes no successor link to explain it, leaving a
+                // fact that nothing contradicted marked `contradicted`.
+                if let Some(old_value) = weld_onto.filter(|old| old.fact_id != this_id) {
+                    weld_with_audience(
+                        pool,
+                        &old_value.fact_id,
+                        &this_id,
+                        &old_value.allow,
+                        &Principal::User(request.sender_id.clone()),
+                        turn_now,
+                    )
+                    .await;
+                }
+
                 // Surface the first filed fact as the turn's anchor id, and
                 // keep every one of them for the supersede verb.
                 turn_facts.push((this_id.clone(), this_body));
@@ -8492,7 +9219,10 @@ pub async fn wiki_ingest_message(
                 // comes back empty still gets the canned seed — see the
                 // fallback right after the recall block.
                 include_flat = true;
-                nothing_filed = !captured_any && !agent_wide_denied && list_page_refused.is_none();
+                nothing_filed = !captured_any
+                    && !agent_wide_denied
+                    && list_page_refused.is_none()
+                    && slot_questions.is_empty();
             }
         },
         IntentKind::Recall => {
@@ -8504,6 +9234,33 @@ pub async fn wiki_ingest_message(
             }
         },
     }
+
+    // The turn's own question, when it held a value back. The two candidates
+    // ride the disambiguation channel the consumers already honour, and the
+    // seed says the same thing in prose so a turn that asks never also claims
+    // to have noted something.
+    let slot_candidates: Vec<DisambigCandidate> = {
+        let mut candidates = Vec::with_capacity(slot_questions.len() * 2);
+        let mut seeds: Vec<String> = Vec::with_capacity(slot_questions.len());
+        for (stored, asserted) in &slot_questions {
+            let (two, seed) = slot_question(stored, asserted);
+            candidates.extend(two);
+            seeds.push(seed);
+        }
+        if !seeds.is_empty() {
+            // A structural turn's dashboard nudge IS its answer, so it is not
+            // dropped for the question — both reach the person. Everywhere
+            // else the classifier's seed goes: it was written believing the
+            // turn had stored something.
+            if intent == IntentKind::Structural
+                && let Some(nudge) = suggested_seed.take()
+            {
+                seeds.insert(0, nudge);
+            }
+            suggested_seed = Some(seeds.join("\n\n"));
+        }
+        candidates
+    };
 
     // Media the routed plan did not claim — a recall/skip turn carrying
     // a photo, an extraction that never named its attachment — is filed
@@ -8665,6 +9422,12 @@ pub async fn wiki_ingest_message(
     // no candidates there is nothing to reconcile against and no call is made,
     // which is the shape of an ordinary chat turn.
     let mut reconciled = 0usize;
+    // What the stage was shown and what it answered, for the recall trace. It
+    // is the only call in the turn that can retire a stored fact, so it is
+    // the one whose inputs and raw output a person has to be able to read
+    // back.
+    let mut reconcile_journal: Vec<crate::recall_trace::TraceReconcileCandidate> = Vec::new();
+    let mut reconcile_verdict: Option<String> = None;
     if matches!(intent, IntentKind::Capture) {
         let candidates = reconcile_candidates(
             pool,
@@ -8677,7 +9440,12 @@ pub async fn wiki_ingest_message(
             &turn_facts,
         )
         .await;
-        let decision = reconcile_after_reading(
+        reconcile_journal.extend(
+            candidates
+                .iter()
+                .map(crate::recall_trace::TraceReconcileCandidate::from_hit),
+        );
+        let Reconciliation { decision, verdict } = reconcile_after_reading(
             tree,
             llm,
             &request,
@@ -8687,6 +9455,7 @@ pub async fn wiki_ingest_message(
             completed_message,
         )
         .await;
+        reconcile_verdict = verdict;
         if !decision.is_empty() {
             reconciled += apply_plan_closures(
                 pool,
@@ -8991,6 +9760,8 @@ pub async fn wiki_ingest_message(
                 due_soon: due_soon_tail.as_ref().map(|(_, hits)| hits.as_slice()),
                 injected_block: context_snippet.as_deref(),
                 rules_block: rules.as_deref(),
+                reconcile_candidates: &reconcile_journal,
+                reconcile_verdict: reconcile_verdict.as_deref(),
                 recall_clock,
                 took: start.elapsed(),
             },
@@ -9010,8 +9781,19 @@ pub async fn wiki_ingest_message(
     // chosen candidate, the orchestrator never re-surfaces ambiguity
     // — even if the LLM ignored the prompt's commit instruction. The
     // contract is "second turn commits".
+    //
+    // A slot question is the exception, and it is not a re-ask: the engine
+    // held a write back this turn and cannot commit it until somebody
+    // chooses, so answering one slot on a turn that refills a second still
+    // asks about the second. The slot the answer named can never come back
+    // here — an answered slot is settled inside the loop — so this cannot
+    // loop. Its candidates replace the classifier's rather than joining them:
+    // two unrelated questions in one list is a choice nobody can make, and
+    // this one is the one holding up a write.
     let resolving_disambig = request.disambig_choice.is_some();
-    let (needs_disambig, disambig_candidates) = if resolving_disambig {
+    let (needs_disambig, disambig_candidates) = if !slot_candidates.is_empty() {
+        (true, slot_candidates)
+    } else if resolving_disambig {
         (false, Vec::new())
     } else {
         (
@@ -9718,6 +10500,8 @@ mod tests {
             topics: &no_ids,
             body: Some("latte"),
             supersede_target: None,
+            conflicts_with: None,
+            slot: None,
             attachments: &no_ids,
         };
 
@@ -9805,6 +10589,8 @@ mod tests {
             topics: &no_ids,
             body: Some("qualcosa"),
             supersede_target: None,
+            conflicts_with: None,
+            slot: None,
             attachments: &no_ids,
         };
         let user = |id: &str| Principal::User(id.to_owned());
@@ -10503,15 +11289,17 @@ mod tests {
             successor: Some(id.to_owned()),
         };
         assert!(
-            vet_supersede(
-                &same,
-                std::slice::from_ref(&hit),
-                &[(FactId::parse(id).unwrap(), String::new())],
-                "alice",
-                &[],
-            )
-            .is_none(),
-            "one fact named for both roles is refused"
+            matches!(
+                vet_supersede(
+                    &same,
+                    std::slice::from_ref(&hit),
+                    &[(FactId::parse(id).unwrap(), String::new())],
+                    "alice",
+                    &[],
+                ),
+                VettedSupersede::Unsound
+            ),
+            "one fact named for both roles is refused, and asks nobody about it"
         );
 
         // Two different facts still supersede normally.
@@ -10522,15 +11310,71 @@ mod tests {
             successor: Some(other.to_owned()),
         };
         assert!(
-            vet_supersede(
-                &pair,
-                std::slice::from_ref(&hit),
-                &[(FactId::parse(other).unwrap(), String::new())],
-                "alice",
-                &[],
-            )
-            .is_some(),
+            matches!(
+                vet_supersede(
+                    &pair,
+                    std::slice::from_ref(&hit),
+                    &[(FactId::parse(other).unwrap(), String::new())],
+                    "alice",
+                    &[],
+                ),
+                VettedSupersede::Sound { .. }
+            ),
             "a genuine replacement is untouched"
+        );
+    }
+
+    /// A supersede the speaker has no standing to apply is a QUESTION, not
+    /// noise.
+    ///
+    /// Bob restates a claim about Alice that Alice made. The pair is sound —
+    /// one slot, two values, neither can hold beside the other — and the only
+    /// thing wrong with it is who is speaking. Answering that with the same
+    /// `continue` a hallucinated id gets left the two values live side by
+    /// side with nothing anywhere saying they contradict, which is the whole
+    /// defect. The verdict has to name the case so the caller can ask Alice.
+    #[test]
+    fn a_supersede_the_speaker_may_not_apply_is_put_to_its_owner() {
+        let target = "0190f3c2-7a4e-7c31-9b02-2f6a1c8e5d81";
+        let successor = "0190f3c2-7a4e-7c31-9b02-2f6a1c8e5d82";
+        let mut hit = sample_recall_hit(target);
+        hit.sender_id = Some(Principal::User("alice".into()));
+        let pair = LlmSupersede {
+            slot: Some("how alice takes her coffee".to_owned()),
+            target: Some(target.to_owned()),
+            successor: Some(successor.to_owned()),
+        };
+        let verdict = vet_supersede(
+            &pair,
+            std::slice::from_ref(&hit),
+            &[(
+                FactId::parse(successor).unwrap(),
+                "alice takes it with milk".to_owned(),
+            )],
+            "bob",
+            &[],
+        );
+        assert!(
+            matches!(verdict, VettedSupersede::NotTheirs { .. }),
+            "a sound pair the sender may not rewrite is asked about, not dropped"
+        );
+        assert!(
+            !matches!(verdict, VettedSupersede::Unsound),
+            "refusing it as noise is what left the two values silently side by side"
+        );
+        // Alice restating her own claim is applied, with nobody asked.
+        assert!(
+            matches!(
+                vet_supersede(
+                    &pair,
+                    std::slice::from_ref(&hit),
+                    &[(FactId::parse(successor).unwrap(), String::new())],
+                    "alice",
+                    &[],
+                ),
+                VettedSupersede::Sound { .. }
+            ),
+            "the subject rewriting her own fact needs no proposal"
         );
     }
 
@@ -15092,6 +15936,57 @@ mod tests {
         );
     }
 
+    /// The bundled ingest prompt refuses to turn a measurement into a date.
+    ///
+    /// An age, a duration and a bare day-and-month are the three shapes a
+    /// classifier reads as an anchor and resolves against `current_time`,
+    /// and resolving any of them mints a birth date nobody stated — which
+    /// then lands on the subject's card beside the one somebody did state.
+    /// The prompt has to keep both halves: the measurement is never a date,
+    /// and the anchor rule that licenses "tomorrow" does not reach it.
+    #[test]
+    fn bundled_ingest_prompt_never_derives_a_birth_date_from_an_age() {
+        assert!(
+            BUNDLED_INGEST_PROMPT_MD.contains("is never a date of birth"),
+            "the age-is-not-a-birth-date rule is gone from the bundled prompt"
+        );
+        assert!(
+            BUNDLED_INGEST_PROMPT_MD.contains("never gains a year"),
+            "the day-and-month-without-a-year rule is gone from the bundled prompt"
+        );
+        assert!(
+            BUNDLED_INGEST_PROMPT_MD
+                .contains("The anchor rule is about the turn's own clock, and nothing else"),
+            "the anchor rule no longer excludes ages and durations, so it licenses them again"
+        );
+    }
+
+    /// Neither stage that judges a stored fact is told that duplicates get
+    /// merged downstream.
+    ///
+    /// Nothing merges them: the promotion dedup only looks at claims from the
+    /// same sender inside its similarity threshold, and the identity core is
+    /// held out of every automatic pass by design. A stage told the memory
+    /// tidies up after it has a reason to leave a second live value where it
+    /// found it, which is exactly the state the card was found in.
+    #[test]
+    fn the_stages_that_judge_stored_facts_promise_no_downstream_merge() {
+        for (name, prompt) in [
+            ("reconciler", BUNDLED_INGEST_RECONCILE_MD),
+            ("closure confirmer", BUNDLED_INGEST_CLOSURES_MD),
+        ] {
+            assert!(
+                !prompt.contains("merges duplicates by itself"),
+                "the {name} is still told something merges duplicates for it"
+            );
+        }
+        assert!(
+            BUNDLED_INGEST_RECONCILE_MD
+                .contains("nothing downstream folds two live values into one later"),
+            "the reconciler no longer knows a second live value stays where it lands"
+        );
+    }
+
     /// The bundled ingest prompt carries the explicit-relationship gate: a
     /// person the message leaves unnamed is never identified with a
     /// `known_users` entry, and relationship facts require the sender to
@@ -15151,6 +16046,427 @@ mod tests {
         )
         .expect("@rules.md written");
         assert!(rules.contains("- Never store my exact home address."));
+        drop(dir);
+    }
+
+    // ---------- a filled identity slot is a question, not a second value ----------
+
+    /// The two candidate ids are a wire contract: the consumer sends one back
+    /// verbatim, and the engine has to read the same answer out of it.
+    ///
+    /// A choice belonging to some OTHER disambiguation must not parse as one
+    /// of these — it would settle a slot question nobody was asked — so the
+    /// prefix and a well-formed fact id are both required.
+    #[test]
+    fn a_slot_answer_round_trips_and_ignores_anybody_elses_choice() {
+        let id = FactId::parse(CARD_FACT_ID).unwrap();
+        for answer in [SlotAnswer::Keep(id.clone()), SlotAnswer::Replace(id)] {
+            let on_the_wire = answer.candidate_id();
+            assert_eq!(SlotAnswer::parse(&on_the_wire), Some(answer));
+        }
+        for foreign in [
+            "a",
+            "the-dentist",
+            "keep:0190f3c2-7a4e-7c31-9b02-2f6a1c8e5da1",
+            "slot-keep:not-a-fact-id",
+            "slot-keep:",
+            "",
+        ] {
+            assert_eq!(
+                SlotAnswer::parse(foreign),
+                None,
+                "{foreign:?} is not an answer to a slot question"
+            );
+        }
+    }
+
+    /// The turn that opened this, with the family renamed to the repo's
+    /// fixtures. It states an AGE, in a month, about a child whose card
+    /// already carries a birth date.
+    const AGE_TURN: &str = "bob ha circa 300-350 \u{20ac} di risparmi da parte.\n\
+                            carol ha gi\u{e0} un conto corrente presso le Poste Italiane.\n\
+                            bob ha circa 14 anni a luglio 2026.\n\
+                            carol sta valutando diverse opzioni per i risparmi di bob: \
+                            l'apertura di un libretto postale, un fondo pensione o un piano \
+                            di accumulo (PAC).";
+    /// The birth date already on bob's card.
+    const CARD_BIRTHDATE: &str = "bob \u{e8} nato il 31 ottobre 2017 alle 08:10";
+    /// The birth date a classifier derives from the age above.
+    const DERIVED_BIRTHDATE: &str = "bob \u{e8} nato l'8 luglio 2012";
+    const CARD_FACT_ID: &str = "0190f3c2-7a4e-7c31-9b02-2f6a1c8e5da1";
+
+    /// Two enrolled people, each with their own wiki: carol speaks, bob is the
+    /// child she speaks about.
+    async fn setup_family() -> (TempDir, WikiTree, SqlitePool) {
+        let dir = tempfile::tempdir().unwrap();
+        let pool = db::open_or_init(dir.path()).await.expect("db open");
+        let wikis = dir.path().join("wikis");
+        std::fs::create_dir_all(&wikis).unwrap();
+        write_wiki(&wikis, "carol", "Carol", "wiki-user", None);
+        write_wiki(&wikis, "bob", "Bob", "wiki-user", None);
+        let tree = WikiTree::open(dir.path()).expect("open tree");
+        for user in ["carol", "bob"] {
+            sqlx::query(
+                "INSERT INTO enrollment_users (user_id, aliases, is_admin) VALUES (?,'[]',0)",
+            )
+            .bind(user)
+            .execute(&pool)
+            .await
+            .unwrap();
+        }
+        (dir, tree, pool)
+    }
+
+    /// Plant the birth date already on bob's identity card: his own claim,
+    /// shared with carol so she may read it (an unreadable fact cannot be
+    /// quoted back to her, and so cannot be asked about).
+    async fn plant_the_card_birthdate(pool: &SqlitePool) -> FactId {
+        let fact_id = FactId::parse(CARD_FACT_ID).unwrap();
+        fact_index::insert(
+            pool,
+            &fact_index::NewFact {
+                subject_external: None,
+                authored_refs: Vec::new(),
+                fact_id: fact_id.clone(),
+                wiki_id: "bob".to_owned(),
+                source_path: "wikis/bob/@profile.md".to_owned(),
+                region_start: Some(0),
+                region_end: Some(40),
+                text: CARD_BIRTHDATE.to_owned(),
+                embedding: vec![0.1, 0.2, 0.3, 0.4],
+                subject_id: Principal::User("bob".to_owned()),
+                allow_ids: vec![Principal::User("carol".to_owned())],
+                sender_id: Some(Principal::User("bob".to_owned())),
+                fact_type: Some("bio".to_owned()),
+                topics: Vec::new(),
+                valid_from: Some("2026-07-02T00:00:00Z".to_owned()),
+                valid_to: None,
+                target_page: None,
+                style: None,
+                salience: Some("high".to_owned()),
+                source_ref: None,
+            },
+        )
+        .await
+        .expect("plant the card's birth date");
+        fact_id
+    }
+
+    /// A classifier that derives a birth date from the age in the turn and
+    /// declares the conflict the `identity_core` block let it see.
+    fn derived_birthdate_plan() -> String {
+        format!(
+            "{{\"intent\":\"capture\",\"suggested_seed\":\"Noted.\",\"extractions\":[\
+             {{\"target_wiki_id\":\"bob\",\"subject_id\":\"user:bob\",\
+             \"body\":\"{DERIVED_BIRTHDATE}\",\"fact_type\":\"bio\",\"salience\":\"high\",\
+             \"conflicts_with\":\"{CARD_FACT_ID}\",\"slot\":\"la data di nascita\"}}]}}"
+        )
+    }
+
+    fn the_age_turn(sender: &str, choice: Option<&str>) -> IngestRequest {
+        IngestRequest {
+            disambig_choice: choice.map(str::to_owned),
+            metadata: IngestMetadata {
+                occurred_at: Some(
+                    chrono::DateTime::parse_from_rfc3339("2026-07-08T08:54:40Z")
+                        .unwrap()
+                        .to_utc(),
+                ),
+                ..IngestMetadata::default()
+            },
+            ..req(AGE_TURN, sender)
+        }
+    }
+
+    /// The real turn, on the real card: a second birth date is NOT written,
+    /// and the turn asks instead.
+    ///
+    /// This is the case that opened 85 — an age in a month, replayed against a
+    /// card that already carried a birth date, and both values ended up live
+    /// on the same card. The classifier here still derives the date (85a asks
+    /// it not to; a prompt is not a guarantee), so what this pins is the
+    /// engine's half: nothing is queued, nothing reaches the page, and the
+    /// turn comes back with the two candidates for a person to choose
+    /// between.
+    #[tokio::test]
+    async fn a_second_birth_date_is_asked_about_and_never_written() {
+        let (dir, tree, pool) = setup_family().await;
+        let card = plant_the_card_birthdate(&pool).await;
+        let llm = FakeLlmBackend::new("fake", derived_birthdate_plan());
+        let resp = wiki_ingest_message(
+            &pool,
+            &tree,
+            fake_embedder(),
+            &llm,
+            None,
+            the_age_turn("carol", None),
+            &IngestPolicy::default(),
+        )
+        .await
+        .expect("ingest");
+
+        assert!(resp.needs_disambig, "the turn asks");
+        let ids: Vec<&str> = resp
+            .disambig_candidates
+            .iter()
+            .map(|c| c.candidate_id.as_str())
+            .collect();
+        assert_eq!(
+            ids,
+            vec![
+                format!("slot-keep:{CARD_FACT_ID}").as_str(),
+                format!("slot-replace:{CARD_FACT_ID}").as_str(),
+            ],
+            "keep what is there, or replace it — and both name the fact"
+        );
+        assert!(
+            resp.disambig_candidates[0]
+                .description
+                .contains(CARD_BIRTHDATE)
+                && resp.disambig_candidates[0].description.contains("bob")
+                && resp.disambig_candidates[0]
+                    .description
+                    .contains("2026-07-02"),
+            "the kept candidate quotes the value, who said it and when: {:?}",
+            resp.disambig_candidates[0].description
+        );
+        assert!(
+            resp.disambig_candidates[1]
+                .description
+                .contains(DERIVED_BIRTHDATE),
+            "the replacing candidate quotes the new value"
+        );
+
+        assert!(resp.capture_id.is_none(), "nothing was filed");
+        assert!(
+            capture_buffer::find_all_buffered(&pool, 100)
+                .await
+                .unwrap()
+                .is_empty(),
+            "and nothing is waiting in the buffer to be filed for it either"
+        );
+        let card_row = fact_index::find_by_id(&pool, &card)
+            .await
+            .unwrap()
+            .expect("the card's own fact");
+        assert!(
+            card_row.valid_to.is_none() && card_row.superseded_at.is_none(),
+            "the value already on the card is untouched"
+        );
+        assert_ne!(
+            resp.suggested_seed.as_deref(),
+            Some("Noted."),
+            "a turn that wrote nothing must not tell the person it noted something"
+        );
+        drop(dir);
+    }
+
+    /// The person keeps what the card says: nothing is written, and the turn
+    /// stops asking.
+    #[tokio::test]
+    async fn keeping_the_card_value_writes_nothing() {
+        let (dir, tree, pool) = setup_family().await;
+        let card = plant_the_card_birthdate(&pool).await;
+        let llm = FakeLlmBackend::new("fake", derived_birthdate_plan());
+        let resp = wiki_ingest_message(
+            &pool,
+            &tree,
+            fake_embedder(),
+            &llm,
+            None,
+            the_age_turn("carol", Some(&format!("slot-keep:{CARD_FACT_ID}"))),
+            &IngestPolicy::default(),
+        )
+        .await
+        .expect("ingest");
+
+        assert!(!resp.needs_disambig, "the question is settled");
+        assert!(
+            capture_buffer::find_all_buffered(&pool, 100)
+                .await
+                .unwrap()
+                .is_empty(),
+            "keeping means keeping: the rejected value is not filed either"
+        );
+        let card_row = fact_index::find_by_id(&pool, &card).await.unwrap().unwrap();
+        assert!(card_row.valid_to.is_none(), "and the card still holds");
+        drop(dir);
+    }
+
+    /// The subject himself replaces it: the new value is filed and the old one
+    /// is retired, pointing at it.
+    ///
+    /// The weld happens in the turn, not in the reconciliation stage that runs
+    /// after it. That stage judges whether a message replaced something; here
+    /// a person was asked and answered, and putting a model's opinion after
+    /// their answer could only overrule it.
+    #[tokio::test]
+    async fn the_subject_replacing_his_own_birth_date_retires_the_old_one() {
+        let (dir, tree, pool) = setup_family().await;
+        let card = plant_the_card_birthdate(&pool).await;
+        let llm = FakeLlmBackend::new("fake", derived_birthdate_plan());
+        let resp = wiki_ingest_message(
+            &pool,
+            &tree,
+            fake_embedder(),
+            &llm,
+            None,
+            the_age_turn("bob", Some(&format!("slot-replace:{CARD_FACT_ID}"))),
+            &IngestPolicy::default(),
+        )
+        .await
+        .expect("ingest");
+
+        let filed = resp.capture_id.expect("the new value is filed");
+        let card_row = fact_index::find_by_id(&pool, &card).await.unwrap().unwrap();
+        assert_eq!(
+            card_row.superseded_by.as_ref().map(FactId::as_str),
+            Some(filed.as_str()),
+            "the old birth date is retired and points at the one that replaced it"
+        );
+        let pending: i64 =
+            sqlx::query_scalar("SELECT count(*) FROM structure_proposals WHERE kind = ?")
+                .bind(proposals::kind::SLOT_CONFLICT)
+                .fetch_one(&pool)
+                .await
+                .unwrap();
+        assert_eq!(pending, 0, "nobody needs asking: he is the subject");
+        drop(dir);
+    }
+
+    /// Somebody else replaces it: the new value does NOT go on the page, and
+    /// the person whose card it is gets the question.
+    ///
+    /// Carol may not rewrite what bob said about bob. Filing her value anyway
+    /// and leaving the disagreement to a dashboard nobody reads is what the
+    /// old `continue` did.
+    #[tokio::test]
+    async fn a_third_party_replacing_it_writes_nothing_and_asks_the_owner() {
+        let (dir, tree, pool) = setup_family().await;
+        let card = plant_the_card_birthdate(&pool).await;
+        let llm = FakeLlmBackend::new("fake", derived_birthdate_plan());
+        let resp = wiki_ingest_message(
+            &pool,
+            &tree,
+            fake_embedder(),
+            &llm,
+            None,
+            the_age_turn("carol", Some(&format!("slot-replace:{CARD_FACT_ID}"))),
+            &IngestPolicy::default(),
+        )
+        .await
+        .expect("ingest");
+
+        assert!(resp.capture_id.is_none(), "her value is not filed");
+        assert!(
+            capture_buffer::find_all_buffered(&pool, 100)
+                .await
+                .unwrap()
+                .is_empty(),
+            "not on the page and not in the buffer on its way there"
+        );
+        let card_row = fact_index::find_by_id(&pool, &card).await.unwrap().unwrap();
+        assert!(
+            card_row.valid_to.is_none() && card_row.superseded_at.is_none(),
+            "and bob's own claim stands until bob says otherwise"
+        );
+        let (recipient, context): (Option<String>, String) = sqlx::query_as(
+            "SELECT recipient_id, context FROM structure_proposals WHERE kind = ? AND status = 'pending'",
+        )
+        .bind(proposals::kind::SLOT_CONFLICT)
+        .fetch_one(&pool)
+        .await
+        .expect("the question was opened");
+        assert_eq!(recipient.as_deref(), Some("user:bob"));
+        assert!(
+            context.contains(DERIVED_BIRTHDATE) && context.contains(CARD_FACT_ID),
+            "the proposal carries both values: {context}"
+        );
+        drop(dir);
+    }
+
+    /// Restating the SAME value is not a conflict: it files as the duplicate
+    /// it is, and nobody is asked to choose between a sentence and itself.
+    #[tokio::test]
+    async fn restating_the_same_value_asks_nobody() {
+        let (dir, tree, pool) = setup_family().await;
+        plant_the_card_birthdate(&pool).await;
+        let plan = format!(
+            "{{\"intent\":\"capture\",\"extractions\":[\
+             {{\"target_wiki_id\":\"bob\",\"subject_id\":\"user:bob\",\
+             \"body\":\"{CARD_BIRTHDATE}\",\"fact_type\":\"bio\",\"salience\":\"high\",\
+             \"conflicts_with\":\"{CARD_FACT_ID}\",\"slot\":\"la data di nascita\"}}]}}"
+        );
+        let llm = FakeLlmBackend::new("fake", &plan);
+        let resp = wiki_ingest_message(
+            &pool,
+            &tree,
+            fake_embedder(),
+            &llm,
+            None,
+            the_age_turn("carol", None),
+            &IngestPolicy::default(),
+        )
+        .await
+        .expect("ingest");
+        assert!(
+            !resp.needs_disambig,
+            "the same value is a duplicate, not a disagreement"
+        );
+        assert!(
+            resp.capture_id.is_some(),
+            "and it files like any restatement"
+        );
+        drop(dir);
+    }
+
+    /// `needs_disambig` on its own holds nothing back — only a declared slot
+    /// conflict does.
+    ///
+    /// The two questions are not the same question. The classifier raises
+    /// `needs_disambig` when it cannot tell WHICH stored fact a turn refers to
+    /// ("the dentist", with three on file); that is a reading problem, and the
+    /// facts the same turn states have nothing to do with it. Holding those
+    /// back would lose them outright for a consumer that never sends the
+    /// choice, against the rule that a capture is never traded away. A slot
+    /// conflict is the opposite shape: the write ITSELF is what nobody may
+    /// decide, so that one extraction — and only it — waits.
+    #[tokio::test]
+    async fn needs_disambig_alone_does_not_hold_a_capture_back() {
+        let (dir, tree, pool) = setup_workdir().await;
+        let json = "{\"intent\":\"capture\",\"needs_disambig\":true,\
+                    \"disambig_candidates\":[{\"candidate_id\":\"a\",\"description\":\"which dentist\"}],\
+                    \"extractions\":[{\"target_wiki_id\":\"alice\",\"subject_id\":\"user:alice\",\
+                    \"body\":\"Alice moved her appointment to the 20th.\",\"fact_type\":\"plan\"}]}";
+        let llm = FakeLlmBackend::new("fake", json);
+        let resp = wiki_ingest_message(
+            &pool,
+            &tree,
+            fake_embedder(),
+            &llm,
+            None,
+            req("ho spostato l'appuntamento al 20", "alice"),
+            &IngestPolicy::default(),
+        )
+        .await
+        .expect("ingest");
+
+        assert!(
+            resp.needs_disambig,
+            "the reading question still reaches the consumer"
+        );
+        assert!(
+            resp.capture_id.is_some(),
+            "and the fact the turn stated is filed all the same"
+        );
+        assert_eq!(
+            capture_buffer::find_all_buffered(&pool, 100)
+                .await
+                .unwrap()
+                .len(),
+            1,
+            "queued, not held"
+        );
         drop(dir);
     }
 

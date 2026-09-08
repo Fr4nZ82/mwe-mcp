@@ -565,7 +565,16 @@ below directly.
 5. **Honour disambiguation.** When `needs_disambig` is true, surface the
    `disambig_candidates` to the user and re-call with
    `metadata.disambig_choice` set to the picked id; the second turn
-   commits.
+   commits. Two questions arrive on this channel and one of them holds a
+   write: when the turn states a birth date, an address or a contact for
+   somebody whose identity card already carries a **different** value, the
+   server writes nothing and offers "keep" the value on record (quoted,
+   with who said it and when) against "replace with" the new one.
+   `suggested_seed` asks the same thing in prose, so a turn that held a
+   value back never also claims to have noted it. Ignore the channel and
+   the card simply keeps what it had — the two values never land side by
+   side. The other question ("which dentist did you mean?") holds nothing
+   up: that turn's facts are stored either way.
 6. **The response is always renderable.** Soft failures (internal LLM
    down, malformed plan) degrade to `intent=skip` with a canned seed —
    your turn never dies on a memory hiccup. `llm_used` tells audit-grade

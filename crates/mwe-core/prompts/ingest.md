@@ -124,6 +124,16 @@ are not there for the model to ACT on: they keep the block
 self-consistent for the coherence reads it performs (do not re-file what
 you recalled; stay coherent in time; do not rewrite a relationship).
 
+Two sections are appended after that, each a **complete** set and each
+therefore something the model may act against: `agent_behaviour_rules`
+(`ingest::push_behaviour_rules_section`) and `identity_core`
+(`ingest::push_identity_core_section` — every identity-core fact, with its
+`fact_id`, on the card of each person this turn is about, capped at
+`policy.max_mentioned_cards + 1` people). The cards themselves reach the
+CONSUMER as prose with the markers stripped; `identity_core` is the same facts
+reaching the CLASSIFIER as claims it can name, which is what a `conflicts_with`
+declaration needs.
+
 **Editing note**: the worked examples inside the prompt body are
 bullet lists, never fenced code blocks, on purpose — the loader
 (`mwe_core::prompts::extract_fenced_text`) extracts the first fenced
@@ -180,6 +190,8 @@ This is the heart of `capture`. A single message usually carries SEVERAL distinc
 - **DO NOT ADD SPECIFICITY THE TURN DID NOT CARRY.** You may re-word freely; you may not make a claim sharper than the message made it. The test is not *was the detail written* but **is there an ANCHOR in the turn it follows from**. "Tomorrow", "Saturday", "the 5th" are anchors — resolving them against `current_time` adds no specificity and is exactly your job (see `body`, above). What you know from your own training is NOT an anchor.
   - WRONG (knowledge imported as a personal fact): the message says the car's road tax is due on 31 August → you write "…can be paid without penalty until 30 September, at a cost of about €185". Neither the second date nor the amount nor the grace period is in the turn: that is a rule you know about the world, filed as a fact about these people. Nobody can contradict it later, because nobody said it. Write only "The car's road tax is due on 31 August 2026."
   - WRONG (a thing promoted into a bigger thing): the message says "it has put me down for the east fair at Granduardi and I never asked it to" → you write "…asked not to be included in the **project** of the east fair at Granduardi". "Project" is nowhere in the turn: a fair is an event, and calling it a project asserts a working relationship nobody described. Keep the turn's own noun.
+  - WRONG (an age read as a birth date): the message says "bob is about 14 in July 2026" → you write "bob was born on 8 July 2012". **An age, a duration, or a "he is N years old" is never a date of birth.** Doing the arithmetic against `current_time` is not resolving an anchor, it is inventing one: the turn names no day and no month, "about 14" is not 14, and the sentence you would write is one nobody said and nobody can correct — while it sits on the card beside the birth date somebody DID state. Keep what the turn measured: "bob is about 14 years old in July 2026". A day and a month with no year stay a day and a month ("born on 31 October" never gains a year), and a duration stays a duration ("married for twenty years" is not a wedding date).
+  - **The anchor rule is about the turn's own clock, and nothing else.** "Tomorrow", "Saturday", "the 5th" point at a moment relative to `current_time`, so resolving them adds no specificity. An age and a duration point at no moment at all — they are measurements, and a measurement is never resolved into the date it would imply.
   - This rule binds the FRAME as much as the body: it applies with equal force to `target_page` and `page_description` (Part 4) — inventing the container is the same error as inventing the claim, and it is harder to see.
 - **AN UNRESOLVED REFERENCE STAYS UNRESOLVED.** When the turn points at something you cannot pin down — a date with no anchor, an amount nobody stated, a person named only as "my colleague" — keep the fact and keep the turn's own wording ("Frodo has an appointment with his accountant, date not stated"). Do NOT drop the fact, and do NOT pick a plausible specific to fill the gap: a missing detail is recoverable by asking, an invented one is not, because it reads afterwards exactly like something that was said.
 - LENGTH IS NEVER THE GATE. A long message is not a reason to skip extraction. A durable fact often hides inside a long body — an appointment buried in a forwarded email, a decision stated in the middle of a wall of operative chatter, a preference dropped at the end of a paste. Scan the WHOLE message and emit one extraction per durable fact you find, exactly as you would for a short message. Storing the long body VERBATIM is a SEPARATE decision and NOT yours to make here: a paste the user explicitly asks to keep whole becomes its own document elsewhere (a document-import on explicit request), never an extraction in this array. Your job on every turn, short or long, is the same — find the durable facts and emit one extraction each.
@@ -366,7 +378,7 @@ Examples — the cases the rules above do not already walk through:
 "disambig_candidates": [ { "candidate_id": "...", "description": "..." }, ... ],
 "completed_message":   "<the turn's message with what the speaker left implicit written in — omit when nothing is implicit>",
 "fact_scores":         [ { "target": "<fact_id copied EXACTLY from recalled_memory>", "multiplier": 0.90 … 1.10 }, ... ],
-"extractions":         [ { "target_page": "<`lista` extractions AND requested containers ONLY (Part 4's two cases): the page file name, from list_pages when it exists — NEVER a reserved name; omit otherwise>", "subject_id": "user:<id>" | "group:<id>" | "global", "subject_external": "<the NAME of what the fact is about when that is not a principal — see the `subject_external` section; omit otherwise>", "allow_ids": [ "user:<id>" | "group:<id>" | "global", ... ], "fact_type": "bio" | "state" | "preference" | "rule" | "plan" | "episode" | "other", "valid_from": "<ISO-8601 Z resolved against current_time>", "valid_to": "<ISO-8601 Z>" | null, "style": "prosa" | "prosa-tecnica" | "lista", "page_description": "<same two cases, and only for a NEW page: one line saying what it holds; omit otherwise>", "requested_container": false | true, "salience": "high" | "normal" | "low", "engine_rule": false | true, "behaviour_rule": false | true, "behaviour_scope": "per-user" | "agent-wide" | "user-global", "topics": [ "<the macrotopic>", "<the microtopic>" ], "body": "<the atomic fact, third person, dates resolved>", "supersede_target": "<behaviour-rule fact_id from agent_behaviour_rules — NEVER a fact_id from recalled_memory>" | null, "attachments": [ "<catalog_id from this turn's attachments>", ... ] }, ... ]
+"extractions":         [ { "target_page": "<`lista` extractions AND requested containers ONLY (Part 4's two cases): the page file name, from list_pages when it exists — NEVER a reserved name; omit otherwise>", "subject_id": "user:<id>" | "group:<id>" | "global", "subject_external": "<the NAME of what the fact is about when that is not a principal — see the `subject_external` section; omit otherwise>", "allow_ids": [ "user:<id>" | "group:<id>" | "global", ... ], "fact_type": "bio" | "state" | "preference" | "rule" | "plan" | "episode" | "other", "valid_from": "<ISO-8601 Z resolved against current_time>", "valid_to": "<ISO-8601 Z>" | null, "style": "prosa" | "prosa-tecnica" | "lista", "page_description": "<same two cases, and only for a NEW page: one line saying what it holds; omit otherwise>", "requested_container": false | true, "salience": "high" | "normal" | "low", "engine_rule": false | true, "behaviour_rule": false | true, "behaviour_scope": "per-user" | "agent-wide" | "user-global", "topics": [ "<the macrotopic>", "<the microtopic>" ], "body": "<the atomic fact, third person, dates resolved>", "supersede_target": "<behaviour-rule fact_id from agent_behaviour_rules — NEVER a fact_id from recalled_memory>" | null, "conflicts_with": "<fact_id from identity_core whose SLOT this fact fills with a DIFFERENT value — omit otherwise>" | null, "slot": "<the ONE thing both state, in your own words; required with conflicts_with>" | null, "attachments": [ "<catalog_id from this turn's attachments>", ... ] }, ... ]
 }
 
 For `recall` and `skip`, `extractions` is the empty array `[]` and `disambig_candidates` is empty unless you set `needs_disambig`. For `capture`, `extractions` holds one element per atomic fact, and is EMPTY when the turn changes the memory without stating anything to write down ("forget the greenhouse"). For `structural`, it is usually empty — except the HYBRID case (Part 1): content stated alongside the container request files as normal `extractions`. The per-extraction fields below are decided INDEPENDENTLY for each fact.
@@ -417,11 +429,31 @@ One rule governs what you may do with any block of stored material, this one inc
 
 `recalled_memory` is a sample — the facts most similar to this message, out of a memory that may hold thousands, so the one you would need is as likely to sit outside it as inside. Hence the three uses above, all readings, and no `supersede_target` ever pointing at an id from this block.
 
-Three blocks ARE complete, and there you are expected to compare and choose:
+Four blocks ARE complete, and there you are expected to compare and choose:
 
 - **`list_pages`** — every list the sender may add to, so reuse an existing one's exact name instead of minting a second (Part 4). You see WHICH lists exist, never WHAT IS ON THEM: an individual item is not something you can act on.
 - **`agent_behaviour_rules`** — every standing directive in force, so revise one with `supersede_target` (Part 7). You can see everything you would be replacing.
 - **`sender_rules`** — the sender's policy in full, so honour it, and do not append a governance rule it already carries (Part 7).
+- **`identity_core`** — every fact already on the identity card of each person this turn is about, with its `fact_id`, who said it and when. See the section below.
+
+## `identity_core` — the slots these people's cards already fill
+
+An identity card holds a handful of always-on facts: who somebody is, how they relate to others, when they were born, where they live, how to reach them. Each of those is a **slot**, and a slot holds ONE value — a person has one date of birth, one address they live at, one number you call.
+
+You are shown that set complete, per person, with ids. It is there for exactly one judgement: **is the fact I am about to write a SECOND, DIFFERENT value for a slot one of these already fills?**
+
+When it is, do not write it beside. Set on that extraction:
+
+- `conflicts_with` — the `fact_id`, copied exactly from this block;
+- `slot` — the one thing both values state, in your own words: "the date of birth", "where they live", "the mobile number".
+
+The engine then holds that fact back and asks the person which of the two is right, in this same turn, and writes only after they answer. **Nothing is lost** — the words you extracted travel with the question — and nothing is decided by you or by anybody else who was not there.
+
+- **You are not choosing.** Never drop the new value because the card disagrees, and never assume the card is stale because the turn is newer. Somebody stated what is on the card; you do not know who is right, and neither does the engine. Emit the extraction with `conflicts_with` and let the person say.
+- **Same value, no conflict.** A fact that says what the card already says is a duplicate: leave `conflicts_with` unset and let it file. This is for a DIFFERENT value in the same slot.
+- **Different slot, no conflict.** Two facts that can both be true at once are two facts, not one slot — «lives in Bologna» and «works in Milan» fill different slots and neither conflicts with the other. If you cannot name the one slot both fill, there is no conflict; that is what writing `slot` down is for.
+- **The card is the perimeter.** `conflicts_with` may only name an id from THIS block. A fact from `recalled_memory` is not a candidate: that block is a sample, and this one is complete.
+- **When the person has answered**, the turn carries a `disambig_choice` and you are told to commit. Emit the extraction the same way, `conflicts_with` and `slot` still set: they are how the engine knows which stored value the answer was about.
 
 ## The `Project documentation` slot — reference, not memory (turn-level, EVERY turn)
 

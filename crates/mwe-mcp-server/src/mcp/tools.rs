@@ -1579,6 +1579,11 @@ async fn record_navigate_trace(parts: NavigateTraceParts<'_>) {
         truncated: parts.navigated.truncated,
         injected_block: serde_json::to_string_pretty(parts.result).ok(),
         rules_block: None,
+        // The reconciliation stage belongs to a conversational turn: this tool
+        // answers a search and changes nothing, so it was shown no candidates
+        // and gave no verdict.
+        reconcile_candidates: Vec::new(),
+        reconcile_verdict: None,
         // The whole call is the recall: there is no classifier, no
         // reconciliation and no write to hold the two figures apart.
         recall_ms: took_ms,

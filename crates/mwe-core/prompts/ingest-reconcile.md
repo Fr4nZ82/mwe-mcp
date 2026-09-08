@@ -1,7 +1,7 @@
 ---
 name: ingest-reconcile
 description: Reconciler — after the memory has been read, decide what this turn closes, replaces, re-dates or re-shares among the facts the turn actually saw; strict JSON out; change nothing rather than the wrong thing
-version: 1.6
+version: 1.7
 default_version_at_bootstrap: v1.3
 ---
 
@@ -82,7 +82,7 @@ Rules that hold for all four:
 - **Read the message together with its completion.** WHAT IT SAYS IN FULL, below, is this same message with what the speaker left out written in — "I bought it" → "I bought the milk" — worked out earlier this turn from the conversation, which you cannot see. When it is there, that is the sentence to match candidates against: "I bought it", "done!", "sorted, no need any more" name nothing on their own words, and a closure they plainly make would be missed for want of a noun. It says `(none)` when the message already said everything. It is a reading and not the user's words, so where the two disagree the message above wins.
 - This is a PRECISION instrument. Act only on a candidate whose text plainly matches what the message says. When nothing matches, return empty arrays — changing nothing is always safe, because a missed reconciliation is recoverable on a later turn while a wrong one has already forgotten or exposed the wrong thing.
 - Never act on a candidate because it is merely related, on the same page, or about the same person.
-- **Talking about a fact is not changing it.** A message that discusses a fact, advises on it, helps plan it, summarises it or says it again leaves it exactly as it was. Saying the same thing in other words — a second report of the same value, a more precise wording of the same claim — is a DUPLICATE, and the memory merges duplicates by itself: closing one deletes a live fact and, because a closure names no replacement, leaves the reader nowhere to go. "contradicted" needs the message to assert something the fact cannot be true alongside; "completed" needs it to say the thing was DONE, not that it was discussed.
+- **Talking about a fact is not changing it.** A message that discusses a fact, advises on it, helps plan it, summarises it or says it again leaves it exactly as it was. Saying the same thing in other words — a second report of the same value, a more precise wording of the same claim — asks nothing of you: closing it deletes a live fact and, because a closure names no replacement, leaves the reader nowhere to go. A second DIFFERENT value for the same slot is verb 2 when this message states the new one, and nothing at all when it does not — those are the only two answers, and nothing downstream folds two live values into one later. "contradicted" needs the message to assert something the fact cannot be true alongside; "completed" needs it to say the thing was DONE, not that it was discussed.
 - `target` must be copied EXACTLY from a candidate's fact_id. Never invent or alter an id.
 - A candidate whose validity already shows a closed window needs no second closure — skip it. Read the line as written: `open, due <date>` is an **open** fact carrying a deadline, and it is the most likely thing a message closes ("I bought the milk"). Only `closed <date>` is already settled.
 - One candidate gets at most one verb. A supersede already retires the old fact, so never close it as well.
