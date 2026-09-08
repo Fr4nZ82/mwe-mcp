@@ -403,10 +403,11 @@ async fn delete(
     // logged, never blocks the delete.
     if let Some(memory) = state.memory.as_ref() {
         let gone = mwe_core::types::Principal::Group(group_id.clone());
-        match mwe_core::fact_index::reassign_sender_to_scope(&state.pool, &memory.tree, &gone).await
+        match mwe_core::fact_index::reassign_sender_after_removal(&state.pool, &memory.tree, &gone)
+            .await
         {
             Ok(n) => {
-                tracing::info!(group = %group_id, reassigned = n, "group delete reassigned facts' sender to wiki scope");
+                tracing::info!(group = %group_id, reassigned = n, "group delete re-signed the facts it had authored");
             },
             Err(e) => {
                 tracing::warn!(group = %group_id, error = %e, "sender reassignment failed after group delete");

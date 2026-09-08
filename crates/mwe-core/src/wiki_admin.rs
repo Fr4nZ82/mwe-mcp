@@ -1765,23 +1765,16 @@ pub enum ReadAccessOutcome {
     /// `_meta.md.shared_with` names the builtin `global` group — anyone
     /// authenticated can read.
     Global,
-    /// Caller cannot read. `owner` is kept for diagnostic messages on the
-    /// 403 path.
-    Denied {
-        /// The wiki's scope principal, as the audit text prints it: a bare
-        /// user id (no `user:` prefix), or `group:<id>` for a wiki a group
-        /// answers for. `None` on a **topic wiki** — one that stands for
-        /// nobody, so nobody owns it — and a message built from it says that
-        /// instead of naming somebody.
-        owner: Option<String>,
-    },
+    /// Caller cannot read. A refusal that wants to name whose wiki it is
+    /// asks [`wiki_owner_label`], the one place that label is spelled.
+    Denied,
 }
 
 impl ReadAccessOutcome {
     /// `true` for every variant except [`ReadAccessOutcome::Denied`].
     #[must_use]
     pub const fn is_granted(&self) -> bool {
-        !matches!(self, Self::Denied { .. })
+        !matches!(self, Self::Denied)
     }
 
     /// `true` when the caller has **owner-equivalent** authority — the
@@ -1817,13 +1810,12 @@ impl ReadAccessOutcome {
 ///    `shared_with` → [`ReadAccessOutcome::SharedGroup`].
 /// 5. `shared_with` names the builtin `global` group → every
 ///    authenticated token reads ([`ReadAccessOutcome::Global`]).
-/// 6. Else [`ReadAccessOutcome::Denied`], carrying the resolved owner.
+/// 6. Else [`ReadAccessOutcome::Denied`].
 ///
 /// A **topic wiki** — one that stands for nobody — has no scope principal
 /// ([`WikiTree::resolve_scope_principal`] answers `None`), so steps 1 and 2
 /// have nothing to match: nobody is its owner, and nobody is a member of an
-/// owning group. Its `shared_with` roster still grants exactly what it names,
-/// and a denial names no owner.
+/// owning group. Its `shared_with` roster still grants exactly what it names.
 ///
 /// Group lookups run only when needed. The scope principal is derived
 /// from the parent chain via [`WikiTree::resolve_scope_principal`].
@@ -1889,25 +1881,14 @@ pub async fn resolve_read_access(
     if saw_global {
         return Ok(ReadAccessOutcome::Global);
     }
-    Ok(ReadAccessOutcome::Denied {
-        owner: principal.as_ref().map(owner_label),
-    })
+    Ok(ReadAccessOutcome::Denied)
 }
 
-/// A wiki's scope principal as the audit text prints it: a bare user id
-/// (`alice`, never `user:alice`), or `group:<id>` for a wiki a group answers
-/// for.
+/// A wiki's scope principal as the audit text prints it.
 ///
-/// A **topic wiki** has no principal at all, and both callers keep that as
-/// `None` so a message built from it says nobody instead of naming somebody.
-fn owner_label(principal: &Principal) -> String {
-    match principal {
-        Principal::User(id) => id.clone(),
-        Principal::Group(g) => format!("group:{g}"),
-    }
-}
-
-/// [`owner_label`] for a wiki, resolving its scope principal first.
+/// A bare user id (`alice`, never `user:alice`), or `group:<id>` for a wiki a
+/// group answers for. `None` on a **topic wiki**, which has no principal at
+/// all, so a message built from it says nobody instead of naming somebody.
 ///
 /// The label a refusal names, for a caller that decided the refusal by some
 /// other question — [`wiki_readable_by`] answers a bare `bool`, and a message
@@ -1923,8 +1904,10 @@ pub fn wiki_owner_label(
     Ok(tree
         .resolve_scope_principal(handle.meta())
         .map_err(AdminError::Wiki)?
-        .as_ref()
-        .map(owner_label))
+        .map(|p| match p {
+            Principal::User(id) => id,
+            Principal::Group(g) => format!("group:{g}"),
+        }))
 }
 
 /// Request-shape validation for the `pages` of a push, run BEFORE any
@@ -3279,10 +3262,13 @@ mod tests {
         let mallory = resolve_read_access(&pool, &tree, &handle, "mallory")
             .await
             .expect("resolve mallory");
-        assert!(
-            matches!(mallory, ReadAccessOutcome::Denied { ref owner } if owner.as_deref() == Some("alice"))
-        );
+        assert!(matches!(mallory, ReadAccessOutcome::Denied));
         assert!(!mallory.is_granted());
+        assert_eq!(
+            wiki_owner_label(&tree, &handle).expect("owner label"),
+            Some("alice".to_owned()),
+            "a refusal can still name whose wiki it is"
+        );
     }
 
     #[tokio::test]
@@ -3324,7 +3310,7 @@ mod tests {
         let mallory = resolve_read_access(&pool, &tree, &handle, "mallory")
             .await
             .expect("resolve mallory");
-        assert!(matches!(mallory, ReadAccessOutcome::Denied { .. }));
+        assert!(matches!(mallory, ReadAccessOutcome::Denied));
     }
 
     #[tokio::test]
@@ -3389,7 +3375,7 @@ mod tests {
         let mallory = resolve_read_access(&pool, &tree, &handle, "mallory")
             .await
             .expect("resolve mallory");
-        assert!(matches!(mallory, ReadAccessOutcome::Denied { .. }));
+        assert!(matches!(mallory, ReadAccessOutcome::Denied));
         assert!(!mallory.is_owner_equivalent());
     }
 

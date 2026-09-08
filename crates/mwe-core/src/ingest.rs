@@ -181,16 +181,8 @@ pub enum RecallDepth {
 }
 
 impl RecallDepth {
-    /// Wire token: `"full" | "light"`.
-    #[must_use]
-    pub const fn as_str(self) -> &'static str {
-        match self {
-            Self::Full => "full",
-            Self::Light => "light",
-        }
-    }
-
-    /// The depth a wire token names, `None` for anything else.
+    /// The depth a wire token (`"full"` | `"light"`) names, `None` for
+    /// anything else.
     ///
     /// An unrecognised token is refused at the boundary rather than read as
     /// the default: a consumer that asks for a shallower turn and silently
@@ -1418,8 +1410,9 @@ fn subject_is_the_wikis_own_principal(subject: &Principal, wiki_id: &str) -> boo
 /// The enrolled people this turn's own words NAME, by id.
 ///
 /// The engine's floor under the resolution contract stated beside
-/// [`enrollment::list_users`]: a name resolves to an enrolled user only when
-/// it IS that user's id or one of the aliases declared for them.
+/// [`enrollment::list_users`]: a name resolves to an enrolled user when it IS
+/// that user's id or one of the aliases declared for them, or when it is the
+/// name of an entity the memory already files under them, and never otherwise.
 /// The classifier is shown the roster, and a roster of bare ids invites it to
 /// finish a resemblance itself — a colleague called Roberto onto an enrolled
 /// `robert`, a full name whose surname the roster does not carry onto the one
@@ -4476,10 +4469,13 @@ fn build_prompt(
     // by canonical name. A message from one user about another ("Bob
     // prefers tea") routes `subject_id` to the named person via this roster
     // rather than filing it under the sender. An id and the aliases printed
-    // beside it are the ONLY names that reach a person — the resolution
-    // contract stated beside `enrollment::list_users`, with
+    // beside it are the only names in THIS roster that reach a person — the
+    // resolution contract stated beside `enrollment::list_users`, with
     // `people_the_turn_names` as its floor — because a roster of bare ids
-    // otherwise reads as an invitation to finish a resemblance.
+    // otherwise reads as an invitation to finish a resemblance. The other
+    // roster reaches a person too, by its own door: an entity in
+    // `known_entities` names the principal it is filed under
+    // (`principals_the_entities_name`).
     //
     // The assistant is in this roster too — it is an enrolled user like any
     // other (the diagonal identity model) — and `is_agent: true` says which
@@ -7690,13 +7686,14 @@ pub async fn wiki_ingest_message(
 
                 // The other half of the same ruling, and the mistake the
                 // roster itself invites: a subject who IS enrolled but whom
-                // this turn never named. Resemblance is not identity — an id
-                // and its declared aliases are the only names that reach a
-                // principal (`people_the_turn_names`) — so a look-alike
-                // resolved onto a real person writes a stranger's life onto
-                // that person's own card. Re-owning to the sender leaves the
-                // name in the prose where the fact reads correctly; claiming
-                // the card does not.
+                // this turn never named. Resemblance is not identity — the
+                // names that reach a principal are its id, its declared
+                // aliases, and the name of an entity already filed under it
+                // (`people_the_turn_names`) — so a look-alike resolved onto a
+                // real person writes a stranger's life onto that person's own
+                // card. Re-owning to the sender leaves the name in the prose
+                // where the fact reads correctly; claiming the card does
+                // not.
                 if let Some(raw) = unit.subject_id
                     && let Ok(Principal::User(subject)) = Principal::from_str(raw)
                     && subject != request.sender_id
@@ -18947,9 +18944,8 @@ mod tests {
     /// latency-bound consumer back on the deep path without telling it.
     #[test]
     fn recall_depth_round_trips_its_wire_tokens() {
-        for d in [RecallDepth::Full, RecallDepth::Light] {
-            assert_eq!(RecallDepth::parse(d.as_str()), Some(d));
-        }
+        assert_eq!(RecallDepth::parse("full"), Some(RecallDepth::Full));
+        assert_eq!(RecallDepth::parse("light"), Some(RecallDepth::Light));
         assert_eq!(RecallDepth::default(), RecallDepth::Full);
         assert_eq!(RecallDepth::parse("ligth"), None);
         assert_eq!(RecallDepth::parse(""), None);

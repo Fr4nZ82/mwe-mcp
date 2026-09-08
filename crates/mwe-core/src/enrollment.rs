@@ -468,8 +468,9 @@ pub struct EnrolledUserLite {
 ///
 /// # The resolution contract this roster carries
 ///
-/// **A name reaches an entry only when it IS that entry's `user_id` or one of
-/// its declared `aliases`**, compared whole-token with case and accents folded
+/// **A name reaches an entry of THIS roster only when it IS that entry's
+/// `user_id` or one of its declared `aliases`**, compared whole-token with
+/// case and accents folded
 /// ([`is_valid_user_id`] allows lowercase ASCII only, so `eowyn` is how
 /// "Éowyn" is enrolled). Nothing else folds. A longer or a shorter form of an
 /// id, a translation of it, a diminutive nobody declared, and a full name
@@ -485,7 +486,7 @@ pub struct EnrolledUserLite {
 /// Two things make the rule load-bearing rather than pedantic. This roster is
 /// the *only* thing a model can tell people apart by — it carries no surnames
 /// and no display names — and the `aliases` column is therefore the one place
-/// a name can come from. Two hands fill it ([`add_aliases`]): the operator, on
+/// a name **of a person** can come from. Two hands fill it ([`add_aliases`]): the operator, on
 /// the user form, and the person themselves, with the full name and the
 /// nickname they type at their first sign-in. Empty, it leaves a household
 /// name reaching nobody. And the cost of a model finishing a resemblance on its

@@ -4,7 +4,7 @@
 //! ACL governs the content directly — instead of 500-ing inside the comment /
 //! edit-affordance read-access checks.
 //!
-//! `resolve_read_access` now resolves a group-owned wiki directly: a member of
+//! `resolve_read_access` resolves a group-owned wiki directly: a member of
 //! the owning group is owner-equivalent, a non-member falls through to
 //! per-fragment only. Either way the leaf-page view renders. Here the admin
 //! `alice` is *not* a member of `famiglia` (a non-member), and the page still

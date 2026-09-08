@@ -961,13 +961,14 @@ pub async fn mark_forgotten_in_wiki(pool: &SqlitePool, wiki_id: &str, reason: &s
     Ok(res.rows_affected())
 }
 
-/// Reassign a removed principal's facts to their wiki's scope principal.
+/// Re-sign the facts a just-removed principal authored, so no active row
+/// carries the name of somebody who is gone.
 ///
-/// Substitute every active fact's dangling `sender_id` — equal to the
-/// just-removed principal `gone` — with that fact's wiki **scope principal**,
-/// so a contribution outlives its author as the category's: a fact `franz`
-/// authored in the family wiki becomes `sender = group:famiglia` once `franz`
-/// is gone, instead of pointing at a principal that no longer exists.
+/// Every active fact whose `sender_id` is the removed principal `gone` takes
+/// that fact's wiki **scope principal** instead, so a contribution outlives
+/// its author as the category's: a fact authored in the family wiki becomes
+/// `sender = group:famiglia` once its author is gone, instead of pointing at
+/// a principal that is not there.
 ///
 /// This is the **group** deletion's answer, and the one a group can give: a
 /// group is a collective, not a person, so its contributions belong to the
@@ -992,7 +993,7 @@ pub async fn mark_forgotten_in_wiki(pool: &SqlitePool, wiki_id: &str, reason: &s
 /// # Errors
 ///
 /// As [`sqlx::Error`] (the distinct-wiki scan or a per-wiki update).
-pub async fn reassign_sender_to_scope(
+pub async fn reassign_sender_after_removal(
     pool: &SqlitePool,
     tree: &crate::wiki::WikiTree,
     gone: &Principal,
@@ -3724,7 +3725,7 @@ mod tests {
     // ---------- deleted-principal sender reassignment ----------
 
     #[tokio::test]
-    async fn reassign_sender_to_scope_substitutes_gone_author() {
+    async fn reassign_sender_after_removal_substitutes_gone_author() {
         use crate::wiki::WikiTree;
         let pool = make_pool().await;
 
@@ -3752,7 +3753,7 @@ mod tests {
 
         // franz is removed → his sender is reassigned to the wiki scope.
         let gone = "user:franz".parse::<Principal>().unwrap();
-        let n = reassign_sender_to_scope(&pool, &tree, &gone)
+        let n = reassign_sender_after_removal(&pool, &tree, &gone)
             .await
             .expect("reassign");
         assert_eq!(n, 1, "one fact reassigned");
@@ -3764,7 +3765,7 @@ mod tests {
         );
 
         // Idempotent: a second pass finds nothing still attributed to franz.
-        let n2 = reassign_sender_to_scope(&pool, &tree, &gone)
+        let n2 = reassign_sender_after_removal(&pool, &tree, &gone)
             .await
             .expect("reassign2");
         assert_eq!(n2, 0, "nothing left to reassign");
@@ -3794,7 +3795,7 @@ mod tests {
         // Reassigning would substitute user:franz with user:franz — a no-op the
         // helper skips, leaving the fact for the forget-user pass.
         let gone = "user:franz".parse::<Principal>().unwrap();
-        let n = reassign_sender_to_scope(&pool, &tree, &gone)
+        let n = reassign_sender_after_removal(&pool, &tree, &gone)
             .await
             .expect("reassign");
         assert_eq!(n, 0, "scope == gone is skipped");
@@ -3834,7 +3835,7 @@ mod tests {
         insert(&pool, &f).await.expect("insert");
 
         let gone = "group:famiglia".parse::<Principal>().unwrap();
-        let n = reassign_sender_to_scope(&pool, &tree, &gone)
+        let n = reassign_sender_after_removal(&pool, &tree, &gone)
             .await
             .expect("reassign");
         assert_eq!(n, 1, "the row is re-signed, not left as it is");
@@ -3847,7 +3848,7 @@ mod tests {
 
         // Idempotent: the removed identity is not the gone principal, so a
         // second pass finds nothing.
-        let n2 = reassign_sender_to_scope(&pool, &tree, &gone)
+        let n2 = reassign_sender_after_removal(&pool, &tree, &gone)
             .await
             .expect("reassign2");
         assert_eq!(n2, 0, "nothing left attributed to the vanished group");

@@ -1348,7 +1348,9 @@ fn known_entities_block(entities: &[crate::fact_index::KnownEntity]) -> String {
 /// ([`crate::ingest::roster_aliases`]); an empty roster renders `(none)`.
 ///
 /// A list of bare ids is also an invitation to finish a resemblance, which is
-/// why [`subject_the_segment_never_named`] stands under it.
+/// why [`subject_the_segment_never_named`] stands under it. That guard reads
+/// the entity roster as well: a name in `known_entities` reaches the principal
+/// it is filed under, so it is not a resemblance to be refused.
 fn known_users_block(users: &[crate::enrollment::EnrolledUserLite]) -> String {
     let mut out = String::from("known_users:\n");
     if users.is_empty() {
@@ -1653,8 +1655,9 @@ fn people_the_segment_names(
 /// segment's words never named — the one the extraction re-owns.
 ///
 /// The engine's floor under the resolution contract stated beside
-/// [`crate::enrollment::list_users`]: a name reaches an enrolled person only
-/// when it IS their id or one of the aliases declared for them.
+/// [`crate::enrollment::list_users`]: a name reaches an enrolled person when
+/// it IS their id or one of the aliases declared for them, or when it is the
+/// name of an entity the memory already files under them, and never otherwise.
 /// The extractor is shown a roster of bare ids, and a roster of bare ids
 /// invites it to finish a resemblance itself — a colleague called Roberto onto
 /// an enrolled `robert`, a full name whose surname no entry carries onto the
@@ -3651,7 +3654,7 @@ mod tests {
                 source_path: "wikis/alice/orto.md".to_owned(),
                 region_start: None,
                 region_end: None,
-                text: "La serra sta in fondo all\u{2019}orto.".to_owned(),
+                text: "La serra sta in fondo all’orto.".to_owned(),
                 embedding: vec![0.1, 0.2, 0.3, 0.4],
                 subject_id: "user:carol".parse().unwrap(),
                 allow_ids: vec!["user:alice".parse().unwrap()],
