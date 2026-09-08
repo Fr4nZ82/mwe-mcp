@@ -44,6 +44,9 @@ the same recall as text:
   it asked for, which opened and — for each refusal — why not.
 - **Handed to the consumer** — the text that actually reached your assistant
   (a deep search shows **Answered to the caller** instead).
+- **Standing rules handed over** — your standing rules as they went with it,
+  in the field your assistant receives them in, kept apart from the memory
+  above. The panel is there only on a turn that carried any.
 
 ## The replay
 

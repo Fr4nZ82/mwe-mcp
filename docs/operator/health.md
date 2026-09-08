@@ -16,9 +16,11 @@ so a readable path means the per-reader access control can be bypassed by
 reading the files directly. Each finding is listed with its severity and its
 mode.
 
-**LLM slots** — press **Load LLM slot diagnostics** and every slot is probed
-for reachability. This is where an unreachable provider or a wrong endpoint
-shows up.
+**LLM slots** — a spinner while the page dials every slot, then the table. It
+arrives on its own a moment after the rest of the page, because a slot whose
+backend is not answering takes a while to give up and the rest of the page is
+not made to wait for it. This is where an unreachable provider or a wrong
+endpoint shows up, and a slot with no model at all reads **NO MODEL**.
 
 This page is the subset of `mwe-mcp doctor` that can be answered while the
 server is running. When the server will not start at all, the offline CLI is

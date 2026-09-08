@@ -17,16 +17,21 @@ different questions:
 ## Getting in: an admin token
 
 A scraper has no browser and no sign-in, so it holds a token in a file and
-sends it on every request. Issue one, on the machine the server runs on:
+sends it on every request. Issue one from [Tokens](tokens.md), with the server
+running: consumer class **Smart**, **Owner (user)** yourself, and a **Device
+id** such as `prometheus`. The token's `isAdmin` claim is taken from the
+owner's role, and that is what this address asks for. A smart token creates no
+consumer identity and no wiki — it is the admin's own credential, on a device.
 
-```bash
-mwe-mcp token-issue --sender <your admin id> --device prometheus --is-admin
-```
+It has to be an admin's, because the answer below describes the whole
+deployment — the models it calls, what they cost, the credentials that talk to
+it — and that is not a reader's business. Revoking it on that same page stops
+the scraping.
 
-It is an ordinary token: it shows up on the **Tokens** page, and revoking it
-there stops the scraping. It has to be an admin's, because the answer below
-describes the whole deployment — the models it calls, what they cost, the
-credentials that talk to it — and that is not a reader's business.
+The CLI mints the same token with
+`mwe-mcp token-issue --sender <your admin id> --device prometheus --is-admin`,
+and it needs the server **stopped**: like every other `mwe-mcp` subcommand it
+takes the workdir lock, which the running server holds.
 
 Then the scrape itself:
 
@@ -118,7 +123,7 @@ is nightly, so a healthy `light` says nothing about it.
 |---|---|
 | `mwe_dream_last_run_timestamp_seconds` | When the most recent run of that kind finished. |
 | `mwe_dream_last_run_ok` | 1 if it succeeded, 0 if it failed. |
-| `mwe_dream_runs` | Runs by kind and outcome, over the last 100 the console keeps — the same history the console lists. |
+| `mwe_dream_runs` | Runs by kind and outcome (`ok="true"` or `"false"`), over the last 100 the console keeps — the same history the console lists. |
 
 A family with nothing behind it is left out rather than published as zero. On a
 server nobody has used today there are no `…_today` lines at all, and that

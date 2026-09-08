@@ -54,5 +54,5 @@ restart.
 
 ## When something does not answer
 
-**[Health](health.md) → Load LLM slot diagnostics** probes every slot against
-the live handles and tells you which one is unreachable.
+The **LLM slots** table on [Health](health.md) dials every slot against the
+live handles and tells you which one is unreachable.
