@@ -196,6 +196,17 @@ impl RecallDepth {
             _ => None,
         }
     }
+
+    /// The wire token of this depth — the inverse of [`Self::parse`], and
+    /// what the recall trace journals so a reader can tell a turn that asked
+    /// for the shallow answer from one whose intent skipped the walk.
+    #[must_use]
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::Full => "full",
+            Self::Light => "light",
+        }
+    }
 }
 
 /// Input to [`wiki_ingest_message`].
@@ -6111,57 +6122,6 @@ fn behaviour_supersede_target(
 const HDR_RELEVANT_MEMORY: &str =
     "RELEVANT MEMORY (recalled facts — the dates are signals, not filters):";
 
-/// Render the `RELEVANT MEMORY` section: the deterministic flat hit-list,
-/// trust-tagged, with the fresh (un-promoted) hits in their own labelled
-/// sub-slot. Two filters keep the section honest:
-///
-/// - `navigated_paths` — workdir-relative source paths of the pages the
-///   navigator already injected below: a durable hit homed on one of them
-///   is dropped (its content rides the page prose; injecting it twice is
-///   noise). Fresh hits have no published page and are never deduped.
-/// - rules-page hits are skipped — standing directives reach the consumer
-///   through the dedicated `rules` field only, never as recalled memory.
-///
-/// ## The turn-level relevance floor
-///
-/// `relevance_floor` gates the **promoted** hits as a group, not one at a
-/// time: it is compared against the MAXIMUM score among the turn's
-/// promoted (non-fresh) hits — every `RecallHit` in `hits` with
-/// `fresh == false`, before the two filters above ever run, so the gate's
-/// outcome depends only on the turn's own recall scores, never on which
-/// pages the navigator happened to open this same turn or on whether a
-/// hit happens to be a rules-page hit. A per-hit threshold cannot do this
-/// job — measured on two real turns: on the one that NEEDED its
-/// recall the right answer scored `0.4813` / `0.4811`, while on the one
-/// that needed none the noise it recited ran to `0.4306` — the bands
-/// overlap, so any per-hit cut that removes one removes the other. Below
-/// the floor, the turn's flat recall has nothing to say and the promoted
-/// section is not opened at all (not "the weak hits are trimmed" — no
-/// promoted hit renders, however strong). At or above it, every promoted
-/// hit renders, including ones individually below the floor — the
-/// guarantee the first turn needs, since its `0.4813` hit clears only
-/// because the turn's best was `0.5474`. See
-/// [`recall::DEFAULT_RELEVANCE_FLOOR`] for the measurement.
-///
-/// Deliberately **NOT** gated by `relevance_floor`:
-/// - the **fresh** (un-promoted) captures below — a different signal
-///   (things said a few turns ago, not durable memory) that keeps
-///   rendering even when every promoted hit is dropped;
-/// - the caller's `UPCOMING` (due-soon) slot — time-driven by design,
-///   deliberately never similarity-gated;
-/// - the project-docs slot (`project_docs`) — it already has its own
-///   floor ([`recall::DEFAULT_SIGNPOST_FLOOR`] /
-///   [`recall::DEFAULT_SMART_CORPUS_FLOOR`]);
-/// - the flat hits' other two uses (the classifier's input, the
-///   navigator's RAG seeds) — both happen upstream of this function and
-///   read `hits` unfiltered; this floor decides only whether *this
-///   render* shows a promoted hit, never whether recall found one.
-///
-/// `relevance_floor <= 0.0` is the off switch — same idiom as
-/// [`recall::admitted_smart_wikis`] — and renders every promoted hit,
-/// however weak.
-///
-/// `None` when nothing survives — the section is omitted entirely.
 /// Floor of the classifier's vote, and its ceiling
 /// ([`FACT_SCORE_MAX`]). Founder's ruling, 2026-08-03: **±10 %**.
 ///
@@ -6224,39 +6184,120 @@ fn apply_classifier_vote(hits: &[RecallHit], scores: &[LlmFactScore]) -> Vec<Rec
     out
 }
 
+/// Why the flat slot leaves a recalled hit out of the block, or `None` when
+/// it takes it. The three tokens are what the recall trace journals.
+///
+/// One function, two readers: [`format_snippet`] filters on it and the trace
+/// records it, so what the page says was dropped is what the block dropped —
+/// and that function's doc is where the three reasons are explained. The
+/// first that applies is the one named: a hit on a page the block already
+/// carries is reported as that, whatever the turn-level gate is doing.
+fn flat_drop_reason(
+    h: &RecallHit,
+    navigated_paths: &[String],
+    promoted_gate_open: bool,
+) -> Option<&'static str> {
+    if crate::wiki::is_rules_page(&h.source_path) {
+        return Some("rules_page");
+    }
+    if h.fresh {
+        return None;
+    }
+    if navigated_paths.iter().any(|p| p == &h.source_path) {
+        return Some("on_an_injected_page");
+    }
+    (!promoted_gate_open).then_some("relevance_floor")
+}
+
+/// Is the promoted section open at all this turn?
+///
+/// Turn-level gate: the MAXIMUM score among ALL promoted hits (not the subset
+/// that survives the per-hit filter) decides it — see the relevance-floor
+/// section of [`format_snippet`]'s doc for why it is a group gate and not a
+/// per-hit threshold.
+fn promoted_gate_open(hits: &[RecallHit], relevance_floor: f32) -> bool {
+    relevance_floor <= 0.0
+        || hits
+            .iter()
+            .filter(|h| !h.fresh)
+            .map(|h| h.score)
+            .fold(f32::NEG_INFINITY, f32::max)
+            >= relevance_floor
+}
+
+/// Render the `RELEVANT MEMORY` section: the deterministic flat hit-list,
+/// trust-tagged, with the fresh (un-promoted) hits in their own labelled
+/// sub-slot.
+///
+/// What it leaves out is decided by [`flat_drop_reason`], which the recall
+/// trace also reads, so the record of what was dropped and the block itself
+/// can never disagree. Two filters keep the section honest:
+///
+/// - `navigated_paths` — workdir-relative source paths of the pages the
+///   navigator already injected below: a durable hit homed on one of them
+///   is dropped (its content rides the page prose; injecting it twice is
+///   noise). Fresh hits have no published page and are never deduped.
+/// - rules-page hits are skipped — standing directives reach the consumer
+///   through the dedicated `rules` field only, never as recalled memory.
+///
+/// ## The turn-level relevance floor
+///
+/// `relevance_floor` gates the **promoted** hits as a group, not one at a
+/// time: it is compared against the MAXIMUM score among the turn's
+/// promoted (non-fresh) hits — every `RecallHit` in `hits` with
+/// `fresh == false`, before the two filters above ever run, so the gate's
+/// outcome depends only on the turn's own recall scores, never on which
+/// pages the navigator happened to open this same turn or on whether a
+/// hit happens to be a rules-page hit. A per-hit threshold cannot do this
+/// job — measured on two real turns: on the one that NEEDED its
+/// recall the right answer scored `0.4813` / `0.4811`, while on the one
+/// that needed none the noise it recited ran to `0.4306` — the bands
+/// overlap, so any per-hit cut that removes one removes the other. Below
+/// the floor, the turn's flat recall has nothing to say and the promoted
+/// section is not opened at all (not "the weak hits are trimmed" — no
+/// promoted hit renders, however strong). At or above it, every promoted
+/// hit renders, including ones individually below the floor — the
+/// guarantee the first turn needs, since its `0.4813` hit clears only
+/// because the turn's best was `0.5474`. See
+/// [`recall::DEFAULT_RELEVANCE_FLOOR`] for the measurement.
+///
+/// Deliberately **NOT** gated by `relevance_floor`:
+/// - the **fresh** (un-promoted) captures below — a different signal
+///   (things said a few turns ago, not durable memory) that keeps
+///   rendering even when every promoted hit is dropped;
+/// - the caller's `UPCOMING` (due-soon) slot — time-driven by design,
+///   deliberately never similarity-gated;
+/// - the project-docs slot (`project_docs`) — it already has its own
+///   floor ([`recall::DEFAULT_SIGNPOST_FLOOR`] /
+///   [`recall::DEFAULT_SMART_CORPUS_FLOOR`]);
+/// - the flat hits' other two uses (the classifier's input, the
+///   navigator's RAG seeds) — both happen upstream of this function and
+///   read `hits` unfiltered; this floor decides only whether *this
+///   render* shows a promoted hit, never whether recall found one.
+///
+/// `relevance_floor <= 0.0` is the off switch — same idiom as
+/// [`recall::admitted_smart_wikis`] — and renders every promoted hit,
+/// however weak.
+///
+/// `None` when nothing survives — the section is omitted entirely.
 fn format_snippet(
     hits: &[RecallHit],
     navigated_paths: &[String],
     project_docs: &[recall::SectionHit],
     relevance_floor: f32,
 ) -> Option<String> {
-    let keep = |h: &&RecallHit| -> bool {
-        if crate::wiki::is_rules_page(&h.source_path) {
-            return false;
-        }
-        h.fresh || !navigated_paths.iter().any(|p| p == &h.source_path)
-    };
-    // Turn-level gate: the MAXIMUM score among ALL promoted hits (not the
-    // subset that survives `keep`) decides whether the promoted section
-    // opens at all. See "The turn-level relevance floor" above.
-    let promoted_gate_open = relevance_floor <= 0.0
-        || hits
-            .iter()
-            .filter(|h| !h.fresh)
-            .map(|h| h.score)
-            .fold(f32::NEG_INFINITY, f32::max)
-            >= relevance_floor;
+    let gate_open = promoted_gate_open(hits, relevance_floor);
+    let keep =
+        |h: &&RecallHit| -> bool { flat_drop_reason(h, navigated_paths, gate_open).is_none() };
     let mut out = String::new();
     // Promoted (durable) facts first — withheld as a group when the gate
     // above is shut; never trimmed hit by hit.
-    if promoted_gate_open {
-        for h in hits.iter().filter(|h| !h.fresh).filter(keep) {
-            out.push_str("\n- (");
-            out.push_str(&h.wiki_id);
-            out.push_str(") ");
-            out.push_str(&h.text);
-            push_trust_tag(&mut out, h);
-        }
+    for h in hits.iter().filter(|h| !h.fresh).filter(keep) {
+        out.push_str("\n- (");
+        out.push_str(&h.wiki_id);
+        out.push_str(") ");
+        out.push_str(&h.text);
+        push_trust_tag(&mut out, h);
     }
     // Mid-range bridge: un-promoted buffered captures in a labelled slot, so the
     // agent reads them as recent and provisional (may be superseded soon).
@@ -6627,64 +6668,234 @@ fn assemble_rules_block(notice: Option<String>, behaviour: Option<String>) -> Op
     }
 }
 
+/// Milliseconds of a turn spent on the recall itself, accumulated stage by
+/// stage as the turn runs.
+///
+/// The turn's own wall clock counts everything — the classifier call, the
+/// reconciliation stage, the capture and buffer writes — and none of those is
+/// recall. Both numbers reach the trace because one of them alone, printed
+/// over a recall trace, is read as the cost of the recall.
+///
+/// The stages are disjoint intervals of one sequential turn, so their sum is
+/// a real "of the N ms this turn took, M were recall".
+#[derive(Debug, Clone, Copy, Default)]
+struct RecallClock(std::time::Duration);
+
+impl RecallClock {
+    /// Charge one recall stage, from the instant it started.
+    fn charge(&mut self, started: std::time::Instant) {
+        self.0 += started.elapsed();
+    }
+
+    /// The accumulated total, in milliseconds.
+    fn ms(self) -> u64 {
+        u64::try_from(self.0.as_millis()).unwrap_or(u64::MAX)
+    }
+}
+
+/// The flat slot's verdict on one recalled hit: the score the classifier's
+/// vote left it with, and why it did not reach the block.
+///
+/// Built where the slot renders, because that is the only place both are
+/// known — the vote runs after the walk, and the drop reasons read the pages
+/// the walk opened.
+#[derive(Debug, Clone, Copy, Default)]
+struct FlatVerdict {
+    /// The post-vote score, when the classifier moved it.
+    voted_score: Option<f32>,
+    /// The [`flat_drop_reason`] token, or `None` when the hit reached the
+    /// block.
+    dropped: Option<&'static str>,
+}
+
+/// What the flat slot did with each of the turn's hits, keyed by fact id.
+type FlatVerdicts = std::collections::HashMap<String, FlatVerdict>;
+
+/// The verdict on a turn whose intent never rendered the flat slot at all — a
+/// `skip` turn, the one intent that opens no recalled memory. Recall still ran
+/// and the trace still lists what it found, so without this every one of those
+/// hits reads as delivered.
+fn flat_verdicts_skipped(hits: &[RecallHit]) -> FlatVerdicts {
+    hits.iter()
+        .map(|h| {
+            (
+                h.fact_id.as_str().to_owned(),
+                FlatVerdict {
+                    voted_score: None,
+                    dropped: Some("intent_skipped_the_slot"),
+                },
+            )
+        })
+        .collect()
+}
+
+/// The flat slot's verdict on every hit it was handed, for the recall trace.
+///
+/// `revised` is the classifier-voted list [`format_snippet`] renders from,
+/// `original` the list recall produced — the pair is what says which hits the
+/// vote actually moved.
+fn flat_verdicts(
+    original: &[RecallHit],
+    revised: &[RecallHit],
+    navigated_paths: &[String],
+    relevance_floor: f32,
+) -> FlatVerdicts {
+    let gate_open = promoted_gate_open(revised, relevance_floor);
+    revised
+        .iter()
+        .map(|h| {
+            let before = original
+                .iter()
+                .find(|o| o.fact_id == h.fact_id)
+                .map(|o| o.score);
+            (
+                h.fact_id.as_str().to_owned(),
+                FlatVerdict {
+                    // Exact by construction: the vote multiplies, so a hit the
+                    // classifier left alone carries the same bits it arrived with.
+                    voted_score: before
+                        .filter(|b| b.to_bits() != h.score.to_bits())
+                        .map(|_| h.score),
+                    dropped: flat_drop_reason(h, navigated_paths, gate_open),
+                },
+            )
+        })
+        .collect()
+}
+
+/// Everything one turn's recall trace is written from.
+///
+/// A struct rather than a parameter list because the record is the whole
+/// route of the recall, and a route named positionally is a route nobody can
+/// read at the call site.
+struct IngestTraceParts<'a> {
+    request: &'a IngestRequest,
+    intent: IntentKind,
+    seed_mode: &'a str,
+    seeds: &'a NavSeeds,
+    /// The classifier's completed message, when it wrote one that says
+    /// something the raw turn does not.
+    completed_message: Option<&'a str>,
+    /// `true` when the flat hits are the second search's, run on that
+    /// completed message.
+    flat_hits_from_completed: bool,
+    recall_hits: &'a [RecallHit],
+    /// The flat slot's verdict per hit.
+    flat_verdicts: &'a FlatVerdicts,
+    /// The project-documentation slot, and how many of its leading entries
+    /// the *named* half pulled — the rest came from the signposted half.
+    project_docs: &'a [recall::SectionHit],
+    named_docs: usize,
+    /// The identity cards served whole, `(wiki_id, page, role)`.
+    served_pages: &'a [(String, String, &'static str)],
+    nav_tail: Option<&'a NavigatedTail>,
+    due_soon: Option<&'a [RecallHit]>,
+    injected_block: Option<&'a str>,
+    rules_block: Option<&'a str>,
+    recall_clock: RecallClock,
+    took: std::time::Duration,
+}
+
 /// Journal the route this turn's recall took ([`crate::recall_trace`] — the
 /// admin Traces page). Best-effort telemetry by contract: a journal failure
 /// is logged and never touches the turn.
-#[allow(clippy::too_many_arguments, reason = "one turn's full recall context")]
+#[allow(
+    clippy::too_many_lines,
+    reason = "one struct literal: the whole record, field by field"
+)]
 async fn record_ingest_trace(
     pool: &SqlitePool,
-    request: &IngestRequest,
-    intent: IntentKind,
-    seed_mode: &str,
-    seeds: &NavSeeds,
-    recall_hits: &[RecallHit],
-    nav_tail: Option<&NavigatedTail>,
-    due_soon: Option<&[RecallHit]>,
     policy: &IngestPolicy,
-    injected_block: Option<&str>,
-    rules_block: Option<&str>,
-    took: std::time::Duration,
+    parts: IngestTraceParts<'_>,
 ) {
-    use crate::recall_trace::{self, RecallTrace, TraceEntryPoint, TraceHit, TraceSource};
+    use crate::recall_trace::{
+        self, RecallTrace, TraceDocSection, TraceEntryPoint, TraceHit, TraceServedPage, TraceSource,
+    };
 
+    let request = parts.request;
+    let journal = |h: &RecallHit| {
+        let mut hit = TraceHit::from_hit(h);
+        if let Some(v) = parts.flat_verdicts.get(h.fact_id.as_str()) {
+            hit.voted_score = v.voted_score;
+            hit.dropped = v.dropped.map(str::to_owned);
+        }
+        hit
+    };
     let trace = RecallTrace {
         version: recall_trace::TRACE_PAYLOAD_VERSION,
-        consumer: None,
+        producer: TraceSource::Ingest.as_str().to_owned(),
+        consumer: request.consumer_id.clone(),
         turn_text: recall_trace::cap_turn_text(&request.text),
-        intent: Some(intent.as_str().to_owned()),
-        seed_mode: seed_mode.to_owned(),
-        topics: seeds.topics.clone(),
-        subjects: seeds.subjects.iter().map(ToString::to_string).collect(),
-        flat_hits: recall_hits
+        completed_message: parts.completed_message.map(recall_trace::cap_turn_text),
+        intent: Some(parts.intent.as_str().to_owned()),
+        recall_depth: Some(request.metadata.recall.as_str().to_owned()),
+        seed_mode: parts.seed_mode.to_owned(),
+        topics: parts.seeds.topics.clone(),
+        subjects: parts
+            .seeds
+            .subjects
+            .iter()
+            .map(ToString::to_string)
+            .collect(),
+        flat_hits: parts
+            .recall_hits
             .iter()
             .filter(|h| !h.fresh)
-            .map(TraceHit::from_hit)
+            .map(journal)
             .collect(),
-        fresh_hits: recall_hits
+        flat_hits_from_completed: parts.flat_hits_from_completed,
+        fresh_hits: parts
+            .recall_hits
             .iter()
             .filter(|h| h.fresh)
-            .map(TraceHit::from_hit)
+            .map(journal)
             .collect(),
-        due_soon: due_soon
+        due_soon: parts
+            .due_soon
             .unwrap_or_default()
             .iter()
             .map(TraceHit::from_hit)
             .collect(),
-        entry_points: nav_tail
+        project_docs: parts
+            .project_docs
+            .iter()
+            .enumerate()
+            .map(|(i, d)| {
+                let half = if i < parts.named_docs {
+                    "named"
+                } else {
+                    "signposted"
+                };
+                TraceDocSection::from_section(d, half)
+            })
+            .collect(),
+        served_pages: parts
+            .served_pages
+            .iter()
+            .map(|(wiki_id, page, role)| TraceServedPage {
+                wiki_id: wiki_id.clone(),
+                page: page.clone(),
+                role: (*role).to_owned(),
+            })
+            .collect(),
+        entry_points: parts
+            .nav_tail
             .map(|t| t.entries.iter().map(TraceEntryPoint::from_entry).collect())
             .unwrap_or_default(),
-        hops: nav_tail
+        hops: parts
+            .nav_tail
             .map(|t| t.outcome.trace.clone())
             .unwrap_or_default(),
-        nav_stop: nav_tail.map(|t| t.outcome.stop.as_str().to_owned()),
+        nav_stop: parts.nav_tail.map(|t| t.outcome.stop.as_str().to_owned()),
         char_budget: policy.nav.char_budget,
-        chars_collected: nav_tail.map_or(0, |t| {
+        chars_collected: parts.nav_tail.map_or(0, |t| {
             t.outcome.fragments.iter().map(|f| f.text.len()).sum()
         }),
-        truncated: nav_tail.is_some_and(|t| t.outcome.truncated),
-        injected_block: injected_block.map(str::to_owned),
-        rules_block: rules_block.map(str::to_owned),
-        took_ms: u64::try_from(took.as_millis()).unwrap_or(u64::MAX),
+        truncated: parts.nav_tail.is_some_and(|t| t.outcome.truncated),
+        injected_block: parts.injected_block.map(str::to_owned),
+        rules_block: parts.rules_block.map(str::to_owned),
+        recall_ms: parts.recall_clock.ms(),
+        took_ms: u64::try_from(parts.took.as_millis()).unwrap_or(u64::MAX),
     };
     if let Err(err) = recall_trace::record_trace(
         pool,
@@ -6822,6 +7033,8 @@ pub async fn wiki_ingest_message(
     // Both halves are replaced further down on a turn whose classifier
     // returns a `completed_message`: the same division, re-made on the
     // sentence that says what the turn is about.
+    let mut recall_clock = RecallClock::default();
+    let stage = std::time::Instant::now();
     let mut ranked = match recall::wiki_recall(
         pool,
         Arc::clone(&embedder),
@@ -6838,6 +7051,7 @@ pub async fn wiki_ingest_message(
             Vec::new()
         },
     };
+    recall_clock.charge(stage);
     let mut seed_tail: Vec<RecallHit> = ranked.split_off(ranked.len().min(policy.recall_top_k));
     let mut recall_hits = ranked;
     // Cross-consumer recent window, fetched HERE rather than at the
@@ -6924,6 +7138,7 @@ pub async fn wiki_ingest_message(
     // the turn. Scoped to the ingest (conversational) path on purpose:
     // `wiki_recall` stays promoted-only for the dashboard, whose edit/locate
     // flows assume published-page offsets the buffer lacks.
+    let stage = std::time::Instant::now();
     let fresh_hits = match recall::recall_fresh_captures(
         pool,
         embedder.as_ref(),
@@ -6940,6 +7155,7 @@ pub async fn wiki_ingest_message(
             Vec::new()
         },
     };
+    recall_clock.charge(stage);
     recall_hits.extend(fresh_hits);
 
     // Project-docs slot, first half. The turn's recall above is
@@ -6953,6 +7169,7 @@ pub async fn wiki_ingest_message(
     // Soft-fails to an empty slot.
     let docs_slot =
         recall::SlotBudget::new(policy.project_docs_top_k, policy.project_docs_char_budget);
+    let stage = std::time::Instant::now();
     let mut project_docs = match recall::recall_named_project_docs(
         pool,
         Arc::clone(&embedder),
@@ -6968,6 +7185,11 @@ pub async fn wiki_ingest_message(
             Vec::new()
         },
     };
+    recall_clock.charge(stage);
+    // How many of `project_docs` the named half pulled: the signposted half
+    // extends the same list further down, and the trace has to say which half
+    // reached for what.
+    let named_docs = project_docs.len();
     tracing::debug!(
         recall_hits = recall_hits.len(),
         project_docs = project_docs.len(),
@@ -6987,21 +7209,35 @@ pub async fn wiki_ingest_message(
             recall_hits = recall_hits.len(),
             "ingest: guest turn — ephemeral, classifier skipped, nothing filed"
         );
+        let stage = std::time::Instant::now();
         let context_snippet =
             format_snippet(&recall_hits, &[], &project_docs, policy.relevance_floor);
+        recall_clock.charge(stage);
+        // No classifier ran, so nothing voted: the verdicts are the drop
+        // reasons of the very list `format_snippet` was handed.
+        let verdicts = flat_verdicts(&recall_hits, &recall_hits, &[], policy.relevance_floor);
         record_ingest_trace(
             pool,
-            &request,
-            IntentKind::Skip,
-            "guest",
-            &NavSeeds::default(),
-            &recall_hits,
-            None,
-            None,
             policy,
-            context_snippet.as_deref(),
-            Some(GUEST_RULES_NOTICE),
-            start.elapsed(),
+            IngestTraceParts {
+                request: &request,
+                intent: IntentKind::Skip,
+                seed_mode: "guest",
+                seeds: &NavSeeds::default(),
+                completed_message: None,
+                flat_hits_from_completed: false,
+                recall_hits: &recall_hits,
+                flat_verdicts: &verdicts,
+                project_docs: &project_docs,
+                named_docs,
+                served_pages: &[],
+                nav_tail: None,
+                due_soon: None,
+                injected_block: context_snippet.as_deref(),
+                rules_block: Some(GUEST_RULES_NOTICE),
+                recall_clock,
+                took: start.elapsed(),
+            },
         )
         .await;
         return Ok(IngestResponse {
@@ -7337,7 +7573,12 @@ pub async fn wiki_ingest_message(
     // has its own job and keeps it: it is the classifier's inventory, and it
     // stands alone on every turn where nothing was left implicit, which is
     // most of them.
+    // `true` once the second search has actually replaced the first — the
+    // trace's answer to "which sentence do these hits answer", and `false`
+    // with a completed message present says the second search failed.
+    let mut flat_hits_from_completed = false;
     if let Some(completed) = completed_message {
+        let stage = std::time::Instant::now();
         let depth = policy.nav_seed_depth.max(policy.recall_top_k);
         match recall::wiki_recall(
             pool,
@@ -7361,6 +7602,7 @@ pub async fn wiki_ingest_message(
                 seed_tail = ranked.split_off(ranked.len().min(policy.recall_top_k));
                 recall_hits = ranked;
                 recall_hits.extend(fresh);
+                flat_hits_from_completed = true;
                 tracing::debug!(
                     completed,
                     before,
@@ -7373,6 +7615,7 @@ pub async fn wiki_ingest_message(
                 tracing::warn!(error = %err, "ingest: second search failed, the first stands");
             },
         }
+        recall_clock.charge(stage);
     }
 
     // Step 4 — route based on intent.
@@ -8266,6 +8509,7 @@ pub async fn wiki_ingest_message(
     // Every failure in the tail is soft: the turn survives on whatever the
     // flat path already produced.
     let seeds = nav_seeds(&plan);
+    let stage = std::time::Instant::now();
     // `WHO IS SPEAKING` — the sender's identity card, served from their
     // `@profile.md`. It runs FIRST of the tail because it is the
     // deterministic slot the other two defer to: it costs no completion, it
@@ -8281,6 +8525,15 @@ pub async fn wiki_ingest_message(
         .map(|_| (sender_ctx.sender_id.clone(), PathBuf::from(IDENTITY_PAGE)))
         .into_iter()
         .collect();
+    // The same pages the recall trace shows, each tagged with the slot that
+    // served it. Built from `served_identity` itself — the list the walk
+    // refuses — so the record cannot name a page the walk was still free to
+    // open. The speaker's card is the only thing in it at this point; the
+    // third parties' are appended by the same call that adds them below.
+    let mut served_trace: Vec<(String, String, &'static str)> = served_identity
+        .iter()
+        .map(|(w, p)| (w.clone(), p.to_string_lossy().into_owned(), "speaker"))
+        .collect();
     // `PEOPLE THIS TURN IS ABOUT` — the same treatment for the third parties
     // the turn is about (founder 2026-08-04). It runs here, beside the
     // speaker's card and before the walk, for the same three reasons: no
@@ -8291,6 +8544,11 @@ pub async fn wiki_ingest_message(
             .await;
     if let Some(m) = &mentioned {
         served_identity.extend(m.served.iter().cloned());
+        served_trace.extend(
+            m.served
+                .iter()
+                .map(|(w, p)| (w.clone(), p.to_string_lossy().into_owned(), "mentioned")),
+        );
     }
     // The rails of every card just served. A served page never reaches
     // `open_target`, the only place `[[wikilinks]]` are harvested, so without
@@ -8305,11 +8563,13 @@ pub async fn wiki_ingest_message(
     if let Some(m) = &mentioned {
         served_cards.extend(m.rails.iter().cloned());
     }
+    recall_clock.charge(stage);
     // The third condition is the turn's own: a consumer on a latency-bound
     // channel asks for the block without the walk
     // (`metadata.recall: "light"`), because the walk is the part that opens
     // pages and costs seconds, and a voice satellite in a room is waiting for
     // a spoken answer while it runs. Nothing else about the turn changes.
+    let stage = std::time::Instant::now();
     let nav_tail = match navigator {
         Some(nav_llm)
             if request.metadata.recall == RecallDepth::Full
@@ -8336,6 +8596,7 @@ pub async fn wiki_ingest_message(
         },
         _ => None,
     };
+    recall_clock.charge(stage);
     let navigated = nav_tail.as_ref().and_then(|t| t.section.clone());
 
     // EVERY page whose prose this turn injected: the navigator's walk, the
@@ -8447,6 +8708,7 @@ pub async fn wiki_ingest_message(
     // rides the JSON the classifier already returns. Whatever the named
     // half already pulled is excluded, and it keeps the budget it spent.
     if plan.needs_project_docs {
+        let stage = std::time::Instant::now();
         let named_wikis: Vec<String> = project_docs.iter().map(|d| d.wiki_id.clone()).collect();
         match recall::recall_signposted_project_docs(
             pool,
@@ -8465,6 +8727,7 @@ pub async fn wiki_ingest_message(
                 tracing::warn!(error = %err, "ingest: signposted project-docs recall failed, continuing without it");
             },
         }
+        recall_clock.charge(stage);
     }
 
     // The flat `RELEVANT MEMORY` slot renders here, AFTER navigation, so a
@@ -8472,25 +8735,38 @@ pub async fn wiki_ingest_message(
     // arriving twice ([`format_snippet`] dedup) — from the navigated
     // section, or from the identity card the deterministic slot serves
     // (69a: a `bio` fact on `@profile.md` is on both routes by construction).
-    let relevant = if include_flat {
+    let stage = std::time::Instant::now();
+    let (relevant, verdicts) = if include_flat {
         // The classifier's own reading of the hits, applied HERE and nowhere
         // else: navigation has already run above from the unrevised list, so
         // this turn's walk is untouched by construction as well as by
         // intent ([`apply_classifier_vote`]).
         let revised = apply_classifier_vote(&recall_hits, &plan.fact_scores);
-        format_snippet(
+        let snippet = format_snippet(
             &revised,
             &injected_pages,
             &project_docs,
             policy.relevance_floor,
-        )
+        );
+        // The trace's verdicts come off the same revised list and the same
+        // page set, so what the record says was dropped is what was dropped.
+        let verdicts = flat_verdicts(
+            &recall_hits,
+            &revised,
+            &injected_pages,
+            policy.relevance_floor,
+        );
+        (snippet, verdicts)
     } else {
-        None
+        // The slot never rendered: nothing was voted on and nothing reached
+        // the consumer, which is a verdict of its own.
+        (None, flat_verdicts_skipped(&recall_hits))
     };
     // The due-soon slot is a cheap deterministic pull (no LLM call), so it
     // runs on every LLM-routed turn regardless of intent: an imminent
     // commitment must surface even when the message itself asks nothing.
     let due_soon_tail = due_soon_section(pool, &sender_ctx, policy, turn_now).await;
+    recall_clock.charge(stage);
     let due_soon = due_soon_tail.as_ref().map(|(section, _)| section.clone());
 
     // Self-correcting REM's detection floor — all best-effort telemetry,
@@ -8575,6 +8851,7 @@ pub async fn wiki_ingest_message(
     // Re-read post-write so a rule SET this turn is already in effect for the
     // consumer's reply (the classifier above saw the pre-write set, which is
     // what it supersedes against).
+    let stage = std::time::Instant::now();
     let behaviour = format_behaviour_rules(&recall_behaviour_rules(pool, &request).await, policy);
     // The agent's own self-context — `WHO YOU ARE` (the agent wiki's
     // abstract + identity self-facts) and `YOUR RECENT HISTORY WITH THIS
@@ -8616,6 +8893,7 @@ pub async fn wiki_ingest_message(
         navigated,
         due_soon,
     );
+    recall_clock.charge(stage);
 
     // A capture turn that filed nothing AND read nothing has genuinely
     // produced no turn: fall back to the canned seed, which is what the old
@@ -8654,17 +8932,26 @@ pub async fn wiki_ingest_message(
     // telemetry: a journal failure is logged and never touches the turn.
     record_ingest_trace(
         pool,
-        &request,
-        intent,
-        "classifier",
-        &seeds,
-        &recall_hits,
-        nav_tail.as_ref(),
-        due_soon_tail.as_ref().map(|(_, hits)| hits.as_slice()),
         policy,
-        context_snippet.as_deref(),
-        rules.as_deref(),
-        start.elapsed(),
+        IngestTraceParts {
+            request: &request,
+            intent,
+            seed_mode: "classifier",
+            seeds: &seeds,
+            completed_message,
+            flat_hits_from_completed,
+            recall_hits: &recall_hits,
+            flat_verdicts: &verdicts,
+            project_docs: &project_docs,
+            named_docs,
+            served_pages: &served_trace,
+            nav_tail: nav_tail.as_ref(),
+            due_soon: due_soon_tail.as_ref().map(|(_, hits)| hits.as_slice()),
+            injected_block: context_snippet.as_deref(),
+            rules_block: rules.as_deref(),
+            recall_clock,
+            took: start.elapsed(),
+        },
     )
     .await;
 
@@ -10149,6 +10436,8 @@ mod tests {
             valid_to: None,
             score: 0.91,
             fresh: false,
+            seat: None,
+            link_key_win: false,
         }
     }
 
@@ -11430,6 +11719,8 @@ mod tests {
             valid_to: None,
             score: 0.9,
             fresh: false,
+            seat: None,
+            link_key_win: false,
         };
         let doc = recall::SectionHit {
             wiki_id: "franz-acmesigns".into(),
@@ -11620,6 +11911,8 @@ mod tests {
             valid_to: None,
             score,
             fresh: false,
+            seat: None,
+            link_key_win: false,
         };
         vec![
             mk(
@@ -11761,6 +12054,8 @@ mod tests {
                 valid_to: None,
                 score: 0.91,
                 fresh: false,
+                seat: None,
+                link_key_win: false,
             },
             RecallHit {
                 fact_id: FactId::parse("018f1234-5678-7abc-9def-0123456789ac").unwrap(),
@@ -11778,6 +12073,8 @@ mod tests {
                 valid_to: None,
                 score: 0.84,
                 fresh: false,
+                seat: None,
+                link_key_win: false,
             },
             RecallHit {
                 fact_id: FactId::parse("018f1234-5678-7abc-9def-0123456789ad").unwrap(),
@@ -11795,6 +12092,8 @@ mod tests {
                 valid_to: None,
                 score: 0.88,
                 fresh: true,
+                seat: None,
+                link_key_win: false,
             },
         ];
         let snippet = format_snippet(&hits, &[], &[], 0.0).expect("non-empty hits render");
@@ -12456,6 +12755,451 @@ mod tests {
         assert!(
             !navigated.contains("alice/preferenze.md"),
             "the identity page is not a navigation destination for its own subject: {navigated}"
+        );
+        drop(dir);
+    }
+
+    // ---------- the recall trace: what one turn writes down about itself ----------
+
+    /// The single trace a turn journaled, decoded.
+    async fn only_trace(pool: &SqlitePool) -> crate::recall_trace::RecallTrace {
+        let rows = crate::recall_trace::recent_traces(pool, 10)
+            .await
+            .expect("read traces");
+        assert_eq!(rows.len(), 1, "one turn journals one trace");
+        rows[0].parse().expect("payload decodes")
+    }
+
+    /// A second page of alice's wiki, holding one fact of its own, so the flat
+    /// recall seeds a door the walk can take.
+    const ALICE_HOBBIES_FACT: &str = "018f1234-5678-7abc-9def-00000000c003";
+
+    /// alice's card plus a `hobbies.md` the walk can open — the shape almost
+    /// every trace assertion below needs.
+    async fn seed_alice_card_and_a_second_page(dir: &TempDir, pool: &SqlitePool) {
+        seed_alice_card(dir, pool).await;
+        std::fs::write(
+            dir.path().join("wikis").join("alice").join("hobbies.md"),
+            format!(
+                "---\ntitle: Hobbies\n---\n\n\
+                 {{{{f={ALICE_HOBBIES_FACT}}}}}Alice restores marbled endpapers.{{{{/}}}}\n"
+            ),
+        )
+        .unwrap();
+        insert_page_fact(
+            pool,
+            ALICE_HOBBIES_FACT,
+            "alice",
+            "wikis/alice/hobbies.md",
+            "Alice restores marbled endpapers.",
+            Principal::User("alice".into()),
+        )
+        .await;
+    }
+
+    /// The record has to say what the recall did, and this is the turn that
+    /// does most of it: a consumer-carried call at the full depth, the
+    /// speaker's card served whole, a fan whose doors name the facts that
+    /// opened them, a navigator pick vetted away, and a flat hit dropped
+    /// because the walk already put its page in the block.
+    #[tokio::test]
+    #[allow(clippy::too_many_lines, reason = "one turn, every field it fills")]
+    async fn the_trace_records_the_route_the_recall_actually_took() {
+        let (dir, _, pool) = setup_workdir().await;
+        seed_alice_card_and_a_second_page(&dir, &pool).await;
+        let tree = WikiTree::open(dir.path()).expect("reopen tree");
+
+        let llm = FakeLlmBackend::new("fake", "{\"intent\":\"recall\"}");
+        // Two picks: alice's wiki with no page — half an address, which no
+        // candidate matches — and a real page of it.
+        let nav = FakeLlmBackend::new(
+            "fake-nav",
+            "{\"open\":[{\"wiki_id\":\"alice\"},\
+             {\"wiki_id\":\"alice\",\"page\":\"hobbies.md\"}],\"done\":true}",
+        );
+        wiki_ingest_message(
+            &pool,
+            &tree,
+            fake_embedder(),
+            &llm,
+            Some(&nav),
+            req_consumer("what do you know about me?", "alice", "botdeploy"),
+            &IngestPolicy::default(),
+        )
+        .await
+        .expect("ingest");
+
+        let t = only_trace(&pool).await;
+        assert_eq!(t.version, crate::recall_trace::TRACE_PAYLOAD_VERSION);
+        assert_eq!(t.producer, "ingest", "the payload names its own producer");
+        assert_eq!(
+            t.consumer.as_deref(),
+            Some("botdeploy"),
+            "an ingest turn knows which bot was talking"
+        );
+        assert_eq!(
+            t.recall_depth.as_deref(),
+            Some("full"),
+            "the depth the consumer asked for, not a guess from the hops"
+        );
+        assert!(
+            t.recall_ms <= t.took_ms,
+            "the recall is part of the turn, never longer than it: {} vs {}",
+            t.recall_ms,
+            t.took_ms
+        );
+
+        // The speaker's card was served whole, so the walk was forbidden it.
+        let speaker: Vec<_> = t
+            .served_pages
+            .iter()
+            .filter(|p| p.role == "speaker")
+            .collect();
+        assert_eq!(speaker.len(), 1, "one speaker card: {:?}", t.served_pages);
+        assert_eq!(speaker[0].wiki_id, "alice");
+        assert_eq!(speaker[0].page, IDENTITY_PAGE);
+
+        // Every door the flat hits opened says which fact opened it.
+        let doors: Vec<_> = t
+            .entry_points
+            .iter()
+            .filter(|e| e.origin == "rag")
+            .collect();
+        assert!(
+            !doors.is_empty(),
+            "the fan has rag doors: {:?}",
+            t.entry_points
+        );
+        assert!(
+            doors.iter().all(|e| e.matched_fact.is_some()),
+            "a rag door names the fact that opened it: {doors:?}"
+        );
+
+        // The pick that named no page was refused, and the record says why.
+        let refused: Vec<_> = t
+            .hops
+            .iter()
+            .flat_map(|h| h.requested.iter())
+            .filter(|r| !r.opened)
+            .collect();
+        assert_eq!(refused.len(), 1, "one pick refused: {refused:?}");
+        assert_eq!(
+            refused[0].reason.as_deref(),
+            Some("not_offered"),
+            "a wiki with no page is half an address, not an unreadable page"
+        );
+        assert!(
+            t.hops
+                .iter()
+                .flat_map(|h| h.requested.iter())
+                .filter(|r| r.opened)
+                .all(|r| r.reason.is_none()),
+            "a pick that opened carries no refusal"
+        );
+
+        // Every flat hit says what kind of statement it is and which seat it
+        // took; here the block is far from full, so every seat is similarity.
+        assert!(!t.flat_hits.is_empty(), "the turn recalled something");
+        assert!(
+            t.flat_hits
+                .iter()
+                .all(|h| h.fact_type.as_deref() == Some("bio")),
+            "the fact's kind travels with it: {:?}",
+            t.flat_hits
+        );
+        assert!(
+            t.flat_hits
+                .iter()
+                .all(|h| h.seat.as_deref() == Some("similarity")),
+            "an unfilled block hands out similarity seats: {:?}",
+            t.flat_hits
+        );
+        assert!(
+            t.flat_hits.iter().all(|h| !h.link_key_win),
+            "no link key was in play on this turn"
+        );
+
+        // The walk put `hobbies.md` in the block, so the flat slot dropped the
+        // fact that lives on it rather than restating it.
+        let hobbies = t
+            .flat_hits
+            .iter()
+            .find(|h| h.fact_id == ALICE_HOBBIES_FACT)
+            .expect("the hobbies fact was recalled");
+        assert_eq!(
+            hobbies.dropped.as_deref(),
+            Some("on_an_injected_page"),
+            "the page the walk opened is why this hit is not in the flat slot"
+        );
+        drop(dir);
+    }
+
+    /// The record says which sentence the hits answer. When the classifier
+    /// rewrites the turn, the second search replaces the first — and a page
+    /// that printed the raw sentence over those hits would be printing a
+    /// question they were never asked.
+    #[tokio::test]
+    async fn the_trace_carries_the_completed_message_the_hits_answer() {
+        let (dir, _, pool) = setup_workdir().await;
+        seed_alice_card(&dir, &pool).await;
+        let tree = WikiTree::open(dir.path()).expect("reopen tree");
+
+        let llm = FakeLlmBackend::new(
+            "fake",
+            "{\"intent\":\"recall\",\
+             \"completed_message\":\"where does alice live?\"}",
+        );
+        wiki_ingest_message(
+            &pool,
+            &tree,
+            fake_embedder(),
+            &llm,
+            None,
+            req("and there?", "alice"),
+            &IngestPolicy::default(),
+        )
+        .await
+        .expect("ingest");
+
+        let t = only_trace(&pool).await;
+        assert_eq!(t.turn_text, "and there?");
+        assert_eq!(
+            t.completed_message.as_deref(),
+            Some("where does alice live?")
+        );
+        assert!(
+            t.flat_hits_from_completed,
+            "the second search ran and took the place of the first"
+        );
+        drop(dir);
+    }
+
+    /// The other half of the same rule: a turn the classifier left alone
+    /// carries no completed message, and its hits answer the sentence that was
+    /// typed. Not "the field is empty because nobody filled it".
+    #[tokio::test]
+    async fn a_turn_with_nothing_left_implicit_answers_its_own_words() {
+        let (dir, _, pool) = setup_workdir().await;
+        seed_alice_card(&dir, &pool).await;
+        let tree = WikiTree::open(dir.path()).expect("reopen tree");
+
+        let llm = FakeLlmBackend::new("fake", "{\"intent\":\"recall\"}");
+        wiki_ingest_message(
+            &pool,
+            &tree,
+            fake_embedder(),
+            &llm,
+            None,
+            req("where does alice live?", "alice"),
+            &IngestPolicy::default(),
+        )
+        .await
+        .expect("ingest");
+
+        let t = only_trace(&pool).await;
+        assert_eq!(t.completed_message, None);
+        assert!(!t.flat_hits_from_completed);
+        drop(dir);
+    }
+
+    /// A `recall: light` turn is not a turn whose navigator was unwired: the
+    /// consumer asked for the shallow answer, and the record says so instead
+    /// of leaving a reader to explain the missing walk however they like.
+    #[tokio::test]
+    async fn the_trace_says_a_light_turn_asked_to_skip_the_walk() {
+        let (dir, _, pool) = setup_workdir().await;
+        seed_alice_card_and_a_second_page(&dir, &pool).await;
+        let tree = WikiTree::open(dir.path()).expect("reopen tree");
+
+        let llm = FakeLlmBackend::new("fake", "{\"intent\":\"recall\"}");
+        let nav = FakeLlmBackend::new(
+            "fake-nav",
+            "{\"open\":[{\"wiki_id\":\"alice\",\"page\":\"hobbies.md\"}],\"done\":true}",
+        );
+        let light = IngestRequest {
+            metadata: IngestMetadata {
+                recall: RecallDepth::Light,
+                ..IngestMetadata::default()
+            },
+            ..req("what do you know about me?", "alice")
+        };
+        wiki_ingest_message(
+            &pool,
+            &tree,
+            fake_embedder(),
+            &llm,
+            Some(&nav),
+            light,
+            &IngestPolicy::default(),
+        )
+        .await
+        .expect("ingest");
+
+        let t = only_trace(&pool).await;
+        assert_eq!(
+            t.recall_depth.as_deref(),
+            Some("light"),
+            "the turn's own request, recorded"
+        );
+        assert!(t.hops.is_empty(), "and the walk did not run");
+        assert_eq!(t.nav_stop, None);
+        drop(dir);
+    }
+
+    /// The classifier's vote is the last thing that moves a recalled fact, and
+    /// the record keeps both numbers: the score the search gave it and the one
+    /// the vote left it with.
+    #[tokio::test]
+    async fn the_trace_keeps_the_score_the_classifier_voted_it_to() {
+        let (dir, _, pool) = setup_workdir().await;
+        seed_alice_card(&dir, &pool).await;
+        let tree = WikiTree::open(dir.path()).expect("reopen tree");
+
+        let llm = FakeLlmBackend::new(
+            "fake",
+            format!(
+                "{{\"intent\":\"recall\",\"fact_scores\":\
+                 [{{\"fact_id\":\"{ALICE_FACT_B}\",\"score\":0.9}}]}}"
+            ),
+        );
+        wiki_ingest_message(
+            &pool,
+            &tree,
+            fake_embedder(),
+            &llm,
+            None,
+            req("what do you know about me?", "alice"),
+            &IngestPolicy::default(),
+        )
+        .await
+        .expect("ingest");
+
+        let t = only_trace(&pool).await;
+        let voted = t
+            .flat_hits
+            .iter()
+            .find(|h| h.fact_id == ALICE_FACT_B)
+            .expect("the voted fact was recalled");
+        let untouched = t
+            .flat_hits
+            .iter()
+            .find(|h| h.fact_id == ALICE_FACT_A)
+            .expect("the other fact was recalled");
+        let after = voted.voted_score.expect("the vote moved this one");
+        assert!(
+            after < voted.score,
+            "a 0.9 multiplier lowers it: {} -> {after}",
+            voted.score
+        );
+        assert_eq!(
+            untouched.voted_score, None,
+            "a fact the classifier said nothing about keeps one number, not two"
+        );
+        drop(dir);
+    }
+
+    /// A `skip` turn never renders the flat slot, and recall still ran: without
+    /// a verdict of its own, the record would list what similarity found under
+    /// a heading that says the consumer received it.
+    #[tokio::test]
+    async fn the_trace_says_when_the_intent_never_rendered_the_flat_slot() {
+        let (dir, _, pool) = setup_workdir().await;
+        seed_alice_card(&dir, &pool).await;
+        let tree = WikiTree::open(dir.path()).expect("reopen tree");
+
+        let llm = FakeLlmBackend::new("fake", "{\"intent\":\"skip\"}");
+        let resp = wiki_ingest_message(
+            &pool,
+            &tree,
+            fake_embedder(),
+            &llm,
+            None,
+            req("buongiorno!", "alice"),
+            &IngestPolicy::default(),
+        )
+        .await
+        .expect("ingest");
+        assert!(
+            !resp
+                .context_snippet
+                .as_deref()
+                .unwrap_or_default()
+                .contains(HDR_RELEVANT_MEMORY),
+            "a skip turn carries no recalled-memory slot"
+        );
+
+        let t = only_trace(&pool).await;
+        assert!(!t.flat_hits.is_empty(), "recall ran all the same");
+        assert!(
+            t.flat_hits
+                .iter()
+                .all(|h| h.dropped.as_deref() == Some("intent_skipped_the_slot")),
+            "and none of it reached the consumer: {:?}",
+            t.flat_hits
+        );
+        drop(dir);
+    }
+
+    /// The project-documentation slot is a section of the block, and until now
+    /// the record could not account for it: the trace names both halves and
+    /// which one reached for what.
+    #[tokio::test]
+    async fn the_trace_accounts_for_the_project_docs_slot() {
+        let (dir, _, pool) = setup_workdir().await;
+        seed_alice_card(&dir, &pool).await;
+        let tree = WikiTree::open(dir.path()).expect("reopen tree");
+
+        crate::sections::upsert_smart_wiki(
+            &pool,
+            &crate::sections::SmartWikiRow {
+                wiki_id: "alice-lnprint".to_owned(),
+                slug: "lnprint".to_owned(),
+                owner_id: "user:alice".parse().unwrap(),
+                shared_with: Vec::new(),
+                project_id: None,
+                wiki_type: "wiki-project".to_owned(),
+                description: None,
+            },
+        )
+        .await
+        .expect("register the project");
+        crate::sections::replace_page_sections(
+            &pool,
+            "wikis/alice-lnprint/doc.md",
+            &[crate::sections::NewSection {
+                wiki_id: "alice-lnprint".to_owned(),
+                source_path: "wikis/alice-lnprint/doc.md".to_owned(),
+                section_ord: 0,
+                heading_path: Some("Deploy".to_owned()),
+                text: "The deploy runs from the release archive.".to_owned(),
+                embedding: vec![0.9, -0.3, 0.2, -0.1],
+            }],
+        )
+        .await
+        .expect("seed the section");
+
+        let llm = FakeLlmBackend::new("fake", "{\"intent\":\"recall\"}");
+        wiki_ingest_message(
+            &pool,
+            &tree,
+            fake_embedder(),
+            &llm,
+            None,
+            req("how does lnprint deploy?", "alice"),
+            &IngestPolicy::default(),
+        )
+        .await
+        .expect("ingest");
+
+        let t = only_trace(&pool).await;
+        assert_eq!(t.project_docs.len(), 1, "{:?}", t.project_docs);
+        let doc = &t.project_docs[0];
+        assert_eq!(doc.wiki_id, "alice-lnprint");
+        assert_eq!(doc.source_path, "wikis/alice-lnprint/doc.md");
+        assert_eq!(doc.heading_path.as_deref(), Some("Deploy"));
+        assert_eq!(
+            doc.half, "named",
+            "the message named the project, so this is the half that needs no judgement"
         );
         drop(dir);
     }

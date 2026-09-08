@@ -1536,11 +1536,19 @@ struct NavigateTraceParts<'a> {
 /// result payload the consumer receives, verbatim.
 async fn record_navigate_trace(parts: NavigateTraceParts<'_>) {
     use mwe_core::recall_trace::{self, RecallTrace, TraceEntryPoint, TraceHit, TraceSource};
+    let took_ms = u64::try_from(parts.took.as_millis()).unwrap_or(u64::MAX);
     let trace = RecallTrace {
         version: recall_trace::TRACE_PAYLOAD_VERSION,
+        producer: TraceSource::Navigate.as_str().to_owned(),
         consumer: parts.consumer.map(str::to_owned),
         turn_text: recall_trace::cap_turn_text(parts.query),
+        // No classifier runs here: the caller's query is searched as written,
+        // so there is no completed sentence and no second search.
+        completed_message: None,
         intent: None,
+        // `metadata.recall` is an ingest-turn dial; this tool is asked for
+        // deep recall by name and has no shallower mode to record.
+        recall_depth: None,
         seed_mode: parts.seed_mode.to_owned(),
         topics: parts.seed_topics,
         subjects: parts
@@ -1549,8 +1557,14 @@ async fn record_navigate_trace(parts: NavigateTraceParts<'_>) {
             .map(ToString::to_string)
             .collect(),
         flat_hits: parts.flat_hits.iter().map(TraceHit::from_hit).collect(),
+        flat_hits_from_completed: false,
         fresh_hits: Vec::new(),
         due_soon: Vec::new(),
+        // The project-docs slot and the identity cards are sections of the
+        // ingest turn's recall block. This tool builds no block, so it serves
+        // neither and the walk is forbidden nothing.
+        project_docs: Vec::new(),
+        served_pages: Vec::new(),
         entry_points: parts
             .entries
             .iter()
@@ -1565,7 +1579,10 @@ async fn record_navigate_trace(parts: NavigateTraceParts<'_>) {
         truncated: parts.navigated.truncated,
         injected_block: serde_json::to_string_pretty(parts.result).ok(),
         rules_block: None,
-        took_ms: u64::try_from(parts.took.as_millis()).unwrap_or(u64::MAX),
+        // The whole call is the recall: there is no classifier, no
+        // reconciliation and no write to hold the two figures apart.
+        recall_ms: took_ms,
+        took_ms,
     };
     if let Err(err) = recall_trace::record_trace(
         &parts.state.pool,

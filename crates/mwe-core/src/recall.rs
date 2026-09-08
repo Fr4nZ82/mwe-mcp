@@ -711,6 +711,55 @@ pub struct RecallHit {
     /// durable `fact_index` fact. Fresh hits carry no published-page region,
     /// so `region_start`/`region_end` are `None`.
     pub fresh: bool,
+    /// Which seat of the block this hit took ([`take_with_macrotopic_quota`]),
+    /// or `None` on a hit that never went through that allocation — a fresh
+    /// capture, or a pure SQL pull like the due-soon slot.
+    ///
+    /// Two of the three seats put a fact in the block **against** similarity,
+    /// and without this the recall trace shows a 0.41 quota seat beside a 0.87
+    /// nearest neighbour with nothing to tell them apart.
+    pub seat: Option<HitSeat>,
+    /// `true` when a [`crate::link_key`] embedding scored this fact higher
+    /// than the fact's own text did, so [`score`] is the key's number.
+    ///
+    /// Kept apart from [`seat`] because it answers a different question: the
+    /// seat says which slot of the block the fact took, this says which of the
+    /// two embeddings got it there.
+    ///
+    /// [`score`]: Self::score
+    /// [`seat`]: Self::seat
+    pub link_key_win: bool,
+}
+
+/// Which seat of the flat block a hit took — the answer to *why is this fact
+/// here*, which the score alone cannot give.
+///
+/// Filled by [`take_with_macrotopic_quota`], the one place the seats are
+/// handed out, and carried through to the recall trace.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum HitSeat {
+    /// The ordinary case: the fact ranked high enough on its own score.
+    Similarity,
+    /// One of the [`MACROTOPIC_QUOTA`] seats reserved for a fact that shares
+    /// a macrotopic with the top of the block and says something the block
+    /// has not said.
+    MacrotopicQuota,
+    /// An [`ONE_FACT_PER_KIND`] seat: the best spare fact of a `fact_type`
+    /// the block does not yet show, appended because similarity is blind to
+    /// the kind of a statement.
+    OneFactPerKind,
+}
+
+impl HitSeat {
+    /// Lowercase token for logs and the trace payload.
+    #[must_use]
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::Similarity => "similarity",
+            Self::MacrotopicQuota => "macrotopic_quota",
+            Self::OneFactPerKind => "one_fact_per_kind",
+        }
+    }
 }
 
 impl RecallHit {
@@ -731,7 +780,16 @@ impl RecallHit {
             valid_to: row.valid_to,
             score,
             fresh: false,
+            seat: None,
+            link_key_win: false,
         }
+    }
+
+    /// Stamp the seat this hit took in the block.
+    #[must_use]
+    const fn seated(mut self, seat: HitSeat) -> Self {
+        self.seat = Some(seat);
+        self
     }
 
     /// Build a hit from an un-promoted buffered capture (the mid-range
@@ -760,6 +818,8 @@ impl RecallHit {
             valid_to: cap.valid_to,
             score,
             fresh: true,
+            seat: None,
+            link_key_win: false,
         }
     }
 }
@@ -959,14 +1019,14 @@ fn score_and_filter(
     // harmless: at replay time the corpus' closures are themselves only
     // as far along as the replayed turn.)
     let now = chrono::Utc::now();
-    let mut scored: Vec<(f32, FactIndexRow)> = candidates
+    let mut scored: Vec<Scored> = candidates
         .into_iter()
         .filter(|row| row_visible_to(row, sender))
         .map(|row| {
             let own = cosine_similarity(query_embedding, &row.embedding);
-            let mut s = link_scores
-                .get(row.fact_id.as_str())
-                .map_or(own, |k| own.max(*k));
+            let key = link_scores.get(row.fact_id.as_str()).copied();
+            let link_key_win = key.is_some_and(|k| k > own);
+            let mut s = key.map_or(own, |k| own.max(k));
             // Validity as a ranking SIGNAL, never a filter: a closed
             // window down-ranks the hit but can still surface.
             if window_closed_at(row.valid_to.as_deref(), &now) {
@@ -978,14 +1038,48 @@ fn score_and_filter(
             // rather than adding is what keeps it a weight instead of an
             // override — see the constant.
             s *= coverage_multiplier(&row, subjects, roster);
-            (s, row)
+            Scored {
+                score: s,
+                link_key_win,
+                row,
+            }
         })
         .collect();
     // Sort by score descending. NaN treated as "lowest" so it never
     // wins the top-K (a NaN here would mean the embedding had a
     // zero magnitude, which the dot product surfaces as 0.0 / 0.0).
-    scored.sort_by(|a, b| b.0.partial_cmp(&a.0).unwrap_or(std::cmp::Ordering::Less));
+    scored.sort_by(|a, b| {
+        b.score
+            .partial_cmp(&a.score)
+            .unwrap_or(std::cmp::Ordering::Less)
+    });
     take_with_macrotopic_quota(scored, top_k, macrotopics)
+}
+
+/// One scored candidate on its way to a seat in the block.
+///
+/// It carries which of the two embeddings produced the number as well as the
+/// number, because a fact and its link key are scored against the same query
+/// and only the higher one survives into [`RecallHit::score`] — where nothing
+/// says which it was, and the recall trace has to.
+struct Scored {
+    /// The score after the link-key max, the closed-window down-rank and the
+    /// subject-coverage uplift.
+    score: f32,
+    /// `true` when the link key beat the fact's own embedding.
+    link_key_win: bool,
+    /// The row itself.
+    row: FactIndexRow,
+}
+
+impl Scored {
+    /// Turn a scored candidate into the block's hit, stamped with its seat.
+    fn into_hit(self, seat: HitSeat) -> RecallHit {
+        let link_key_win = self.link_key_win;
+        let mut hit = RecallHit::from_row(self.row, self.score).seated(seat);
+        hit.link_key_win = link_key_win;
+        hit
+    }
 }
 
 /// Fills the block: similarity first, then [`MACROTOPIC_QUOTA`] seats for the
@@ -999,7 +1093,7 @@ fn score_and_filter(
 /// return the twins similarity had already ranked and rejected, which is the
 /// failure the quota exists to fix.
 fn take_with_macrotopic_quota(
-    scored: Vec<(f32, FactIndexRow)>,
+    scored: Vec<Scored>,
     top_k: usize,
     macrotopics: &[String],
 ) -> Vec<RecallHit> {
@@ -1013,19 +1107,19 @@ fn take_with_macrotopic_quota(
     let mut out: Vec<RecallHit> = Vec::with_capacity(top_k);
     let mut spoken: std::collections::HashSet<String> = std::collections::HashSet::new();
     let mut areas: std::collections::HashSet<String> = std::collections::HashSet::new();
-    let mut rest: Vec<(f32, FactIndexRow)> = Vec::new();
+    let mut rest: Vec<Scored> = Vec::new();
 
-    for (score, row) in scored {
+    for cand in scored {
         if out.len() < by_similarity {
-            for t in &row.topics {
+            for t in &cand.row.topics {
                 if macrotopics.iter().any(|m| m == t) {
                     areas.insert(t.clone());
                 }
                 spoken.insert(t.clone());
             }
-            out.push(RecallHit::from_row(row, score));
+            out.push(cand.into_hit(HitSeat::Similarity));
         } else {
-            rest.push((score, row));
+            rest.push(cand);
         }
     }
     if seats == 0 || areas.is_empty() {
@@ -1033,40 +1127,40 @@ fn take_with_macrotopic_quota(
         // rather than serve a shorter block than the caller asked for. The
         // per-kind seats still run — they answer a different question and do
         // not need a macrotopic to answer it.
-        let mut spare: Vec<(f32, FactIndexRow)> = Vec::new();
-        for (score, row) in rest {
+        let mut spare: Vec<Scored> = Vec::new();
+        for cand in rest {
             if out.len() < top_k {
-                out.push(RecallHit::from_row(row, score));
+                out.push(cand.into_hit(HitSeat::Similarity));
             } else {
-                spare.push((score, row));
+                spare.push(cand);
             }
         }
         add_one_fact_per_kind(&mut out, spare);
         return out;
     }
     let mut taken = 0usize;
-    let mut leftovers: Vec<(f32, FactIndexRow)> = Vec::new();
-    for (score, row) in rest {
-        let in_area = row.topics.iter().any(|t| areas.contains(t));
-        let says_something_new = row.topics.iter().any(|t| !spoken.contains(t));
+    let mut leftovers: Vec<Scored> = Vec::new();
+    for cand in rest {
+        let in_area = cand.row.topics.iter().any(|t| areas.contains(t));
+        let says_something_new = cand.row.topics.iter().any(|t| !spoken.contains(t));
         if taken < seats && in_area && says_something_new {
-            for t in &row.topics {
+            for t in &cand.row.topics {
                 spoken.insert(t.clone());
             }
             taken += 1;
-            out.push(RecallHit::from_row(row, score));
+            out.push(cand.into_hit(HitSeat::MacrotopicQuota));
         } else {
-            leftovers.push((score, row));
+            leftovers.push(cand);
         }
     }
     // Seats the quota could not fill go back to similarity: an empty seat
     // would shorten the block for nobody's benefit.
-    let mut spare: Vec<(f32, FactIndexRow)> = Vec::new();
-    for (score, row) in leftovers {
+    let mut spare: Vec<Scored> = Vec::new();
+    for cand in leftovers {
         if out.len() < top_k {
-            out.push(RecallHit::from_row(row, score));
+            out.push(cand.into_hit(HitSeat::Similarity));
         } else {
-            spare.push((score, row));
+            spare.push(cand);
         }
     }
     add_one_fact_per_kind(&mut out, spare);
@@ -1080,7 +1174,7 @@ fn take_with_macrotopic_quota(
 /// A fact with no type is skipped rather than given a seat of its own: an
 /// absent type is not a kind of statement, and the untyped tail would take
 /// one seat on every turn and always the same one.
-fn add_one_fact_per_kind(block: &mut Vec<RecallHit>, spare: Vec<(f32, FactIndexRow)>) {
+fn add_one_fact_per_kind(block: &mut Vec<RecallHit>, spare: Vec<Scored>) {
     if !ONE_FACT_PER_KIND {
         return;
     }
@@ -1089,12 +1183,12 @@ fn add_one_fact_per_kind(block: &mut Vec<RecallHit>, spare: Vec<(f32, FactIndexR
         .filter_map(|h| h.fact_type.clone())
         .filter(|k| !k.is_empty())
         .collect();
-    for (score, row) in spare {
-        let Some(kind) = row.fact_type.clone().filter(|k| !k.is_empty()) else {
+    for cand in spare {
+        let Some(kind) = cand.row.fact_type.clone().filter(|k| !k.is_empty()) else {
             continue;
         };
         if shown.insert(kind) {
-            block.push(RecallHit::from_row(row, score));
+            block.push(cand.into_hit(HitSeat::OneFactPerKind));
         }
     }
 }
@@ -3270,6 +3364,19 @@ mod tests {
             hits.iter().any(|h| h.fact_id == bio.fact_id),
             "the `bio` similarity ranked last is in: {hits:?}"
         );
+        // And it says so: the seat is what tells a reader this fact is here
+        // BECAUSE similarity could not reach it, not despite that.
+        let seated = hits
+            .iter()
+            .find(|h| h.fact_id == bio.fact_id)
+            .expect("the bio hit");
+        assert_eq!(seated.seat, Some(HitSeat::OneFactPerKind));
+        assert!(
+            hits.iter()
+                .filter(|h| h.fact_id != bio.fact_id)
+                .all(|h| h.seat == Some(HitSeat::Similarity)),
+            "the rest ranked their way in: {hits:?}"
+        );
     }
 
     /// A kind the block already shows buys nothing. The seats exist to add a
@@ -3387,6 +3494,69 @@ mod tests {
             hits.iter().any(|h| h.fact_id == other.fact_id),
             "the fact saying something ELSE in the area is in, though similarity \
              ranked it last: {hits:?}"
+        );
+        // The seat names the mechanism that let it in — the one thing its
+        // score cannot say, since its score is the lowest of the five.
+        let seated = hits
+            .iter()
+            .find(|h| h.fact_id == other.fact_id)
+            .expect("the quota hit");
+        assert_eq!(seated.seat, Some(HitSeat::MacrotopicQuota));
+        assert_eq!(hits[0].seat, Some(HitSeat::Similarity));
+    }
+
+    /// The other embedding. A link key can carry a fact past its own text, and
+    /// the hit then reports the KEY's number: without the flag the trace shows
+    /// a score the fact's own words never earned, with nothing to say so.
+    #[test]
+    fn a_link_key_win_is_marked_on_the_hit_that_won_by_it() {
+        let query = vec![1.0, 0.0];
+        let near = row_kind(
+            "018f1234-5678-7abc-9def-000000000001",
+            vec![1.0, 0.0],
+            Some("bio"),
+        );
+        // Far from the question on its own text, and the key says otherwise.
+        let by_key = row_kind(
+            "018f1234-5678-7abc-9def-000000000002",
+            vec![0.0, 1.0],
+            Some("bio"),
+        );
+        let mut keys = HashMap::new();
+        keys.insert(by_key.fact_id.as_str().to_owned(), 0.95_f32);
+        // A key BELOW the fact's own reach changes nothing and is not a win.
+        keys.insert(near.fact_id.as_str().to_owned(), 0.1_f32);
+
+        let hits = score_and_filter(
+            &query,
+            vec![near.clone(), by_key.clone()],
+            &SenderContext::anonymous(),
+            5,
+            &[],
+            &[],
+            &keys,
+            &[],
+        );
+        let won = hits
+            .iter()
+            .find(|h| h.fact_id == by_key.fact_id)
+            .expect("the key carried it in");
+        assert!(
+            won.link_key_win,
+            "the key beat the fact's own text: {won:?}"
+        );
+        assert!(
+            (won.score - 0.95).abs() < 1e-6,
+            "and the score reported is the key's: {}",
+            won.score
+        );
+        let own = hits
+            .iter()
+            .find(|h| h.fact_id == near.fact_id)
+            .expect("the near hit");
+        assert!(
+            !own.link_key_win,
+            "a key that reaches less far than the text is not a win: {own:?}"
         );
     }
 

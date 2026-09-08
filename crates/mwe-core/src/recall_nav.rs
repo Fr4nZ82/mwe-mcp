@@ -620,8 +620,8 @@ pub struct CandidateCard {
     /// journal row — [`Self::from_candidate`] always fills it, because a
     /// candidate that named no page would offer nothing to open.
     pub page: Option<String>,
-    /// How it surfaced (`principal` | `rag` | `topic` | `situational` |
-    /// `link` | `page`).
+    /// How it surfaced (`rag` | `topic` | `situational` | `link` | `card`) —
+    /// the tiers [`Candidate::prune_tier`] ranks by.
     pub origin: String,
     /// Reader-relative topic words of the card.
     pub keywords: Vec<String>,
@@ -641,9 +641,7 @@ impl CandidateCard {
     }
 }
 
-/// One open-this pick of a decision, with the vetting outcome. `opened:
-/// false` = discarded (hallucinated target, vanished wiki, already visited,
-/// unreadable page, ACL map unloadable).
+/// One open-this pick of a decision, with the vetting outcome.
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(default)]
 pub struct RequestedOpen {
@@ -655,6 +653,54 @@ pub struct RequestedOpen {
     pub page: Option<String>,
     /// Whether the vetting let the pick through and the page opened.
     pub opened: bool,
+    /// Why the vetting discarded the pick ([`OpenRefusal::as_str`]), and
+    /// `None` on a pick that opened.
+    ///
+    /// The six refusals are six different stories — the navigator invented a
+    /// target, the page was already in the block, the page is policy — and a
+    /// reader shown only `opened: false` has to guess which, so a surface
+    /// that guesses says the wrong one most of the time.
+    pub reason: Option<String>,
+}
+
+/// Why [`open_target`] discarded one navigator pick. Every one of these is
+/// turn-level noise a single pick is dropped for, never an error.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum OpenRefusal {
+    /// The pick matched no candidate this hop offered: an invented target, or
+    /// a wiki with no page named, which is half an address.
+    NotOffered,
+    /// The candidate's wiki has left the tree since the pool was built.
+    WikiVanished,
+    /// The reserved `@rules.md`: standing directives reach the consumer
+    /// through the dedicated `rules` field, never as navigated prose.
+    RulesPage,
+    /// The page opened already **this hop**: one decision named it twice.
+    /// A page read on an earlier hop, and a card the identity slot served
+    /// whole, are pruned out of the offer before the model ever sees them
+    /// ([`prune_pool`]), so a pick naming one of those is
+    /// [`Self::NotOffered`].
+    AlreadyRead,
+    /// The page's per-fact ACL map could not be loaded, so it cannot be
+    /// redacted and is not shown.
+    AclUnreadable,
+    /// The page is gone, unreadable, or renders to nothing for this reader.
+    Unreadable,
+}
+
+impl OpenRefusal {
+    /// Lowercase token for logs and the recall-trace payload.
+    #[must_use]
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::NotOffered => "not_offered",
+            Self::WikiVanished => "wiki_vanished",
+            Self::RulesPage => "rules_page",
+            Self::AlreadyRead => "already_read",
+            Self::AclUnreadable => "acl_unreadable",
+            Self::Unreadable => "unreadable",
+        }
+    }
 }
 
 /// One page the funnel actually opened, as journaled.
@@ -965,7 +1011,7 @@ pub async fn navigate(
         let mut discoveries: Vec<Candidate> = Vec::new();
         for target in decision.open.iter().take(policy.pages_per_hop) {
             let fragments_before = outcome.fragments.len();
-            if let Some(mut found) = open_target(
+            match open_target(
                 pool,
                 tree,
                 sender,
@@ -978,32 +1024,37 @@ pub async fn navigate(
             )
             .await
             {
-                // `open_target` reaches this arm only after pushing exactly
-                // one fragment — every other path returns `None` — so the
-                // page just read is the one at `fragments_before`, and the
-                // operator record can never attribute it to the previous
-                // page.
-                let frag = &outcome.fragments[fragments_before];
-                hop.opened.push(OpenedPage {
-                    wiki_id: frag.wiki_id.clone(),
-                    page: frag.page.to_string_lossy().into_owned(),
-                    chars: frag.text.len(),
-                    excerpt: excerpt_of(&frag.text, TRACE_EXCERPT_CAP),
-                    discovered: found.len(),
-                });
-                hop.requested.push(RequestedOpen {
-                    wiki_id: target.wiki_id.clone(),
-                    page: target.page.clone(),
-                    opened: true,
-                });
-                discoveries.append(&mut found);
-                opened_this_hop += 1;
-            } else {
-                hop.requested.push(RequestedOpen {
-                    wiki_id: target.wiki_id.clone(),
-                    page: target.page.clone(),
-                    opened: false,
-                });
+                Ok(mut found) => {
+                    // `open_target` reaches this arm only after pushing
+                    // exactly one fragment — every refusal returns before it —
+                    // so the page just read is the one at `fragments_before`,
+                    // and the operator record can never attribute it to the
+                    // previous page.
+                    let frag = &outcome.fragments[fragments_before];
+                    hop.opened.push(OpenedPage {
+                        wiki_id: frag.wiki_id.clone(),
+                        page: frag.page.to_string_lossy().into_owned(),
+                        chars: frag.text.len(),
+                        excerpt: excerpt_of(&frag.text, TRACE_EXCERPT_CAP),
+                        discovered: found.len(),
+                    });
+                    hop.requested.push(RequestedOpen {
+                        wiki_id: target.wiki_id.clone(),
+                        page: target.page.clone(),
+                        opened: true,
+                        reason: None,
+                    });
+                    discoveries.append(&mut found);
+                    opened_this_hop += 1;
+                },
+                Err(refusal) => {
+                    hop.requested.push(RequestedOpen {
+                        wiki_id: target.wiki_id.clone(),
+                        page: target.page.clone(),
+                        opened: false,
+                        reason: Some(refusal.as_str().to_owned()),
+                    });
+                },
             }
             if state.remaining == 0 {
                 break;
@@ -1247,11 +1298,9 @@ fn normalise_target(raw: &str) -> String {
 
 /// Vet one navigator pick against the candidate pool and — when it holds —
 /// open the page, project it for the sender, charge the budget, and push the
-/// fragment. Returns `Some(discoveries)` (the new candidates the opened page
-/// exposes) when a page was actually opened, `None` when the pick was
-/// discarded (hallucinated target, vanished wiki, already visited,
-/// unreadable page, ACL map unloadable). Every one of those is turn-level
-/// noise a single pick is discarded for, so nothing here is an error.
+/// fragment. Returns the new candidates the opened page exposes, or the
+/// [`OpenRefusal`] that discarded the pick. Every refusal is turn-level noise
+/// a single pick is dropped for, so nothing here is an error.
 #[allow(clippy::too_many_arguments, reason = "one funnel-step's full context")]
 async fn open_target(
     pool: &SqlitePool,
@@ -1263,7 +1312,7 @@ async fn open_target(
     state: &mut FunnelState,
     outcome: &mut NavigationOutcome,
     reader_card: &meta_annotate::ReaderCard,
-) -> Option<Vec<Candidate>> {
+) -> Result<Vec<Candidate>, OpenRefusal> {
     // Anti-hallucination vetting: the target must match an offered candidate
     // verbatim — the navigator picks doors, it does not mint them.
     // A request that names no page names a wiki, and a wiki is not a door
@@ -1279,9 +1328,11 @@ async fn open_target(
             page = ?target.page,
             "recall_nav: navigator chose a non-candidate, discarded"
         );
-        return None;
+        return Err(OpenRefusal::NotOffered);
     };
-    let d = by_id.get(cand.wiki_id.as_str())?;
+    let d = by_id
+        .get(cand.wiki_id.as_str())
+        .ok_or(OpenRefusal::WikiVanished)?;
     let page = cand.page.clone();
     // The reserved `@rules.md` policy page is not navigable:
     // standing directives reach the consumer through the dedicated `rules`
@@ -1294,10 +1345,10 @@ async fn open_target(
             page = %page.display(),
             "recall_nav: rules page is channel-only, not navigable — discarded"
         );
-        return None;
+        return Err(OpenRefusal::RulesPage);
     }
     if !state.visited.insert((cand.wiki_id.clone(), page.clone())) {
-        return None;
+        return Err(OpenRefusal::AlreadyRead);
     }
     // Authoritative per-fact ACL for the page, keyed by fact id
     // (redaction-policy: DB first, inline attributes as fallback). A
@@ -1316,10 +1367,10 @@ async fn open_target(
                 error = %err,
                 "recall_nav: page ACL map unloadable, page skipped"
             );
-            return None;
+            return Err(OpenRefusal::AclUnreadable);
         },
     };
-    let projected = open_projected(d, &page, &db_acl, sender)?;
+    let projected = open_projected(d, &page, &db_acl, sender).ok_or(OpenRefusal::Unreadable)?;
     let (text, cut) = take_budget(projected, state.remaining);
     state.remaining -= text.len();
     outcome.truncated |= cut;
@@ -1332,7 +1383,7 @@ async fn open_target(
         text,
         truncated: cut,
     });
-    Some(discoveries)
+    Ok(discoveries)
 }
 
 /// Turn the entry-point fan into the hop-0 candidate pool, each entry
@@ -2046,6 +2097,8 @@ mod tests {
             valid_to: None,
             score,
             fresh,
+            seat: None,
+            link_key_win: false,
         }
     }
 
@@ -3556,10 +3609,10 @@ mod tests {
             "# Alice\n\nHer whole card.\n",
         );
         write_page(&tree, "alice", "appunti.md", "Ordinary prose.\n");
-        // Hop 1 asks for the wiki with no page — which resolves to the
-        // foundation page, `@profile.md` — and for a real page beside it.
-        // Hop 2 asks for `@profile.md` by name: `open_target`'s gate is the
-        // central fail-safe and this is the case that exercises it.
+        // Hop 1 asks for the wiki with no page — half an address, which
+        // matches no candidate — and for a real page beside it. Hop 2 asks
+        // for `@profile.md` by name, and the served page is not in the offer
+        // to match either.
         let llm = ScriptedLlm::new(&[
             r#"{"open":[{"wiki_id":"alice"},{"wiki_id":"alice","page":"appunti.md"}],"done":false}"#,
             r#"{"open":[{"wiki_id":"alice","page":"@profile.md"}],"done":false}"#,
@@ -3607,6 +3660,111 @@ mod tests {
         assert!(
             !out.fragments.iter().any(|f| f.text.contains("whole card")),
             "and none of its prose reaches the caller a second time"
+        );
+        // The refusal the record keeps says which gate stopped it. A served
+        // page is pruned OUT OF THE OFFER, so a pick naming it matches no
+        // candidate: the walk never gets as far as "already read".
+        let refusals: Vec<Option<&str>> = out
+            .trace
+            .iter()
+            .flat_map(|hop| hop.requested.iter())
+            .filter(|r| !r.opened)
+            .map(|r| r.reason.as_deref())
+            .collect();
+        assert!(
+            refusals.iter().all(|r| *r == Some("not_offered")),
+            "the offer is the gate that stops both picks: {refusals:?}"
+        );
+    }
+
+    /// The same page named twice in one decision. The offer is pruned of
+    /// everything already visited, so this is the only route left to
+    /// "already read": the first pick opens the page, the second finds it
+    /// open. The page is collected once, and the record says which pick was
+    /// which.
+    #[tokio::test]
+    async fn a_page_named_twice_in_one_decision_opens_once() {
+        let (_dir, tree) = open_tree();
+        forge_user(&tree, "alice");
+        write_page(&tree, "alice", "appunti.md", "Ordinary prose.\n");
+        let llm = ScriptedLlm::new(&[
+            r#"{"open":[{"wiki_id":"alice","page":"appunti.md"},{"wiki_id":"alice","page":"appunti.md"}],"done":true}"#,
+        ]);
+
+        let out = navigate(
+            &make_pool().await,
+            &tree,
+            &llm,
+            &sender("alice", &[]),
+            "what do we know?",
+            &[entry("alice", "appunti.md", EntryOrigin::Rag, 0.9)],
+            &NavigatorPolicy::default(),
+            Served::default(),
+        )
+        .await
+        .unwrap();
+
+        let picks: Vec<(bool, Option<&str>)> = out
+            .trace
+            .iter()
+            .flat_map(|hop| hop.requested.iter())
+            .map(|r| (r.opened, r.reason.as_deref()))
+            .collect();
+        assert_eq!(picks, vec![(true, None), (false, Some("already_read"))]);
+        assert_eq!(
+            out.fragments.len(),
+            1,
+            "the prose is collected once, whatever the decision repeated"
+        );
+    }
+
+    /// A door whose page is not on disk — a fan entry built from a fact whose
+    /// page was renamed mid-turn. It is a real candidate, so it passes the
+    /// offer gate and dies at the read: the record says `unreadable`, and the
+    /// walk keeps its other choice.
+    #[tokio::test]
+    async fn a_door_whose_page_vanished_is_refused_at_the_read() {
+        let (_dir, tree) = open_tree();
+        forge_user(&tree, "alice");
+        write_page(&tree, "alice", "appunti.md", "Ordinary prose.\n");
+        // `sparita.md` is a fan entry and never a file.
+        let llm = ScriptedLlm::new(&[
+            r#"{"open":[{"wiki_id":"alice","page":"sparita.md"},{"wiki_id":"alice","page":"appunti.md"}],"done":true}"#,
+        ]);
+
+        let out = navigate(
+            &make_pool().await,
+            &tree,
+            &llm,
+            &sender("alice", &[]),
+            "what do we know?",
+            &[
+                entry("alice", "sparita.md", EntryOrigin::Rag, 0.9),
+                entry("alice", "appunti.md", EntryOrigin::Rag, 0.5),
+            ],
+            &NavigatorPolicy::default(),
+            Served::default(),
+        )
+        .await
+        .unwrap();
+
+        let refusals: Vec<(&str, Option<&str>)> = out
+            .trace
+            .iter()
+            .flat_map(|hop| hop.requested.iter())
+            .map(|r| (r.page.as_deref().unwrap_or(""), r.reason.as_deref()))
+            .collect();
+        assert_eq!(
+            refusals,
+            vec![("sparita.md", Some("unreadable")), ("appunti.md", None)],
+            "the missing page is not an invented target: it was offered, and \
+             the read is what refused it"
+        );
+        assert!(
+            out.fragments
+                .iter()
+                .any(|f| f.page == Path::new("appunti.md")),
+            "and the walk keeps the page it could read"
         );
     }
 
@@ -3656,6 +3814,18 @@ mod tests {
                 .all(|c| c.page.as_deref() != Some("@rules.md")),
             "the rules page must never be offered as a candidate door"
         );
+        // Which gate stopped it, in the record's own words. Nothing offers the
+        // reserved page, so the pick matches no candidate and never reaches
+        // the `open_target` fail-safe — which is why that gate stays: it is
+        // the guarantee, not the route.
+        let refusals: Vec<Option<&str>> = out
+            .trace
+            .iter()
+            .flat_map(|hop| hop.requested.iter())
+            .filter(|r| !r.opened)
+            .map(|r| r.reason.as_deref())
+            .collect();
+        assert_eq!(refusals, vec![Some("not_offered")]);
         // The control: the ordinary page named beside it in the same decision
         // IS opened, so the assertions above are about the reserved page and
         // not about a walk that did nothing.

@@ -187,12 +187,12 @@ impl LlmBackend for OpenTheFirst {
 fn bucket(origin: &str) -> usize {
     match origin {
         "link" => 0,
-        "principal" | "rag" | "topic" | "situational" => 1,
+        "rag" | "topic" | "situational" => 1,
         _ => 2,
     }
 }
 
-const BUCKET_NAMES: [&str; 3] = ["link", "fan", "page"];
+const BUCKET_NAMES: [&str; 3] = ["link", "fan", "card"];
 
 /// `link N | fan N | page N`, zeros included so the columns line up.
 fn by_origin(cards: impl Iterator<Item = String>) -> String {

@@ -141,6 +141,7 @@ fn sample_trace() -> RecallTrace {
             text: "Galadriel è celiaca — cucinare senza glutine.".to_owned(),
             score: 0.83,
             valid_to: None,
+            ..TraceHit::default()
         }],
         fresh_hits: Vec::new(),
         due_soon: Vec::new(),
@@ -150,12 +151,14 @@ fn sample_trace() -> RecallTrace {
                 page: None,
                 origin: "principal".to_owned(),
                 weight: 0.6,
+                ..TraceEntryPoint::default()
             },
             TraceEntryPoint {
                 wiki_id: "galadriel".to_owned(),
                 page: Some("cucina.md".to_owned()),
                 origin: "rag".to_owned(),
                 weight: 0.83,
+                ..TraceEntryPoint::default()
             },
         ],
         hops: vec![HopTrace {
@@ -171,11 +174,13 @@ fn sample_trace() -> RecallTrace {
                     wiki_id: "galadriel".to_owned(),
                     page: Some("cucina.md".to_owned()),
                     opened: true,
+                    reason: None,
                 },
                 RequestedOpen {
                     wiki_id: "ghost".to_owned(),
                     page: None,
                     opened: false,
+                    reason: Some("not_offered".to_owned()),
                 },
             ],
             done: false,
@@ -195,6 +200,7 @@ fn sample_trace() -> RecallTrace {
         injected_block: Some("- (galadriel) Galadriel è celiaca [noted 2026-07-01]".to_owned()),
         rules_block: None,
         took_ms: 2150,
+        ..RecallTrace::default()
     }
 }
 
