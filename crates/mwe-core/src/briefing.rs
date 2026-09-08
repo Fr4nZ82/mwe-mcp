@@ -10,17 +10,17 @@
 //!
 //! ## Authorisation
 //!
-//! Open to **any token with read access to the target wiki** — not
+//! Open to **any token that reads the target wiki's content** — not
 //! restricted to `consumer_class=smart`: a standard consumer must be
 //! able to notify when the user, talking on Telegram, leaves an
 //! observation that the smart consumer should pick up next session. The
 //! rate limit below is what keeps that door narrow.
 //!
-//! **You may leave a note where you may read**, and read is asked of each
-//! family in its own words ([`crate::wiki_admin::wiki_readable_by`]): a
-//! standard wiki derives it from the facts it holds, a smart wiki holds none
-//! and answers from its own roster — owner, owning-group member, or a
-//! `shared_with` entry.
+//! **A note is left where a fact is read**
+//! ([`crate::wiki_admin::wiki_notifiable_by`]), and the question is asked of
+//! each family in its own words: a standard wiki wants at least one fact the
+//! caller can read, a smart wiki holds no facts at all and answers from its
+//! own roster — owner, owning-group member, or a `shared_with` entry.
 //!
 //! ## Rate limit
 //!
@@ -117,9 +117,9 @@ pub enum BriefingError {
         /// Human-readable description of which combination was rejected.
         detail: String,
     },
-    /// The caller cannot read the target wiki, so it cannot leave a note in
-    /// it either: no fact of a standard wiki is legible to them, or a smart
-    /// wiki's roster does not name them.
+    /// The caller has read nothing in the target wiki, so it leaves nothing
+    /// in it either: a standard wiki holds no fact legible to them — an empty
+    /// one holds none at all — or a smart wiki's roster does not name them.
     #[error("wiki {wiki_id} answers to {owner} and is not readable by {caller_owner}")]
     ReadAccessDenied {
         /// Target wiki id.
@@ -665,19 +665,23 @@ pub async fn notify(
     req: NotifyRequest,
 ) -> Result<NotifyResponse, BriefingError> {
     let (handle, outcome) = gate_notify_target_matrix(tree, &req.wiki_id, caller.consumer_class)?;
-    // You may leave a note where you may read. `wiki_readable_by` asks each
-    // family its own question — a standard wiki derives visibility from the
-    // facts in it, a smart wiki holds none and answers from its own roster
-    // (owner, owning-group member, `shared_with`) — which is the one rule the
-    // dashboard's comment gate follows too. It is what lets a note reach a
+    // A note is left where a fact is read. `wiki_notifiable_by` asks each
+    // family its own question — a standard wiki wants one fact the caller can
+    // read, a smart wiki holds none and answers from its own roster (owner,
+    // owning-group member, `shared_with`). It is what lets a note reach a
     // topic wiki at all: nobody owns one, so an owner question refuses
     // everybody, while whoever reads a fact in it can say something about it.
     let sender_groups = crate::enrollment::groups_for(pool, &caller.sender_id).await?;
-    let readable =
-        crate::wiki_admin::wiki_readable_by(pool, tree, &handle, &caller.sender_id, &sender_groups)
-            .await
-            .map_err(map_admin_error)?;
-    if !readable {
+    let may_notify = crate::wiki_admin::wiki_notifiable_by(
+        pool,
+        tree,
+        &handle,
+        &caller.sender_id,
+        &sender_groups,
+    )
+    .await
+    .map_err(map_admin_error)?;
+    if !may_notify {
         // The refusal still names whose wiki it is, for diagnostics.
         let owner = crate::wiki_admin::wiki_owner_label(tree, &handle).map_err(map_admin_error)?;
         return Err(BriefingError::ReadAccessDenied {
@@ -1421,6 +1425,17 @@ mod tests {
         let alice = WikiId::parse("alice").unwrap();
         create_identity_wiki(&tree, &alice, "Alice", IdentityKind::User).unwrap();
         let tree = WikiTree::open(dir.path()).unwrap();
+        // The cell under test is the db-only shape, not the gate: one fact
+        // alice can read is what a standard wiki asks for before it takes a
+        // note at all.
+        seed_fact(
+            &pool,
+            "018f1234-5678-7abc-9def-0123456789ac",
+            "alice",
+            "user:alice",
+            &[],
+        )
+        .await;
         let smart_alice = NotifyCaller {
             sender_id: "alice".into(),
             consumer_class: crate::jwt::ConsumerClass::Smart,
@@ -1479,10 +1494,10 @@ mod tests {
     /// A smart wiki is governed by its roster and by nothing else.
     ///
     /// It holds no rows in `fact_index`, so the derived question a standard
-    /// wiki answers — *can you read a fact in here* — falls into its
-    /// empty-wiki branch and says **yes to everybody**. Routing the notify
-    /// gate through `wiki_readable_by` keeps the two families on their own
-    /// questions: a stranger with no `shared_with` entry is still refused.
+    /// wiki answers — *can you read a fact in here* — has nothing to answer
+    /// from. Routing the notify gate through `wiki_notifiable_by` keeps the
+    /// two families on their own questions: a stranger with no `shared_with`
+    /// entry is still refused.
     #[tokio::test]
     async fn notify_rejects_cross_user_access() {
         let (_dir, tree, pool, wiki_id) = seeded_tree_with_smart_wiki().await;
@@ -1551,7 +1566,7 @@ mod tests {
         .expect("seed fact");
     }
 
-    /// **You may leave a note where you may read.** A topic wiki stands for
+    /// **A note is left where a fact is read.** A topic wiki stands for
     /// nobody, so an owner question refuses everybody and no consumer could
     /// ever notify one. The derived question is the right one there: a reader
     /// of a fact in the wiki may leave a note about it.
@@ -1618,6 +1633,70 @@ mod tests {
             panic!("expected ReadAccessDenied, got {err:?}");
         };
         assert_eq!(owner, "nobody", "a topic wiki has no owner to name");
+    }
+
+    /// **A note is left where a fact is read.** An empty standard wiki reads
+    /// as visible to everyone — the derived-visibility rule every read path
+    /// keeps, so a fresh wiki does not 404 for its own subject — and notify
+    /// does not follow it there: with nothing in the wiki to have read, the
+    /// note is refused, and the first readable fact is what opens the door.
+    #[tokio::test]
+    async fn notify_needs_a_readable_fact_in_a_standard_wiki() {
+        let dir = tempdir().unwrap();
+        let tree = WikiTree::open(dir.path()).unwrap();
+        let pool = make_pool().await;
+        forge_topic_wiki(&tree, "giardinaggio");
+        let tree = WikiTree::open(dir.path()).unwrap();
+        let wiki_id = WikiId::parse("giardinaggio").unwrap();
+        let bob = NotifyCaller {
+            sender_id: "bob".into(),
+            consumer_class: crate::jwt::ConsumerClass::Smart,
+        };
+
+        // Empty, and the derived read question would say "visible to
+        // everyone" — the notify gate says no.
+        assert!(
+            crate::fact_index::wiki_visible_to(&pool, "giardinaggio", "bob", &[])
+                .await
+                .unwrap(),
+            "an empty wiki is visible: that is the rule notify does not follow"
+        );
+        let err = notify(&pool, &tree, &bob, sample_request(&wiki_id))
+            .await
+            .expect_err("nothing read there, so nothing left there");
+        assert!(matches!(err, BriefingError::ReadAccessDenied { .. }));
+
+        // One fact bob may read, and the same call lands.
+        seed_fact(
+            &pool,
+            "018f1234-5678-7abc-9def-0123456789ab",
+            "giardinaggio",
+            "user:alice",
+            &["user:bob"],
+        )
+        .await;
+        let resp = notify(&pool, &tree, &bob, sample_request(&wiki_id))
+            .await
+            .expect("one readable fact is what opens it");
+        assert!(resp.briefing_item_id.starts_with("bi_"));
+    }
+
+    /// The smart half of the same gate is untouched, and it has to be: a smart
+    /// wiki holds **no** `fact_index` rows at all, so a fact test would refuse
+    /// everybody. Its roster answers, and an empty one still takes a note.
+    #[tokio::test]
+    async fn notify_in_a_smart_wiki_answers_from_the_roster_not_from_facts() {
+        let (_dir, tree, pool, wiki_id) = seeded_tree_with_smart_wiki().await;
+        assert!(
+            !crate::fact_index::readable_fact_in_wiki(&pool, wiki_id.as_str(), "alice", &[])
+                .await
+                .unwrap(),
+            "a smart wiki holds no facts — the standard question has no answer here"
+        );
+        let resp = notify(&pool, &tree, &alice_caller(), sample_request(&wiki_id))
+            .await
+            .expect("the owner is on the roster");
+        assert!(resp.briefing_item_id.starts_with("bi_"));
     }
 
     /// Inject `shared_with: [...]` into the smart wiki's

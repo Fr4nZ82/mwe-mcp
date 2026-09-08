@@ -1778,6 +1778,10 @@ pub async fn find_active_by_sender(
 /// the wiki-level `shared_with`). Reads a wiki's *own* rows only
 /// (`fact_index.wiki_id`); cheaper than a full reader card for a single verdict.
 ///
+/// This is the question every **read** path asks. A caller about to *write*
+/// something into the wiki wants [`readable_fact_in_wiki`] instead, which
+/// does not exempt the empty wiki.
+///
 /// # Errors
 ///
 /// The underlying [`find_active_in_wiki`] query error.
@@ -1790,16 +1794,45 @@ pub async fn wiki_visible_to(
     let rows = find_active_in_wiki(pool, wiki_id).await?;
     // Empty wiki: nothing to hide → visible (avoids a 404 on a fresh or
     // buffered-only wiki before the light dream promotes its first fact).
-    if rows.is_empty() {
-        return Ok(true);
-    }
-    Ok(rows.iter().any(|row| {
-        let acl = crate::types::Acl {
-            subject: Some(row.subject_id.clone()),
-            allow: row.allow_ids.clone(),
-        };
-        crate::acl::can_read(&acl, sender_id, sender_groups, row.sender_id.as_ref())
-    }))
+    Ok(rows.is_empty()
+        || rows
+            .iter()
+            .any(|row| row_readable_by(row, sender_id, sender_groups)))
+}
+
+/// Can this reader read **at least one active fact** in this wiki?
+///
+/// The sibling of [`wiki_visible_to`] without its empty-wiki exemption: a
+/// wiki with no facts answers `false` here, because there is no fact in it to
+/// read. That is the whole difference between the two, and it is the
+/// difference between *may you look* and *have you been let in*: a caller
+/// leaving a note in a wiki it can read nothing of is writing into a place
+/// it has never been shown.
+///
+/// # Errors
+///
+/// The underlying [`find_active_in_wiki`] query error.
+pub async fn readable_fact_in_wiki(
+    pool: &SqlitePool,
+    wiki_id: &str,
+    sender_id: &str,
+    sender_groups: &[String],
+) -> Result<bool> {
+    let rows = find_active_in_wiki(pool, wiki_id).await?;
+    Ok(rows
+        .iter()
+        .any(|row| row_readable_by(row, sender_id, sender_groups)))
+}
+
+/// The per-row visibility test both wiki-level questions above are built
+/// from — the same [`crate::acl::can_read`] the redaction path applies, so a
+/// per-fragment `allow=` grant is honoured.
+fn row_readable_by(row: &FactIndexRow, sender_id: &str, sender_groups: &[String]) -> bool {
+    let acl = crate::types::Acl {
+        subject: Some(row.subject_id.clone()),
+        allow: row.allow_ids.clone(),
+    };
+    crate::acl::can_read(&acl, sender_id, sender_groups, row.sender_id.as_ref())
 }
 
 /// Find the wiki's rows **recently closed by a contradiction** — the
@@ -4941,6 +4974,42 @@ mod tests {
         // A wiki with NO active facts hides nothing → it surfaces to anyone (a
         // fresh / not-yet-promoted wiki must not 404 for its subject).
         assert!(wiki_visible_to(&pool, "empty", "alice", &[]).await.unwrap());
+    }
+
+    /// The sibling question, and the one answer that separates the two: an
+    /// empty wiki is **visible** and holds **no readable fact**. Everything
+    /// else about them agrees, and it has to — the notify gate reads one and
+    /// every other read path reads the other.
+    #[tokio::test]
+    async fn readable_fact_in_wiki_has_no_empty_wiki_exemption() {
+        let pool = make_pool().await;
+        let mut f = sample_new_fact(SAMPLE_UUID_V7_1, "alice", "user:alice", "private");
+        f.allow_ids = vec!["group:team".parse().unwrap()];
+        f.sender_id = Some("user:alice".parse().unwrap());
+        insert(&pool, &f).await.unwrap();
+
+        assert!(
+            readable_fact_in_wiki(&pool, "alice", "alice", &[])
+                .await
+                .unwrap()
+        );
+        assert!(
+            readable_fact_in_wiki(&pool, "alice", "bob", &["team".to_owned()])
+                .await
+                .unwrap()
+        );
+        assert!(
+            !readable_fact_in_wiki(&pool, "alice", "carol", &[])
+                .await
+                .unwrap()
+        );
+        // Where the two part: nothing in the wiki is a fact nobody has read.
+        assert!(wiki_visible_to(&pool, "empty", "alice", &[]).await.unwrap());
+        assert!(
+            !readable_fact_in_wiki(&pool, "empty", "alice", &[])
+                .await
+                .unwrap()
+        );
     }
 
     #[tokio::test]

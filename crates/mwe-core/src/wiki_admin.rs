@@ -1725,18 +1725,85 @@ pub async fn wiki_readable_by(
     sender_id: &str,
     sender_groups: &[String],
 ) -> Result<bool, AdminError> {
+    wiki_access(
+        pool,
+        tree,
+        handle,
+        sender_id,
+        sender_groups,
+        EmptyStandardWiki::Visible,
+    )
+    .await
+}
+
+/// May this caller leave a briefing note here — the `wiki_admin_notify` gate.
+///
+/// The same two questions [`wiki_readable_by`] asks, with one answer
+/// different: **a note is left where a fact is read, and in an empty standard
+/// wiki nothing is read** (founder, 2026-09-08). Reading an empty standard
+/// wiki is looking at nothing and is allowed; writing into one is a note
+/// deposited in a place the caller was never shown.
+///
+/// A smart wiki is unchanged: it holds no facts at all, so the question is
+/// its roster — owner, owning-group member, or a `shared_with` entry — and a
+/// derived fact test would refuse everybody.
+///
+/// # Errors
+///
+/// Propagates the scope-principal resolution and the group / fact lookups.
+pub async fn wiki_notifiable_by(
+    pool: &SqlitePool,
+    tree: &WikiTree,
+    handle: &WikiHandle,
+    sender_id: &str,
+    sender_groups: &[String],
+) -> Result<bool, AdminError> {
+    wiki_access(
+        pool,
+        tree,
+        handle,
+        sender_id,
+        sender_groups,
+        EmptyStandardWiki::Refused,
+    )
+    .await
+}
+
+/// What an **empty standard wiki** answers — the one place the read gate and
+/// the notify gate part company.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum EmptyStandardWiki {
+    /// Visible. Nothing is hidden, and a just-created or not-yet-promoted
+    /// wiki must not 404 for its own subject.
+    Visible,
+    /// Refused. There is no fact in it to have read.
+    Refused,
+}
+
+/// The shared body of the two gates above: the smart branch, and the derived
+/// fact check with the caller's ruling on an empty standard wiki.
+async fn wiki_access(
+    pool: &SqlitePool,
+    tree: &WikiTree,
+    handle: &WikiHandle,
+    sender_id: &str,
+    sender_groups: &[String],
+    empty: EmptyStandardWiki,
+) -> Result<bool, AdminError> {
     if handle.meta().smart {
         return Ok(resolve_read_access(pool, tree, handle, sender_id)
             .await?
             .is_granted());
     }
-    crate::fact_index::wiki_visible_to(
-        pool,
-        handle.meta().wiki_id.as_str(),
-        sender_id,
-        sender_groups,
-    )
-    .await
+    let wiki_id = handle.meta().wiki_id.as_str();
+    match empty {
+        EmptyStandardWiki::Visible => {
+            crate::fact_index::wiki_visible_to(pool, wiki_id, sender_id, sender_groups).await
+        },
+        EmptyStandardWiki::Refused => {
+            crate::fact_index::readable_fact_in_wiki(pool, wiki_id, sender_id, sender_groups).await
+        },
+    }
     .map_err(AdminError::from)
 }
 

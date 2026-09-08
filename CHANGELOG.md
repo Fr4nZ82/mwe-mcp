@@ -36,18 +36,18 @@ semver-governed surface: breaking changes are called out explicitly.
   may leave an item by asking who owns the target wiki. A **topic wiki** —
   the kind the nightly grouping raises around a subject — is owned by
   nobody, so the question refused everybody and no consumer could leave a
-  note in one. The gate is now the rule the dashboard's comment box
-  follows: **you may leave a note where you may read**, asked of each
-  family in its own words. On a standard wiki that is whoever can read at
-  least one fact in it; on a smart wiki it stays the wiki's owner, the
-  members of its owning group, and whoever `shared_with` names. Who may
-  reach which wiki at all is unchanged: an ordinary conversational consumer
-  still records into a standard wiki through `wiki_ingest_message` and is
-  refused here. So the two knock-on effects are a smart consumer's: it may
-  now leave a note in another person's wiki when it can read a fact there,
-  and in a standard wiki with no promoted facts yet, which reads as visible
-  to everyone — the same derived answer the dashboard and `wiki_read`
-  already give.
+  note in one. The gate is now the memory itself: **a note is left where a
+  fact is read**, asked of each family in its own words. On a standard wiki
+  that is whoever can read at least one fact in it — a wiki with nothing in
+  it yet has no such fact and takes no note, even though it still *reads* as
+  visible to everyone, which is what keeps a brand-new wiki from vanishing
+  for its own subject. On a smart wiki, which holds no facts at all, it
+  stays the wiki's owner, the members of its owning group, and whoever
+  `shared_with` names. Who may reach which wiki at all is unchanged: an
+  ordinary conversational consumer still records into a standard wiki
+  through `wiki_ingest_message` and is refused here. So the knock-on effect
+  is a smart consumer's: it may now leave a note in another person's wiki
+  when it can read a fact there.
 
 - **Deleting a group no longer leaves its name on the facts it said in a
   wiki nobody owns.** When a group is deleted, the facts recorded as said by

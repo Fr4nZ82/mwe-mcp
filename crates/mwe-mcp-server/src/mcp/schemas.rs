@@ -576,7 +576,7 @@ fn wiki_admin_lease_release() -> Tool {
 fn wiki_admin_notify() -> Tool {
     materialize(
         "wiki_admin_notify",
-        "Append an item to a wiki's briefing inbox (H family). **Open to any token with read access to the target wiki** (NOT restricted to smart consumers): a standard consumer like nanoclaw must be able to relay user observations for the smart consumer to triage at next session. On a smart wiki the item is written into its `_briefing.md`; on a standard wiki it is queued for the nightly briefing pass. Read access is asked of each family in its own words: a standard wiki grants it to whoever can read a fact in it, a smart wiki to its owner, its owning group and its `shared_with` roster. Rate-limited 50 notify/wiki/h.",
+        "Append an item to a wiki's briefing inbox (H family). **Open to any token that reads the target wiki's content** (NOT restricted to smart consumers): a standard consumer like nanoclaw must be able to relay user observations for the smart consumer to triage at next session. On a smart wiki the item is written into its `_briefing.md`; on a standard wiki it is queued for the nightly briefing pass. A note is left where a fact is read, and the question is asked of each family in its own words: a standard wiki wants at least one fact you can read in it — an empty one is refused — and a smart wiki holds no facts at all, so it answers with its owner, its owning group and its `shared_with` roster. Rate-limited 50 notify/wiki/h.",
         json!({
             "type": "object",
             "required": ["wiki_id", "topic", "body", "source"],

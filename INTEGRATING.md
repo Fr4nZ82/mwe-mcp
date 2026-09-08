@@ -256,12 +256,12 @@ The dispatcher declares these, and only these
 | Class | What it means |
 |---|---|
 | `invalid_input` | A malformed, missing or **unknown** argument. Every schema is closed, so a misspelt parameter is refused by name rather than dropped. |
-| `sender_unauthorized` | The effective sender may not do this — including every permanent-state and operator tool on a `guest` turn. |
+| `sender_unauthorized` | The effective sender may not do this — including every permanent-state and operator tool on a `guest` turn. It is also `wiki_admin_notify`'s refusal: a note is left where a fact is read, so a **standard** wiki takes one only from a caller who can read at least one fact in it (an empty wiki has none, and is refused), while a **smart** wiki holds no facts and answers with its owner, its owning group and its `shared_with` roster. |
 | `sender_token_mismatch` | A `sender_id` argument that disagrees with the token's claim. |
 | `consumer_not_registered` | The `consumer_id` has no row in `consumers`; call `consumer_register` first. |
 | `not_found` | No such entity — and the answer for a tool name that is not on the roster. |
 | `rate_limited` | A call ceiling was reached; `data.retry_after` says how many seconds to wait. |
-| `requires_consumer_class_smart` | A smart-only tool (the `wiki_admin_*` writes, the K family) on a standard token. `wiki_admin_notify` is not one of them — it is open to any token that can read the target wiki. |
+| `requires_consumer_class_smart` | A smart-only tool (the `wiki_admin_*` writes, the K family) on a standard token. `wiki_admin_notify` is not one of them — it is open to any token that reads the target wiki's content. |
 | `wiki_owned_by_other_user` | A smart consumer wrote at a wiki its owner does not own. |
 | `wiki_not_smart` | The target wiki's `_meta` smart flag is `false`, so it takes neither an admin write nor a briefing. A standard wiki is written through `wiki_ingest_message`. **One code for both gates** — a wiki's `wiki_type` is a free-form label and decides nothing here. |
 | `smart_does_not_notify_own_wiki` | A smart consumer notified the wiki it administers itself. |
