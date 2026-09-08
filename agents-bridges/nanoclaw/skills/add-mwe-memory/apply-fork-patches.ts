@@ -137,7 +137,7 @@ import type { AgentGroup } from './types.js';`,
     file: POLL_LOOP,
     anchor: `import type { AgentProvider, AgentQuery, ProviderEvent, ProviderExchange } from './providers/types.js';`,
     replacement: `import type { AgentProvider, AgentQuery, ProviderEvent, ProviderExchange } from './providers/types.js';
-import { beginTurn, endTurn, mayEndForFollowUp } from './mwe/turn.js'; // mwe: the per-turn contract
+import { beginTurn, endTurn, mayEndForFollowUp, recordDelivered } from './mwe/turn.js'; // mwe: the per-turn contract
 import { mweStateless } from './mwe/active.js';
 import { clearWindow } from './mwe/window.js';`,
   },
@@ -243,6 +243,27 @@ import { clearWindow } from './mwe/window.js';`,
     continuation = undefined;
   }`,
   },
+  // The two delivery doors. What the memory keeps as the agent's half of the
+  // turn is what a person was actually handed, so each door says so as it
+  // writes the message out. Reading it off the final result text instead gets
+  // both halves of that wrong: a reply streamed mid-turn and not repeated is
+  // missing from it, and a block sitting in it may be one the door refused.
+  {
+    file: POLL_LOOP,
+    anchor: `    await sendToDestination(dest, body, routing);
+    delivered++;`,
+    replacement: `    await sendToDestination(dest, body, routing);
+    recordDelivered(body); // mwe: the reply the person got is the reply the memory gets
+    delivered++;`,
+  },
+  {
+    file: POLL_LOOP,
+    anchor: `    await sendToDestination(dest, body, routing);
+    sent++;`,
+    replacement: `    await sendToDestination(dest, body, routing);
+    recordDelivered(body); // mwe: the reply the person got is the reply the memory gets
+    sent++;`,
+  },
   {
     file: POLL_LOOP,
     anchor: `        midTurnSent = 0;
@@ -251,11 +272,33 @@ import { clearWindow } from './mwe/window.js';`,
     replacement: `        // mwe: at the turn boundary, once the reply has gone out, feed it back
         // for extraction so the agent remembers its own half of the exchange —
         // a deadline it worked out, advice it gave. The host round trip costs
-        // the next turn's start, never this turn's answer.
-        await endTurn(event.text);
+        // the next turn's start, never this turn's answer. A turn that has
+        // delivered nothing yet is left open on purpose: the wrap-nudge above
+        // asks it to answer again inside this same query, and that answer is
+        // the one the memory wants.
+        await endTurn();
         midTurnSent = 0;
         turnStartSeq = maxOutboundSeq();
         midTurnTail = '';`,
+  },
+  {
+    file: POLL_LOOP,
+    anchor: `    throw err;
+  } finally {
+    done = true;
+    clearInterval(pollHandle);
+  }`,
+    replacement: `    throw err;
+  } finally {
+    done = true;
+    clearInterval(pollHandle);
+    // mwe: the net under the turn boundary. A query ended for a follow-up — or
+    // by an error — while the model was still working never reaches the
+    // boundary above, and a reply already handed to the person would go
+    // unremembered. Whichever of the two runs first takes the turn; the other
+    // finds the slot empty and does nothing.
+    await endTurn();
+  }`,
   },
   {
     file: POLL_LOOP,

@@ -16,9 +16,33 @@ const read = (file: string): string => fs.readFileSync(file, 'utf-8');
 describe('the fork carries the mwe reach-ins', () => {
   it('runs the per-turn contract before the provider query', () => {
     const pollLoop = read('container/agent-runner/src/poll-loop.ts');
-    expect(pollLoop).toContain("import { beginTurn, endTurn, mayEndForFollowUp } from './mwe/turn.js'");
+    expect(pollLoop).toContain(
+      "import { beginTurn, endTurn, mayEndForFollowUp, recordDelivered } from './mwe/turn.js'",
+    );
     expect(pollLoop).toContain('await beginTurn(keep, formatMessagesWithCommands(');
-    expect(pollLoop).toContain('await endTurn(event.text);');
+    expect(pollLoop).toContain('await endTurn();');
+  });
+
+  it('tells the turn what the person was handed, at both delivery doors', () => {
+    // What the memory keeps as the agent's half is what actually went out, and
+    // the final result text is not that: a reply streamed mid-turn need not be
+    // repeated in it, and a block sitting in it may be one the door refused to
+    // send. So both doors say so as they write the message, and the reach-in
+    // is asserted at both — one of them alone would leave a whole class of
+    // turns remembered with the person's words and none of the agent's.
+    const pollLoop = read('container/agent-runner/src/poll-loop.ts');
+    expect(pollLoop.split('recordDelivered(body);').length - 1).toBe(2);
+    expect(pollLoop).toContain(`    await sendToDestination(dest, body, routing);
+    recordDelivered(body);`);
+  });
+
+  it('nets the turn boundary against a query that ends before its result', () => {
+    // A follow-up ends the query where it stands. When that happens after the
+    // agent has delivered but before the result event, the boundary reach-in
+    // never runs — so the query's own exit path ends the turn as well.
+    const pollLoop = read('container/agent-runner/src/poll-loop.ts');
+    expect(pollLoop.split('await endTurn();').length - 1).toBe(2);
+    expect(pollLoop).toMatch(/clearInterval\(pollHandle\);\n(?:\s*\/\/[^\n]*\n)+\s*await endTurn\(\);/);
   });
 
   it('opens a fresh provider session on every turn', () => {

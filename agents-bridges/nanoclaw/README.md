@@ -44,7 +44,11 @@ per-turn contract **v1**
   chat, and it holds.
 - **No session is carried between turns.** Every turn is a fresh provider
   query; its conversational context is the bridge's own recent window plus the
-  recall block. Nothing is ever compacted or summarized.
+  recall block. Nothing is ever compacted or summarized. So the window has to
+  carry **both halves** of every turn, and the agent's half is taken from the
+  message the person was actually handed — whether it was streamed out while
+  the agent was still working or came back with the turn's final text. A turn a
+  follow-up cuts short keeps what it had already said.
 - **The memory can start a conversation, once.** A fact minted for somebody
   else, or a commitment coming due, is delivered to that person's own chat,
   phrased by the agent, in their language — a fact as news, a commitment as a
@@ -453,17 +457,28 @@ forget-request vote and the promoted document reaching the agent, neither
 line showing up on a turn that did not earn it, and the vote raised because
 its deadline is inside the day; the media upload and its
 catalog id; a memory outage that leaves the turn answering; no continuation
-between turns; and the reverse channel's poll → enqueue → ack order, including
-a notice that must not be delivered to the wrong person.
+between turns; the four shapes a turn's ending can take, with the reply
+remembered once in each; and the reverse channel's poll → enqueue → ack order,
+including a notice that must not be delivered to the wrong person.
 
-Three of those turns run **on the clock**: a provider that takes longer to
-answer than the follow-up poller's interval, with the host answering slowly
-too. A turn that outlives that poller must still reach the person; a follow-up
-arriving mid-query must end the query rather than ride it; and a turn carrying
-a backlog of notices must deliver every one of them even when somebody writes
-in halfway, with that person served next and nothing lost either way. A mock
-that answers in the same microtask never lets that timer fire, so none of these
-three can be seen without real time on the clock.
+Those four shapes are one rule — **the reply the person got is the reply the
+window and the memory get** — asserted where it is easiest to lose: a reply
+repeated in the turn's final text is remembered once and not twice; a reply
+streamed out and never repeated there is remembered from what went out, not
+from the note the model left behind; a first answer that comes back without its
+delivery wrapper is nudged, and it is the second answer, the one that reached
+the person, that lands in the window; and a query a follow-up ends before the
+turn formally finishes still remembers what it had already said.
+
+Four of the turns run **on the clock**: a provider that takes longer to answer
+than the follow-up poller's interval, with the host answering slowly too. A
+turn that outlives that poller must still reach the person; a follow-up
+arriving mid-query must end the query rather than ride it; a turn carrying a
+backlog of notices must deliver every one of them even when somebody writes in
+halfway, with that person served next and nothing lost either way; and a query
+ended after the agent has spoken but before the turn's result must still feed
+that reply back. A mock that answers in the same microtask never lets that
+timer fire, so none of these four can be seen without real time on the clock.
 
 `NANOCLAW_SRC=/path/to/a/local/checkout` clones from disk instead of GitHub;
 `MWE_SMOKE_KEEP=1` leaves the scratch fork behind to poke at.

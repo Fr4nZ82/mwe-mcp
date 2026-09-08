@@ -9,6 +9,24 @@ From 1.0, the public interface — the MCP tool surface, family by family, as
 the dispatcher in `crates/mwe-mcp-server/src/mcp/` declares it — is a stable,
 semver-governed surface: breaking changes are called out explicitly.
 
+## Unreleased
+
+### Fixed
+
+- **The ready-made assistant remembers what it just answered.** On the nanoclaw
+  bridge the agent's own reply was read back out of the text the provider hands
+  over when a turn finishes, and there are two everyday turns where that text
+  does not carry it: one where the reply goes to the person while the agent is
+  still working and is not said again at the end, and one where the first
+  answer comes back without the wrapper that sends it, so the bridge asks for
+  it again and the real answer arrives after the turn had been counted as over.
+  In both, the person got their answer and nothing else did: it was not stored
+  as the agent's half of the exchange and it never entered the recent window,
+  so the next message found the question on file with no answer beside it and
+  the assistant asked again what it had just been told. The reply is now taken
+  from the delivery itself, however the turn sent it, and a turn cut short by a
+  follow-up before it formally ends keeps what it had already said.
+
 ## 2.1.0 — 2026-09-08
 
 **Traces** now tells the recall the way the engine runs it: the question the

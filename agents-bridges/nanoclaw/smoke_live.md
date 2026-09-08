@@ -57,9 +57,15 @@ After each step, check what the memory did on the dashboard
      and must **not** promise to remember. Nothing appears on the dashboard.
    - It must not offer a dashboard link.
 
-5. **The window is real.** As alice, three short messages in a row, then a
-   question that only makes sense given the first one (*"e quello di prima?"*).
-   It must follow — that is the recent window, not a session.
+5. **The window is real, in both directions.** As alice, three short messages
+   in a row, then a question that only makes sense given the first one (*"e
+   quello di prima?"*). It must follow — that is the recent window, not a
+   session. Then a question that only makes sense given the agent's **own**
+   last answer (*"e perché proprio quella?"*, right after it has recommended
+   something). It must follow that too, and it must not ask which answer you
+   mean: the window carries both halves of every turn, and a window holding
+   your questions with none of its answers is exactly what that looks like from
+   the chat.
 
 6. **A photo becomes memory.** Send a photo with a caption. The dashboard shows
    a described media fact; the described text should match the photo.

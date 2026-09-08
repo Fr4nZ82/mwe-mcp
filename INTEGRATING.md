@@ -532,6 +532,16 @@ below directly.
    archive; supply the sliding window via `recent_messages` (the server
    reads at most its configured cap, by default the last 16 entries) and
    trim it on your side. There is no server-side "compact" to call.
+
+   **The window carries both halves of every turn**, `role: "user"` and
+   `role: "assistant"`, and the agent's half enters it when the reply reaches
+   the person — **however your host delivered it.** Take that reply from the
+   delivery itself, not from whatever text your provider hands back at the end
+   of the turn: a host that reads it off that text loses the replies streamed
+   to the person while the agent was still working and never repeated at the
+   end, and it keeps blocks the delivery path refused to send. A window
+   holding a question with no answer beside it is worse than a short one — the
+   agent reads its own silence and asks again what it has just been told.
 3. **Inject the recall block after your stable content.** The block
    changes every turn; placing it after the stable system-prompt prefix
    (persona, tools, standing instructions) preserves your LLM provider's

@@ -55,13 +55,15 @@ interface PendingTurn {
   /** The window as it was BEFORE this turn — what a replay must send again. */
   window: WindowMessage[];
   userMessages: WindowMessage[];
+  /** The replies this turn delivered, in the order the person received them. */
+  delivered: string[];
 }
 
 /**
  * The turn currently in flight. The loop runs one turn at a time in one
- * container, so a module-level slot is the whole bookkeeping. It is read by
- * `endTurn` in this same process; what the MCP tool process needs instead
- * goes to disk (`state.ts`).
+ * container, so a module-level slot is the whole bookkeeping. `recordDelivered`
+ * fills it as the turn speaks and `endTurn` empties it, both in this same
+ * process; what the MCP tool process needs instead goes to disk (`state.ts`).
  */
 let pending: PendingTurn | undefined;
 
@@ -205,6 +207,9 @@ async function ingestGroup(
  * window go in front of it, never inside it.
  */
 export async function beginTurn(messages: MessageInRow[], formatted: string): Promise<string> {
+  // A new turn is the bound on the previous one. `endTurn` leaves the slot
+  // standing when the turn it closed had delivered nothing, so that the same
+  // turn can still answer; here is where that ends.
   pending = undefined;
   carriedNotices = countNotices(messages);
   noticeWaitLogged = false;
@@ -243,6 +248,7 @@ export async function beginTurn(messages: MessageInRow[], formatted: string): Pr
     text: lastGroup.map((r) => r.text).filter(Boolean).join('\n') || '[media]',
     window,
     userMessages,
+    delivered: [],
   };
   // Whose turn it is, for the tools in the other process — and, when the
   // memory asked one, the disambiguation they may commit.
@@ -264,17 +270,24 @@ export async function beginTurn(messages: MessageInRow[], formatted: string): Pr
   return assemblePrompt(renderRecallBlock(last.payload), renderConversation(window), formatted);
 }
 
-/** The `<message to="…">` bodies the agent delivered this turn. */
-function deliveredBodies(text: string): string {
-  const withoutInternal = text.replace(/<internal\b[\s\S]*?<\/internal>/gi, '');
-  const bodies: string[] = [];
-  const re = /<message\s+to="[^"]+"\s*>([\s\S]*?)<\/message>/g;
-  let match: RegExpExecArray | null;
-  while ((match = re.exec(withoutInternal)) !== null) {
-    const body = match[1].trim();
-    if (body) bodies.push(body);
-  }
-  return bodies.join('\n\n');
+/**
+ * Record one reply this turn has just delivered to the person.
+ *
+ * Both of the loop's delivery doors call it the moment the message is written
+ * to the outbound mailbox: the mid-turn door as each `<message to="…">` block
+ * finishes streaming, and the result door on the turns where it is the one
+ * that sends. That way the turn knows what the person actually received,
+ * instead of inferring it from the final result text — which can carry a block
+ * nobody got (an unknown destination, or a block the result door was told not
+ * to send) and can omit one that went out mid-turn and was never repeated.
+ *
+ * Outside a conversational turn — a task run, a delivery instruction, an agent
+ * whose memory is off — there is no turn in flight and nothing is kept.
+ */
+export function recordDelivered(body: string): void {
+  const reply = body.trim();
+  if (!pending || !reply) return;
+  pending.delivered.push(reply);
 }
 
 /**
@@ -321,26 +334,38 @@ export function mayEndForFollowUp(): boolean {
 
 /**
  * Feed the agent's own reply back for extraction, so it remembers its half of
- * the turn — a deadline it worked out, advice it gave, a decision reached.
+ * the turn — a deadline it worked out, advice it gave, a decision reached —
+ * and so the next turn's window shows it what it already said.
+ *
+ * **The reply that reached the person is the reply the window and the memory
+ * get, however it was delivered.** What this ingests is what the delivery
+ * doors recorded through `recordDelivered`, never the shape of the final
+ * result text: a reply streamed mid-turn counts whether or not the result
+ * repeats it, a block the result carried but nobody delivered does not count,
+ * and a turn whose first answer came back unwrapped — nudged, then answered
+ * again inside the same query — is remembered from the answer that went out.
  *
  * `author=assistant` tells the memory to keep only the durable sediment and
  * to attribute it to the agent rather than to the person. The reply has
  * already gone out by the time this runs, so the cost is the next turn's
  * start, never this turn's answer.
  *
- * What it sees is the turn's `<message to="…">` blocks. An agent that answers
- * only through the `send_message` tool leaves no block in its result text, and
- * that reply is not fed back — the user's half of the turn is stored either
- * way, so the memory is thinner, never wrong.
+ * A turn that has delivered nothing leaves the slot standing: it has no
+ * assistant half yet, and the same turn may still speak — that is exactly what
+ * the wrap-nudge asks of it, in the same query. `beginTurn` empties the slot
+ * when the next turn opens, so nothing is ever carried across one. An agent
+ * that answers only through the `send_message` tool goes through neither door
+ * and is such a turn: the person's half is stored either way, so the memory is
+ * thinner, never wrong.
  */
-export async function endTurn(resultText: string | null): Promise<void> {
+export async function endTurn(): Promise<void> {
   // The turn reached its boundary: whatever it was carrying has been spoken.
   carriedNotices = 0;
   const turn = pending;
-  pending = undefined;
   if (!turn || !mweActive()) return;
-  const reply = deliveredBodies(resultText ?? '').trim();
+  const reply = turn.delivered.join('\n\n');
   if (!reply) return;
+  pending = undefined;
 
   const now = new Date().toISOString();
   const frame = await callHost('ingest', {

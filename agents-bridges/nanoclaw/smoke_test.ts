@@ -283,6 +283,46 @@ function slowProvider(reply: string, delayMs: number): { provider: unknown; prom
   return { provider: mock, prompts };
 }
 
+/**
+ * A provider whose first turn delivers mid-turn and then never reaches its
+ * result — the shape a follow-up interrupts while the model is still working
+ * after it has already spoken. Its `abort()` releases the halt, so the query
+ * ends exactly the way the poll loop ends one. Later turns are ordinary.
+ */
+function haltingProvider(first: string, later: string): { provider: unknown } {
+  let queries = 0;
+  const mock = new MockProvider({}, () => (queries === 1 ? first : later));
+  const inner = mock.query.bind(mock);
+  mock.query = (input: { prompt: string; continuation?: string }) => {
+    queries++;
+    const query = inner(input);
+    if (queries > 1) return query;
+    let release: () => void = () => {};
+    const halted = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    return {
+      ...query,
+      abort() {
+        query.abort();
+        release();
+      },
+      events: {
+        async *[Symbol.asyncIterator]() {
+          for await (const event of query.events) {
+            if (event.type === 'result') {
+              await halted;
+              return;
+            }
+            yield event;
+          }
+        },
+      },
+    };
+  };
+  return { provider: mock };
+}
+
 /** Run the real poll loop until `until` holds, then stop it. */
 async function runTurn(provider: unknown, until: () => boolean, label: string): Promise<void> {
   const controller = new AbortController();
@@ -651,6 +691,12 @@ async function main(): Promise<void> {
     'and it arrives with a recall block of its own',
     followUpPrompts.some((p) => p.includes('anzi, aspetta') && p.startsWith('<memory-context>')),
   );
+  ok(
+    'the reply that went out before the query ended is remembered too',
+    ingests()
+      .slice(beforeFollowUp)
+      .some((c) => c.arguments.author === 'assistant' && c.arguments.text === 'eccomi'),
+  );
 
   // -- a backlog of notices survives a follow-up ----------------------------
   // A delivery instruction is not stored anywhere and the daemon acked it to
@@ -692,6 +738,122 @@ async function main(): Promise<void> {
   ok(
     'a notice is never ingested — the memory does not store what it just said',
     !ingests().some((c) => String(c.arguments.text ?? '').includes('notice number')),
+  );
+
+  // -- the reply the person got is the reply the memory gets ----------------
+  // The agent's half of a turn is fed back from what the delivery doors
+  // actually sent. Four shapes, one rule: whichever door the reply left by,
+  // and whatever the result text says afterwards, the window and the memory
+  // get that reply, exactly once.
+
+  // Streamed mid-turn and repeated verbatim in the result — one reply, and the
+  // repeat is not a second one.
+  const beforeRepeat = ingests().length;
+  insertChat('r1', 'Alice', '1', 'che ore sono?');
+  await runTurn(
+    recordingProvider('<message to="famiglia">le cinque</message>').provider,
+    () => windowMessages().some((m) => m.role === 'assistant' && m.text === 'le cinque'),
+    'a reply repeated in the result',
+  );
+  ok(
+    'a reply repeated in the result is remembered once, not twice',
+    ingests().slice(beforeRepeat).filter((c) => c.arguments.text === 'le cinque').length === 1,
+  );
+  ok(
+    'and it is stored as the agent speaking',
+    ingests()
+      .slice(beforeRepeat)
+      .some((c) => c.arguments.author === 'assistant' && c.arguments.text === 'le cinque'),
+  );
+
+  // Streamed mid-turn and NOT repeated: the result text is the model's note to
+  // itself. Reading the reply off it would file the note and lose the answer.
+  const beforeUnrepeated = ingests().length;
+  insertChat('r2', 'Alice', '1', 'e le chiavi?');
+  const unrepeated = new MockProvider({}, () => 'ho già risposto in chat.', () => [
+    '<message to="famiglia">le chiavi sono in cucina</message>',
+  ]);
+  await runTurn(
+    unrepeated,
+    () => windowMessages().some((m) => m.role === 'assistant' && m.text === 'le chiavi sono in cucina'),
+    'a reply the result never repeats',
+  );
+  ok('the reply reached the person', outboundChat().at(-1)?.text === 'le chiavi sono in cucina');
+  ok(
+    'the memory stores the answer that went out',
+    ingests()
+      .slice(beforeUnrepeated)
+      .some((c) => c.arguments.author === 'assistant' && c.arguments.text === 'le chiavi sono in cucina'),
+  );
+  ok(
+    'and not the note the model left behind in its result',
+    !ingests().some((c) => String(c.arguments.text ?? '').includes('ho già risposto')),
+  );
+
+  // The first answer comes back unwrapped, so nothing is delivered and the
+  // loop nudges; the model answers again inside the same query, and THAT is
+  // the turn's reply. A turn closed at its first result throws the slot away
+  // before the answer exists, and the person's question is then remembered
+  // with no answer beside it.
+  const beforeNudge = ingests().length;
+  insertChat('r3', 'Alice', '1', 'su quale ricetta va il guanciale?');
+  let answeredUnwrapped = false;
+  const nudged = new MockProvider({}, () => {
+    if (answeredUnwrapped) return '<message to="famiglia">va nella carbonara</message>';
+    answeredUnwrapped = true;
+    return 'bozza mai consegnata';
+  });
+  await runTurn(
+    nudged,
+    () => windowMessages().some((m) => m.role === 'assistant' && m.text === 'va nella carbonara'),
+    'a turn nudged into wrapping its answer',
+  );
+  ok('the nudged answer reached the person', outboundChat().at(-1)?.text === 'va nella carbonara');
+  ok(
+    'the memory remembers the answer the nudge produced',
+    ingests()
+      .slice(beforeNudge)
+      .some((c) => c.arguments.author === 'assistant' && c.arguments.text === 'va nella carbonara'),
+  );
+  ok(
+    'the draft nobody received is not remembered as a reply',
+    !ingests().some((c) => c.arguments.text === 'bozza mai consegnata'),
+  );
+  ok(
+    'and the next turn sees the answer, not a question left hanging',
+    windowMessages().slice(-2).map((m) => m.text).join('|') ===
+      'su quale ricetta va il guanciale?|va nella carbonara',
+    JSON.stringify(windowMessages().slice(-2)),
+  );
+
+  // A follow-up can end the query where it stands, before the turn ever
+  // reaches its result. The reply is already in the person's chat by then, so
+  // the query's own exit path is what feeds it back.
+  const beforeHalt = ingests().length;
+  insertChat('r4', 'Alice', '1', 'arrivi?');
+  const interrupted = haltingProvider(
+    '<message to="famiglia">arrivo</message>',
+    '<message to="famiglia">ci penso io</message>',
+  );
+  const haltInterrupt = setTimeout(() => insertChat('r5', 'Alice', '1', 'e la spesa?'), 700);
+  await runTurn(
+    interrupted.provider,
+    () =>
+      windowMessages().some((m) => m.role === 'assistant' && m.text === 'arrivo') &&
+      ingests().some((c) => c.arguments.text === 'e la spesa?'),
+    'a query ended before its result',
+  );
+  clearTimeout(haltInterrupt);
+  ok('the reply reached the person before the query ended', outboundChat().some((m) => m.text === 'arrivo'));
+  ok(
+    'a turn ended before its result still remembers what it said',
+    ingests()
+      .slice(beforeHalt)
+      .some((c) => c.arguments.author === 'assistant' && c.arguments.text === 'arrivo'),
+  );
+  ok(
+    'and the person who wrote in still gets a turn of their own',
+    ingests().slice(beforeHalt).some((c) => c.arguments.text === 'e la spesa?'),
   );
 
   // -- degradation: the memory falls over and the turn still answers --------
