@@ -27,8 +27,9 @@ semver-governed surface: breaking changes are called out explicitly.
 - **The numbers your own monitoring can graph.** `GET /metrics` serves a
   Prometheus scrape of what this deployment is doing: turns and tool calls and
   failures per credential, model calls and errors and latency and tokens per
-  slot, today's spend against the budget, how long recall is taking, when the
-  night pass last ran and whether it worked, the database size and the uptime.
+  slot, today's spend against the budget, how long recall is taking, when each
+  of the Dream console's runs last finished and whether it worked, the database
+  size and the uptime.
   It is **never public** — it takes an admin token
   (`mwe-mcp token-issue --is-admin`), the same credential family `/mcp` uses,
   revocable from **Tokens**. Every number is read from a table at scrape time,

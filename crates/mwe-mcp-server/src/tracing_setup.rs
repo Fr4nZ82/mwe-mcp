@@ -69,8 +69,11 @@ pub fn install(workdir: &Path, config: &Config) -> Guard {
     let stderr_layer = formatted_layer(
         format,
         std::io::stderr,
-        // A terminal is where the interactive operator reads this one.
-        true,
+        // Colour is left to the library's own rule, which honours
+        // `NO_COLOR`: an operator who set that variable set it for this
+        // process too, and forcing the answer here would be one more
+        // place their choice quietly does not reach.
+        None,
         make_filter(config),
     );
 
@@ -84,7 +87,7 @@ pub fn install(workdir: &Path, config: &Config) -> Guard {
                     // ANSI escapes belong on a terminal, not in a log
                     // file — strip them so `grep` / `less` produce
                     // clean output.
-                    false,
+                    Some(false),
                     make_filter(config),
                 );
                 (Some(layer), Some(guard))
@@ -168,7 +171,7 @@ pub fn build_file_appender(
 fn formatted_layer<S, W>(
     format: LogFormat,
     writer: W,
-    ansi: bool,
+    ansi: Option<bool>,
     filter: tracing_subscriber::EnvFilter,
 ) -> Box<dyn tracing_subscriber::Layer<S> + Send + Sync>
 where
@@ -176,11 +179,17 @@ where
     W: for<'a> MakeWriter<'a> + Send + Sync + 'static,
 {
     match format {
-        LogFormat::Text => tracing_subscriber::fmt::layer()
-            .with_ansi(ansi)
-            .with_writer(writer)
-            .with_filter(filter)
-            .boxed(),
+        LogFormat::Text => {
+            let layer = tracing_subscriber::fmt::layer();
+            // `None` is not "off": it leaves the library's own rule in
+            // place, which is the feature flag **and** `NO_COLOR`. A
+            // caller that wants colour gone says so.
+            let layer = match ansi {
+                Some(ansi) => layer.with_ansi(ansi),
+                None => layer,
+            };
+            layer.with_writer(writer).with_filter(filter).boxed()
+        },
         // The JSON formatter writes no escapes of its own, so `ansi` has
         // nothing to say here.
         LogFormat::Json => tracing_subscriber::fmt::layer()
@@ -233,11 +242,17 @@ mod tests {
     /// Two events through a scoped subscriber built the way [`install`]
     /// builds each of its sinks, returned as the bytes that sink saw.
     fn captured(format: LogFormat) -> String {
+        captured_with(format, Some(false))
+    }
+
+    /// As [`captured`], with the caller choosing what to say about
+    /// colour — the difference between the two sinks.
+    fn captured_with(format: LogFormat, ansi: Option<bool>) -> String {
         let buffer = Buffer::default();
         let layer = formatted_layer(
             format,
             buffer.clone(),
-            false,
+            ansi,
             tracing_subscriber::EnvFilter::new("info"),
         );
         let subscriber = tracing_subscriber::registry().with(layer);
@@ -294,5 +309,19 @@ mod tests {
     #[test]
     fn the_default_format_is_text() {
         assert_eq!(Config::default().logging.format, LogFormat::Text);
+    }
+
+    /// The file sink is read with `grep` and `less`, so it says colour
+    /// off rather than leaving it to a rule about terminals — the file
+    /// is not one.
+    #[test]
+    fn the_file_sink_carries_no_escape_codes() {
+        let out = captured_with(LogFormat::Text, Some(false));
+
+        assert!(out.contains("first event"), "{out:?}");
+        assert!(
+            !out.contains('\x1b'),
+            "an escape code reached the file: {out:?}"
+        );
     }
 }

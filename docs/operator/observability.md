@@ -59,8 +59,8 @@ all-time total, and each one says its window in its own name:
   That is the same day the daily budget uses, so the spend you see here and the
   spend on **Usage** are the same figure. `rate()` and `increase()` handle the
   midnight restart the way they handle a server restart.
-- **`mwe_dream_runs`** counts the runs the Dream console still keeps, which is
-  the newest hundred — a window, not a total.
+- **`mwe_dream_runs`** counts the runs the [Dream console](dream.md) still
+  keeps, which is the last 100 it lists — a window, not a total.
 - Everything else is a reading of right now.
 
 ## What is published
@@ -101,7 +101,7 @@ embedder is recorded under the slot name `embedding`.
 | `mwe_spend_stopped` | 1 while paid calls are being refused because today's budget is spent. |
 | `mwe_spend_unpriced_calls_today` | Calls on a model with no rate in the price list: their tokens are counted and their cost is not, so while this is above zero the budget is looser than it looks. |
 
-**How fast memory answered**, over the newest hundred recorded recalls.
+**How fast memory answered**, over the last 100 recorded recalls.
 
 | Name | What it is |
 |---|---|
@@ -109,13 +109,16 @@ embedder is recorded under the slot name `embedding`.
 | `mwe_recall_ms_p90` | What the slowest tenth exceeded. |
 | `mwe_recall_ms_max` | The slowest one. |
 
-**What the night pass did**, labelled by `kind` (`full`, `light`, `compile`).
+**What the [Dream console](dream.md) recorded**, labelled by `kind` — the three
+its own buttons name: `light` (the frequent cycle), `compile` (the page-writing
+half on its own) and `full` (**Full REM**, the nightly reorganisation). Only `full`
+is nightly, so a healthy `light` says nothing about it.
 
 | Name | What it is |
 |---|---|
 | `mwe_dream_last_run_timestamp_seconds` | When the most recent run of that kind finished. |
 | `mwe_dream_last_run_ok` | 1 if it succeeded, 0 if it failed. |
-| `mwe_dream_runs` | Runs by kind and outcome, over the hundred the console keeps. |
+| `mwe_dream_runs` | Runs by kind and outcome, over the last 100 the console keeps — the same history the console lists. |
 
 A family with nothing behind it is left out rather than published as zero. On a
 server nobody has used today there are no `…_today` lines at all, and that
@@ -124,10 +127,11 @@ absence is the honest answer.
 ## The one to alert on
 
 If you set up a single alert, make it
-`mwe_dream_last_run_timestamp_seconds{kind="full"}`. A nightly cycle that quietly
-stops running is the failure that shows up nowhere else — the server keeps
-answering, the memory keeps growing, and nothing tidies it. Everything else on
-this page you will notice eventually; that one you will not.
+`mwe_dream_last_run_timestamp_seconds{kind="full"}` — **Full REM**, the nightly
+reorganisation. It quietly stopping is the failure that shows up nowhere else:
+the server keeps answering, the memory keeps growing, and nothing reorganises
+it. Everything else on this page you will notice eventually; that one you will
+not.
 
 ## Logs a machine can read
 

@@ -44,10 +44,12 @@ reachable. When the database is not, the answer is `503` with
 `{"status":"degraded","detail":"database unreachable"}`, which is the status
 code a watchdog restarts a service on.
 
-It answers those two things and nothing else, on purpose. It is the one address
-here that asks for no sign-in, so it names no version, no file and no model
-slot — anything that describes your deployment stays behind the admin login,
-on this page.
+It answers those two things and nothing else, on purpose. It asks for no
+credential, so anybody who can reach the server reads it, and that is why it
+names no version, no file and no model slot. What *does* describe your
+deployment is gated: this page, behind the admin login, and the `/metrics`
+scrape, behind an admin token — see [Watching it from
+outside](observability.md).
 
 Nothing about the answer is cached, so it is always about the server as it is
 now, and the check itself is one small database query: polling it every few

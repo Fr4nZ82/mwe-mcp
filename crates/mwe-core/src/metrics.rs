@@ -26,9 +26,9 @@
 //! - The dream journal keeps its newest
 //!   [`MAX_HISTORY`](crate::dream_journal::MAX_HISTORY) runs and no
 //!   longer, so its outcomes are gauges over that window, and the
-//!   question an operator actually alerts on — *did the night pass run,
-//!   and did it work* — is answered by the timestamp of the last run of
-//!   each kind.
+//!   question an operator actually alerts on — *did Full REM run last
+//!   night, and did it work* — is answered by the timestamp of the last
+//!   run of each kind.
 //!
 //! # What is deliberately not here
 //!
@@ -198,17 +198,17 @@ pub struct Reading<'a> {
     /// The server always has one: the budget guard is installed beside
     /// the usage ledger before the first backend is built, so every
     /// command that opens the database has both. `None` is the library
-    /// caller who installed neither, and drops the spend family rather
+    /// caller who installed neither, and drops the spend families rather
     /// than reporting a budget nobody set as zero.
     pub spend: Option<&'a BudgetState>,
 }
 
 /// Read one scrape.
 ///
-/// Four queries and one `stat`, none of them touching a model or the
-/// network. Ordered as the exposition reads: what the process is, what
-/// came in, what the models cost, how fast recall answered, and what the
-/// night pass did.
+/// Four queries and a look at the database on disk, none of them
+/// touching a model or the network. Ordered as the exposition reads:
+/// what the process is, what came in, what the models cost, how fast
+/// recall answered, and what the Dream console recorded.
 ///
 /// # Errors
 ///
@@ -240,7 +240,7 @@ pub async fn collect(pool: &SqlitePool, reading: Reading<'_>) -> crate::Result<V
     out.extend(models_today(pool, &today).await?);
     out.extend(spend(reading.spend));
     out.extend(recall_latency(pool).await?);
-    out.extend(night_pass(pool).await?);
+    out.extend(dream_history(pool).await?);
     Ok(out)
 }
 
@@ -248,8 +248,8 @@ pub async fn collect(pool: &SqlitePool, reading: Reading<'_>) -> crate::Result<V
 /// 0.0.4.
 ///
 /// Empty families are skipped; the rest are written in the order given,
-/// each with its `# HELP` and `# TYPE` header, and the document ends
-/// with a newline.
+/// each with its `# HELP` and `# TYPE` header, and every line — headers
+/// and samples alike — is newline-terminated.
 #[must_use]
 pub fn render(families: &[Family]) -> String {
     let mut out = String::new();
@@ -268,7 +268,7 @@ pub fn render(families: &[Family]) -> String {
                 }
                 out.push('}');
             }
-            let _ = writeln!(out, " {}", value(sample.value));
+            let _ = writeln!(out, " {}", sample_value(sample.value));
         }
     }
     out
@@ -360,7 +360,8 @@ async fn models_today(pool: &SqlitePool, today: &str) -> crate::Result<Vec<Famil
                 COALESCE(SUM(completion_tokens), 0)           AS completion_tokens
          FROM llm_usage
          WHERE ts >= ?1
-         GROUP BY slot, backend, model",
+         GROUP BY slot, backend, model
+         ORDER BY slot, backend, model",
     )
     .bind(today)
     .fetch_all(pool)
@@ -528,26 +529,36 @@ async fn recall_latency(pool: &SqlitePool) -> crate::Result<Vec<Family>> {
     ])
 }
 
-/// What the night pass did, from the dream journal.
+/// What the Dream console recorded, from the dream journal.
+///
+/// Three kinds, and only one of them is nightly — the distinction the
+/// console draws with its own buttons: `light` is the frequent cycle
+/// that places waiting captures, `compile` is the page rewrite on its
+/// own, and `full` is Full REM, the nightly reorganisation on the strong
+/// models. Reading them as one thing is exactly the confusion the names
+/// exist to prevent.
 ///
 /// The journal keeps its newest
 /// [`MAX_HISTORY`](crate::dream_journal::MAX_HISTORY) runs, so the
 /// outcome counts are gauges over that window. The timestamp of the last
-/// run of each kind is the one an operator alerts on: a nightly cycle
-/// that has not finished for two days is the failure that shows up
-/// nowhere else.
-async fn night_pass(pool: &SqlitePool) -> crate::Result<Vec<Family>> {
+/// run of each kind is the one an operator alerts on: a Full REM that
+/// has not finished for two days is the failure that shows up nowhere
+/// else.
+async fn dream_history(pool: &SqlitePool) -> crate::Result<Vec<Family>> {
     let rows = sqlx::query(
         "SELECT kind, ok, COUNT(*) AS runs, MAX(finished_at) AS last_finished
-         FROM dream_runs GROUP BY kind, ok",
+         FROM dream_runs GROUP BY kind, ok ORDER BY kind, ok",
     )
     .fetch_all(pool)
     .await
-    .map_err(|e| crate::Error::Other(format!("metrics night pass: {e}")))?;
+    .map_err(|e| crate::Error::Other(format!("metrics dream history: {e}")))?;
 
     let mut runs = Vec::new();
     // Newest finish per kind, whatever its outcome, and the outcome that
-    // came with it: the pair answers "did it run, and did it work".
+    // came with it: the pair answers "did this kind run, and did it
+    // work" — asked of each kind separately, because they run on
+    // different cadences and a healthy `light` says nothing about
+    // `full`.
     let mut latest: Vec<(String, String, bool)> = Vec::new();
     for row in rows {
         let kind: String = row.get("kind");
@@ -593,8 +604,8 @@ async fn night_pass(pool: &SqlitePool) -> crate::Result<Vec<Family>> {
         Family::new(
             "mwe_dream_last_run_timestamp_seconds",
             Kind::Gauge,
-            "Unix time the most recent run of each kind finished. The metric to alert on: \
-             a nightly cycle that stops running fails silently otherwise.",
+            "Unix time the most recent run of each kind finished. Alert on kind=\"full\", \
+             Full REM: the nightly reorganisation stopping fails silently otherwise.",
             last_at,
         ),
         Family::new(
@@ -657,8 +668,12 @@ fn add(into: &mut Vec<(String, f64)>, device: &str, n: f64) {
     }
 }
 
-/// Turn per-device totals into samples, ordered by device so a scrape
-/// diffed against the previous one has its lines in the same places.
+/// Turn per-device totals into samples, ordered by device.
+///
+/// Every family in this module comes out in a fixed order — by `ORDER
+/// BY` where the rows are used as they arrive, here by sorting after the
+/// fold. A scrape diffed against the previous one should differ in its
+/// numbers, not in where its lines sit.
 fn by_device(mut totals: Vec<(String, f64)>) -> Vec<Sample> {
     totals.sort_by(|a, b| a.0.cmp(&b.0));
     totals
@@ -697,7 +712,7 @@ fn percentile(sorted: &[i64], q: f64) -> f64 {
 /// the spelling is translated here rather than trusted not to arise: a
 /// price list an operator typed is the one number on this page that
 /// arrives from outside.
-fn value(v: f64) -> String {
+fn sample_value(v: f64) -> String {
     if v.is_nan() {
         "NaN".to_owned()
     } else if v.is_infinite() {

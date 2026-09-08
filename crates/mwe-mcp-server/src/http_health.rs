@@ -17,8 +17,9 @@
 //! advisories apply; a slot name, a path or a count describes the
 //! deployment to somebody who has not signed in. So the body carries a
 //! fixed vocabulary and nothing that varies with this installation. The
-//! operator's own answers live behind the admin login — the Health
-//! console at `/dashboard/admin/health` for a person, `/metrics` for a
+//! operator's own answers are gated instead: the Health console at
+//! `/dashboard/admin/health` behind the admin login, for a person, and
+//! [`/metrics`](crate::http_metrics) behind an admin bearer token, for a
 //! scraper.
 //!
 //! Cheap and cacheless by design: one `SELECT 1`, no cached verdict, and

@@ -394,9 +394,9 @@ Because it needs no credential, this is the address to give a reverse proxy's
 health check, a container orchestrator's liveness probe, or a plain cron
 `curl`. It names nothing about your deployment — no version, no path, no model
 slot — precisely so it can stay open. What *does* describe your server is
-behind the admin login: the [Health](docs/operator/health.md) page, and the
-`/metrics` scrape described in [Watching it from
-outside](docs/operator/observability.md).
+gated: the [Health](docs/operator/health.md) page behind the admin login, and
+the `/metrics` scrape behind an admin token — [Watching it from
+outside](docs/operator/observability.md) has both.
 
 ---
 

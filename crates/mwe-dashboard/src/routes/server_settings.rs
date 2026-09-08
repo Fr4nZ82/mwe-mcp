@@ -880,16 +880,38 @@ mod tests {
 
         let l = parse_logging(&form(&[
             ("level", "debug"),
+            ("format", "json"),
             ("file_rotation", "disabled"),
             ("file_path", "/var/log/mwe.log"),
         ]))
         .unwrap();
         assert!(matches!(l.level, LogLevel::Debug));
+        assert!(matches!(l.format, LogFormat::Json));
         assert!(matches!(l.file_rotation, LogFileRotation::Disabled));
         assert_eq!(l.file_path.as_deref(), Some(Path::new("/var/log/mwe.log")));
 
         assert!(parse_logging(&form(&[("level", "chatty")])).is_err());
+        assert!(parse_logging(&form(&[("format", "jsonl")])).is_err());
         assert!(parse_logging(&form(&[("file_rotation", "weekly")])).is_err());
+    }
+
+    /// The saved value is the one the form comes back showing. A select
+    /// that always reopened on `text` would tell the operator their save
+    /// had not taken.
+    #[test]
+    fn the_logging_form_offers_both_formats_and_marks_the_saved_one() {
+        let cfg = LoggingConfig {
+            format: LogFormat::Json,
+            ..LoggingConfig::default()
+        };
+        let out = logging_section(&cfg).into_string();
+
+        assert!(out.contains(r#"<option value="text""#), "{out}");
+        assert!(out.contains(r#"<option value="json" selected"#), "{out}");
+        assert!(
+            !out.contains(r#"<option value="text" selected"#),
+            "only the saved shape is selected: {out}"
+        );
     }
 
     #[test]
