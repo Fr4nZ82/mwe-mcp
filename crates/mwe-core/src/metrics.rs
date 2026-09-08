@@ -98,7 +98,7 @@ pub const FAMILIES: &[&str] = &[
 /// Prometheus type of a metric family. The two shapes this exposition
 /// uses; a histogram or a summary would need bucket bookkeeping the
 /// engine does not keep.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy)]
 pub enum Kind {
     /// A value that goes up and down freely.
     Gauge,
@@ -119,7 +119,7 @@ impl Kind {
 }
 
 /// One measurement: its labels and its value.
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug)]
 pub struct Sample {
     /// Label pairs, written in the order given.
     pub labels: Vec<(String, String)>,
@@ -154,7 +154,7 @@ impl Sample {
 ///
 /// A family with no samples is dropped by [`render`]: two `# HELP` lines
 /// and nothing under them tell a reader less than their absence does.
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug)]
 pub struct Family {
     /// Metric name, `mwe_`-prefixed.
     pub name: &'static str,
@@ -185,7 +185,7 @@ impl Family {
 }
 
 /// Everything [`collect`] needs that is not in the database.
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug)]
 pub struct Reading<'a> {
     /// The engine database, for its size on disk.
     pub db_path: &'a Path,
@@ -268,7 +268,7 @@ pub fn render(families: &[Family]) -> String {
                 }
                 out.push('}');
             }
-            let _ = writeln!(out, " {}", sample.value);
+            let _ = writeln!(out, " {}", value(sample.value));
         }
     }
     out
@@ -689,6 +689,24 @@ fn percentile(sorted: &[i64], q: f64) -> f64 {
     }
 }
 
+/// A sample's value as the exposition spells it.
+///
+/// Prometheus writes the three non-finite floats its own way, and a
+/// scraper that meets Rust's spelling of one fails the parse of the
+/// **whole document** — every other metric on this page goes with it. So
+/// the spelling is translated here rather than trusted not to arise: a
+/// price list an operator typed is the one number on this page that
+/// arrives from outside.
+fn value(v: f64) -> String {
+    if v.is_nan() {
+        "NaN".to_owned()
+    } else if v.is_infinite() {
+        if v.is_sign_positive() { "+Inf" } else { "-Inf" }.to_owned()
+    } else {
+        v.to_string()
+    }
+}
+
 /// Escape a `# HELP` line: a backslash and a newline are the two
 /// characters that would end or continue the line somewhere else.
 fn escape_help(help: &str) -> String {
@@ -953,6 +971,28 @@ mod tests {
             "quote, backslash and newline are all escaped: {out}"
         );
         assert_eq!(out.lines().count(), 3, "the value stays on one line: {out}");
+    }
+
+    /// A budget an operator typed can be a number Rust prints as `inf`,
+    /// and Prometheus fails the parse of the whole document on one line
+    /// it cannot read — taking every other metric with it.
+    #[test]
+    fn a_non_finite_value_is_spelled_the_way_prometheus_reads_it() {
+        let out = render(&[Family::new(
+            "mwe_thing",
+            Kind::Gauge,
+            "A thing.",
+            vec![
+                Sample::bare(f64::INFINITY),
+                Sample::bare(f64::NEG_INFINITY),
+                Sample::bare(f64::NAN),
+            ],
+        )]);
+
+        assert!(out.contains("mwe_thing +Inf"), "{out}");
+        assert!(out.contains("mwe_thing -Inf"), "{out}");
+        assert!(out.contains("mwe_thing NaN"), "{out}");
+        assert!(!out.contains("inf\n"), "Rust's spelling escaped: {out}");
     }
 
     #[test]

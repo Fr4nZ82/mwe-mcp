@@ -36,6 +36,15 @@ way there.
 account on the machine can read. The memory on disk is cleartext, so a readable
 path bypasses everything this product enforces above it.
 
+**Know the two addresses a machine reads.** `/health` answers anybody who can
+reach the server, which is what makes it usable as a proxy or orchestrator
+health check; it is one line and names nothing about your deployment.
+`/metrics` is the opposite — it describes the deployment, so it takes an admin
+token and is never open. Both are described in [Watching it from
+outside](observability.md). If your proxy runs bot or browser-integrity
+filters, exempt them along with `/mcp`: they are spoken by programs, and such a
+filter refuses a non-browser client on sight.
+
 **Decide who may read what.** If administering the panel and owning the memory
 are not the same person, set `instance.admin_reveal_locked: true` — the admin
 then cannot switch the reveal lens on, and no page can undo it.

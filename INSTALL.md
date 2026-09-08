@@ -394,7 +394,9 @@ Because it needs no credential, this is the address to give a reverse proxy's
 health check, a container orchestrator's liveness probe, or a plain cron
 `curl`. It names nothing about your deployment — no version, no path, no model
 slot — precisely so it can stay open. What *does* describe your server is
-behind the admin login: the [Health](docs/operator/health.md) page.
+behind the admin login: the [Health](docs/operator/health.md) page, and the
+`/metrics` scrape described in [Watching it from
+outside](docs/operator/observability.md).
 
 ---
 
@@ -497,11 +499,12 @@ The defaults are already conservative; production exposure adds seven habits:
    authenticated tunnel (Cloudflare Tunnel, Tailscale, a VPN). Never forward
    bare HTTP across a network you don't own — every request carries a bearer
    token. If that fronting layer runs bot or browser-integrity filters, exempt
-   `/mcp` from them: it is an API path spoken only by programs, and those
-   filters reject non-browser clients on sight — a consumer then gets an
-   opaque `403` from the edge that looks like a revoked token but never
-   reaches mwe-mcp at all. `/dashboard` is the browser surface; leave its
-   filtering alone.
+   `/mcp`, `/health` and `/metrics` from them: they are API paths spoken only
+   by programs, and those filters reject non-browser clients on sight — a
+   consumer then gets an opaque `403` from the edge that looks like a revoked
+   token but never reaches mwe-mcp at all, and a health check gets one that
+   looks like the server being down. `/dashboard` is the browser surface;
+   leave its filtering alone.
 2. **Tell the server the address people reach it at.** Set
    `public_base_url` in `mwe-mcp.config.yaml` (or from Settings → *Public
    address of this server*) to the address your tunnel or proxy publishes,
