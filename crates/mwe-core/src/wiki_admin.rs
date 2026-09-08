@@ -1890,19 +1890,21 @@ pub async fn resolve_read_access(
         return Ok(ReadAccessOutcome::Global);
     }
     Ok(ReadAccessOutcome::Denied {
-        owner: owner_label(principal.as_ref()),
+        owner: principal.as_ref().map(owner_label),
     })
 }
 
 /// A wiki's scope principal as the audit text prints it: a bare user id
 /// (`alice`, never `user:alice`), or `group:<id>` for a wiki a group answers
-/// for. `None` on a **topic wiki** — one that stands for nobody — and a message
-/// built from it says that instead of naming somebody.
-fn owner_label(principal: Option<&Principal>) -> Option<String> {
-    principal.map(|p| match p {
+/// for.
+///
+/// A **topic wiki** has no principal at all, and both callers keep that as
+/// `None` so a message built from it says nobody instead of naming somebody.
+fn owner_label(principal: &Principal) -> String {
+    match principal {
         Principal::User(id) => id.clone(),
         Principal::Group(g) => format!("group:{g}"),
-    })
+    }
 }
 
 /// [`owner_label`] for a wiki, resolving its scope principal first.
@@ -1918,10 +1920,11 @@ pub fn wiki_owner_label(
     tree: &WikiTree,
     handle: &WikiHandle,
 ) -> Result<Option<String>, AdminError> {
-    let principal = tree
+    Ok(tree
         .resolve_scope_principal(handle.meta())
-        .map_err(AdminError::Wiki)?;
-    Ok(owner_label(principal.as_ref()))
+        .map_err(AdminError::Wiki)?
+        .as_ref()
+        .map(owner_label))
 }
 
 /// Request-shape validation for the `pages` of a push, run BEFORE any
