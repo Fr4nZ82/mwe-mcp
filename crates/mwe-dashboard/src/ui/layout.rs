@@ -291,14 +291,14 @@ fn shell(
                 // SVG mark from the design pack — scales for every
                 // browser tab size without rasterisation. Embedded via
                 // rust-embed alongside the rest of the dashboard assets.
-                link rel="icon" type="image/svg+xml" href="/dashboard/static/mwe-mark.svg";
+                link rel="icon" type="image/svg+xml" href=(crate::assets::asset_url("mwe-mark.svg"));
                 // Every dashboard rule lives in `tailwind/app.css`
                 // under `@layer components`, with its colour
                 // references routed through the design tokens. Page
                 // bodies carry plain class names (`.flash`, `.kpi`,
                 // `.config-table`, …) and pick up the phosphor
                 // palette automatically.
-                link rel="stylesheet" href="/dashboard/static/tailwind.css";
+                link rel="stylesheet" href=(crate::assets::asset_url("tailwind.css"));
                 @if let Some(u) = user {
                     // Per-user namespace for the chat panel's localStorage —
                     // history must not leak across accounts on a shared
@@ -311,10 +311,10 @@ fn shell(
                             ))
                         )))
                     }
-                    script src="/dashboard/static/ui.js" defer {}
+                    script src=(crate::assets::asset_url("ui.js")) defer {}
                     // chat.js only ever drives the chat panel, which a frozen
                     // deployment does not render.
-                    @if !read_only { script src="/dashboard/static/chat.js" defer {} }
+                    @if !read_only { script src=(crate::assets::asset_url("chat.js")) defer {} }
                     // A frozen instance renders every write control and then
                     // makes them visibly inert. The exempt list is the
                     // server's own `ALLOWED_WRITES`, handed to the script
@@ -322,7 +322,7 @@ fn shell(
                     // exactly what the guard still accepts.
                     @if read_only {
                         script { (PreEscaped(crate::read_only::live_writes_js())) }
-                        script src="/dashboard/static/read-only.js" defer {}
+                        script src=(crate::assets::asset_url("read-only.js")) defer {}
                     }
                     // Keep the sliding session alive while the user is
                     // actively interacting (esp. the multi-step welcome
@@ -402,7 +402,7 @@ fn header(read_only: bool, demo_identities: &[String], user: Option<&SessionUser
         header class="site-header sticky top-0 z-30 flex flex-wrap items-center gap-3 px-4 md:px-6 py-3 border-b border-border bg-bg-2" {
             a href="/dashboard/"
                 class="brand flex items-center gap-3 no-underline shrink-0 whitespace-nowrap" {
-                img src="/dashboard/static/mwe-mark.svg" alt="" class="h-9 w-9 shrink-0";
+                img src=(crate::assets::asset_url("mwe-mark.svg")) alt="" class="h-9 w-9 shrink-0";
                 // Two-line vertical lockup: wordmark on top,
                 // "dashboard" tagline underneath. One logo block at every
                 // viewport, rather than a tagline span floating loose in

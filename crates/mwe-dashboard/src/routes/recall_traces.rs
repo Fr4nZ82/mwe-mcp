@@ -434,7 +434,7 @@ fn render_viewer_body(row: &TraceRow, trace: &RecallTrace, reveal: bool) -> Mark
         // hydrates it from the /data endpoint; without JS/WebGL the stage
         // stays empty and the textual trace below is the whole surface.
         div id="trace-stage" class="trace-stage" data-trace-id=(row.id) {}
-        script src="/dashboard/static/recall-trace.js" type="module" {}
+        script src=(crate::assets::asset_url("recall-trace.js")) type="module" {}
 
         (render_meta(row, trace, navigate))
         (render_served(trace))

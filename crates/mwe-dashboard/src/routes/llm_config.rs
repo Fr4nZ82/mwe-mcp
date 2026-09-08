@@ -655,7 +655,7 @@ fn render(
         // installed tags aren't in the models.dev catalog.
         datalist #models-ollama {}
         (embed_config_data(&catalog, &auth))
-        script src="/dashboard/static/llm-config.js" defer {}
+        script src=(crate::assets::asset_url("llm-config.js")) defer {}
     };
     layout::authenticated_page(chrome, "LLM config", session, &body)
 }

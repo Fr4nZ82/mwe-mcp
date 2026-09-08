@@ -384,7 +384,7 @@ fn render_issue_form(users: &[String], form: &IssueFormState) -> Markup {
 
             (components::submit("Issue token"))
         }
-        script src="/dashboard/static/tokens.js" defer {}
+        script src=(crate::assets::asset_url("tokens.js")) defer {}
     }
 }
 

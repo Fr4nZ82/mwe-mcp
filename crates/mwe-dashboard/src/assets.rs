@@ -26,6 +26,19 @@ use crate::state::DashboardState;
 #[folder = "assets/"]
 struct Assets;
 
+/// The URL a page uses for an embedded asset, stamped with the build's
+/// version: `/dashboard/static/<path>?v=<version>`.
+///
+/// The assets are served with a four-hour cache, and a browser that visited
+/// the dashboard before a release keeps the old stylesheet and scripts until
+/// that cache expires — the new release looks like the old one for an
+/// afternoon. The version in the query changes the URL on every release, so
+/// the browser fetches the new file at once; the route ignores the query.
+#[must_use]
+pub fn asset_url(path: &str) -> String {
+    format!("/dashboard/static/{path}?v={}", crate::VERSION)
+}
+
 /// Router fragment that adds the `/static/*path` handler to whatever
 /// it is merged into.
 pub fn router() -> Router<DashboardState> {

@@ -319,7 +319,7 @@ async fn journal_lists_and_viewer_replays_a_recorded_trace() {
     let html = body_string(response).await;
     for needle in [
         "trace-stage",
-        "recall-trace.js",
+        "recall-trace.js?v=",
         "Doors the walk could start from",
         "Step 1",
         "the guest's page holds the dietary constraints",
