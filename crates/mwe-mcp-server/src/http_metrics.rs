@@ -12,9 +12,10 @@
 //! `Authorization: Bearer <token>`, verified by the same
 //! [`mwe_core::jwt::verify`] that guards `/mcp` — the signature, the
 //! expiry and the revocation list — and then required to carry
-//! `is_admin`. The operator mints one with
-//! `mwe-mcp token-issue --is-admin`, and revokes it from the Tokens page
-//! like any other.
+//! `is_admin`. The operator mints one from the Tokens page — a **smart**
+//! token takes `is_admin` from its admin owner — or, with the server
+//! stopped so the workdir lock is free, with `mwe-mcp token-issue
+//! --is-admin`. Either is revoked from that same page, like any other.
 //!
 //! The dashboard's session cookie is not an alternative here, and not
 //! only because a scraper has no cookie jar: the cookie is scoped
