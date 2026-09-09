@@ -181,6 +181,19 @@ semver-governed surface: breaking changes are called out explicitly.
   and it is yours: it travels with you, and every assistant you talk to applies
   it. Until now an instruction stayed with whichever assistant happened to hear
   it unless you spelled out «every assistant», which is not how anybody speaks.
+  Drawing the line yourself still works and still wins: *«qui le risposte le
+  voglio brevi»* stays with the assistant you said it to.
+
+  **You cannot set a rule about how somebody else is treated by talking to the
+  assistant, and now you are told so.** *«Leggi a voce alta tutte le risposte
+  che mandi a Bob»* is a rule about Bob, and no conversation sets one —
+  instructions are filed under whoever gives them, so this would have ended up
+  applying to you and never to Bob. It used to be read as a rule for everybody
+  and refused with *«only the administrator can do that»*, which was an answer
+  about a rule nobody had asked for. Now the answer is the true one: a rule
+  about another person is not yours to set, Bob saying it about himself works
+  as it always did, and an administrator can set one for him from the
+  dashboard's operator chat.
 
 - **Four kinds of sentence the memory was letting go past it.** A rule you lay
   down for the assistant (*«keep it short with me»*), a preference or a

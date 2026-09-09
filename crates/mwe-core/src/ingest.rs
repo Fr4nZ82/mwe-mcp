@@ -16601,6 +16601,17 @@ mod tests {
     /// which no ordinary sentence does. Both are replaced by one reading:
     /// addressed to the assistant in front of you ⇒ this assistant only;
     /// addressed to nobody ⇒ every assistant serving that person.
+    ///
+    /// Three rules narrow that second half, and each exists because a wider
+    /// reading is silently wrong. An explicit limiter ("qui", "solo su questo
+    /// assistente") names who it binds without saying "you". A consumer's
+    /// third-person summary is the BRIDGE's grammar, not the speaker's — it is
+    /// no evidence about the addressee, so it takes the narrowest scope rather
+    /// than the widest, or any consumer that paraphrases would promote its
+    /// user's every directive into a rule for all assistants. And a directive
+    /// whose scope is a THIRD PERSON is refused in the open: nobody sets how
+    /// the assistant treats another person by talking to it, the admin
+    /// included — that is the operator chat's, and the refusal says so.
     #[test]
     fn bundled_ingest_prompt_reads_a_directive_and_its_scope_from_the_addressee() {
         for needle in [
@@ -16608,12 +16619,25 @@ mod tests {
             "THE SCOPE IS READ IN TWO STEPS, AND THE SECOND ONE IS THE ADDRESSEE",
             "the second person or the imperative",
             "an impersonal or general sentence about how the answers are to be",
-            // A consumer's own third-person summary does not launder a
-            // directive into a fact, and does not pin it to that consumer.
-            "A directive REPORTED IN THE THIRD PERSON belongs here too",
+            // A consumer's own third-person summary is the BRIDGE's grammar:
+            // it is no evidence about the addressee, and no evidence narrows
+            // the scope rather than widening it.
+            "A THIRD-PERSON REPORT IS NOT AN IMPERSONAL SENTENCE",
+            "take the NARROWEST scope",
+            // A sentence can name who it binds by drawing the line instead of
+            // by saying "you".
+            "AN EXPLICIT LIMITER IS AN ADDRESSEE",
             // The taste-that-is-a-directive, and the test that decides it.
             "is a `behaviour_rule`, and never a preference on their card",
-            "WHO HAS TO ACT for the sentence to come true",
+            // ONE question with ONE answer. Two questions both answered yes on
+            // "I prefer short answers", which is the shape they had to settle.
+            "WHO HAS TO MOVE for this sentence to become true, and is it YOU?",
+            "a wish is not promoted into one because you could grant it",
+            // A rule whose scope is a third person is nobody's to set in
+            // conversation, and the classifier refuses it in the open rather
+            // than guessing a home for it.
+            "A RULE ABOUT SOMEBODY ELSE IS NOT SET IN CONVERSATION",
+            "the same sentence from Bob about HIMSELF is an ordinary directive",
             // The `fact_type` list is where the wrong answer actually gets
             // picked, so it carries the pointer back to Part 7.
             "A taste whose object is the ASSISTANT'S OWN CONDUCT is not one of these",
@@ -16624,9 +16648,21 @@ mod tests {
             );
         }
         assert!(
-            BUNDLED_INGEST_PROMPT_MD.contains("TRUE WITH NO ASSISTANT IN THE ROOM"),
-            "the fence is gone — without it the tie-breaker promotes every ordinary \
+            BUNDLED_INGEST_PROMPT_MD.contains("NAME THE MOVER, and these stay facts"),
+            "the fence is gone — without it the question promotes every ordinary \
              preference into a standing directive"
+        );
+        assert!(
+            BUNDLED_INGEST_PROMPT_MD.contains("(BOB moves"),
+            "the counter-example whose mover is a THIRD PERSON is gone, and it is the \
+             one a two-question test used to get wrong"
+        );
+        // The naming rule has to justify itself with the criterion in force:
+        // "your name is Gandalf" is per-user because it says YOUR, not because
+        // it names no audience — the old reason contradicts the two steps.
+        assert!(
+            !BUNDLED_INGEST_PROMPT_MD.contains("with no audience, or for the speaker alone"),
+            "the naming rule still explains itself with the scope rule that was replaced"
         );
         // The rule it replaces has to be gone, not merely outvoted: while it
         // stands, an impersonal directive still needs the user to name every
