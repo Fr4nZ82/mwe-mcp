@@ -88,7 +88,16 @@ pub async fn index(
             section.kpi-grid {
                 div.kpi { strong { (c.wikis_with_facts) } " wikis with facts" }
                 div.kpi { strong { (c.active_facts) } " active facts" }
-                div.kpi { strong { (c.pending_proposals) } " pending proposals" }
+                div.kpi {
+                    // The one count on this row with a page behind it.
+                    // The number is the whole deployment's, as every count
+                    // here is; the page it opens shows the admin their own
+                    // rows and the unaddressed ones, and says so at the
+                    // top, so the two are never read as the same figure.
+                    a href="/dashboard/proposals?status=pending" {
+                        strong { (c.pending_proposals) } " pending proposals"
+                    }
+                }
                 div.kpi { strong { (c.recent_calls) } " MCP calls (24h)" }
                 div.kpi { strong { (c.users) } " users" }
                 div.kpi { strong { (c.groups) } " groups" }
@@ -151,6 +160,14 @@ pub async fn index(
                         }
                     }
                     li { a href="/dashboard/recall-traces" { "What was recalled for you" } }
+                    li {
+                        // The notes the memory left about its own filing.
+                        // Scoped to the reader like the two above it, so
+                        // it belongs in this card and not the admin one.
+                        a href="/dashboard/proposals" {
+                            "What the memory rearranged"
+                        }
+                    }
                 }
             }
 

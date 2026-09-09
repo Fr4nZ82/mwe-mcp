@@ -55,7 +55,7 @@ use mwe_core::embedder::Embedder;
 use mwe_core::fact_index::FactFilters;
 use mwe_core::llm::Tool;
 use mwe_core::promote;
-use mwe_core::proposals::{self, ListFilters, ProposalStatus};
+use mwe_core::proposals::{self, ListFilters, ProposalStatus, RecipientScope};
 use mwe_core::recall::{self, SenderContext};
 use mwe_core::types::{FactId, WikiId};
 use mwe_core::wiki::WikiTree;
@@ -948,11 +948,15 @@ const CONTEXT_SUMMARY_CHARS: usize = 120;
 /// which is per-fragment ACL'd and is **not** re-projected per reader, so
 /// listing every recipient's proposals would leak other users' content.
 /// The admin ACL-reveal switch — dashboard-wide, explicit, bannered —
-/// lifts the scope (`recipient = None`, every recipient), the same posture
-/// the facts table and wiki pages already take. `ctx.reveal` is only ever
-/// `true` for an admin (`crate::reveal::active` gates on the role).
-fn proposal_recipient_scope(ctx: &AgenticContext<'_>) -> Option<String> {
-    (!ctx.reveal).then(|| format!("user:{}", ctx.sender_ctx.sender_id))
+/// lifts the scope to every recipient, the same posture the facts table and
+/// wiki pages already take. `ctx.reveal` is only ever `true` for an admin
+/// (`crate::reveal::active` gates on the role).
+fn proposal_recipient_scope(ctx: &AgenticContext<'_>) -> RecipientScope {
+    if ctx.reveal {
+        RecipientScope::Everybody
+    } else {
+        RecipientScope::AddresseeOrNobody(format!("user:{}", ctx.sender_ctx.sender_id))
+    }
 }
 
 async fn dispatch_proposal_list(
@@ -1021,24 +1025,16 @@ async fn dispatch_proposal_get(
             detail: e.to_string(),
         }
     })?;
-    let rows = proposals::list(
-        ctx.pool,
-        &ListFilters {
-            status: None,
-            kind: None,
-            // Scoped to the operator's own proposals unless admin reveal is on.
-            recipient: proposal_recipient_scope(ctx),
-            top_k: Some(MAX_PROPOSAL_LIST_SIZE),
-        },
-    )
-    .await
-    .map_err(|e| AgenticToolError::InternalFailure {
-        tool: AgenticTool::StructureProposalGet.name(),
-        detail: e.to_string(),
-    })?;
-    let row = rows
-        .into_iter()
-        .find(|r| r.proposal_id == args.proposal_id)
+    // By id, not by position: a proposal older than a page of the newest
+    // ones is still a proposal the operator can name. Scoped to their own
+    // unless admin reveal is on, and the scope rides in the same query —
+    // a row outside it answers "not found", like a row that is not there.
+    let row = proposals::get(ctx.pool, &args.proposal_id, &proposal_recipient_scope(ctx))
+        .await
+        .map_err(|e| AgenticToolError::InternalFailure {
+            tool: AgenticTool::StructureProposalGet.name(),
+            detail: e.to_string(),
+        })?
         .ok_or_else(|| AgenticToolError::InvalidArguments {
             tool: AgenticTool::StructureProposalGet.name(),
             detail: format!("proposal `{}` not found", args.proposal_id),

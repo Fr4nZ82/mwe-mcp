@@ -13,6 +13,29 @@ semver-governed surface: breaking changes are called out explicitly.
 
 ### Added
 
+- **A page for the proposals, so you can read them without asking the chat.**
+  The memory keeps rearranging how your facts are filed — it makes a page for a
+  subject nobody named, links one page to another, merges two facts that said
+  the same thing, closes one that stopped being true, changes who may read one
+  — and it writes a note each time. Until now those notes could only be reached
+  by talking to the chat, which meant that on a **read-only instance**, where
+  the chat is not there at all, the top bar showed a count with nothing behind
+  it. There is now a **Proposals** page: the notes listed newest first, each
+  with the kind of change in a couple of words, one sentence saying what
+  happened, who it concerns, when, and its state — **Pending**, **Applied** or
+  **Expired**. Tabs narrow it to one state, and opening a row shows what the
+  note holds field by field, plus, when it is a question, the question word for
+  word with the answer that happens if nobody gives one. **No model is called
+  to render any of it**: every sentence is built from the stored note, which is
+  what lets the page work on an instance that must never spend a call. Nothing
+  on the page changes anything — a row that is still waiting carries a link
+  that opens the chat on it, and that link is absent on a frozen instance,
+  where nothing can be answered. **You see the proposals about your own facts
+  and about what you said**, and nobody else's, because a note carries the
+  material the change was about; the admin also sees the ones addressed to
+  nobody in particular, and Admin reveal shows every recipient's. Reachable
+  from the top bar, from your home page, from the count on the admin's home,
+  and with its own page in the guide behind the **?** beside its title.
 - **A search box, in the top bar, for the pages a word appears on.** There was
   no way to ask *where does this word appear* — you could read a page you had
   found some other way, or filter the facts table by who and when, but not by a

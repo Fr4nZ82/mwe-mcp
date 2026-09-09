@@ -121,6 +121,7 @@ async fn a_reader_is_never_pointed_at_a_page_that_refuses_them() {
         "/skills",
         "/bridges",
         "/recall-traces",
+        "/proposals",
         "/search",
         "/settings/me",
         "/settings/2fa",

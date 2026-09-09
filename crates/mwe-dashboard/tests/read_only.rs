@@ -81,7 +81,7 @@ async fn setup_admin(app: &Router) -> String {
 
 /// A frozen router sharing an already-seeded workdir, so the tests below
 /// have an admin to sign in as without going through `/setup` twice.
-async fn frozen_app_with_admin() -> (Router, String, tempfile::TempDir) {
+async fn frozen_app_with_admin() -> (Router, String, sqlx::SqlitePool, tempfile::TempDir) {
     let dir = tempfile::tempdir().expect("tempdir");
     let pool = db::open_or_init(dir.path()).await.expect("open db");
     let secret = TokenSecret::new(vec![0xEFu8; 32]).expect("secret");
@@ -107,7 +107,8 @@ async fn frozen_app_with_admin() -> (Router, String, tempfile::TempDir) {
         read_only: true,
         ..DashboardConfig::default()
     });
-    (router(frozen), cookie, dir)
+    let pool = frozen.pool.clone();
+    (router(frozen), cookie, pool, dir)
 }
 
 async fn post(app: &Router, uri: &str, cookie: &str, body: &'static str) -> StatusCode {
@@ -129,7 +130,7 @@ async fn post(app: &Router, uri: &str, cookie: &str, body: &'static str) -> Stat
 /// on both halves of the tree.
 #[tokio::test]
 async fn a_frozen_instance_refuses_memory_and_configuration_writes() {
-    let (app, cookie, _dir) = frozen_app_with_admin().await;
+    let (app, cookie, _pool, _dir) = frozen_app_with_admin().await;
 
     // Memory.
     for (uri, body) in [
@@ -205,7 +206,7 @@ async fn the_same_writes_are_not_forbidden_when_the_instance_is_open() {
 /// you are looking as is the point of showing it.
 #[tokio::test]
 async fn identity_still_works_on_a_frozen_instance() {
-    let (app, cookie, _dir) = frozen_app_with_admin().await;
+    let (app, cookie, _pool, _dir) = frozen_app_with_admin().await;
 
     // The session minted before the freeze still reads pages.
     let response = send(
@@ -266,7 +267,7 @@ async fn identity_still_works_on_a_frozen_instance() {
 /// in the frame whose only purpose is to capture memory on every turn.
 #[tokio::test]
 async fn a_frozen_instance_shows_every_console_and_arms_none_of_them() {
-    let (app, cookie, _dir) = frozen_app_with_admin().await;
+    let (app, cookie, _pool, _dir) = frozen_app_with_admin().await;
     let html = body_string(
         send(
             &app,
@@ -305,6 +306,7 @@ async fn a_frozen_instance_shows_every_console_and_arms_none_of_them() {
         r#"href="/dashboard/dream""#,
         r#"href="/dashboard/admin/backup""#,
         r#"href="/dashboard/recall-traces""#,
+        r#"href="/dashboard/proposals""#,
         r#"href="/dashboard/wiki""#,
     ] {
         assert!(
@@ -322,6 +324,7 @@ async fn a_frozen_instance_shows_every_console_and_arms_none_of_them() {
         "/admin/backup",
         "/admin/llm-config",
         "/welcome",
+        "/proposals",
     ] {
         let response = send(
             &app,
@@ -398,4 +401,75 @@ async fn an_open_instance_keeps_its_consoles_and_its_chat_panel() {
     )
     .await;
     assert_eq!(response.status(), StatusCode::OK);
+}
+
+/// The proposals page is the one surface a frozen instance cannot do
+/// without.
+///
+/// Everywhere else, what the memory rearranged is read by asking the chat
+/// — and the chat panel is not rendered on a frozen deployment at all
+/// ([`mwe_dashboard`]'s layout drops it), so without these two pages a
+/// shown instance would carry a count in the top bar and nothing behind
+/// it. Both are pure reads and call no model, which is what lets them be
+/// there.
+///
+/// The counterpart is that they offer no way to answer: the door into the
+/// chat is not rendered, because everything behind it is refused.
+#[tokio::test]
+async fn a_frozen_instance_reads_its_proposals_and_offers_no_way_to_answer_them() {
+    let (app, cookie, pool, _dir) = frozen_app_with_admin().await;
+    let now = chrono::Utc::now();
+    for (id, status) in [("p-waiting", "pending"), ("p-done", "applied")] {
+        sqlx::query(
+            "INSERT INTO structure_proposals \
+             (proposal_id, kind, context, questions, proposed_at, timeout_at, status, \
+              recipient_id) \
+             VALUES (?, 'page_create', ?, '[]', ?, ?, ?, 'user:alice')",
+        )
+        .bind(id)
+        .bind(
+            serde_json::json!({
+                "slug": "the-kitchen",
+                "wiki_id": "alice",
+                "page_path": "cucina.md",
+                "title": "The kitchen",
+                "description": "What happens in the kitchen",
+                "fact_count": 5,
+                "minted_at": now.to_rfc3339(),
+            })
+            .to_string(),
+        )
+        .bind(now.to_rfc3339())
+        .bind((now + chrono::Duration::hours(24)).to_rfc3339())
+        .bind(status)
+        .execute(&pool)
+        .await
+        .unwrap();
+    }
+
+    for uri in ["/proposals", "/proposals/p-waiting", "/proposals/p-done"] {
+        let response = send(
+            &app,
+            Request::builder()
+                .uri(uri)
+                .header(header::COOKIE, cookie.clone())
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await;
+        assert_eq!(
+            response.status(),
+            StatusCode::OK,
+            "GET {uri} must read on a frozen instance"
+        );
+        let html = body_string(response).await;
+        assert!(
+            html.contains("gathered 5 facts onto a page nobody named"),
+            "{uri} must say what happened, with no model to say it: {html}"
+        );
+        assert!(
+            !html.contains("open-in-chat"),
+            "{uri} must offer no way to answer on a frozen instance: {html}"
+        );
+    }
 }

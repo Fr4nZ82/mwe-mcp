@@ -34,7 +34,8 @@ card are worse than a question.
 request to forget a fact you can read, and a disagreement about one of those
 card values that the person who raised it was not entitled to settle. Both
 light the badge in the top bar of the dashboard, and clicking it opens the chat
-on exactly those items. See [The chat](the-chat.md).
+on exactly those items. They are also listed, with their deadlines, under
+[Proposals](proposals.md). See [The chat](the-chat.md).
 
 If your assistant is not delivering these, that is a question for whoever runs
 the server: the notices are queued for the consumer to collect, and a consumer

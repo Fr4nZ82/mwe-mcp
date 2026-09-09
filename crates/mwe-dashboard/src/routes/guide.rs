@@ -320,6 +320,7 @@ const SCREEN_PAGES: &[(&str, &str)] = &[
     ("Search", "user/search"),
     ("Facts", "user/your-facts"),
     ("Recall traces", "user/traces"),
+    ("Proposals", "user/proposals"),
     ("Skills", "operator/skills"),
     ("Bridges", "operator/bridges"),
     ("Users", "operator/users"),

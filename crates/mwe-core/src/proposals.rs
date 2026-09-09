@@ -251,6 +251,59 @@ impl FromStr for ProposalStatus {
 
 // ---------- List filters and rows ----------
 
+/// Whose rows a listing may return.
+///
+/// A proposal's `context` carries the material the question was raised
+/// about — a fact body in full for [`kind::SLOT_CONFLICT`], a 120-character
+/// preview of one for the validity and sharing receipts, the title and
+/// description of a page for [`kind::PAGE_CREATE`]. None of it is
+/// re-projected per reader, so the scope a caller picks here **is** the
+/// read ACL for that material, and there is no second check downstream.
+///
+/// Two narrowed shapes rather than one because callers disagree about the
+/// unaddressed rows (`recipient_id IS NULL`), and both of them are right.
+/// To something that offers an answer they are the bucket anybody may act
+/// on: nobody in particular was asked, so whoever arrives first answers.
+/// To something that lists what already happened they are the operator's:
+/// the nightly pass addresses none of its receipts, and they name pages
+/// across every wiki.
+///
+/// [`Self::Everybody`] is the `Default` because that is what a caller with
+/// no reader behind it wants — a sweep, a test. **A surface that serves a
+/// person names its scope**, and never lets it default.
+#[derive(Debug, Default, Clone)]
+pub enum RecipientScope {
+    /// Every recipient's rows, the deployment-wide view.
+    #[default]
+    Everybody,
+    /// Rows addressed to this principal — a `Principal` wire string like
+    /// `"user:frodo"` — **plus** the unaddressed ones.
+    AddresseeOrNobody(String),
+    /// Rows addressed to this principal, and nothing else.
+    Addressee(String),
+}
+
+impl RecipientScope {
+    /// The principal the scope narrows to, if it narrows at all.
+    const fn principal(&self) -> Option<&String> {
+        match self {
+            Self::Everybody => None,
+            Self::AddresseeOrNobody(p) | Self::Addressee(p) => Some(p),
+        }
+    }
+
+    /// The `WHERE` clause that expresses the scope, or `None` for
+    /// [`Self::Everybody`].
+    const fn sql(&self) -> Option<&'static str> {
+        match self {
+            Self::Everybody => None,
+            // 0032: addressed to me OR unaddressed (admin-fallback bucket).
+            Self::AddresseeOrNobody(_) => Some("(recipient_id = ? OR recipient_id IS NULL)"),
+            Self::Addressee(_) => Some("recipient_id = ?"),
+        }
+    }
+}
+
 /// Filters for [`list`]. Every field optional + AND-combined.
 #[derive(Debug, Default, Clone)]
 pub struct ListFilters {
@@ -259,12 +312,9 @@ pub struct ListFilters {
     pub status: Option<ProposalStatus>,
     /// Optional kind filter (e.g. `"wiki_promote"`).
     pub kind: Option<String>,
-    /// Optional recipient scope. When `Some(principal)` — a
-    /// `Principal` wire string like `"user:frodo"` — the listing is
-    /// narrowed to rows addressed to that principal **or** unaddressed
-    /// (`recipient_id IS NULL`, the admin-fallback bucket). `None` lifts
-    /// the scope (admin view: every recipient).
-    pub recipient: Option<String>,
+    /// Whose rows come back — the read ACL for the listing, see
+    /// [`RecipientScope`].
+    pub recipient: RecipientScope,
     /// Page size; defaults to [`DEFAULT_LIST_TOP_K`].
     pub top_k: Option<i64>,
 }
@@ -368,9 +418,8 @@ pub async fn list(pool: &SqlitePool, filters: &ListFilters) -> Result<Vec<Propos
     if filters.kind.is_some() {
         clauses.push("kind = ?");
     }
-    if filters.recipient.is_some() {
-        // 0032: addressed to me OR unaddressed (admin-fallback bucket).
-        clauses.push("(recipient_id = ? OR recipient_id IS NULL)");
+    if let Some(clause) = filters.recipient.sql() {
+        clauses.push(clause);
     }
     if !clauses.is_empty() {
         sql.push_str(" WHERE ");
@@ -385,13 +434,57 @@ pub async fn list(pool: &SqlitePool, filters: &ListFilters) -> Result<Vec<Propos
     if let Some(k) = &filters.kind {
         q = q.bind(k);
     }
-    if let Some(r) = &filters.recipient {
+    if let Some(r) = filters.recipient.principal() {
         q = q.bind(r);
     }
     let rows: Vec<ListTuple> = q.bind(limit).fetch_all(pool).await?;
 
-    let mut out = Vec::with_capacity(rows.len());
-    for (
+    rows.into_iter().map(decode).collect()
+}
+
+/// One proposal by id, within `scope`.
+///
+/// `None` covers both "there is no such row" and "the scope does not
+/// reach it", on purpose: a caller that could tell them apart would turn
+/// the id into a way of asking whether somebody else's proposal exists.
+///
+/// Separate from [`list`] because a row is looked up by name, not by
+/// position: finding it inside a page of the newest rows would lose it
+/// as soon as enough newer ones were written, and every link to a
+/// proposal outlives that window.
+///
+/// # Errors
+///
+/// - [`ProposalsError::Db`] for any SQL failure.
+/// - [`ProposalsError::Json`] when the stored `questions` / `context`
+///   blob is no longer valid JSON.
+pub async fn get(
+    pool: &SqlitePool,
+    proposal_id: &str,
+    scope: &RecipientScope,
+) -> Result<Option<ProposalRow>> {
+    let mut sql = String::from(
+        "SELECT proposal_id, kind, context, questions, proposed_at, timeout_at, status,
+                applied_at, applied_by, recipient_id
+           FROM structure_proposals
+          WHERE proposal_id = ?",
+    );
+    if let Some(clause) = scope.sql() {
+        sql.push_str(" AND ");
+        sql.push_str(clause);
+    }
+    let mut q = sqlx::query_as::<_, ListTuple>(&sql).bind(proposal_id);
+    if let Some(r) = scope.principal() {
+        q = q.bind(r);
+    }
+    q.fetch_optional(pool).await?.map(decode).transpose()
+}
+
+/// Turn one selected row into a [`ProposalRow`], decoding the two JSON
+/// columns. The one place the column order of the `SELECT`s above is
+/// tied to the struct.
+fn decode(row: ListTuple) -> Result<ProposalRow> {
+    let (
         proposal_id,
         kind,
         context,
@@ -402,24 +495,19 @@ pub async fn list(pool: &SqlitePool, filters: &ListFilters) -> Result<Vec<Propos
         applied_at,
         applied_by,
         recipient_id,
-    ) in rows
-    {
-        let context: Value = serde_json::from_str(&context)?;
-        let questions: Value = serde_json::from_str(&questions)?;
-        out.push(ProposalRow {
-            proposal_id,
-            kind,
-            context,
-            questions,
-            emitted_at: proposed_at,
-            expires_at: timeout_at,
-            status: parse_status_lenient(&status),
-            applied_at,
-            applied_by,
-            recipient_id,
-        });
-    }
-    Ok(out)
+    ) = row;
+    Ok(ProposalRow {
+        proposal_id,
+        kind,
+        context: serde_json::from_str(&context)?,
+        questions: serde_json::from_str(&questions)?,
+        emitted_at: proposed_at,
+        expires_at: timeout_at,
+        status: parse_status_lenient(&status),
+        applied_at,
+        applied_by,
+        recipient_id,
+    })
 }
 
 fn parse_status_lenient(s: &str) -> ProposalStatus {
@@ -1291,12 +1379,13 @@ pub async fn emit_proposal(pool: &SqlitePool, params: EmitParams) -> Result<Stri
 /// Relative dashboard path a consumer agent surfaces as a clickable link so the
 /// originating user can review or modify a proposed change to the structure.
 ///
-/// Points at the real per-proposal **open-in-chat** primer
+/// Points at the per-proposal **open-in-chat** primer
 /// (`GET /dashboard/proposals/:id/open-in-chat`): it lands the user inside the
 /// dashboard's agentic chat with the proposal already summarised, where they
-/// can ask to modify it. (There is deliberately no per-proposal detail page
-/// and no tray: reading a proposal and acting on it are the same
-/// conversation, which is what this primer opens.) Relative on purpose: mwe-mcp has
+/// can ask to modify it. Acting on a proposal is a conversation, so a link
+/// offered to somebody who can still answer opens one — the dashboard's own
+/// per-proposal page (`GET /dashboard/proposals/:id`) reads the row and
+/// nothing else. Relative on purpose: mwe-mcp has
 /// no notion of a public base URL, so the consumer prepends whatever base it
 /// knows the operator serves the dashboard from.
 #[must_use]
@@ -1967,6 +2056,77 @@ mod tests {
         seed(&pool, "p-3", kind::DEDUP_MERGE, "expired", 86_400).await;
         let rows = list(&pool, &ListFilters::default()).await.unwrap();
         assert_eq!(rows.len(), 3);
+    }
+
+    /// The two narrowed scopes differ on exactly one row: the one nobody
+    /// was addressed with. [`RecipientScope::AddresseeOrNobody`] hands it
+    /// over (it is the bucket anybody may answer),
+    /// [`RecipientScope::Addressee`] does not (it is a receipt of what the
+    /// engine did, and it describes pages its reader may not be able to
+    /// open). Somebody else's row is out of both.
+    #[tokio::test]
+    async fn the_unaddressed_bucket_is_what_the_two_narrow_scopes_disagree_on() {
+        let (_workdir, pool) = fresh_pool().await;
+        seed_addressed(&pool, "p-mine", Some("user:frodo")).await;
+        seed_addressed(&pool, "p-nobody", None).await;
+        seed_addressed(&pool, "p-theirs", Some("user:bilbo")).await;
+
+        let ids = |rows: Vec<ProposalRow>| {
+            let mut out: Vec<String> = rows.into_iter().map(|r| r.proposal_id).collect();
+            out.sort();
+            out
+        };
+
+        let with_bucket = list(
+            &pool,
+            &ListFilters {
+                recipient: RecipientScope::AddresseeOrNobody("user:frodo".to_owned()),
+                ..Default::default()
+            },
+        )
+        .await
+        .unwrap();
+        assert_eq!(ids(with_bucket), ["p-mine", "p-nobody"]);
+
+        let without_bucket = list(
+            &pool,
+            &ListFilters {
+                recipient: RecipientScope::Addressee("user:frodo".to_owned()),
+                ..Default::default()
+            },
+        )
+        .await
+        .unwrap();
+        assert_eq!(ids(without_bucket), ["p-mine"]);
+
+        let everybody = list(
+            &pool,
+            &ListFilters {
+                recipient: RecipientScope::Everybody,
+                ..Default::default()
+            },
+        )
+        .await
+        .unwrap();
+        assert_eq!(ids(everybody), ["p-mine", "p-nobody", "p-theirs"]);
+    }
+
+    /// One `pending` row with an explicit addressee.
+    async fn seed_addressed(pool: &SqlitePool, proposal_id: &str, recipient: Option<&str>) {
+        let now = chrono::Utc::now();
+        sqlx::query(
+            "INSERT INTO structure_proposals (proposal_id, kind, context, questions, \
+             proposed_at, timeout_at, status, recipient_id) \
+             VALUES (?, ?, '{}', '[]', ?, ?, 'pending', ?)",
+        )
+        .bind(proposal_id)
+        .bind(kind::SLOT_CONFLICT)
+        .bind(now.to_rfc3339())
+        .bind((now + chrono::Duration::hours(24)).to_rfc3339())
+        .bind(recipient)
+        .execute(pool)
+        .await
+        .unwrap();
     }
 
     // ---- apply_proposal dispatch ----

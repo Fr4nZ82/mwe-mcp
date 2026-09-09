@@ -218,11 +218,13 @@ async fn wiki_list_renders_admin_identity_wiki_post_setup() {
     // right-side panel is on every authenticated page, which makes a
     // dedicated nav entry redundant.
     assert!(html.contains("href=\"/dashboard/wiki\""), "{html}");
-    // There is no Proposals tab either: proposals are operated from the
-    // chat, which every authenticated page carries.
+    // A Proposals tab, for reading what the memory rearranged. It is in
+    // the bar rather than only behind the badge because the badge is
+    // JS-revealed and counts only what is still waiting, and because a
+    // frozen deployment renders no badge and no chat at all.
     assert!(
-        !html.contains("href=\"/dashboard/proposals\""),
-        "Proposals tab must not appear in the top nav: {html}"
+        html.contains("href=\"/dashboard/proposals\""),
+        "Proposals tab must appear in the top nav: {html}"
     );
     // No Chat *tab* in the top nav (a `nav_link` renders as `…>Chat</a>`).
     // We assert on the tab label, not on the bare `/dashboard/chat` path,
@@ -1295,15 +1297,17 @@ async fn home_page_lists_memory_section() {
     let html = body_string(response).await;
     assert!(html.contains("Browse wikis"), "{html}");
     assert!(html.contains("Browse facts"), "{html}");
-    // The proposals link points at the chat: there is no form page for
-    // them.
+    // Two doors, and they do different jobs: the chat is where a pending
+    // change is answered, the proposals page is where the whole record is
+    // read. Neither is a form — see
+    // `there_is_no_apply_endpoint_to_post_a_proposal_to`.
     assert!(
         html.contains("Review pending changes in the chat"),
         "{html}"
     );
     assert!(
-        !html.contains("href=\"/dashboard/proposals\""),
-        "Home must not link to a proposals form page: {html}"
+        html.contains("href=\"/dashboard/proposals\""),
+        "Home must offer the record of what the memory rearranged: {html}"
     );
     // "Open the chat" link removed: chat lives in the right-side panel.
     assert!(
@@ -1315,11 +1319,13 @@ async fn home_page_lists_memory_section() {
 
 // ---- Proposal routes ----
 //
-// There is no proposals FORM surface and no apply endpoint: a proposal is
-// applied by talking to the chat, which drives the same chassis through its
-// agentic tools. What the dashboard exposes is the door into that
-// conversation, GET `open-in-chat`, whose primer is covered with the rest of
-// the agentic surface further down (it needs a planted model).
+// The dashboard reads proposals on its own pages (GET `/proposals` and
+// GET `/proposals/:id`, covered in `proposals_page.rs`) and offers the door
+// into the conversation that answers one, GET `open-in-chat`, whose primer
+// is covered with the rest of the agentic surface further down (it needs a
+// planted model). What it does NOT have is a FORM surface: no endpoint takes
+// the chassis' answers by POST, because the questions it needs answered are
+// a conversation.
 
 /// Applying a proposal is a conversation: the chat asks the questions the
 /// chassis needs answered, and no form on the dashboard posts them. A URL

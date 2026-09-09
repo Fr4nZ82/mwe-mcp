@@ -27,7 +27,10 @@ example each:
 
 When something needs your answer, a badge lights up in the top bar. Clicking it
 opens the chat on exactly those items — it is the same door as *Review pending
-changes in the chat* on [your home page](your-home.md).
+changes in the chat* on [your home page](your-home.md). To read them first,
+with their deadlines and what happens if you say nothing, open
+[Proposals](proposals.md); **answer in chat** there opens this same door on one
+of them.
 
 Two kinds of thing arrive there. A **change somebody made to a fact of yours**
 comes with a summary of what happened. A **request to forget a fact you can

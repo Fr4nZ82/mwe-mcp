@@ -145,22 +145,35 @@ struct FactRefileSpec {
     moved: MovedFactRecord,
 }
 
-const VARIANT_PARAGRAPH_TO_FILE: &str = "paragraph_to_file";
+// The `variant` discriminator carried at the top of every `wiki_promote`
+// `context` and `spec`. Public because they are the vocabulary a reader of
+// those rows has to match on — the dashboard's proposals page names each
+// one in the reader's words — and a second copy of the strings elsewhere
+// would drift the first time one of them changed.
+
+/// A run of facts on one page becomes a page of its own in the same wiki.
+pub const VARIANT_PARAGRAPH_TO_FILE: &str = "paragraph_to_file";
 /// Pages that are one subject area, from ANY wiki, become a wiki of their
 /// own at the root.
-const VARIANT_PAGES_TO_NEW_WIKI: &str = "pages_to_new_wiki";
+pub const VARIANT_PAGES_TO_NEW_WIKI: &str = "pages_to_new_wiki";
 /// Its twin for a destination that already exists.
-const VARIANT_PAGES_INTO_WIKI: &str = "pages_into_wiki";
-/// Pages leaving their wiki for an unrelated one, page by page rather than as
-/// a subject area — the page was born in the wrong place, and this is the only
-/// gesture that says so about the page as a whole rather than one fact at a
-/// time.
-const VARIANT_PAGES_REHOME: &str = "pages_rehome";
-const VARIANT_PAGE_MERGE: &str = "page_merge";
-const VARIANT_FACT_REFILE: &str = "fact_refile";
-const VARIANT_VALIDITY_CLOSE: &str = "validity_close";
-const VARIANT_VALIDITY_EDIT: &str = "validity_edit";
-const VARIANT_ACL_CHANGE: &str = "acl_change";
+pub const VARIANT_PAGES_INTO_WIKI: &str = "pages_into_wiki";
+/// Pages leaving their wiki for an unrelated one, page by page.
+///
+/// Not as a subject area: the page was born in the wrong place, and this is
+/// the only gesture that says so about the page as a whole rather than one
+/// fact at a time.
+pub const VARIANT_PAGES_REHOME: &str = "pages_rehome";
+/// One page is folded into another and the emptied one is deleted.
+pub const VARIANT_PAGE_MERGE: &str = "page_merge";
+/// A single fact moves to another page, possibly in another wiki.
+pub const VARIANT_FACT_REFILE: &str = "fact_refile";
+/// A batch of facts stopped being true, and their validity was closed.
+pub const VARIANT_VALIDITY_CLOSE: &str = "validity_close";
+/// A batch of facts kept their meaning and had their dates corrected.
+pub const VARIANT_VALIDITY_EDIT: &str = "validity_edit";
+/// A batch of facts changed subject or audience — who may read them.
+pub const VARIANT_ACL_CHANGE: &str = "acl_change";
 
 /// `wiki_type` label stamped on a topic wiki born out of the grouping pass.
 ///

@@ -106,6 +106,8 @@ Then running it day to day:
 - [Comments](user/comments.md) — the way to change a page.
 - [The chat](user/the-chat.md) — asking the memory to do something.
 - [What was recalled for you](user/traces.md) — the record of every answer.
+- [Proposals](user/proposals.md) — what the memory rearranged about its own
+  filing, and the two things it stops to ask.
 - [Reminders and notices](user/reminders-and-notices.md) — what reaches you
   through your assistant.
 - [Your account](user/your-account.md) — password, two-factor, signing out

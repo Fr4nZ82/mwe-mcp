@@ -471,6 +471,15 @@ fn header(read_only: bool, demo_identities: &[String], user: Option<&SessionUser
                     // is transparency about the answer you were given, not
                     // operator telemetry.
                     (nav_link("/dashboard/recall-traces", "Traces"))
+                    // "Proposals" — what the memory changed about its own
+                    // shape, and the few things it stopped to ask. Same
+                    // reasoning as Traces, and the same gate: the page shows
+                    // each reader the rows addressed to them
+                    // (`crate::routes::proposals`), so it is theirs rather
+                    // than the operator's. On a frozen deployment it is the
+                    // only way in — the in-flight badge below is not
+                    // rendered there, and neither is the chat it opens.
+                    (nav_link("/dashboard/proposals", "Proposals"))
                     @if u.is_admin {
                         (nav_link("/dashboard/admin/health", "Health"))
                         // The operator's consoles, linked on every

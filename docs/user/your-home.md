@@ -2,10 +2,10 @@
 
 `/dashboard/home`
 
-The bar across the top is the whole dashboard: **Home · Wikis · Facts ·
-Traces · Settings**. On the right it says who you are signed in as, with **Log
-out everywhere** beside it. (An admin sees more entries in that bar — those are
-the operator's consoles.)
+The bar across the top is the whole dashboard: a search box, then **Home ·
+Wikis · Facts · Traces · Proposals · Guide · Settings**. On the right it says
+who you are signed in as, with **Log out everywhere** beside it. (An admin sees
+more entries in that bar — those are the operator's consoles.)
 
 Home itself is three short lists of links.
 
@@ -19,6 +19,9 @@ Home itself is three short lists of links.
   always apply.
 - **What was recalled for you** — the record of the last answers built out of
   your memory.
+- **What the memory rearranged** — the notes it left each time it changed how
+  your facts are filed, and anything it stopped to ask you. See
+  [Proposals](proposals.md).
 
 **All the memory**
 
@@ -36,4 +39,6 @@ A chat panel sits on the right of every page. It is how you ask the memory to
 do something — see [The chat](the-chat.md).
 
 When something is waiting on you, a badge lights up in the top bar. Clicking it
-opens the chat on exactly those items.
+opens the chat on exactly those items. The same items are listed, with
+everything the memory has already rearranged, under
+[Proposals](proposals.md).
