@@ -29,9 +29,16 @@ jobs:
   clippy:
     name: cargo clippy
     runs-on: ubuntu-latest
+    # Pinned, and raised on purpose rather than on Rust's schedule: this job
+    # lints at pedantic + nursery with `-D warnings`, so on `stable` a release
+    # that adds a lint turns it red on code nobody touched. 1.98 did exactly
+    # that. `RUSTUP_TOOLCHAIN` is what makes the pin bite — `rust-toolchain.toml`
+    # says `stable` and outranks the default the action sets.
+    env:
+      RUSTUP_TOOLCHAIN: "1.98.1"
     steps:
       - uses: actions/checkout@v5
-      - uses: dtolnay/rust-toolchain@stable
+      - uses: dtolnay/rust-toolchain@1.98.1
         with:
           components: clippy
       - uses: Swatinem/rust-cache@v2
