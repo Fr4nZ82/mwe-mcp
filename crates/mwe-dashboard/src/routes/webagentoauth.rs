@@ -477,6 +477,9 @@ async fn session_sender(state: &DashboardState, jar: &CookieJar) -> Option<Strin
 
 /// Validate the authorize request against the registered client. On failure
 /// returns a rendered error page (we never redirect an unvalidated client).
+// The error *is* the page, so its size is `axum::Response`'s and boxing it
+// would buy an allocation per refusal on a once-per-sign-in path.
+#[allow(clippy::result_large_err)]
 async fn validate_client(
     state: &DashboardState,
     p: &AuthorizeParams,
@@ -672,6 +675,9 @@ async fn authorize_post(
 /// Forge the dedicated smart wiki on first connection (markerless, smart,
 /// owned by `sender`), or reuse it on re-auth. Returns the bound wiki id, or a
 /// rendered error page.
+// The error *is* the page, so its size is `axum::Response`'s and boxing it
+// would buy an allocation per refusal on a once-per-sign-in path.
+#[allow(clippy::result_large_err)]
 async fn ensure_dedicated_wiki(
     state: &DashboardState,
     sender: &str,

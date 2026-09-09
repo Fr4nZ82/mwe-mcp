@@ -2032,7 +2032,13 @@ impl EmbeddingConfig {
     /// `bundled` arm when the `local-embedder` feature is absent: the
     /// backend is simply not in this binary.
     #[cfg(not(feature = "local-embedder"))]
-    #[allow(clippy::unused_async, clippy::unused_self)]
+    // `async` and `&self` are the shape of the other arm, which needs both:
+    // the two must stay interchangeable at the single call site.
+    #[allow(
+        clippy::unused_async,
+        clippy::unused_async_trait_impl,
+        clippy::unused_self
+    )]
     async fn build_bundled(&self) -> Result<std::sync::Arc<dyn crate::embedder::Embedder>> {
         Err(ConfigError::EmbeddingUnavailable {
             detail: "backend `bundled` requires a build with the `local-embedder` feature"

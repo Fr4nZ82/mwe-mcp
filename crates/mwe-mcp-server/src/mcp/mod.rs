@@ -95,6 +95,10 @@ impl ServerHandler for McpHandler {
         info
     }
 
+    // The trait declares this method `async` and every sibling implements it
+    // that way; hand-rolling an `impl Future` here would drop the shape the
+    // SDK asks for to save a state machine on a once-per-connection call.
+    #[allow(clippy::unused_async_trait_impl)]
     async fn list_tools(
         &self,
         _params: Option<PaginatedRequestParams>,

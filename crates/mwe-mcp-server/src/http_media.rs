@@ -69,6 +69,9 @@ struct UploadFields {
     description: Option<String>,
 }
 
+// The error *is* the response, so its size is `axum::Response`'s and boxing
+// it would buy an allocation per rejected upload.
+#[allow(clippy::result_large_err)]
 async fn collect_upload_fields(mut multipart: Multipart) -> Result<UploadFields, Response> {
     let mut out = UploadFields::default();
     loop {

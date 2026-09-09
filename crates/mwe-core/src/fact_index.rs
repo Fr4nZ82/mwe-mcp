@@ -273,13 +273,9 @@ pub fn decode_embedding(bytes: &[u8]) -> Result<Vec<f32>> {
     if !bytes.len().is_multiple_of(4) {
         return Err(FactIndexError::InvalidEmbeddingBlob(bytes.len()));
     }
-    let mut out = Vec::with_capacity(bytes.len() / 4);
-    let mut buf = [0u8; 4];
-    for chunk in bytes.chunks_exact(4) {
-        buf.copy_from_slice(chunk);
-        out.push(f32::from_le_bytes(buf));
-    }
-    Ok(out)
+    // The length check above leaves no remainder, so the tail is empty.
+    let (words, _tail) = bytes.as_chunks::<4>();
+    Ok(words.iter().copied().map(f32::from_le_bytes).collect())
 }
 
 // ---------- Helpers for principal JSON ----------
