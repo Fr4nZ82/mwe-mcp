@@ -201,9 +201,10 @@ fn resolve_identity(ctx: &RequestContext<RoleServer>) -> Result<IdentityProfile,
 /// do touch the database and are here deliberately, because what they
 /// write is telemetry about the reader rather than content:
 ///
-/// - `wiki_navigate` appends to the recall-trace journal, which is
-///   capped at the last ten runs and is the surface that makes the
-///   navigator demonstrable at all;
+/// - `wiki_navigate` appends to the recall-trace journal — bounded by
+///   age (`recall.trace_retention_days`, months of it) rather than by
+///   count — and that journal is the surface that makes the navigator
+///   demonstrable at all;
 /// - `events_poll` stamps `consumers.last_seen_at`, a heartbeat column.
 ///
 /// `dashboard_link` is **not** here even though it writes nothing: it

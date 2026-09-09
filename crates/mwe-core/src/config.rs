@@ -2732,7 +2732,7 @@ pub struct InstanceConfig {
     ///
     /// Two deliberate exceptions, because "changes memory" is the test
     /// and neither of these does: `wiki_navigate` still appends to the
-    /// capped recall-trace journal, and `events_poll` still stamps a
+    /// age-capped recall-trace journal, and `events_poll` still stamps a
     /// consumer's `last_seen_at`. Both are telemetry about the reader,
     /// not content.
     #[serde(default)]
@@ -2791,9 +2791,18 @@ pub struct InstanceConfig {
     /// disabled itself would be worse than one that stops the server:
     /// the operator would believe the demo works.
     ///
-    /// Sessions minted here are **never admin**, whatever the listed
-    /// user's row says. A passwordless door hands out the smallest thing
-    /// that makes the demonstration work.
+    /// A session minted here carries **that person's own role, admin
+    /// included**: the visitor is shown Bob, not a reduced stand-in for
+    /// him. What keeps the door safe is [`Self::read_only`] — on a
+    /// frozen instance nothing an admin can do changes anything — so
+    /// the role decides what may be *seen* and the freeze decides what
+    /// may be *changed*.
+    ///
+    /// The consequence to weigh before publishing one: every operator
+    /// console is then readable by whoever clicks a button, and some of
+    /// them print host paths, spend and prompt bodies. Two `GET`s hand
+    /// over whole subtrees ([`crate::gdpr`] export, wiki export) and are
+    /// gated on [`Self::admin_reveal_locked`] alone.
     #[serde(default)]
     pub demo_identities: Vec<String>,
 }

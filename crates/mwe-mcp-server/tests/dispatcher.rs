@@ -2367,7 +2367,7 @@ async fn the_same_write_is_not_refused_when_the_instance_is_not_frozen() {
 
 /// Reading and navigating are the whole point of a shown instance, so
 /// they answer normally — including `wiki_navigate`, which appends to
-/// the capped recall-trace journal and is on the allow-list anyway.
+/// the age-capped recall-trace journal and is on the allow-list anyway.
 #[tokio::test]
 async fn read_only_still_serves_reads() {
     let (state, identity, _dir) = read_only_fixture().await;

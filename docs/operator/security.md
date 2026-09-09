@@ -73,8 +73,21 @@ a switch a panel admin can flip is not a switch that constrains a panel admin:
   that would rewrite memory on their own do not start.
 - `instance.demo_identities: [alice, bob, carol]` puts a passwordless door on
   it, offering *Enter as…* for exactly those people. It **requires**
-  `read_only`, and the server refuses to start otherwise. Sessions minted that
-  way are never admin, whatever the listed person's account says.
+  `read_only`, and the server refuses to start otherwise. A session minted
+  that way carries that person's own role, **admin included** — the visitor is
+  shown that person, not a reduced stand-in. What makes the door safe is the
+  freeze, not a smaller session.
 
 Empty is the only value a normal installation ever has for the second one: with
 no identities listed, the passwordless routes are not mounted at all.
+
+⚠️ **List an admin and every operator console becomes readable by whoever
+clicks the button.** The freeze refuses changes, not reading: Backup, Spool,
+Health and Wikis print paths on this machine, LLM config prints the last four
+characters of each API key and the Ollama endpoint in full, Prompts prints the
+system prompts, the Dream journal prints a night's whole log, and Usage prints
+what the deployment spends. Two links hand over more than a page —
+**Export everything about this person** on a user and **Export subtree (.tar)**
+on a wiki — and the only switch that closes them, along with *Reveal*, is
+`instance.admin_reveal_locked: true`. Read those pages on the deployment you
+are about to show before you show it.

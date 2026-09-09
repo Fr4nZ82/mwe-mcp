@@ -517,7 +517,7 @@ async fn journal_hides_another_users_trace_until_admin_reveal() {
 /// recall actually ran for is exactly who should be able to replay it —
 /// the 3D route is the clearest explanation of the product anyone gets,
 /// and an admin-only page would have withheld it from every ordinary user
-/// (and from every demo visitor, whose session is never admin).
+/// (and from a demo visitor looking as one).
 ///
 /// The other half is what a role gate would have done for free and the route
 /// has to do instead: bob may open his own by id, and **not** carol's by
