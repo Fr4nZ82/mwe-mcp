@@ -232,7 +232,7 @@ fn render_form(
                 "the memory answers differently to each of them, and you can switch "
                 "at any time from the top of any page."
             }
-            (super::demo::buttons(&state.config.demo_identities, None, false))
+            (super::demo::buttons(&state.config.demo_identities, None, false, next))
             p class="muted" {
                 "Nothing here can be changed, by you or by anybody: the instance is read-only."
             }

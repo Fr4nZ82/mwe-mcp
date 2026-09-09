@@ -40,6 +40,7 @@ pub mod routes;
 pub mod state;
 pub mod twofa;
 pub mod ui;
+pub mod urlenc;
 
 pub use state::{
     BackendForError, DashboardConfig, DashboardState, LlmBackendOverrides, MemoryHandles,

@@ -540,7 +540,7 @@ async fn authorize_get(
     };
     let Some(sender) = session_sender(&state, &jar).await else {
         // Bounce through login, returning to this exact authorize URL after.
-        let next = pct_encode(&uri.to_string());
+        let next = crate::urlenc::query_value(&uri.to_string());
         return Redirect::to(&format!("/dashboard/login?next={next}")).into_response();
     };
     render_consent(&p, &client, &sender, None)
@@ -891,35 +891,13 @@ fn slugify(s: &str) -> String {
 /// echoed `state`. Values are percent-encoded; the separator adapts to whether
 /// the redirect URI already carries a query string.
 fn redirect_back(redirect_uri: &str, key: &str, value: &str, state: Option<&str>) -> Response {
-    let mut query = format!("{key}={}", pct_encode(value));
+    let mut query = format!("{key}={}", crate::urlenc::query_value(value));
     if let Some(s) = state {
         query.push_str("&state=");
-        query.push_str(&pct_encode(s));
+        query.push_str(&crate::urlenc::query_value(s));
     }
     let sep = if redirect_uri.contains('?') { '&' } else { '?' };
     Redirect::to(&format!("{redirect_uri}{sep}{query}")).into_response()
-}
-
-/// Minimal percent-encoder for query-string values (RFC 3986 unreserved set
-/// kept, everything else `%XX`). Dependency-free — the dashboard pulls in no URL
-/// crate, and the inputs here (a local path, an auth code, an opaque `state`)
-/// don't warrant one.
-fn pct_encode(s: &str) -> String {
-    const HEX: &[u8; 16] = b"0123456789ABCDEF";
-    let mut out = String::with_capacity(s.len());
-    for b in s.bytes() {
-        match b {
-            b'A'..=b'Z' | b'a'..=b'z' | b'0'..=b'9' | b'-' | b'_' | b'.' | b'~' => {
-                out.push(b as char);
-            },
-            _ => {
-                out.push('%');
-                out.push(HEX[(b >> 4) as usize] as char);
-                out.push(HEX[(b & 0x0f) as usize] as char);
-            },
-        }
-    }
-    out
 }
 
 #[cfg(test)]
@@ -1211,15 +1189,6 @@ mod tests {
         assert_eq!(connection_slug("  ", "Claude"), "claude");
         // Whatever connection_slug returns must parse as a WikiSlug.
         assert!(WikiSlug::parse(&connection_slug("My Bot 2!", "x")).is_ok());
-    }
-
-    #[test]
-    fn pct_encode_keeps_unreserved_escapes_rest() {
-        assert_eq!(pct_encode("abcXYZ-_.~123"), "abcXYZ-_.~123");
-        assert_eq!(
-            pct_encode("/dashboard/x?a=b&c"),
-            "%2Fdashboard%2Fx%3Fa%3Db%26c"
-        );
     }
 
     #[test]

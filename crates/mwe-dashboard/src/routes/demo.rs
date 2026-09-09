@@ -16,6 +16,15 @@
 //! sign-in screen would make the visitor navigate back each time and the
 //! demonstration would die of friction.
 //!
+//! The same argument reaches one step further back, to the visitor who
+//! has not arrived yet. A tour, a link in a README or a link in a post
+//! names a *page*, not the panel, and somebody following one has no
+//! session: the session layer bounces them to the door carrying the page
+//! in `?next=` ([`crate::auth::session`]), the buttons here carry it back
+//! ([`buttons`]), and they land where the link promised. Without both
+//! halves every deep link into the demonstration is a link to the panel
+//! home, which is the one page that explains nothing.
+//!
 //! # It exists only under the demo configuration
 //!
 //! Two config keys, both required
@@ -112,6 +121,15 @@ pub struct EnterForm {
     /// value that is not on it is refused, so the field carries a choice
     /// and not an authorisation.
     user_id: String,
+    /// Where to land, when the door already knows: the buttons on the
+    /// sign-in screen carry the `?next=` the session bounce put there,
+    /// because their own `Referer` is the sign-in screen and that is the
+    /// one destination [`destination`] must not honour.
+    ///
+    /// Reduced by [`safe_local`] like the `Referer`, so it carries a
+    /// page and not an authorisation either.
+    #[serde(default)]
+    next: Option<String>,
 }
 
 /// Human label for a configured identity: the id with its first
@@ -146,29 +164,38 @@ fn safe_local(raw: &str) -> Option<String> {
     (path.starts_with("/dashboard/") && !path.starts_with("/dashboard//")).then(|| path.to_owned())
 }
 
-/// The page a switch lands on: the one it was made from, or the panel.
+/// The page a switch lands on: the one that was asked for, the one it
+/// was made from, or the panel.
 ///
 /// Two questions that are **not** the same one, which is why they are
 /// two steps. [`safe_local`] answers *may we send the browser there at
 /// all* — a security reduction, and the reason a forged `Referer` cannot
 /// leave the site. This answers *is there anything to see when we do*,
 /// and the only path that fails it is [`SIGN_IN`].
-fn destination(referer: Option<&str>) -> String {
-    referer
-        .and_then(safe_local)
-        .filter(|path| path != SIGN_IN)
+///
+/// `next` wins over `referer` where both stand, and the two are asked in
+/// that order because they answer different situations: `next` is a page
+/// the visitor asked for and could not have, `referer` is the page they
+/// are on. Only the door sends the first, and it sends it precisely
+/// because its own `Referer` is the one value that is never the answer.
+fn destination(next: Option<&str>, referer: Option<&str>) -> String {
+    let usable = |raw: Option<&str>| raw.and_then(safe_local).filter(|path| path != SIGN_IN);
+    usable(next)
+        .or_else(|| usable(referer))
         .unwrap_or_else(|| FALLBACK.to_owned())
 }
 
 /// `POST /dashboard/demo/enter` — become one of the configured
 /// identities, no credentials involved.
 ///
-/// Lands back on the page the switch was made from, so comparing the
-/// same page as two people is one click and no navigation. The page is
-/// taken from `Referer`, which browsers send in full for a same-origin
-/// form post; when it is missing, not a local dashboard path, or the
-/// sign-in screen itself, the visitor goes to the panel rather than
-/// anywhere a header could name ([`destination`]).
+/// Lands on the page the visitor asked for, or the one the switch was
+/// made from, so comparing the same page as two people is one click and
+/// no navigation. The first comes from the form's `next` (the door's
+/// buttons carry the `?next=` the session bounce put there), the second
+/// from `Referer`, which browsers send in full for a same-origin form
+/// post; when neither is a local dashboard path other than the sign-in
+/// screen, the visitor goes to the panel rather than anywhere a header
+/// could name ([`destination`]).
 ///
 /// # Errors
 ///
@@ -207,7 +234,10 @@ pub async fn enter(
     // safe is the freeze, not a downgraded session.
     let is_admin = is_admin != 0;
     let cookie = issue_session_cookie(&state, wanted, is_admin).await?;
-    let landing = destination(headers.get(REFERER).and_then(|v| v.to_str().ok()));
+    let landing = destination(
+        form.next.as_deref(),
+        headers.get(REFERER).and_then(|v| v.to_str().ok()),
+    );
     tracing::info!(identity = wanted, is_admin, "demo entrance: session issued");
     Ok((jar.add(cookie), Redirect::to(&landing)).into_response())
 }
@@ -218,8 +248,20 @@ pub async fn enter(
 /// frame as the identity switcher. `current` suppresses the button for
 /// whoever is already signed in — offering "Enter as Bob" to Bob is a
 /// control that does nothing.
+///
+/// `next` is the page to land on, and only the sign-in screen has one:
+/// it passes on the `?next=` the session bounce gave it, because a
+/// button on the door posts with the door as its `Referer` and that is
+/// the one destination [`destination`] refuses. The switcher in the
+/// frame passes `None` and is answered by its `Referer`, which is the
+/// page it was used on — exactly what it wants.
 #[must_use]
-pub fn buttons(identities: &[String], current: Option<&str>, compact: bool) -> Markup {
+pub fn buttons(
+    identities: &[String],
+    current: Option<&str>,
+    compact: bool,
+    next: Option<&str>,
+) -> Markup {
     let (list_class, button_class) = if compact {
         (
             "demo-switch flex items-center gap-1",
@@ -256,6 +298,9 @@ pub fn buttons(identities: &[String], current: Option<&str>, compact: bool) -> M
                     };
                     form method="post" action="/dashboard/demo/enter" class="contents" {
                         input type="hidden" name="user_id" value=(id);
+                        @if let Some(target) = next {
+                            input type="hidden" name="next" value=(target);
+                        }
                         button type="submit" class=(button_class) { (label) }
                     }
                 }
@@ -307,15 +352,67 @@ mod tests {
     #[test]
     fn a_switch_returns_to_the_page_it_was_made_from() {
         assert_eq!(
-            destination(Some(
-                "https://demo.example/dashboard/wiki/bob/view/cucina.md"
-            )),
+            destination(
+                None,
+                Some("https://demo.example/dashboard/wiki/bob/view/cucina.md")
+            ),
             "/dashboard/wiki/bob/view/cucina.md"
         );
         assert_eq!(
-            destination(Some("/dashboard/facts?page=2")),
+            destination(None, Some("/dashboard/facts?page=2")),
             "/dashboard/facts"
         );
+    }
+
+    /// Following a link into the demo before signing in: the session
+    /// bounce puts the page in `?next=`, the door's buttons carry it
+    /// back, and the visitor lands on the page they asked for.
+    ///
+    /// The `Referer` on that post is the door itself, so this is the one
+    /// case where obeying it would be wrong — which is exactly why the
+    /// form field exists and why it is asked first.
+    #[test]
+    fn a_deep_link_survives_the_sign_in_bounce() {
+        assert_eq!(
+            destination(
+                Some("/dashboard/wiki/renovation/view/kitchen.md"),
+                Some(
+                    "http://127.0.0.1:8760/dashboard/login?next=/dashboard/wiki/renovation/view/kitchen.md"
+                ),
+            ),
+            "/dashboard/wiki/renovation/view/kitchen.md"
+        );
+        // With no field, that same post has only the door to go on, and
+        // the door is never an answer — so it lands on the panel. That
+        // is the gap the field fills.
+        assert_eq!(
+            destination(
+                None,
+                Some(
+                    "http://127.0.0.1:8760/dashboard/login?next=/dashboard/wiki/renovation/view/kitchen.md"
+                ),
+            ),
+            FALLBACK
+        );
+    }
+
+    /// `next` is reduced exactly like the `Referer`: it names a page,
+    /// never an authorisation and never another site. A value that
+    /// cannot be honoured falls through to the `Referer` rather than
+    /// taking the visitor nowhere.
+    #[test]
+    fn a_hostile_next_is_refused_and_the_referer_still_answers() {
+        assert_eq!(
+            destination(Some("https://evil.example/phish"), Some("/dashboard/facts")),
+            "/dashboard/facts"
+        );
+        assert_eq!(
+            destination(Some("//evil.example/dashboard/x"), None),
+            FALLBACK
+        );
+        // A `next` naming the door is no more usable than a `Referer`
+        // naming it.
+        assert_eq!(destination(Some(SIGN_IN), None), FALLBACK);
     }
 
     /// …and the one path that rule must not honour. The buttons on the
@@ -326,16 +423,19 @@ mod tests {
     #[test]
     fn entering_from_the_door_lands_in_the_panel_and_not_back_on_the_door() {
         assert_eq!(
-            destination(Some("http://127.0.0.1:8760/dashboard/login")),
+            destination(None, Some("http://127.0.0.1:8760/dashboard/login")),
             FALLBACK
         );
-        assert_eq!(destination(Some("/dashboard/login")), FALLBACK);
+        assert_eq!(destination(None, Some("/dashboard/login")), FALLBACK);
         assert_eq!(
-            destination(Some("/dashboard/login?next=/dashboard/facts")),
+            destination(None, Some("/dashboard/login?next=/dashboard/facts")),
             FALLBACK
         );
         // The pre-existing fallbacks are unchanged.
-        assert_eq!(destination(None), FALLBACK);
-        assert_eq!(destination(Some("https://evil.example/phish")), FALLBACK);
+        assert_eq!(destination(None, None), FALLBACK);
+        assert_eq!(
+            destination(None, Some("https://evil.example/phish")),
+            FALLBACK
+        );
     }
 }

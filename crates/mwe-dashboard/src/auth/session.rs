@@ -39,7 +39,9 @@
 //!    (`/dashboard/session/keepalive`, fired by the shell on user
 //!    interaction) counts as an interaction, so an active tab never
 //!    lapses even on an all-client-side form.
-//! 4. On any verify failure, redirects to `/dashboard/login`.
+//! 4. On any verify failure, redirects to `/dashboard/login`, carrying
+//!    the page that was asked for in `?next=` so signing in returns the
+//!    visitor to it ([`sign_in_redirect`]).
 //!
 //! ## Extractors
 //!
@@ -53,6 +55,7 @@ use std::time::Duration;
 use axum::body::Body;
 use axum::extract::{FromRequestParts, Request, State};
 use axum::http::request::Parts;
+use axum::http::{Method, Uri};
 use axum::middleware::Next;
 use axum::response::{IntoResponse, Redirect, Response};
 use axum_extra::extract::cookie::{Cookie, CookieJar, SameSite};
@@ -264,6 +267,37 @@ async fn verify_session(
     Ok(claims)
 }
 
+/// The sign-in page, carrying the page the visitor was trying to reach.
+///
+/// A bounce that forgets where it came from turns every deep link into a
+/// link to the panel: somebody who follows a link to one page signs in
+/// and arrives somewhere else, with nothing to say why. So the path
+/// rides along in `?next=`, which [`crate::routes::login`] and
+/// [`crate::routes::demo`] both honour after re-validating it — this
+/// side only carries it.
+///
+/// Two deliberate narrowings:
+///
+/// - **`GET` and `HEAD` only.** A form post that lost its session would
+///   otherwise send the browser to that path as a `GET` afterwards,
+///   which is a different request and usually a `405`.
+/// - **The query is carried, the fragment cannot be.** A `#anchor` never
+///   reaches the server at all.
+///
+/// The path is the one nesting left behind — dashboard-relative — so the
+/// prefix goes back on for the browser.
+fn sign_in_redirect(method: &Method, uri: &Uri) -> String {
+    const SIGN_IN: &str = "/dashboard/login";
+    if !matches!(*method, Method::GET | Method::HEAD) {
+        return SIGN_IN.to_owned();
+    }
+    let target = format!(
+        "/dashboard{}",
+        uri.path_and_query().map_or("", |p| p.as_str())
+    );
+    format!("{SIGN_IN}?next={}", crate::urlenc::query_value(&target))
+}
+
 /// Tower middleware: gate the wrapped routes on a valid session and
 /// refresh the cookie on every successful interaction.
 pub async fn refresh_session_layer(
@@ -273,7 +307,8 @@ pub async fn refresh_session_layer(
     next: Next,
 ) -> Response {
     let Ok(claims) = verify_session(&state, &jar).await else {
-        return Redirect::to("/dashboard/login").into_response();
+        let back = sign_in_redirect(request.method(), request.uri());
+        return Redirect::to(&back).into_response();
     };
 
     let user = SessionUser {
@@ -522,5 +557,40 @@ mod tests {
         };
         let err = regular.require_admin().expect_err("must reject");
         assert!(matches!(err, DashboardError::Forbidden));
+    }
+
+    /// A visitor who follows a link into a page they are not signed in
+    /// for is sent to the door **with that page in hand**, so signing in
+    /// finishes the journey they started instead of dropping them on the
+    /// panel with nothing to explain it.
+    ///
+    /// The path arrives dashboard-relative (nesting has stripped the
+    /// prefix) and goes back out absolute, because a browser is the one
+    /// following it.
+    #[test]
+    fn a_bounced_get_carries_the_page_it_was_bounced_from() {
+        assert_eq!(
+            sign_in_redirect(
+                &Method::GET,
+                &"/wiki/renovation/view/kitchen.md".parse().expect("uri")
+            ),
+            "/dashboard/login?next=%2Fdashboard%2Fwiki%2Frenovation%2Fview%2Fkitchen.md"
+        );
+        // The query rides along, percent-encoded so it stays one value.
+        assert_eq!(
+            sign_in_redirect(&Method::GET, &"/facts?page=2".parse().expect("uri")),
+            "/dashboard/login?next=%2Fdashboard%2Ffacts%3Fpage%3D2"
+        );
+    }
+
+    /// A form post that lost its session is **not** carried: replaying it
+    /// as a `GET` after sign-in is a different request, and on a
+    /// POST-only route it is a `405`. That one goes to the bare door.
+    #[test]
+    fn a_bounced_post_carries_nothing() {
+        assert_eq!(
+            sign_in_redirect(&Method::POST, &"/groups/renovation".parse().expect("uri")),
+            "/dashboard/login"
+        );
     }
 }

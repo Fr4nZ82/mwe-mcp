@@ -135,7 +135,9 @@ async fn list_is_admin_only() {
             .headers()
             .get(header::LOCATION)
             .and_then(|v| v.to_str().ok()),
-        Some("/dashboard/login")
+        // The bounce carries the page that was asked for, so a person who
+        // signs in lands on it rather than on the panel.
+        Some("/dashboard/login?next=%2Fdashboard%2Fprompts")
     );
 }
 

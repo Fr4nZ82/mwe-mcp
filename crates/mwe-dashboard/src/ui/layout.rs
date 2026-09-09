@@ -560,6 +560,7 @@ fn header(read_only: bool, demo_identities: &[String], user: Option<&SessionUser
                             demo_identities,
                             Some(&u.sender_id),
                             /* compact */ true,
+                            /* next */ None,
                         ))
                     }
                     // The badge normally hides below `md` to keep the mobile

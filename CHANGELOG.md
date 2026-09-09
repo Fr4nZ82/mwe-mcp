@@ -105,6 +105,18 @@ semver-governed surface: breaking changes are called out explicitly.
   and the conversation goes in front of every turn whether the memory answered
   or not — the memory is told afterwards and may take as long as it needs.
 
+- **A link to a page takes you to that page, even when you have to sign in
+  first.** Following a link into a page of a memory you are not signed in for
+  put you on the sign-in screen, which is right, and then — whichever way you
+  signed in — on the panel home, which is not: the page you had asked for was
+  forgotten between the two, and nothing on the screen said so. It now travels
+  with you, so signing in finishes the journey the link started. On a shown
+  instance, where signing in is one click on *Enter as…*, the same is true of
+  the buttons: they carry the page, and the visitor lands on it as the person
+  they picked. This is what makes a link into a demonstration — from a tour, a
+  README, a post — a link to what it promised rather than to a panel that
+  explains nothing.
+
 ## 2.1.0 — 2026-09-08
 
 **Traces** now tells the recall the way the engine runs it: the question the

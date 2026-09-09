@@ -151,11 +151,12 @@ pub fn build(state: DashboardState) -> Router {
         // alias `/dashboard/cite/:bi_id`; the canonical short form
         // `/cite/:bi_id` is mounted by `mwe-mcp-server` at the root.
         .merge(cite::router())
-        // `webagentoauth` consent step. Mounted in the public tree
-        // so it can verify the session itself and bounce to /dashboard/login?next=
-        // when absent, rather than the middleware's context-less redirect — but it
-        // still sits under /dashboard, where the session cookie (Path=/dashboard)
-        // is sent. The public discovery/DCR/token endpoints live at the root via
+        // `webagentoauth` consent step. Mounted in the public tree so it
+        // can verify the session itself and answer an absent one on its own
+        // terms — it has an authorization request to preserve across the
+        // sign-in, which is more than a path — but it still sits under
+        // /dashboard, where the session cookie (Path=/dashboard) is sent.
+        // The public discovery/DCR/token endpoints live at the root via
         // `webagentoauth_public_router`.
         .merge(webagentoauth::consent_router())
         .merge(crate::assets::router())

@@ -240,12 +240,14 @@ async fn login_then_home_then_logout_full_cycle() {
     )
     .await;
     assert!(response.status().is_redirection());
+    // The bounce carries the page that was asked for, so signing back in
+    // returns the person to it instead of to the panel.
     assert_eq!(
         response
             .headers()
             .get(header::LOCATION)
             .and_then(|v| v.to_str().ok()),
-        Some("/dashboard/login")
+        Some("/dashboard/login?next=%2Fdashboard%2Fhome")
     );
 }
 
@@ -281,12 +283,15 @@ async fn unauthenticated_home_redirects_to_login() {
     )
     .await;
     assert!(response.status().is_redirection());
+    // Not a bare `/dashboard/login`: the page asked for rides along in
+    // `?next=`, which is what makes a link into the demo land where the
+    // link promised.
     assert_eq!(
         response
             .headers()
             .get(header::LOCATION)
             .and_then(|v| v.to_str().ok()),
-        Some("/dashboard/login")
+        Some("/dashboard/login?next=%2Fdashboard%2Fhome")
     );
 }
 
