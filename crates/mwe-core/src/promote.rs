@@ -3307,6 +3307,7 @@ mod tests {
     use crate::embedder::{Embedder, FakeEmbedder};
     use crate::types::Principal;
     use sqlx::sqlite::SqlitePoolOptions;
+    use std::path::Path;
     use std::sync::Arc;
     use tempfile::TempDir;
 
@@ -3581,8 +3582,17 @@ mod tests {
         );
 
         // The page did not move and the one already there was not touched.
-        assert!(tree.wikis_dir().join("alice").join("orto.md").exists());
-        assert!(!tree.wikis_dir().join("bob").join("orto.md").exists());
+        // Asked byte-exactly, because where `Orto.md` and `orto.md` are one
+        // file `Path::exists` answers about the other spelling and reads a
+        // refusal as a completed move.
+        assert!(wiki::page_exists_byte_exact(
+            &tree.wikis_dir().join("alice"),
+            Path::new("orto.md")
+        ));
+        assert!(!wiki::page_exists_byte_exact(
+            &tree.wikis_dir().join("bob"),
+            Path::new("orto.md")
+        ));
         assert_eq!(std::fs::read_to_string(&taken).unwrap(), "gia' occupato\n");
     }
 
@@ -3656,8 +3666,10 @@ mod tests {
 
         // Refused means untouched: no second file, the fact still on its
         // page, and the row still pointing at it.
+        // Byte-exact: `Path::exists` sees `ricette.md` under the proposed
+        // spelling wherever the filesystem folds the two into one file.
         assert!(
-            !tree.wikis_dir().join("alice").join("Ricette.md").exists(),
+            !wiki::page_exists_byte_exact(&tree.wikis_dir().join("alice"), Path::new("Ricette.md")),
             "the colliding page must not have been created"
         );
         let source =
