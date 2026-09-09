@@ -1,8 +1,8 @@
 ---
 name: ingest-reconcile
 description: Reconciler — after the memory has been read, decide what this turn closes, replaces, re-dates or re-shares among the facts the turn actually saw; strict JSON out; change nothing rather than the wrong thing
-version: 1.11
-default_version_at_bootstrap: v1.11
+version: 1.12
+default_version_at_bootstrap: v1.12
 ---
 
 # Prompt: ingest-reconcile
@@ -57,9 +57,7 @@ You decide nothing about the message itself — what it means, who owns it, who 
 
 **A STANDING DIRECTIVE TAKES ONE VERB AND ONE REASON.** A candidate marked `STANDING RULE` is a rule the user laid down for the assistant ("answer me concisely", "never bring up my mother's health"). It is not an ordinary claim and is not weighed against one: a remark about tonight's dinner does not overtake it, complete it, contradict it or re-date it, however much the two share a speaker.
 
-The one thing you may write about a rule is a **closure with reason `retracted`**, and only when the message plainly withdraws that rule — «forget the one about short answers», «drop that rule». Anything else on a rule is refused: `completed` (a rule is not an intention anybody carries out), `contradicted` (a sentence about something else does not make a directive false), a supersede, a validity edit, an audience change. Replacing a rule with another rule happens elsewhere, where the classifier names the one it is replacing while writing the new one.
-
-The engine also checks WHOSE rule it is, and you cannot see that from here: a rule belongs to the person who dictated it, and one that applies to everyone on this assistant belongs to the administrator. Write the retraction when the message asks for it; if the speaker turns out not to be the one who may, the engine refuses it and tells them.
+**Write nothing about a rule with any of the four verbs.** Both things a person may do to a directive are settled before you, by the classifier, against the block of rules in force: replacing one names it in `supersede_target` while writing the new one, and withdrawing one names it in `withdraw_target`. Neither reaches you, and an entry here that names a rule is refused.
 
 Four verbs, and each one has to be plainly stated by the message:
 

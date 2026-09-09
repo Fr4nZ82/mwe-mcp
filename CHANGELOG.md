@@ -147,12 +147,14 @@ semver-governed surface: breaking changes are called out explicitly.
 
   **What you can do to an instruction, from now on, you do by talking about
   the instruction.** Take one back by saying so — *«forget the rule about
-  keeping it short»* — and it stops applying, if it is yours to take back: an
-  instruction belongs to whoever gave it, and one that applies to everybody on
-  an assistant belongs to the administrator, who is the only person who can
-  lift it. Ask to drop somebody else's and you are told so plainly, instead of
-  hearing "done" and finding the assistant still obeying it. Change one by
-  giving another in its place, as before. Nothing else reaches it: a
+  keeping it short»* — and it stops applying and its page says when it stopped,
+  so what is written there is still the list of what binds the assistant. It
+  has to be yours to take back: an instruction belongs to whoever gave it, and
+  one that applies to everybody on an assistant belongs to the administrator,
+  who is the only person who can lift it. Where it cannot be done you are told
+  which of the two it is, and told plainly when nothing matched what you named,
+  instead of hearing "done" and finding the assistant still obeying it. Change
+  one by giving another in its place, as before. Nothing else reaches it: a
   sentence about something else cannot end it, cannot re-date it, and cannot
   change who it applies to, whatever else that sentence is about. Who an
   instruction binds was settled when you gave it — this assistant, everyone on

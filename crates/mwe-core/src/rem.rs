@@ -1960,10 +1960,10 @@ async fn run_revisor_jaccard(
             .collect();
         // Channel-page membership per fact: dedup pairs never cross the
         // boundary (both sides on a reserved channel page, or neither).
-        // A directive the speaker has taken back: its window is shut, the
-        // channel already refuses to serve it, and it must not be weighed
-        // against the ones still in force.
-        let withdrawn: Vec<bool> = facts.iter().map(|f| f.valid_to.is_some()).collect();
+        // Whether each fact's validity window is shut. On the rules page that
+        // means the directive was taken back: the channel already refuses to
+        // serve it, and it must not be weighed against the ones in force.
+        let window_is_shut: Vec<bool> = facts.iter().map(|f| f.valid_to.is_some()).collect();
         let on_channel_page: Vec<bool> = facts
             .iter()
             .map(|f| wiki::is_channel_page(&f.source_path))
@@ -2008,7 +2008,8 @@ async fn run_revisor_jaccard(
                 // here like any other. Paired against a rule in force it can
                 // retire one that IS being obeyed, on the strength of words
                 // nobody follows any more.
-                if on_channel_page[new_idx] && (withdrawn[new_idx] || withdrawn[old_idx]) {
+                if on_channel_page[new_idx] && (window_is_shut[new_idx] || window_is_shut[old_idx])
+                {
                     continue;
                 }
                 // Identity-core stickiness: background dedup never retires a

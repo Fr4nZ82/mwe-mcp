@@ -1,8 +1,8 @@
 ---
 name: ingest
-description: Classifier driving `wiki_ingest_message` — one JSON object per turn (intent + an `extractions[]` array of atomic facts, the SOLE fact container; every fact is prose, each carrying a per-fact validity interval `valid_from`/`valid_to`, a per-fact `style` (and, for `lista` material or a requested container, a `target_page` + `page_description`), a `requested_container` live-write flag, a per-fact `salience`, and an `engine_rule` flag routing a standing governance directive to `@rules.md` instead of `fact_index`, a `behaviour_rule` flag (with a `behaviour_scope` of `per-user`/`agent-wide`/`user-global`, read from the addressee) routing a how-an-agent-converses-or-operates directive to the calling consumer's own wiki — or, user-global, to the sender's identity wiki for every assistant serving them — and an `attachments` claim list linking the turn's media to the fact that describes them); targets the strong-model tier
-version: 2.81
-default_version_at_bootstrap: v2.81
+description: Classifier driving `wiki_ingest_message` — one JSON object per turn (intent + an `extractions[]` array of atomic facts, the SOLE fact container; every fact is prose, each carrying a per-fact validity interval `valid_from`/`valid_to`, a per-fact `style` (and, for `lista` material or a requested container, a `target_page` + `page_description`), a `requested_container` live-write flag, a per-fact `salience`, and an `engine_rule` flag routing a standing governance directive to `@rules.md` instead of `fact_index`, a `behaviour_rule` flag (with a `behaviour_scope` of `per-user`/`agent-wide`/`user-global`, read from the addressee) routing a how-an-agent-converses-or-operates directive to the calling consumer's own wiki — or, user-global, to the sender's identity wiki for every assistant serving them — and an `attachments` claim list linking the turn's media to the fact that describes them; plus two turn-level fields for a turn that TAKES SOMETHING BACK — `withdrawal` and, when what it takes back is a standing rule, `withdraw_target` naming that rule from the block of directives in force); targets the strong-model tier
+version: 2.82
+default_version_at_bootstrap: v2.82
 source_of_truth: crates/mwe-core/src/ingest.rs (fn wiki_ingest_message)
 ---
 
@@ -378,6 +378,8 @@ Examples — the cases the rules above do not already walk through:
 
 {
 "intent":              "capture" | "recall" | "structural" | "skip",
+"withdrawal":          false | true,
+"withdraw_target":     "<fact_id of the standing rule this turn drops, copied EXACTLY from agent_behaviour_rules — omit unless the turn drops one>",
 "suggested_seed":      "<short natural-language reply the consumer agent can refine>",
 "needs_disambig":      false | true,
 "needs_project_docs":  false | true,
@@ -386,6 +388,8 @@ Examples — the cases the rules above do not already walk through:
 "fact_scores":         [ { "target": "<fact_id copied EXACTLY from recalled_memory>", "multiplier": 0.90 … 1.10 }, ... ],
 "extractions":         [ { "target_page": "<`lista` extractions AND requested containers ONLY (Part 4's two cases): the page file name, from list_pages when it exists — NEVER a reserved name; omit otherwise>", "subject_id": "user:<id>" | "group:<id>" | "global", "subject_external": "<the NAME of what the fact is about when that is not a principal — see the `subject_external` section; omit otherwise>", "allow_ids": [ "user:<id>" | "group:<id>" | "global", ... ], "fact_type": "bio" | "state" | "preference" | "rule" | "plan" | "episode" | "other", "valid_from": "<ISO-8601 Z resolved against current_time>", "valid_to": "<ISO-8601 Z>" | null, "style": "prosa" | "prosa-tecnica" | "lista", "page_description": "<same two cases, and only for a NEW page: one line saying what it holds; omit otherwise>", "requested_container": false | true, "salience": "high" | "normal" | "low", "engine_rule": false | true, "behaviour_rule": false | true, "behaviour_scope": "per-user" | "agent-wide" | "user-global", "topics": [ "<the macrotopic>", "<the microtopic>" ], "body": "<the atomic fact, third person, dates resolved>", "supersede_target": "<behaviour-rule fact_id from agent_behaviour_rules — NEVER a fact_id from recalled_memory>" | null, "conflicts_with": "<fact_id from identity_core whose SLOT this fact fills with a DIFFERENT value — omit otherwise>" | null, "slot": "<the ONE thing both state, in your own words; required with conflicts_with>" | null, "attachments": [ "<catalog_id from this turn's attachments>", ... ] }, ... ]
 }
+
+`withdrawal` is `true` whenever the turn TAKES SOMETHING BACK rather than saying something new — «forget what I told you about the greenhouse», «you were right, close mine», «drop that rule about short answers». When what it takes back is a STANDING RULE, `withdraw_target` carries that rule's `fact_id` from `agent_behaviour_rules`: a rule is named there and nowhere else, because rules do not travel with the recalled facts, and a withdrawal that does not name one withdraws nothing.
 
 For `recall` and `skip`, `extractions` is the empty array `[]` and `disambig_candidates` is empty unless you set `needs_disambig`. For `capture`, `extractions` holds one element per atomic fact, and is EMPTY when the turn changes the memory without stating anything to write down ("forget the greenhouse"). For `structural`, it is usually empty — except the HYBRID case (Part 1): content stated alongside the container request files as normal `extractions`. The per-extraction fields below are decided INDEPENDENTLY for each fact.
 
@@ -672,7 +676,7 @@ These anchor the boundaries between `structural` (reshape a container), `capture
 
 **L — withdrawing your own claim in favour of somebody else's → `capture`, `extractions` empty**
 - `current_message`: "Bob was right, it's the 15th. Close mine." (`recalled_memory` carries the speaker's own earlier "Nora's birthday is on the 14th")
-- `intent`: `"capture"`; `extractions`: `[]`. Nothing new is asserted — Bob's date is already on record — so there is nothing to write; the whole turn is the withdrawal. The closing itself is not yours to perform and not yours to name: the reconciliation stage does it after the reading, and it only runs because this turn is a `capture`. Filed as `skip` (an ack) or as `structural` (an operation on memory), the speaker's date stays live for ever and the two dates keep contradicting each other.
+- `intent`: `"capture"`, `withdrawal`: `true`; `extractions`: `[]`. Nothing new is asserted — Bob's date is already on record — so there is nothing to write; the whole turn is the withdrawal, and `withdrawal` is what says so. No `withdraw_target` here: what is being taken back is an ordinary fact, not a standing rule, and an ordinary fact is settled after the reading. Had the turn dropped a RULE instead («forget the one about short answers»), it would carry `withdraw_target` with that rule's `fact_id`. The closing itself is not yours to perform and not yours to name: the reconciliation stage does it after the reading, and it only runs because this turn is a `capture`. Filed as `skip` (an ack) or as `structural` (an operation on memory), the speaker's date stays live for ever and the two dates keep contradicting each other.
 
 **M — a plain statement about somebody outside the roster → `capture` with `subject_external`**
 - `current_message`: "Sam is taking over the deployment side." (`known_users` does not contain Sam)

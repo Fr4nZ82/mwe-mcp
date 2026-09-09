@@ -785,6 +785,16 @@ struct LlmIngestPlan {
     /// standing rules to the reconciliation stage.
     #[serde(default)]
     withdrawal: bool,
+    /// The `fact_id` of the standing rule this turn withdraws, from the
+    /// `agent_behaviour_rules` block the classifier is shown.
+    ///
+    /// A rule is named here and NOWHERE else. Behaviour rules travel on their
+    /// own channel, not on recall, so they are never among the facts the
+    /// closing stages can see: a withdrawal routed through those stages
+    /// reaches a target that is not there, is refused as a hallucinated id,
+    /// and the person hears "Ok." while the rule stands.
+    #[serde(default)]
+    withdraw_target: Option<String>,
     #[serde(default)]
     suggested_seed: Option<String>,
     #[serde(default)]
@@ -2432,34 +2442,39 @@ enum RuleRetractionRefused {
     /// The rule applies to everyone on this agent.
     NeedsTheAdmin,
     /// The rule is somebody else's.
+    ///
+    /// Rare by construction: a speaker is only ever shown the rules that bind
+    /// THEM, so the id they can name is either their own or the agent's. It
+    /// stays as the fail-closed answer for a row that is neither.
     NotYours,
+    /// The turn asked to drop a rule and named none the memory holds — or
+    /// named one this speaker was not shown. Nothing was withdrawn, and
+    /// saying nothing would leave them believing it was.
+    NotAmongTheRulesInForce,
 }
 
 impl RuleRetractionRefused {
-    /// The refusal a PERSON has to hear about, out of one closure failure.
-    ///
-    /// `None` for every other failure here — a hallucinated id, a reason
-    /// outside the vocabulary, a target that vanished. Those are the model's
-    /// business and nobody asked for them; a refused withdrawal is a question
-    /// the person put and an answer they are owed.
-    const fn of(err: &ClosurePlanError) -> Option<Self> {
-        match err {
-            ClosurePlanError::AgentWideRuleNeedsTheAdmin(_) => Some(Self::NeedsTheAdmin),
-            ClosurePlanError::RuleIsNotYours(_) => Some(Self::NotYours),
-            _ => None,
-        }
-    }
-
     /// The one-shot line for the response's `rules` field, in the same voice
     /// as the agent-wide refusal it sits beside: what happened, and what the
     /// agent should say about it.
     const fn notice(self) -> &'static str {
         match self {
             Self::NeedsTheAdmin => {
-                "NOTE — the user asked to drop a standing rule that applies to EVERYONE on                  this assistant. Only the administrator may withdraw one of those, so it is                  still in force. Tell the user plainly that the rule stands and that an                  admin has to lift it; keep obeying it in the meantime."
+                "NOTE — the user asked to drop a standing rule that applies to EVERYONE on \
+                 this assistant. Only the administrator may withdraw one of those, so it is \
+                 still in force. Tell the user plainly that the rule stands and that an admin \
+                 has to lift it; keep obeying it in the meantime."
             },
             Self::NotYours => {
-                "NOTE — the user asked to drop a standing rule that somebody else set. A rule                  is withdrawn by the person who dictated it, so it is still in force. Tell                  the user plainly that the rule stands and whose it is to lift; keep obeying                  it in the meantime."
+                "NOTE — the user asked to drop a standing rule that somebody else set. A rule \
+                 is withdrawn by the person who dictated it, so it is still in force. Tell the \
+                 user plainly that the rule stands and whose it is to lift; keep obeying it in \
+                 the meantime."
+            },
+            Self::NotAmongTheRulesInForce => {
+                "NOTE — the user asked to drop a standing rule, and none of the rules in force \
+                 matches what they named. Nothing was withdrawn. Tell them so and ask which \
+                 rule they mean; do not claim anything changed."
             },
         }
     }
@@ -2482,31 +2497,141 @@ enum RuleRetraction {
     NotYours,
 }
 
-/// Answer [`RuleRetraction`] for one requested closure.
+/// Withdraw the standing rule this turn names, or say why it cannot.
 ///
-/// Cheap by shape: it looks nothing up unless the target really is a rule, and
-/// a closure naming a rule is rare. `Allowed` is also the answer for every
-/// non-rule target, because [`validate_closure`] then never consults it.
-async fn rule_retraction_for(
+/// **The road matters more than the guards on it.** A behaviour rule is served
+/// by its own channel ([`recall_behaviour_rules`]) and never travels on
+/// recall, so it is never among the candidates the closing stages judge: a
+/// withdrawal routed through those stages names a target they cannot see, is
+/// refused as a hallucinated id, and the person is told nothing. The
+/// classifier, on the other hand, is shown every rule in force WITH its
+/// `fact_id` ([`push_behaviour_rules_section`]) — the same block a revision
+/// resolves against ([`behaviour_supersede_target`]) — so that is where a
+/// withdrawal is named and that is where it is resolved.
+///
+/// No receipt is emitted. A `validity_close` receipt exists to tell the OWNER
+/// that something of theirs was closed by somebody else; here the owner is
+/// either the person doing it or the agent itself, so the receipt would be a
+/// note from somebody to themselves. The answer the person needs is the one
+/// the turn already gives them.
+///
+/// Returns the refusal when there is one, for the response's `rules` field.
+async fn withdraw_named_rule(
     pool: &SqlitePool,
-    closure: &LlmClosure,
-    recall_hits: &[RecallHit],
+    tree: &WikiTree,
+    embedder: &Arc<dyn Embedder>,
+    plan: &LlmIngestPlan,
+    behaviour_rules: &[(FactId, String, BehaviourScope)],
     request: &IngestRequest,
-    sender_groups: &[String],
-) -> RuleRetraction {
-    let Some(hit) = closure
-        .target
+    turn_now: chrono::DateTime<chrono::Utc>,
+) -> Option<RuleRetractionRefused> {
+    if !plan.withdrawal {
+        return None;
+    }
+    let raw = plan
+        .withdraw_target
         .as_deref()
         .map(str::trim)
-        .and_then(|t| recall_hits.iter().find(|h| h.fact_id.as_str() == t))
-        .filter(|h| crate::wiki::is_rules_page(&h.source_path))
+        .filter(|s| !s.is_empty())?;
+    // Anti-hallucination, the same shape the revision path uses: only a rule
+    // this turn was actually SHOWN may be named.
+    let Some(target) = FactId::parse(raw)
+        .ok()
+        .filter(|id| behaviour_rules.iter().any(|(rid, _, _)| rid == id))
     else {
-        return RuleRetraction::Allowed;
+        tracing::info!(
+            withdraw_target = raw,
+            sender_id = request.sender_id.as_str(),
+            "ingest: withdraw_target names no rule in force — nothing withdrawn, and the \
+             person is told"
+        );
+        return Some(RuleRetractionRefused::NotAmongTheRulesInForce);
     };
-    // An agent-wide rule is the AGENT's: subject and author both, which is why
-    // the ordinary retraction test refuses even the admin who set it. Its
-    // withdrawal is the admin's, exactly as its setting was.
-    if let Principal::User(subject) = &hit.subject_id
+    match rule_withdrawal_authority(pool, &target, request).await {
+        RuleRetraction::NeedsTheAdmin => {
+            tracing::info!(
+                sender_id = request.sender_id.as_str(),
+                target = target.as_str(),
+                "ingest: withdrawal of an agent-wide rule refused (admin-only)"
+            );
+            Some(RuleRetractionRefused::NeedsTheAdmin)
+        },
+        RuleRetraction::NotYours => {
+            tracing::info!(
+                sender_id = request.sender_id.as_str(),
+                target = target.as_str(),
+                "ingest: withdrawal refused — the rule is somebody else's"
+            );
+            Some(RuleRetractionRefused::NotYours)
+        },
+        RuleRetraction::Allowed => {
+            let valid_to = fact_index::bound_from_instant(turn_now);
+            match fact_index::close_validity(
+                pool,
+                &target,
+                &valid_to,
+                fact_index::decay::RETRACTED,
+                None,
+            )
+            .await
+            {
+                Ok(Some(_)) => {
+                    tracing::info!(
+                        target = target.as_str(),
+                        valid_to,
+                        "ingest: standing rule WITHDRAWN"
+                    );
+                    // The page says so too. Without it a withdrawn rule reads
+                    // exactly like one still in force, and the page is what a
+                    // person opens to see what binds the assistant.
+                    if let Err(err) = crate::reindex::note_rule_withdrawn(
+                        pool,
+                        tree,
+                        Arc::clone(embedder),
+                        &target,
+                        &turn_now.format("%-d %B %Y").to_string(),
+                    )
+                    .await
+                    {
+                        tracing::warn!(
+                            error = %err,
+                            target = target.as_str(),
+                            "ingest: withdrawn rule not marked on its page — the row is closed \
+                             regardless"
+                        );
+                    }
+                },
+                Ok(None) => tracing::warn!(
+                    target = target.as_str(),
+                    "ingest: withdraw_target vanished between the injection and now"
+                ),
+                Err(err) => tracing::warn!(
+                    error = %err,
+                    target = target.as_str(),
+                    "ingest: withdrawal failed — the rule stands"
+                ),
+            }
+            None
+        },
+    }
+}
+
+/// May this speaker withdraw this rule?
+///
+/// A per-user or user-global rule is its speaker's: the ordinary retraction
+/// test answers, and it is the right one. An agent-wide rule is the AGENT's —
+/// subject and author both, so that test refuses everybody, the admin who
+/// dictated it included — and withdrawing it is the admin's, exactly as
+/// setting it was.
+async fn rule_withdrawal_authority(
+    pool: &SqlitePool,
+    target: &FactId,
+    request: &IngestRequest,
+) -> RuleRetraction {
+    let Ok(Some(row)) = fact_index::find_by_id(pool, target).await else {
+        return RuleRetraction::NotYours;
+    };
+    if let Principal::User(subject) = &row.subject_id
         && enrollment::is_agent(pool, subject).await.unwrap_or(false)
     {
         return if enrollment::is_admin(pool, &request.sender_id)
@@ -2518,14 +2643,15 @@ async fn rule_retraction_for(
             RuleRetraction::NeedsTheAdmin
         };
     }
-    // A per-user or user-global rule is its speaker's, and the ordinary test
-    // is the right one: its subject, or whoever said it.
+    let groups = enrollment::groups_for(pool, &request.sender_id)
+        .await
+        .unwrap_or_default();
     if crate::acl::sender_may_retract(
-        &hit.subject_id,
-        hit.sender_id.as_ref(),
-        &hit.allow_ids,
+        &row.subject_id,
+        row.sender_id.as_ref(),
+        &row.allow_ids,
         &request.sender_id,
-        sender_groups,
+        &groups,
     ) {
         RuleRetraction::Allowed
     } else {
@@ -2551,24 +2677,14 @@ enum ClosurePlanError {
     /// `reason` is missing or outside the closed vocabulary.
     #[error("closure reason `{0}` is not one of completed|retracted|contradicted")]
     UnknownReason(String),
-    /// The target is a standing directive and the reason is not `retracted`.
-    /// A rule is withdrawn by somebody saying so OF THE RULE, which is a
-    /// retraction and passes; it is never `completed` (it is not an intention
-    /// anybody carries out) and never `contradicted` (an ordinary sentence
-    /// does not make a directive false).
+    /// The target is a standing directive. This verb judges recalled facts,
+    /// and a rule is not one of those: withdrawing a rule is named to the
+    /// classifier in `withdraw_target`, against the directives in force.
     #[error(
-        "closure target `{0}` is a standing directive — the only reason a rule takes is `retracted`"
+        "closure target `{0}` is a standing directive — a rule is withdrawn by naming it, \
+         not by closing it here"
     )]
     TargetIsAStandingRule(String),
-    /// The rule applies to everyone this agent serves, and the speaker is not
-    /// the admin. Setting one of those is the admin's, and so is withdrawing
-    /// it; the person is told rather than left with an "Ok."
-    #[error("closure target `{0}` is a rule for everyone — only the admin withdraws one")]
-    AgentWideRuleNeedsTheAdmin(String),
-    /// The rule is somebody else's. A directive is withdrawn by the person who
-    /// dictated it, and by nobody else.
-    #[error("closure target `{0}` is somebody else's standing directive")]
-    RuleIsNotYours(String),
     /// The sender is none of the three the target is open to.
     /// A closure withdraws an assertion, so it is open to the subject, to
     /// whoever made the assertion, and to whoever the fact was SHARED with —
@@ -2597,7 +2713,6 @@ fn validate_closure<'a>(
     recall_hits: &'a [RecallHit],
     sender_id: &str,
     sender_groups: &[String],
-    rule_authority: RuleRetraction,
 ) -> std::result::Result<(&'a RecallHit, &'static str), ClosurePlanError> {
     let raw = closure
         .target
@@ -2627,18 +2742,13 @@ fn validate_closure<'a>(
     // retire. A world fact shared with nobody and claimed by nobody stays
     // closable by no one from chat.
     //
-    // A standing directive is not judged here: it has its own answer below,
-    // because an agent-wide rule is subject AND author of itself, so this gate
-    // refuses everybody including the admin who dictated it.
-    if !crate::wiki::is_rules_page(&hit.source_path)
-        && !crate::acl::sender_may_retract(
-            &hit.subject_id,
-            hit.sender_id.as_ref(),
-            &hit.allow_ids,
-            sender_id,
-            sender_groups,
-        )
-    {
+    if !crate::acl::sender_may_retract(
+        &hit.subject_id,
+        hit.sender_id.as_ref(),
+        &hit.allow_ids,
+        sender_id,
+        sender_groups,
+    ) {
         return Err(ClosurePlanError::NotEntitledToRetract {
             id: raw.to_owned(),
             subject: hit.subject_id.to_string(),
@@ -2668,33 +2778,17 @@ fn validate_closure<'a>(
             ));
         },
     };
-    // A standing directive answers for itself, on both axes at once.
-    //
-    // The REASON: only `retracted`. Withdrawing a rule is something a person
-    // says of the rule — «forget the one about short answers» — and that is a
-    // retraction. It is never `completed`, because a rule is not an intention
-    // anybody carries out, and never `contradicted`, because an ordinary
-    // sentence does not make a directive false — which is exactly how a remark
-    // about dinner came to replace «answer me concisely».
-    //
-    // The AUTHORITY: whose rule it is. A per-user or user-global rule is its
-    // speaker's, and the ordinary retraction test answers. An agent-wide rule
-    // is the agent's — subject and author both, so the ordinary test refuses
-    // everybody, the admin who dictated it included — and it is the admin's to
-    // withdraw, exactly as it was the admin's to set.
+    // A standing directive never reaches this verb, and is refused if it ever
+    // does. It cannot BE a candidate — [`reconcile_candidates`] holds the
+    // rules page out and recall does not carry rules at all — and both things
+    // a person may do to a rule are named to the classifier instead, against
+    // the block of directives in force: a revision through `supersede_target`
+    // on another rule, a withdrawal through `withdraw_target`. This is the
+    // fail-closed floor under that, so a candidate list built differently
+    // tomorrow cannot quietly hand a rule to a verb that judges ordinary
+    // claims.
     if crate::wiki::is_rules_page(&hit.source_path) {
-        if reason != fact_index::decay::RETRACTED {
-            return Err(ClosurePlanError::TargetIsAStandingRule(raw.to_owned()));
-        }
-        match rule_authority {
-            RuleRetraction::Allowed => {},
-            RuleRetraction::NeedsTheAdmin => {
-                return Err(ClosurePlanError::AgentWideRuleNeedsTheAdmin(raw.to_owned()));
-            },
-            RuleRetraction::NotYours => {
-                return Err(ClosurePlanError::RuleIsNotYours(raw.to_owned()));
-            },
-        }
+        return Err(ClosurePlanError::TargetIsAStandingRule(raw.to_owned()));
     }
     Ok((hit, reason))
 }
@@ -3266,18 +3360,8 @@ fn reconcile_candidate_line(h: &RecallHit, now: &chrono::DateTime<chrono::Utc>) 
             .join(",");
         format!("subject {} allow [{allow}]", h.subject_id)
     };
-    // A rule reaching this list is the withdrawal-gesture opening, and the
-    // stage has to be able to see that it is one: the line is all it gets.
-    // Unmarked, a directive reads as an ordinary claim about the speaker,
-    // which is how one came to be closed as contradicted by a remark about
-    // dinner.
-    let kind = if wiki::is_rules_page(&h.source_path) {
-        " · STANDING RULE (only a `retracted` closure is allowed on it)"
-    } else {
-        ""
-    };
     format!(
-        "{} · {validity} · {audience}{kind} · {}",
+        "{} · {validity} · {audience} · {}",
         h.fact_id,
         truncate(&h.text, 160)
     )
@@ -3290,14 +3374,14 @@ fn reconcile_candidate_line(h: &RecallHit, now: &chrono::DateTime<chrono::Utc>) 
 /// fact is not its business and showing it would only invite a judgement it
 /// cannot act on.
 fn closure_candidate_line(h: &RecallHit, now: &chrono::DateTime<chrono::Utc>) -> String {
-    // A standing directive says so. This pass runs only on a closure gesture,
-    // which is the one shape in which somebody legitimately speaks about a
-    // rule from the conversation, so a rule belongs among these candidates —
-    // and `retracted` is the only reason `validate_closure` will take on one.
-    // Unmarked it reads as an ordinary claim, which is how a directive gets
-    // closed as spent or contradicted.
+    // A standing directive says so. This pass draws its candidates from
+    // recall, which does not hold rules back, so one can appear here — and
+    // nothing this stage does may touch it: withdrawing a rule is named to
+    // the classifier, against the block of directives in force. Unmarked it
+    // reads as an ordinary claim, which is how a directive gets closed as
+    // spent or contradicted by a sentence about something else.
     let kind = if wiki::is_rules_page(&h.source_path) {
-        " · STANDING RULE (`retracted` only)"
+        " · STANDING RULE (never close it — say so to the classifier instead)"
     } else {
         ""
     };
@@ -3371,28 +3455,23 @@ async fn reconcile_candidates(
     sender_ctx: &SenderContext,
     fresh_top_k: usize,
     turn_facts: &[(FactId, String)],
-    turn_withdraws_something: bool,
 ) -> Vec<RecallHit> {
     let mut out: Vec<RecallHit> = Vec::new();
     let mut seen: std::collections::HashSet<String> = turn_facts
         .iter()
         .map(|(id, _)| id.as_str().to_owned())
         .collect();
-    // A standing directive is not judged against an ordinary sentence: a
+    // A standing directive is never judged against an ordinary sentence: a
     // passing remark about dinner arrived as a candidate beside "answer me
     // concisely", the two shared a speaker and a wiki, and the remark was
     // recorded as replacing the rule.
     //
-    // Rules are held out of the candidates ALWAYS, with one opening: a turn
-    // that asserts nothing new and is still a capture is a withdrawal gesture
-    // — «forget the one about short answers» — and that is the one thing a
-    // person can legitimately say about a rule from the conversation. Then
-    // they enter, marked as rules in the candidate line, and the only verb the
-    // stage may use on them is a `retracted` closure ([`validate_closure`]).
-    // The other road, a rule replaced by another rule, is the classifier's
-    // (`behaviour_supersede_target`) and never comes through here.
-    let admits_rules =
-        |h: &RecallHit| turn_withdraws_something || !wiki::is_rules_page(&h.source_path);
+    // Nothing a person says about a rule needs this stage. A rule is revised
+    // by naming it from another rule, and withdrawn by naming it in
+    // `withdraw_target` — both resolved against the block the classifier is
+    // shown ([`push_behaviour_rules_section`]), which is the only place a rule
+    // is ever visible with its id. Recall does not carry rules at all.
+    let admits_rules = |h: &RecallHit| !wiki::is_rules_page(&h.source_path);
     for h in flat {
         if admits_rules(h) && seen.insert(h.fact_id.as_str().to_owned()) {
             out.push(h.clone());
@@ -3778,8 +3857,7 @@ async fn confirm_topic_closures(
 /// Every step is soft: an invalid closure, a vanished target, or a DB
 /// hiccup is logged and skipped — a closure never kills the turn.
 ///
-/// Returns the number of closures applied, and the one refusal the PERSON has
-/// to hear about: a withdrawal of a standing rule the engine would not do.
+/// Returns the number of closures applied.
 async fn apply_plan_closures(
     pool: &SqlitePool,
     tree: &WikiTree,
@@ -3787,31 +3865,22 @@ async fn apply_plan_closures(
     recall_hits: &[RecallHit],
     request: &IngestRequest,
     turn_now: chrono::DateTime<chrono::Utc>,
-) -> (usize, Option<RuleRetractionRefused>) {
+) -> usize {
     // Resolve the sender's groups once so the subject gate can admit a
     // member of the owning group, not only the owning user.
     let sender_groups = enrollment::groups_for(pool, &request.sender_id)
         .await
         .unwrap_or_default();
     let mut applied: Vec<promote::AppliedClosure> = Vec::new();
-    let mut refused_rule: Option<RuleRetractionRefused> = None;
     for closure in plan_closures {
-        let authority =
-            rule_retraction_for(pool, closure, recall_hits, request, &sender_groups).await;
-        let (hit, reason) = match validate_closure(
-            closure,
-            recall_hits,
-            &request.sender_id,
-            &sender_groups,
-            authority,
-        ) {
-            Ok(v) => v,
-            Err(err) => {
-                refused_rule = refused_rule.or_else(|| RuleRetractionRefused::of(&err));
-                tracing::warn!(error = %err, "ingest: closure invalid — skipped");
-                continue;
-            },
-        };
+        let (hit, reason) =
+            match validate_closure(closure, recall_hits, &request.sender_id, &sender_groups) {
+                Ok(v) => v,
+                Err(err) => {
+                    tracing::warn!(error = %err, "ingest: closure invalid — skipped");
+                    continue;
+                },
+            };
         if applied.iter().any(|a| a.fact_id == hit.fact_id) {
             continue; // the model repeated a target — first one wins
         }
@@ -3874,7 +3943,7 @@ async fn apply_plan_closures(
         });
     }
     if applied.is_empty() {
-        return (0, refused_rule);
+        return 0;
     }
     // A closed item on a LIST is shown now, not at the next dream: the page is
     // rebuilt from the facts as they stand, so «ho comprato il latte» carries
@@ -3904,7 +3973,7 @@ async fn apply_plan_closures(
         }
     }
     emit_closure_paper_trail(pool, &applied, recall_hits, request).await;
-    (applied.len(), refused_rule)
+    applied.len()
 }
 
 /// The act-first paper trail of a closure batch: ONE born-applied
@@ -8689,16 +8758,25 @@ pub async fn wiki_ingest_message(
 
     // Step 4 — route based on intent.
     let intent = parse_intent(&plan.intent);
+    // A withdrawal is settled here, against the rules the classifier was
+    // shown, and not by the closing stages: those judge what RECALL surfaced,
+    // and a rule is never in it.
+    let refused_rule_retraction = withdraw_named_rule(
+        pool,
+        tree,
+        &embedder,
+        &plan,
+        &behaviour_rules,
+        &request,
+        turn_now,
+    )
+    .await;
     let mut capture_id: Option<FactId> = None;
     // Set when a NON-admin asks for an agent-wide behaviour-rule (one that would
     // apply to everyone — admin-only): the rule is NOT filed, and the dedicated
     // `rules` field carries a one-shot notice so the agent declines politely
     // this turn.
     let mut agent_wide_denied = false;
-    // A withdrawal of a standing rule the engine refused. It rides the same
-    // one-shot channel as the agent-wide refusal below: the person asked for
-    // something and has to hear the answer, not "Ok."
-    let mut refused_rule_retraction: Option<RuleRetractionRefused> = None;
     // A list item the turn could NOT file, because its page name did not
     // survive: the classifier named a reserved page, or the wiki is already at
     // its list limit. The item is refused rather than parked, and the `rules`
@@ -9588,7 +9666,7 @@ pub async fn wiki_ingest_message(
                     }
                 }
             }
-            let (closed, refused) = apply_plan_closures(
+            let closed = apply_plan_closures(
                 pool,
                 tree,
                 &turn_closures,
@@ -9597,7 +9675,6 @@ pub async fn wiki_ingest_message(
                 turn_now,
             )
             .await;
-            refused_rule_retraction = refused_rule_retraction.or(refused);
             if closed > 0 {
                 captured_any = true;
             }
@@ -9869,10 +9946,6 @@ pub async fn wiki_ingest_message(
             &sender_ctx,
             policy.recall_fresh_top_k,
             &turn_facts,
-            // The rules open only on a declared withdrawal. Read off the
-            // shape instead — an empty `extractions` array on a capture — and
-            // «thanks, that was useful» opens them too.
-            plan.withdrawal,
         )
         .await;
         reconcile_journal.extend(
@@ -9892,7 +9965,7 @@ pub async fn wiki_ingest_message(
         .await;
         reconcile_verdict = verdict;
         if !decision.is_empty() {
-            let (closed, refused) = apply_plan_closures(
+            reconciled += apply_plan_closures(
                 pool,
                 tree,
                 &decision.closures,
@@ -9901,8 +9974,6 @@ pub async fn wiki_ingest_message(
                 turn_now,
             )
             .await;
-            reconciled += closed;
-            refused_rule_retraction = refused_rule_retraction.or(refused);
             reconciled += apply_reconciled_supersedes(
                 pool,
                 &decision.supersedes,
@@ -11126,6 +11197,7 @@ mod tests {
         // disk inside the turn, so it is the one that had to be closed.
         let plan = LlmIngestPlan {
             withdrawal: false,
+            withdraw_target: None,
             subject_external: None,
             intent: "capture".into(),
             suggested_seed: None,
@@ -11178,6 +11250,7 @@ mod tests {
     fn validate_capture_plan_derives_the_wiki_from_the_sender() {
         let plan = LlmIngestPlan {
             withdrawal: false,
+            withdraw_target: None,
             subject_external: None,
             intent: "capture".into(),
             suggested_seed: None,
@@ -11226,6 +11299,7 @@ mod tests {
     fn validate_capture_plan_defaults_subject_to_sender() {
         let plan = LlmIngestPlan {
             withdrawal: false,
+            withdraw_target: None,
             subject_external: None,
             intent: "capture".into(),
             suggested_seed: None,
@@ -11282,6 +11356,7 @@ mod tests {
         // while keeping the legitimate entries.
         let plan = LlmIngestPlan {
             withdrawal: false,
+            withdraw_target: None,
             subject_external: None,
             intent: "capture".into(),
             suggested_seed: None,
@@ -11326,6 +11401,7 @@ mod tests {
     fn validate_capture_plan_rejects_bad_principal() {
         let plan = LlmIngestPlan {
             withdrawal: false,
+            withdraw_target: None,
             subject_external: None,
             intent: "capture".into(),
             suggested_seed: None,
@@ -11405,6 +11481,7 @@ mod tests {
     fn validate_capture_plan_ignores_a_hallucinated_target_wiki() {
         let plan = LlmIngestPlan {
             withdrawal: false,
+            withdraw_target: None,
             subject_external: None,
             intent: "capture".into(),
             suggested_seed: None,
@@ -11827,6 +11904,7 @@ mod tests {
     fn plan_with_supersede(target: Option<&str>) -> LlmIngestPlan {
         LlmIngestPlan {
             withdrawal: false,
+            withdraw_target: None,
             subject_external: None,
             intent: "capture".into(),
             suggested_seed: None,
@@ -11976,7 +12054,7 @@ mod tests {
             valid_to: None,
         };
         let hits = vec![sample_recall_hit(id)]; // hit subject = user:alice
-        let err = validate_closure(&closure, &hits, "morgana", &[], RuleRetraction::Allowed)
+        let err = validate_closure(&closure, &hits, "morgana", &[])
             .expect_err("cross-subject closure must fail");
         match err {
             ClosurePlanError::NotEntitledToRetract {
@@ -11989,7 +12067,7 @@ mod tests {
             other => panic!("expected NotEntitledToRetract, got {other:?}"),
         }
         // The subject herself can close it.
-        assert!(validate_closure(&closure, &hits, "alice", &[], RuleRetraction::Allowed).is_ok());
+        assert!(validate_closure(&closure, &hits, "alice", &[]).is_ok());
 
         // And so can the person who said it, about somebody else: the same
         // hit, now carrying carol as its author, is closable by carol.
@@ -11997,13 +12075,11 @@ mod tests {
         authored.sender_id = Some(Principal::User("carol".into()));
         let hits = vec![authored];
         assert!(
-            validate_closure(&closure, &hits, "carol", &[], RuleRetraction::Allowed).is_ok(),
+            validate_closure(&closure, &hits, "carol", &[]).is_ok(),
             "the author may withdraw what they said, whoever it was about"
         );
         // A third party is still none of the three.
-        assert!(
-            validate_closure(&closure, &hits, "morgana", &[], RuleRetraction::Allowed).is_err()
-        );
+        assert!(validate_closure(&closure, &hits, "morgana", &[]).is_err());
 
         // The audience opens the third door: the same hit, about alice and
         // said by carol, now carries `group:famiglia` in its allow list, and
@@ -12013,21 +12089,12 @@ mod tests {
         shared.allow_ids = vec![Principal::Group("famiglia".into())];
         let hits = vec![shared];
         assert!(
-            validate_closure(
-                &closure,
-                &hits,
-                "dora",
-                &["famiglia".to_owned()],
-                RuleRetraction::Allowed
-            )
-            .is_ok(),
+            validate_closure(&closure, &hits, "dora", &["famiglia".to_owned()]).is_ok(),
             "a member of the audience the fact was shared with may retire it"
         );
         // Reading it some other way is not being in the audience: morgana is
         // in no group of the allow list and is still refused.
-        assert!(
-            validate_closure(&closure, &hits, "morgana", &[], RuleRetraction::Allowed).is_err()
-        );
+        assert!(validate_closure(&closure, &hits, "morgana", &[]).is_err());
     }
 
     /// A validity edit rides the same three doors as a closure, and the
@@ -17247,49 +17314,68 @@ mod tests {
         );
     }
 
-    /// Both closing stages are taught the rule the engine enforces: one verb
-    /// and one reason on a standing directive.
+    /// Both closing stages are taught the rule the engine enforces: a rule is
+    /// not theirs to touch, and a withdrawal is named elsewhere.
     ///
     /// Asserting that a SENTENCE is present defends that sentence after it has
-    /// become false — which is what happened here, when the prompts still said
-    /// "name one and the entry is refused" while the engine had started
-    /// admitting a retraction. So each assertion asks for the rule instead:
-    /// `retracted` named as the one reason a rule takes, and the two that are
-    /// refused named as refused. A prompt rewritten in other words passes; a
-    /// prompt that stops teaching the rule does not.
+    /// become false — which is what happened here twice. So each assertion
+    /// asks for the rule instead: that naming a rule is refused, and where a
+    /// withdrawal is really named, which is what lets the stage leave the rule
+    /// alone without leaving the person unanswered. A prompt rewritten in
+    /// other words passes; one that stops teaching the rule does not.
     #[test]
-    fn the_closing_stages_teach_the_one_verb_a_rule_takes() {
+    fn the_closing_stages_send_a_withdrawal_where_it_is_really_named() {
         for (name, prompt) in [
             ("reconciler", BUNDLED_INGEST_RECONCILE_MD),
             ("closure confirmer", BUNDLED_INGEST_CLOSURES_MD),
         ] {
             let lowered = prompt.to_ascii_lowercase();
             // The rule is taught where the directive is discussed, so the
-            // three words have to appear together in one passage rather than
+            // words have to appear together in one passage rather than
             // anywhere in a hundred-thousand-character document.
             let passage = lowered
-                .split("standing directive")
+                .split("standing rule")
                 .nth(1)
+                .or_else(|| lowered.split("standing directive").nth(1))
                 .unwrap_or_default()
                 .chars()
                 .take(1_800)
                 .collect::<String>();
             assert!(
-                passage.contains("retracted"),
-                "the {name} is no longer told which reason a rule takes"
+                passage.contains("withdraw_target"),
+                "the {name} is no longer told where a withdrawal is really named, \
+                 so it has no answer for a person asking to drop a rule"
             );
-            for refused in ["completed", "contradicted"] {
-                assert!(
-                    passage.contains(refused),
-                    "the {name} is no longer told that `{refused}` is refused on a rule"
-                );
-            }
             assert!(
-                passage.contains("engine"),
-                "the {name} is no longer told the engine checks whose rule it is, \
-                 so it cannot tell the user why a withdrawal was refused"
+                passage.contains("refused"),
+                "the {name} is no longer told that naming a rule here is refused"
             );
         }
+    }
+
+    /// The topic words are told which language they are written in.
+    ///
+    /// They are neither a machine key nor a sentence, so a language directive
+    /// that names only the machinery and the reply leaves them in the gap —
+    /// and every worked example of the field being in one language is the
+    /// other half of it. An all-English memory came back tagged `acquisto`,
+    /// `finanze`, `manutenzione`, and the compiled pages printed those among
+    /// their keywords, where a reader sees them.
+    #[test]
+    fn bundled_ingest_prompt_writes_the_topic_words_in_the_memory_s_language() {
+        assert!(
+            BUNDLED_INGEST_PROMPT_MD
+                .contains("**They are written in the SAME LANGUAGE as the body**"),
+            "the topics section no longer says which language its words take"
+        );
+        assert!(
+            BUNDLED_INGEST_PROMPT_MD.contains("[\"car\", \"purchase\"]"),
+            "the English worked pair is gone, leaving only Italian examples to copy"
+        );
+        assert!(
+            BUNDLED_INGEST_PROMPT_MD.contains("[\"strumenti\", \"configurazione\"]"),
+            "the Italian pair is gone, and an Italian memory has no worked example of its own"
+        );
     }
 
     /// A fact with no page yet is not reported as a smart wiki.
@@ -17415,17 +17501,21 @@ mod tests {
         drop(dir);
     }
 
-    /// Withdrawing a rule out loud works, and it is the one thing a person
-    /// can say about a directive from the conversation.
+    /// Withdrawing a rule out loud works, and the page says so afterwards.
     ///
     /// «Forget the one about short answers» asserts nothing new, so the turn
-    /// files no extraction and is still a capture — and it says so, with
-    /// `withdrawal: true`, which is what opens the candidate list to rules.
-    /// The stage then has exactly one verb on them, and the person taking a
-    /// rule back is its subject.
+    /// files no extraction; what carries it is `withdrawal` plus the rule's
+    /// own id in `withdraw_target`, resolved against the block of directives
+    /// the classifier is shown. That block is the only place a rule is ever
+    /// visible with its id — it never travels with the recalled facts — which
+    /// is why this is the road and the closing stages are not.
     #[tokio::test]
     async fn a_rule_is_withdrawn_when_somebody_says_so_of_the_rule() {
         let (dir, tree, pool) = setup_agent_workdir().await;
+        sqlx::query("INSERT INTO enrollment_users (user_id, is_admin) VALUES ('alice', 0)")
+            .execute(&pool)
+            .await
+            .unwrap();
         let rule_id = wiki_ingest_message(
             &pool,
             &tree,
@@ -17450,24 +17540,16 @@ mod tests {
         .capture_id
         .expect("the directive is filed");
 
-        let reconcile = format!(
-            "{{\"closures\":[{{\"target\":\"{}\",\"reason\":\"retracted\",\
-              \"valid_to\":null}}],\"supersedes\":[],\
-              \"validity_edits\":[],\"acl_changes\":[]}}",
+        let withdraw = format!(
+            "{{\"intent\":\"capture\",\"withdrawal\":true,\"withdraw_target\":\"{}\",\
+              \"extractions\":[],\"suggested_seed\":\"Ok.\"}}",
             rule_id.as_str()
         );
-        let llm = ScriptedLlm::new(&[
-            // The gesture is DECLARED, not inferred from the empty array:
-            // that inference also fits «thanks, that was useful».
-            "{\"intent\":\"capture\",\"withdrawal\":true,\"extractions\":[],\
-              \"suggested_seed\":\"Ok.\"}",
-            &reconcile,
-        ]);
         wiki_ingest_message(
             &pool,
             &tree,
             fake_embedder(),
-            &llm,
+            &FakeLlmBackend::new("fake", &withdraw),
             None,
             req_consumer(
                 "Forget that rule about keeping it short.",
@@ -17501,22 +17583,41 @@ mod tests {
             served.is_empty(),
             "a withdrawn rule must stop steering the agent: {served:?}"
         );
-        // The words stay on the page, and that is deliberate: cutting a live
-        // row's region hands it to the orphan sweep, which tombstones it. What
-        // stops the leftover doing harm is that the nightly dedup ignores a
-        // rule whose window is shut.
+
+        // The words stay on the page — cutting a live row's region hands it to
+        // the orphan sweep, which tombstones it — and the page says they no
+        // longer bind, so it stays a truthful list of what does.
+        let page = std::fs::read_to_string(
+            tree.wikis_dir()
+                .join("samvisebot")
+                .join(crate::wiki::RULES_FILENAME),
+        )
+        .expect("the rules page is there");
+        assert!(
+            page.contains("without the preamble"),
+            "the rule's own words are untouched: {page}"
+        );
+        assert!(
+            page.contains("_withdrawn on "),
+            "and the page says it was withdrawn: {page}"
+        );
+        // The marker survived, so nothing collected it as an orphan.
+        assert!(
+            row.region_start.is_some(),
+            "the row keeps its region: nothing swept it"
+        );
         drop(dir);
     }
 
-    /// The rules open to the reconciliation stage only on a DECLARED
-    /// withdrawal, not on a turn that merely wrote nothing.
+    /// A rule is never a candidate of the reconciliation stage, on any turn.
     ///
-    /// Reading the gesture off the shape — an empty `extractions` array on a
-    /// capture — also fits «thanks, that was useful», and that turn was
-    /// opening the standing rules to the one stage that can take a fact away.
-    /// The classifier says so or it does not happen.
+    /// It cannot be: a behaviour rule travels on its own channel and never on
+    /// recall, so the stage would be judging something it was never shown.
+    /// Both roads a person has to a rule — revising it and withdrawing it —
+    /// are resolved against the block the classifier IS shown, where a rule
+    /// appears with its id, and neither passes through here.
     #[tokio::test]
-    async fn the_rules_open_only_when_the_turn_declares_a_withdrawal() {
+    async fn a_standing_rule_is_never_a_reconciliation_candidate() {
         let rule = {
             let mut h = sample_recall_hit("0190f3c2-7a4e-7c31-9b02-2f6a1c8e5d21");
             h.source_path = format!("wikis/alice/{}", crate::wiki::RULES_FILENAME);
@@ -17526,97 +17627,24 @@ mod tests {
         let flat = vec![rule.clone(), plain.clone()];
         let (dir, _tree, pool) = setup_workdir().await;
 
-        for (declared, rule_is_a_candidate) in [(false, false), (true, true)] {
-            let got = reconcile_candidates(
-                &pool,
-                &fake_embedder(),
-                "thanks, that was useful",
-                &flat,
-                &[],
-                &SenderContext::user("alice"),
-                0,
-                &[],
-                declared,
-            )
-            .await;
-            assert_eq!(
-                got.iter().any(|h| h.fact_id == rule.fact_id),
-                rule_is_a_candidate,
-                "withdrawal declared = {declared}: the rule must {} be a candidate",
-                if rule_is_a_candidate { "" } else { "not" }
-            );
-            assert!(
-                got.iter().any(|h| h.fact_id == plain.fact_id),
-                "an ordinary fact is a candidate either way"
-            );
-        }
-        drop(dir);
-    }
-
-    /// A rule for everyone is the admin's to withdraw, and nobody else's.
-    ///
-    /// An agent-wide directive is subject AND author of itself, so the
-    /// ordinary retraction test refuses everybody — the admin who dictated it
-    /// included, which is how it became a rule nobody could lift. The
-    /// authority follows the one that set it.
-    #[tokio::test]
-    async fn a_rule_for_everyone_is_withdrawn_by_the_admin_and_by_nobody_else() {
-        let (dir, _tree, pool) = setup_agent_workdir().await;
-        sqlx::query("INSERT INTO enrollment_users (user_id, is_admin) VALUES ('alice', 1)")
-            .execute(&pool)
-            .await
-            .unwrap();
-        sqlx::query("INSERT INTO enrollment_users (user_id, is_admin) VALUES ('zoe', 0)")
-            .execute(&pool)
-            .await
-            .unwrap();
-        sqlx::query("UPDATE enrollment_users SET is_agent = 1 WHERE user_id = 'samvisebot'")
-            .execute(&pool)
-            .await
-            .unwrap();
-
-        // The agent's own rule: subject and sender both the agent.
-        let mut agents_rule = sample_recall_hit("0190f3c2-7a4e-7c31-9b02-2f6a1c8e5d31");
-        agents_rule.source_path = format!("wikis/samvisebot/{}", crate::wiki::RULES_FILENAME);
-        agents_rule.subject_id = Principal::User("samvisebot".into());
-        agents_rule.sender_id = Some(Principal::User("samvisebot".into()));
-        let hits = vec![agents_rule.clone()];
-        let closure = LlmClosure {
-            target: Some(agents_rule.fact_id.as_str().to_owned()),
-            reason: Some("retracted".to_owned()),
-            valid_to: None,
-        };
-
-        for (who, expected) in [
-            ("alice", RuleRetraction::Allowed),
-            ("zoe", RuleRetraction::NeedsTheAdmin),
-        ] {
-            let got =
-                rule_retraction_for(&pool, &closure, &hits, &req("forget it", who), &[]).await;
-            assert_eq!(got, expected, "the agent's rule, asked by {who}");
-        }
-
-        // Somebody else's PER-USER rule is neither: not the agent's, and not
-        // the speaker's — the admin does not inherit it.
-        let mut zoes_rule = sample_recall_hit("0190f3c2-7a4e-7c31-9b02-2f6a1c8e5d32");
-        zoes_rule.source_path = format!("wikis/samvisebot/{}", crate::wiki::RULES_FILENAME);
-        zoes_rule.subject_id = Principal::User("zoe".into());
-        zoes_rule.sender_id = Some(Principal::User("zoe".into()));
-        let hits = vec![zoes_rule.clone()];
-        let closure = LlmClosure {
-            target: Some(zoes_rule.fact_id.as_str().to_owned()),
-            reason: Some("retracted".to_owned()),
-            valid_to: None,
-        };
-        assert_eq!(
-            rule_retraction_for(&pool, &closure, &hits, &req("forget it", "alice"), &[]).await,
-            RuleRetraction::NotYours,
-            "being the admin is not being the person who said it"
+        let got = reconcile_candidates(
+            &pool,
+            &fake_embedder(),
+            "forget that rule about keeping it short",
+            &flat,
+            &[],
+            &SenderContext::user("alice"),
+            0,
+            &[],
+        )
+        .await;
+        assert!(
+            !got.iter().any(|h| h.fact_id == rule.fact_id),
+            "a rule must never reach the stage that judges recalled facts"
         );
-        assert_eq!(
-            rule_retraction_for(&pool, &closure, &hits, &req("forget it", "zoe"), &[]).await,
-            RuleRetraction::Allowed,
-            "and the person who said it may take it back"
+        assert!(
+            got.iter().any(|h| h.fact_id == plain.fact_id),
+            "an ordinary fact still is a candidate"
         );
         drop(dir);
     }
@@ -17648,6 +17676,208 @@ mod tests {
         assert!(rules.contains("administrator"));
     }
 
+    /// File one rule and hand back its id — shared by the crossings below.
+    async fn file_rule(
+        pool: &SqlitePool,
+        tree: &WikiTree,
+        who: &str,
+        scope: &str,
+        body: &str,
+    ) -> FactId {
+        let plan = format!(
+            "{{\"intent\":\"capture\",\"extractions\":[{{\
+              \"behaviour_rule\":true,\"behaviour_scope\":\"{scope}\",\
+              \"body\":\"{body}\"}}],\"suggested_seed\":\"Ok.\"}}"
+        );
+        wiki_ingest_message(
+            pool,
+            tree,
+            fake_embedder(),
+            &FakeLlmBackend::new("fake", &plan),
+            None,
+            req_consumer("a rule", who, "botdeploy"),
+            &IngestPolicy::default(),
+        )
+        .await
+        .expect("ingest")
+        .capture_id
+        .expect("the rule is filed")
+    }
+
+    /// Ask for a withdrawal, the way the prompt asks the classifier to.
+    async fn withdraw(
+        pool: &SqlitePool,
+        tree: &WikiTree,
+        who: &str,
+        target: &FactId,
+    ) -> IngestResponse {
+        let plan = format!(
+            "{{\"intent\":\"capture\",\"withdrawal\":true,\
+              \"withdraw_target\":\"{}\",\"extractions\":[],\
+              \"suggested_seed\":\"Ok.\"}}",
+            target.as_str()
+        );
+        wiki_ingest_message(
+            pool,
+            tree,
+            fake_embedder(),
+            &FakeLlmBackend::new("fake", &plan),
+            None,
+            req_consumer("forget that rule", who, "botdeploy"),
+            &IngestPolicy::default(),
+        )
+        .await
+        .expect("ingest")
+    }
+
+    /// Has this rule's window been shut?
+    async fn is_withdrawn(pool: &SqlitePool, id: &FactId) -> bool {
+        fact_index::find_by_id(pool, id)
+            .await
+            .expect("find")
+            .expect("row")
+            .valid_to
+            .is_some()
+    }
+
+    /// The four crossings of a withdrawal, each driven through a real turn.
+    ///
+    /// The previous version of this called the authority helper with
+    /// candidates built by hand, which proved the door and not that anybody
+    /// could reach it — and nobody could: a rule never enters the candidates
+    /// the closing stages judge, so every withdrawal was refused as a
+    /// hallucinated id and the person heard "Ok." Here the classifier answers
+    /// with `withdrawal` and `withdraw_target`, exactly as the prompt now
+    /// asks, and the turn goes through `wiki_ingest_message`.
+    #[tokio::test]
+    async fn the_four_crossings_of_a_withdrawal_through_a_real_turn() {
+        // 1 — the author takes back their own rule.
+        let (dir, tree, pool) = setup_agent_workdir().await;
+        sqlx::query("INSERT INTO enrollment_users (user_id, is_admin) VALUES ('alice', 0)")
+            .execute(&pool)
+            .await
+            .unwrap();
+        let mine = file_rule(&pool, &tree, "alice", "per-user", "Answer concisely.").await;
+        let resp = withdraw(&pool, &tree, "alice", &mine).await;
+        assert!(
+            is_withdrawn(&pool, &mine).await,
+            "the person who set a rule may take it back"
+        );
+        assert!(
+            !resp.rules.as_deref().unwrap_or_default().contains("NOTE —"),
+            "and hears no refusal: {:?}",
+            resp.rules
+        );
+        drop(dir);
+
+        // 2 — a rule this speaker was never shown. Somebody else's per-user
+        // rule is not in the block they are served, so its id is one they
+        // cannot have been given: the withdrawal names nothing in force, the
+        // rule is untouched, and they are told rather than answered "Ok."
+        let (dir, tree, pool) = setup_agent_workdir().await;
+        for (u, admin) in [("alice", 1), ("zoe", 0)] {
+            sqlx::query("INSERT INTO enrollment_users (user_id, is_admin) VALUES (?, ?)")
+                .bind(u)
+                .bind(admin)
+                .execute(&pool)
+                .await
+                .unwrap();
+        }
+        let zoes = file_rule(&pool, &tree, "zoe", "per-user", "Answer concisely.").await;
+        let resp = withdraw(&pool, &tree, "alice", &zoes).await;
+        assert!(
+            !is_withdrawn(&pool, &zoes).await,
+            "being the admin is not being the person who said it"
+        );
+        assert!(
+            resp.rules
+                .as_deref()
+                .unwrap_or_default()
+                .contains("none of the rules in force"),
+            "and the refusal is told, not swallowed: {:?}",
+            resp.rules
+        );
+        drop(dir);
+
+        // 3 and 4 — a rule for everyone: the admin may, a normal user may not.
+        for (who, expect_withdrawn) in [("zoe", false), ("alice", true)] {
+            let (dir, tree, pool) = setup_agent_workdir().await;
+            for (u, admin) in [("alice", 1), ("zoe", 0)] {
+                sqlx::query("INSERT INTO enrollment_users (user_id, is_admin) VALUES (?, ?)")
+                    .bind(u)
+                    .bind(admin)
+                    .execute(&pool)
+                    .await
+                    .unwrap();
+            }
+            sqlx::query("UPDATE enrollment_users SET is_agent = 1 WHERE user_id = 'samvisebot'")
+                .execute(&pool)
+                .await
+                .unwrap();
+            let everyones = file_rule(
+                &pool,
+                &tree,
+                "alice",
+                "agent-wide",
+                "Never give medical advice.",
+            )
+            .await;
+            let resp = withdraw(&pool, &tree, who, &everyones).await;
+            assert_eq!(
+                is_withdrawn(&pool, &everyones).await,
+                expect_withdrawn,
+                "a rule for everyone, asked by {who}"
+            );
+            if !expect_withdrawn {
+                assert!(
+                    resp.rules
+                        .as_deref()
+                        .unwrap_or_default()
+                        .contains("administrator"),
+                    "a normal user must be told an admin has to lift it: {:?}",
+                    resp.rules
+                );
+            }
+            drop(dir);
+        }
+    }
+
+    /// `withdrawal` on a turn that also writes facts changes nothing about
+    /// the facts, and a turn that writes facts without it withdraws nothing.
+    ///
+    /// The two are independent: the flag says the turn takes something back,
+    /// the extractions say what it states. A turn can do both.
+    #[tokio::test]
+    async fn a_withdrawal_flag_does_not_disturb_the_facts_the_turn_states() {
+        for declared in [false, true] {
+            let (dir, tree, pool) = setup_workdir().await;
+            let plan = format!(
+                "{{\"intent\":\"capture\",\"withdrawal\":{declared},\"extractions\":[{{\
+                  \"subject_id\":\"user:alice\",\"fact_type\":\"state\",\"style\":\"prosa\",\
+                  \"body\":\"Alice lives in Bologna.\",\"topics\":[\"home\",\"city\"]}}],\
+                  \"suggested_seed\":\"Noted.\"}}"
+            );
+            wiki_ingest_message(
+                &pool,
+                &tree,
+                fake_embedder(),
+                &FakeLlmBackend::new("fake", &plan),
+                None,
+                req("I live in Bologna", "alice"),
+                &IngestPolicy::default(),
+            )
+            .await
+            .expect("ingest");
+            let buffered = capture_buffer::find_all_buffered(&pool, 100).await.unwrap();
+            assert_eq!(
+                buffered.len(),
+                1,
+                "withdrawal = {declared}: the stated fact is taken either way"
+            );
+            drop(dir);
+        }
+    }
+
     /// The four verbs, one test each: what each refuses on a rule, and what
     /// it still does on an ordinary fact so the refusal is not the whole
     /// function saying no.
@@ -17665,27 +17895,19 @@ mod tests {
         let plain = sample_recall_hit("0190f3c2-7a4e-7c31-9b02-2f6a1c8e5d12");
         let groups: Vec<String> = Vec::new();
 
-        // The closure verb: `retracted` passes on a rule, the other two do not.
-        for (reason, allowed) in [
-            ("retracted", true),
-            ("completed", false),
-            ("contradicted", false),
-        ] {
+        // The closure verb judges recalled facts, and a rule is never one:
+        // withdrawing a rule is named to the classifier instead. Every reason
+        // is refused here, the one that IS a withdrawal included — that road
+        // does not run through this function.
+        for reason in ["retracted", "completed", "contradicted"] {
             let closure = LlmClosure {
                 target: Some(rule.fact_id.as_str().to_owned()),
                 reason: Some(reason.to_owned()),
                 valid_to: None,
             };
-            let got = validate_closure(
-                &closure,
-                std::slice::from_ref(&rule),
-                "alice",
-                &groups,
-                RuleRetraction::Allowed,
-            );
-            assert_eq!(
-                got.is_ok(),
-                allowed,
+            let got = validate_closure(&closure, std::slice::from_ref(&rule), "alice", &groups);
+            assert!(
+                matches!(got, Err(ClosurePlanError::TargetIsAStandingRule(_))),
                 "a `{reason}` closure on a standing directive: {got:?}"
             );
         }
@@ -17698,14 +17920,7 @@ mod tests {
                 valid_to: None,
             };
             assert!(
-                validate_closure(
-                    &closure,
-                    std::slice::from_ref(&plain),
-                    "alice",
-                    &groups,
-                    RuleRetraction::Allowed,
-                )
-                .is_ok(),
+                validate_closure(&closure, std::slice::from_ref(&plain), "alice", &groups).is_ok(),
                 "`{reason}` is refused on an ordinary fact"
             );
         }
@@ -17765,16 +17980,14 @@ mod tests {
         let mut rule = sample_recall_hit("0190f3c2-7a4e-7c31-9b02-2f6a1c8e5d11");
         rule.source_path = format!("wikis/alice/{}", crate::wiki::RULES_FILENAME);
         let plain = sample_recall_hit("0190f3c2-7a4e-7c31-9b02-2f6a1c8e5d12");
-        assert!(
-            reconcile_candidate_line(&rule, &now).contains("STANDING RULE"),
-            "the reconciler is not told its candidate is a rule"
-        );
+        // The closure confirmer draws from recall, which does not hold rules
+        // back, so it can be shown one and must see what it is.
         assert!(
             closure_candidate_line(&rule, &now).contains("STANDING RULE"),
             "the closure confirmer is not told its candidate is a rule"
         );
         assert!(
-            !reconcile_candidate_line(&plain, &now).contains("STANDING RULE"),
+            !closure_candidate_line(&plain, &now).contains("STANDING RULE"),
             "and an ordinary fact is not dressed as one"
         );
     }
@@ -19731,7 +19944,6 @@ mod tests {
             &SenderContext::user("alice"),
             10,
             &[],
-            false,
         )
         .await;
         assert!(
@@ -19797,7 +20009,6 @@ mod tests {
             &SenderContext::user("alice"),
             1,
             &[(this_turn.clone(), "alice ha comprato il latte".to_owned())],
-            false,
         )
         .await;
 

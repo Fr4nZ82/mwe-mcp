@@ -495,6 +495,63 @@ pub async fn strip_fact_region(
     cut_region(pool, tree, embedder, fact_id, &row).await
 }
 
+/// Mark a withdrawn rule on its page, so the page stays a truthful list of
+/// what binds the assistant.
+///
+/// A line of engine furniture written straight AFTER the region's closing
+/// marker, never inside it. Three things follow from that, and all three are
+/// the point:
+///
+/// - the fact's own words are untouched, so the claim on the page and the
+///   claim in the index stay the same sentence;
+/// - the marker survives, so the orphan sweep in [`reindex_file`] has nothing
+///   to collect — the trap that makes CUTTING a live row's region unsafe
+///   ([`strip_fact_region`] refuses exactly that);
+/// - the note is untagged prose, which on a rules page is read by anyone who
+///   may open the page and discloses nothing: it says a rule stopped, not
+///   what the rule said.
+///
+/// Idempotent: a second withdrawal of the same rule writes nothing.
+pub async fn note_rule_withdrawn(
+    pool: &SqlitePool,
+    tree: &WikiTree,
+    embedder: Arc<dyn Embedder>,
+    fact_id: &FactId,
+    on: &str,
+) -> Result<bool> {
+    let Some(row) = fact_index::find_by_id(pool, fact_id).await? else {
+        return Ok(false);
+    };
+    if !crate::wiki::is_rules_page(&row.source_path) || row.valid_to.is_none() {
+        return Ok(false);
+    }
+    let (Some(_), Some(end)) = (row.region_start, row.region_end) else {
+        return Ok(false);
+    };
+    let Ok(end) = usize::try_from(end) else {
+        return Ok(false);
+    };
+    let abs = tree.workdir().join(&row.source_path);
+    let Ok(raw) = std::fs::read_to_string(&abs) else {
+        return Ok(false);
+    };
+    if end > raw.len() || !raw.is_char_boundary(end) {
+        return Ok(false);
+    }
+    let note = format!("\n_withdrawn on {on}_\n");
+    if raw[end..].starts_with(&note) {
+        return Ok(false);
+    }
+    let mut out = String::with_capacity(raw.len() + note.len());
+    out.push_str(&raw[..end]);
+    out.push_str(&note);
+    out.push_str(&raw[end..]);
+    crate::wiki::atomic_write(&abs, out.as_bytes())?;
+    // Only the offsets after the insertion moved; every marker is still there.
+    reindex_file(pool, tree, embedder, &abs).await?;
+    Ok(true)
+}
+
 /// The cut itself: find the span, check it really brackets this fact's
 /// marker, rewrite the page, re-sync the surviving offsets and settle the
 /// row's own.
