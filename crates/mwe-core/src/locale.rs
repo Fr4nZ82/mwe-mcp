@@ -226,8 +226,9 @@ pub async fn memory_wide_locale(pool: &sqlx::SqlitePool) -> Option<String> {
 /// a complete LANGUAGE section.
 const MIRROR_FALLBACK: &str = "Mirror the language of the user's message. Never mix languages in a single response. \
      Never use non-Latin alphabets unless the user's text explicitly uses them. The tool \
-     names, JSON keys and argument enums above stay in English; only the natural-language \
-     replies follow the user's locale.";
+     names, JSON keys and argument enums above stay in English; EVERYTHING ELSE you write \
+     as natural language follows the user's language — not only whole sentences, but every \
+     short label and keyword you coin as well.";
 
 /// Translate a BCP-47 tag's **primary subtag** to its English
 /// language name. Unknown subtags surface as the tag itself wrapped
@@ -440,6 +441,21 @@ mod tests {
         // them, so the rule has to hold identically whichever language the tag
         // names — an Italian memory keeps Italian labels, an English one
         // English ones, and neither borrows the other's.
+        // The exit taken by a person with no language set at all — the third
+        // source empty, which `ingest.rs` reaches through
+        // `render_language_directive(None)`. It carries the same rule: a
+        // memory mirroring its speaker still must not coin a label in
+        // another language than the one it is mirroring.
+        let mirrored = render_language_directive(None);
+        assert!(
+            mirrored.contains("every short label and keyword you coin"),
+            "the mirror exit stops at whole sentences: {mirrored}"
+        );
+        assert!(
+            mirrored.contains("Mirror the language"),
+            "and it is still the mirror clause: {mirrored}"
+        );
+
         for (tag, language) in [("en-GB", "English"), ("it", "Italian")] {
             let directive = render_language_directive(Some(tag));
             assert!(

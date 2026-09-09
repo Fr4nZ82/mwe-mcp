@@ -2447,10 +2447,12 @@ enum ClosurePlanError {
 /// Validate one requested closure against this turn's recall window.
 ///
 /// Returns the matched [`RecallHit`] (its `wiki_id` + text feed the
-/// receipt) and the canonical [`fact_index::decay`] reason. Tolerant on
-/// the reason's *spelling* (a few obvious aliases map in), strict on its
-/// *presence*: a closure without a recognisable reason is skipped, never
-/// guessed.
+/// receipt) and the canonical [`fact_index::decay`] reason. Strict on the
+/// reason's *presence* — a closure without a recognisable one is skipped,
+/// never guessed — and it reads two words beyond the three the prompts ask
+/// for: `contradiction` for `contradicted`, and `superseded`, which is not a
+/// spelling but a stage saying it had no successor to name. Both mean
+/// `contradicted` and nothing else is admitted.
 fn validate_closure<'a>(
     closure: &LlmClosure,
     recall_hits: &'a [RecallHit],
@@ -2514,17 +2516,15 @@ fn validate_closure<'a>(
     {
         Some("completed" | "done" | "consumed") => fact_index::decay::COMPLETED,
         Some("retracted" | "abandoned" | "forgotten" | "cancelled") => fact_index::decay::RETRACTED,
-        // `superseded` and its synonyms are the shape that arrives when the
-        // message DID overtake the fact and the stage had no successor id to
-        // name — the replacement is not among the facts this turn wrote, so
-        // verb 2 was unavailable and the closure verb is all that was left.
-        // That is what `contradicted` means, so the answer is read rather than
-        // thrown away. The prompts still ask for the three words and do not
-        // mention these: an alias is a net under a stage that already knows
-        // the rule, never a fourth reason it may choose.
-        Some("contradicted" | "contradiction" | "superseded" | "replaced" | "overtaken") => {
-            fact_index::decay::CONTRADICTED
-        },
+        // `superseded` is the one word out of vocabulary that has actually
+        // arrived, four times in one replayed corpus: the shape is a message
+        // that DID overtake the fact while the stage had no successor id to
+        // name, so verb 2 was unavailable and the closure verb was all that
+        // was left. That is what `contradicted` means, so the answer is read
+        // rather than thrown away. It stays at ONE word: a wider list would
+        // be guessing at words no stage has ever written, and the prompts ask
+        // for the three real ones and do not mention this.
+        Some("contradicted" | "contradiction" | "superseded") => fact_index::decay::CONTRADICTED,
         other => {
             return Err(ClosurePlanError::UnknownReason(
                 other.unwrap_or_default().to_owned(),
@@ -8867,7 +8867,12 @@ pub async fn wiki_ingest_message(
                         // since the turn goes on to report itself as a capture.
                         tracing::warn!(
                             error = %err,
-                            dropped_body = %unit.body.unwrap_or("<no body>"),
+                            dropped_body = %unit
+                                .body
+                                .unwrap_or("<no body>")
+                                .chars()
+                                .take(200)
+                                .collect::<String>(),
                             dropped_subject = %unit.subject_id.unwrap_or("<absent>"),
                             "ingest: capture plan invalid — this extraction dropped, \
                              the rest of the turn files"
@@ -16748,8 +16753,12 @@ mod tests {
     #[test]
     fn the_closing_stages_say_what_to_write_when_there_is_no_successor_to_name() {
         assert!(
-            BUNDLED_INGEST_RECONCILE_MD.contains("the reason is\n   **\"contradicted\"**"),
+            BUNDLED_INGEST_RECONCILE_MD.contains("a closure, reason\n      **\"contradicted\"**"),
             "the reconciler no longer answers the no-successor case"
+        );
+        assert!(
+            BUNDLED_INGEST_RECONCILE_MD.contains("There is no fourth case"),
+            "the three-way rule that decides between the verbs and doing nothing is gone"
         );
         assert!(
             BUNDLED_INGEST_CLOSURES_MD.contains("there is no \"superseded\""),
@@ -16794,8 +16803,8 @@ mod tests {
             "the English worked pair is gone, leaving only Italian examples to copy"
         );
         assert!(
-            !BUNDLED_INGEST_PROMPT_MD.contains("[\"strumenti\", \"configurazione\"]"),
-            "an English sentence is shown with Italian topics again — the defect as an example"
+            BUNDLED_INGEST_PROMPT_MD.contains("[\"strumenti\", \"configurazione\"]"),
+            "the Italian pair is gone, and an Italian memory has no worked example of its own"
         );
     }
 

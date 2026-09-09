@@ -242,6 +242,34 @@ fn segment_fact_id(attrs: &RegionAttrs, db_acl: &FactAclMap) -> Option<FactId> {
         .cloned()
 }
 
+/// Does this line of prose give a redacted page something to stand on?
+///
+/// The total-redaction collapse asks whether anything outside the fact
+/// regions would still be readable. A **thematic break** would not: a rule of
+/// dashes, asterisks or underscores is punctuation between things, it says
+/// nothing on its own, and on a page whose every fact is withheld it says the
+/// one thing the collapse exists to withhold — that the page has parts, and
+/// roughly where they are. So it does not count as an anchor, and a page made
+/// of facts plus a separator still collapses to the single callout.
+///
+/// Everything else does count, including a lone heading: a heading names
+/// something, and a reader shown a heading over `[redacted]` has been told
+/// what they may not read, which is a decision the page's author made.
+fn anchors_a_redacted_page(line: &str) -> bool {
+    let trimmed = line.trim();
+    if trimmed.is_empty() {
+        return false;
+    }
+    // CommonMark's thematic break: three or more of one marker, spaces
+    // allowed between them and nothing else on the line. The count matters —
+    // a single `-` is a list bullet, which is content.
+    let is_thematic_break = |marker: char| {
+        trimmed.chars().filter(|c| *c == marker).count() >= 3
+            && trimmed.chars().all(|c| c == marker || c.is_whitespace())
+    };
+    !(is_thematic_break('-') || is_thematic_break('*') || is_thematic_break('_'))
+}
+
 /// Render `text` for `sender_id`, applying the redaction policy.
 ///
 /// `db_acl` is the page's authoritative fact-key → ACL map loaded from
@@ -300,7 +328,7 @@ pub fn render_for_sender_segments(
                 // Both the consumer LLM and the human reader need this
                 // context to interpret the surrounding regions.
                 out.push_plain(body);
-                if body.chars().any(|c| !c.is_whitespace()) {
+                if body.lines().any(anchors_a_redacted_page) {
                     has_meaningful_prose = true;
                 }
             },
@@ -732,6 +760,54 @@ Sméagol stamattina ha brontolato a colazione.{{{{/}}}}"
         // The total-redaction signal is observable as the
         // collapsed callout in `text`, not as a separate boolean.
         assert_eq!(out.text, FULLY_PRIVATE_CALLOUT);
+    }
+
+    /// A page of facts and a separator still collapses, so the separator
+    /// cannot report the page's shape to a reader who may read none of it.
+    ///
+    /// The compiler puts a thematic break above the facts it appends when the
+    /// writer left them untagged, and a page that is nothing but facts is the
+    /// ordinary case. Counting that break as prose would hand the one reader
+    /// the collapse exists for — the one who may read nothing here — a body of
+    /// `[redacted]`, a rule, `[redacted]`: how many parts, and where the seam
+    /// between them falls.
+    #[test]
+    fn a_separator_is_not_the_prose_that_keeps_a_private_page_from_collapsing() {
+        let private = format!(
+            "{{{{subject=user:frodo allow=group:famiglia f={SAMPLE_UUID_V7}}}}}\
+Il primo fatto.{{{{/}}}}\n\n---\n\n\
+{{{{subject=user:frodo allow=group:famiglia f=0190f3c2-7a4e-7c31-9b02-2f6a1c8e5d02}}}}\
+Il secondo fatto.{{{{/}}}}"
+        );
+
+        // The reader who may read none of it is told one thing and no more.
+        let out = render_for_sender(&private, &no_db(), "bilbo", &groups(&["amici"]));
+        assert_eq!(
+            out.text, FULLY_PRIVATE_CALLOUT,
+            "a separator must not keep the page from collapsing: {}",
+            out.text
+        );
+        assert_eq!(out.blocks_redacted, 2, "and the count is still carried");
+
+        // The reader who may read it gets the page, separator included.
+        let out = render_for_sender(&private, &no_db(), "frodo", &groups(&["famiglia"]));
+        assert!(out.text.contains("Il primo fatto."));
+        assert!(out.text.contains("Il secondo fatto."));
+        assert!(
+            out.text.contains("---"),
+            "the break is still written for whoever can read the page: {}",
+            out.text
+        );
+
+        // Real prose still anchors: one heading is enough, and it should be —
+        // a heading names what is withheld, which is the author's decision.
+        let with_heading = format!("# Il titolo\n\n{private}");
+        let out = render_for_sender(&with_heading, &no_db(), "bilbo", &groups(&["amici"]));
+        assert_ne!(
+            out.text, FULLY_PRIVATE_CALLOUT,
+            "a page with real prose does not collapse"
+        );
+        assert!(out.text.contains("Il titolo"));
     }
 
     #[test]

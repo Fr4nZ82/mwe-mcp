@@ -1,8 +1,8 @@
 ---
 name: ingest-reconcile
 description: Reconciler — after the memory has been read, decide what this turn closes, replaces, re-dates or re-shares among the facts the turn actually saw; strict JSON out; change nothing rather than the wrong thing
-version: 1.9
-default_version_at_bootstrap: v1.9
+version: 1.10
+default_version_at_bootstrap: v1.10
 ---
 
 # Prompt: ingest-reconcile
@@ -65,14 +65,21 @@ Four verbs, and each one has to be plainly stated by the message:
    - "contradicted" — the message states something that makes it false, without replacing it
 
    Those three and nothing else. **There is no "superseded" closure**, and the
-   case you are reaching for it in has an answer: a fact replaced by something
-   THIS TURN wrote is verb 2, which needs the replacement's id — a closure
-   names none. When the fact really is overtaken but the replacement is NOT
-   among the facts this turn wrote, so there is no id to name, the reason is
-   **"contradicted"**: the message made it false without replacing it, which is
-   exactly what that word is for. Between the two there is no third case, so
-   the word "superseded" never has to be written — reach for verb 2 when you
-   have the successor and "contradicted" when you do not.
+   case you reach for it in has an answer. One rule, asked in this order, and
+   it decides between all four verbs and doing nothing:
+
+   1. the message states what replaces the fact, and that replacement is one
+      of the facts THIS TURN wrote → **verb 2**, which carries its id;
+   2. the message makes the fact false without saying what replaces it («the
+      flat is off the market after all») → a closure, reason
+      **"contradicted"**;
+   3. the message only mentions the fact, discusses it, or says the same thing
+      again in other words → **nothing at all**.
+
+   There is no fourth case, so the word "superseded" never has to be written.
+   The discriminator between 2 and 3 is whether the message asserts something
+   the fact cannot be true alongside — not whether it names a replacement, and
+   not how much the two sentences overlap.
 
    **`completed` and `retracted` look identical from outside and mean opposite things.** Both end an intention, and a message that ends one rarely says which: it says the plan is over. The only thing that separates them is whether THE THING HAPPENED. It did → "completed". It did not — cancelled, called off, refused, dropped, prevented, someone was told it is not happening → "retracted". Reaching an end is not the same as being carried out, and a message that reports doing something ABOUT a plan (telling somebody, apologising, rescheduling away) is not a message that reports doing the plan.
 
@@ -91,7 +98,7 @@ Rules that hold for all four:
 - **Read the message together with its completion.** WHAT IT SAYS IN FULL, below, is this same message with what the speaker left out written in — "I bought it" → "I bought the milk" — worked out earlier this turn from the conversation, which you cannot see. When it is there, that is the sentence to match candidates against: "I bought it", "done!", "sorted, no need any more" name nothing on their own words, and a closure they plainly make would be missed for want of a noun. It says `(none)` when the message already said everything. It is a reading and not the user's words, so where the two disagree the message above wins.
 - This is a PRECISION instrument. Act only on a candidate whose text plainly matches what the message says. When nothing matches, return empty arrays — changing nothing is always safe, because a missed reconciliation is recoverable on a later turn while a wrong one has already forgotten or exposed the wrong thing.
 - Never act on a candidate because it is merely related, on the same page, or about the same person.
-- **Talking about a fact is not changing it.** A message that discusses a fact, advises on it, helps plan it, summarises it or says it again leaves it exactly as it was. Saying the same thing in other words — a second report of the same value, a more precise wording of the same claim — asks nothing of you: closing it deletes a live fact and, because a closure names no replacement, leaves the reader nowhere to go. A second DIFFERENT value for the same slot is verb 2 when this message states the new one, and nothing at all when it does not — those are the only two answers, and nothing downstream folds two live values into one later. "contradicted" needs the message to assert something the fact cannot be true alongside; "completed" needs it to say the thing was DONE, not that it was discussed.
+- **Talking about a fact is not changing it.** A message that discusses a fact, advises on it, helps plan it, summarises it or says it again leaves it exactly as it was. Saying the same thing in other words — a second report of the same value, a more precise wording of the same claim — asks nothing of you: closing it deletes a live fact and, because a closure names no replacement, leaves the reader nowhere to go. A second DIFFERENT value for the same slot goes through the three-way rule under verb 1: verb 2 when this message states the new one, a "contradicted" closure when it makes the old one false without stating a new one, nothing at all when it merely says something adjacent — and nothing downstream folds two live values into one later. "contradicted" needs the message to assert something the fact cannot be true alongside; "completed" needs it to say the thing was DONE, not that it was discussed.
 - `target` must be copied EXACTLY from a candidate's fact_id. Never invent or alter an id.
 - A candidate whose validity already shows a closed window needs no second closure — skip it. Read the line as written: `open, due <date>` is an **open** fact carrying a deadline, and it is the most likely thing a message closes ("I bought the milk"). Only `closed <date>` is already settled.
 - One candidate gets at most one verb. A supersede already retires the old fact, so never close it as well.
