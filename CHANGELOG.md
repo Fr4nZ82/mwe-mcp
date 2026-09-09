@@ -68,6 +68,57 @@ semver-governed surface: breaking changes are called out explicitly.
 
 ### Fixed
 
+- **Four kinds of sentence the memory was letting go past it.** A rule you lay
+  down for the assistant (*«keep it short with me»*), a preference or a
+  position you take in a discussion that is still open (*«I'd take the hybrid
+  instead»*), taking back something you said yourself in favour of somebody
+  else's version (*«you were right, close mine»*), and a plain statement about
+  somebody the memory has never heard of (*«Sam is taking over the
+  releases»*) were all read as small talk, or — the last one — as a question
+  about a name, and nothing was kept. Each of the four is now named for what
+  it is, so the rule is filed where the assistant reads it, the two opposing
+  positions stand side by side with who said each, the withdrawn claim is
+  closed, and the person outside the address book gets their fact. The
+  sentences that must still pass without a trace pass unchanged: a thank-you,
+  an instruction meant for this reply only, and a question about a name.
+
+- **A fact about a pet, a tradesman or anyone else without an account.** When
+  the memory was told something about somebody it has no account for, it
+  occasionally garbled which field held the person's name and dropped the
+  whole sentence. It is now shown the two fields filled in side by side, so
+  the name of the thing goes where names go and the fact is kept. When a
+  message does carry a claim the memory cannot read, only that one claim is
+  dropped and the rest of the message is still saved — and the line in the log
+  now says which sentence went, instead of only that one did.
+
+- **A fact the conversation overtook stays open no longer.** When a message
+  replaced something already on file and the memory had no new sentence to
+  point at as the replacement, it described what happened with a word it then
+  refused to accept from itself, and the old fact was left standing as though
+  nothing had happened. It is now read as what it means — overtaken by what
+  was said — and closed, with the date it stopped holding.
+
+- **The keywords on a page are written in the language of the memory.** Every
+  fact is filed under two words, and a page prints them among its keywords.
+  The instruction that says which language to write in named the replies and
+  the machinery and left the short labels between the two, so a stray word in
+  the wrong language could slip in — and then stay, because the next fact about
+  the same thing is deliberately filed under a word already in use. One memory
+  ended up with the same idea under two words in two languages, which is
+  exactly what the second word is meant to prevent. The instruction now covers
+  every word written for a person to read, labels included. Nothing changes for
+  a memory whose language was already being followed: the language is still the
+  one on the person's account, set where it always was.
+
+- **A page no longer looks as though it repeats its own opening.** When the
+  writer leaves a fact out of the prose, the engine adds it back at the end so
+  that no fact loses the marker that governs who may read it. Added with no
+  separation it read as the closing paragraph the writer chose — and where the
+  writer had already said the same thing in its own words, the page appeared
+  to say it twice on purpose. What the engine adds now sits below a horizontal
+  rule, plainly not part of the narrative, and the writer is told what leaving
+  a fact untagged costs.
+
 - **A new release shows its new dashboard at once.** The stylesheet and the
   scripts the dashboard embeds are asked for at an address that carries a
   fingerprint of the file's own content, so a build that changes one of them

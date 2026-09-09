@@ -1275,11 +1275,20 @@ async fn cronista_relink(
 ///
 /// **Forward completeness guard**: a fact the Cronista did not tag (omitted,
 /// or tagged with a number the expander could not resolve) is appended as
-/// its own marked region, so nothing is silently dropped and no non-global
-/// fact loses its protective ACL marker (the `missing_acl_markers` the
-/// reviewer flags). A later full recompile can weave the appended facts back
-/// into the prose. The rail guard's floor is the same discipline applied to
-/// links ([`append_missing_rails`]).
+/// its own marked region under a thematic break, so nothing is silently
+/// dropped and no non-global fact loses its protective ACL marker (the
+/// `missing_acl_markers` the reviewer flags). A later full recompile can
+/// weave the appended facts back into the prose. The rail guard's floor is
+/// the same discipline applied to links ([`append_missing_rails`]), and its
+/// rule holds here too: this is code, it does not know the page's language,
+/// so it writes a separator and never a sentence.
+///
+/// The guard reads MARKERS and not meaning, so it cannot tell an omitted
+/// fact from one whose content the prose already carries untagged — the
+/// second comes back appended beside its own paraphrase, and the page says
+/// the same thing twice. The break is what keeps that from reading as the
+/// writer's own closing paragraph; the cure is upstream, in the Cronista's
+/// obligation to tag every fact.
 fn expand_and_complete_fact_markers(raw_body: &str, page: &PagePlan) -> String {
     let mut body = strip_orphan_fact_tags(&expand_fact_tags(raw_body, &page.primary_facts));
     // What actually made it onto the page as a marker.
@@ -1300,8 +1309,18 @@ fn expand_and_complete_fact_markers(raw_body: &str, page: &PagePlan) -> String {
         tracing::warn!(
             slug = %page.slug,
             missing = missing.len(),
+            fact_ids = %missing
+                .iter()
+                .map(|f| f.fact_id.as_str())
+                .collect::<Vec<_>>()
+                .join(","),
             "compiler: facts without a marker after tag expansion — appending (forward completeness guard)"
         );
+        // Skipped on an empty body, where a leading `---` would be read as
+        // frontmatter rather than as a break.
+        if !body.trim().is_empty() {
+            body.push_str("\n\n---\n");
+        }
         for f in missing {
             let region = crate::capture::render_marker(&f.fact_id, &f.text.replace('\n', " "));
             body.push_str("\n\n");
@@ -2866,6 +2885,55 @@ mod tests {
             style: None,
             salience: None,
         }
+    }
+
+    /// What the completeness guard appends is marked off from the prose.
+    ///
+    /// The guard knows about MARKERS, never about meaning: a fact the Cronista
+    /// wrote into its prose and forgot to tag comes back appended verbatim, so
+    /// the page states it twice — which is how a page ends up looking as if it
+    /// repeats its own opening on purpose. Dropping the append instead would
+    /// trade a visible repetition for a fact with no ACL marker, so the append
+    /// stays; the break is what stops it reading as the writer's own closing
+    /// paragraph. The cure for the repetition itself is upstream, in the
+    /// prompt: tag every fact.
+    #[test]
+    fn an_appended_fact_is_marked_off_from_the_prose_it_was_left_out_of() {
+        let page = PagePlan {
+            primary_facts: vec![
+                ffp(1, "The hybrid estate was bought for 12,400."),
+                ffp(2, "The scrappage incentive ran out on 30 April."),
+            ],
+            ..page_with_subjects("alice", &[])
+        };
+        // The writer tagged the first fact and left the second untagged.
+        let out = expand_and_complete_fact_markers(
+            "<f1>The hybrid estate was bought for 12,400.</f1>",
+            &page,
+        );
+        let (prose, appendix) = out
+            .split_once("\n\n---\n")
+            .expect("the appended fact is marked off from the prose");
+        assert!(
+            prose.contains("12,400"),
+            "the tagged fact stays where the writer put it: {prose}"
+        );
+        assert!(
+            appendix.contains("30 April"),
+            "and the untagged one lands after the break: {appendix}"
+        );
+
+        // An empty body is the one place a leading `---` would be read as
+        // frontmatter rather than as a break.
+        let from_nothing = expand_and_complete_fact_markers("", &page);
+        assert!(
+            !from_nothing.trim_start().starts_with("---"),
+            "a page with no prose never opens on a separator: {from_nothing}"
+        );
+        assert!(
+            from_nothing.contains("30 April") && from_nothing.contains("12,400"),
+            "and both facts are still appended: {from_nothing}"
+        );
     }
 
     #[test]

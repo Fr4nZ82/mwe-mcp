@@ -60,10 +60,15 @@ Four verbs, and each one has to be plainly stated by the message:
    - "retracted" — the user takes it back, calls it off, or gives it up ("forget what I told you about the greenhouse")
    - "contradicted" — the message states something that makes it false, without replacing it
 
-   Those three and nothing else. **There is no "superseded" closure**: a fact
-   replaced by something this turn wrote is verb 2, which needs the
-   replacement's id — a closure names none, so the engine refuses the word and
-   the whole entry goes with it.
+   Those three and nothing else. **There is no "superseded" closure**, and the
+   case you are reaching for it in has an answer: a fact replaced by something
+   THIS TURN wrote is verb 2, which needs the replacement's id — a closure
+   names none. When the fact really is overtaken but the replacement is NOT
+   among the facts this turn wrote, so there is no id to name, the reason is
+   **"contradicted"**: the message made it false without replacing it, which is
+   exactly what that word is for. Between the two there is no third case, so
+   the word "superseded" never has to be written — reach for verb 2 when you
+   have the successor and "contradicted" when you do not.
 
    **`completed` and `retracted` look identical from outside and mean opposite things.** Both end an intention, and a message that ends one rarely says which: it says the plan is over. The only thing that separates them is whether THE THING HAPPENED. It did → "completed". It did not — cancelled, called off, refused, dropped, prevented, someone was told it is not happening → "retracted". Reaching an end is not the same as being carried out, and a message that reports doing something ABOUT a plan (telling somebody, apologising, rescheduling away) is not a message that reports doing the plan.
 

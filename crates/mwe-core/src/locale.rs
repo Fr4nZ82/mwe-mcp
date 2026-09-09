@@ -84,8 +84,10 @@ pub fn render_language_directive(locale: Option<&str>) -> String {
          Never mix languages in a single response. \
          Never use non-Latin alphabets unless the user's text \
          explicitly uses them. The tool names, JSON keys and \
-         argument enums above stay in English; only the \
-         natural-language replies follow the user's locale."
+         argument enums above stay in English; EVERYTHING ELSE you \
+         write as natural language follows the user's locale — not \
+         only whole sentences, but every short label and keyword you \
+         coin as well."
     )
 }
 
@@ -418,6 +420,41 @@ mod tests {
             !directive.contains("Respond in English"),
             "a declared locale must not be overridden by the fallback: {directive}"
         );
+    }
+
+    /// The directive reaches the short labels a slot coins, not only its
+    /// sentences.
+    ///
+    /// A directive that names the machinery on one side and the reply on the
+    /// other leaves in the gap everything that is neither — and the topic
+    /// words live there: two lower-case words per fact, coined by the
+    /// classifier and printed among a page's keywords, where a reader sees
+    /// them. An all-English memory tagged in another language is the failure
+    /// this sentence exists to stop, so the directive has to reach past whole
+    /// sentences while still holding the JSON keys and enums in English.
+    #[test]
+    fn the_language_directive_covers_the_short_labels_a_slot_coins() {
+        // Both halves of the only chain there is: a per-turn `metadata.locale`
+        // or, failing that, the `enrollment_users.locale` an admin sets on the
+        // Users page. There is no deployment-wide language to disagree with
+        // them, so the rule has to hold identically whichever language the tag
+        // names — an Italian memory keeps Italian labels, an English one
+        // English ones, and neither borrows the other's.
+        for (tag, language) in [("en-GB", "English"), ("it", "Italian")] {
+            let directive = render_language_directive(Some(tag));
+            assert!(
+                directive.contains(&format!("Respond in {language}")),
+                "{tag} no longer resolves to {language}: {directive}"
+            );
+            assert!(
+                directive.contains("every short label and keyword you coin"),
+                "the directive stops at whole sentences again for {tag}: {directive}"
+            );
+            assert!(
+                directive.contains("tool names, JSON keys"),
+                "and it must still hold the machinery back in English: {directive}"
+            );
+        }
     }
 
     /// Unknown primary subtag surfaces the BCP-47 tag itself instead

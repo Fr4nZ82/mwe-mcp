@@ -2483,7 +2483,17 @@ fn validate_closure<'a>(
     {
         Some("completed" | "done" | "consumed") => fact_index::decay::COMPLETED,
         Some("retracted" | "abandoned" | "forgotten" | "cancelled") => fact_index::decay::RETRACTED,
-        Some("contradicted" | "contradiction") => fact_index::decay::CONTRADICTED,
+        // `superseded` and its synonyms are the shape that arrives when the
+        // message DID overtake the fact and the stage had no successor id to
+        // name — the replacement is not among the facts this turn wrote, so
+        // verb 2 was unavailable and the closure verb is all that was left.
+        // That is what `contradicted` means, so the answer is read rather than
+        // thrown away. The prompts still ask for the three words and do not
+        // mention these: an alias is a net under a stage that already knows
+        // the rule, never a fourth reason it may choose.
+        Some("contradicted" | "contradiction" | "superseded" | "replaced" | "overtaken") => {
+            fact_index::decay::CONTRADICTED
+        },
         other => {
             return Err(ClosurePlanError::UnknownReason(
                 other.unwrap_or_default().to_owned(),
@@ -3866,16 +3876,50 @@ fn normalize_capture_bound(raw: Option<&str>, edge: fact_index::DayEdge) -> Opti
 /// is logged and skipped — an edit never kills the turn.
 ///
 /// Returns the number of edits applied.
-/// Whether a recalled hit's wiki is a SMART wiki — per-fragment ACL /
-/// validity edits are refused on smart wikis (their governance is
-/// wiki-level and markerless). Fails closed: a wiki that cannot be resolved is
-/// treated as smart, so an edit never mutates a row whose family is
-/// unknown.
-fn hit_wiki_is_smart(tree: &WikiTree, wiki_id: &str) -> bool {
-    WikiId::parse(wiki_id)
-        .ok()
-        .and_then(|id| tree.locate(&id).ok())
-        .is_none_or(|h| h.meta().smart)
+/// Why a per-fragment ACL / validity edit is refused for a recalled hit,
+/// or `None` when it may go ahead.
+///
+/// Both answers refuse, and they are **not the same event**. Reporting them
+/// as one is how a warning comes out naming a smart wiki and printing an
+/// empty `wiki_id`, which sends whoever reads it to look at wiki-level
+/// governance for a fact that simply has no page yet.
+enum EditRefusal {
+    /// The wiki is smart: per-fragment governance does not exist there, its
+    /// pages are content-indexed sections governed at the wiki level.
+    SmartWiki,
+    /// The hit names no wiki this workdir can resolve — the shape a capture
+    /// still waiting in the buffer takes, since it has not been placed on a
+    /// page. Fails closed: an edit never mutates a row whose family is
+    /// unknown.
+    NoWikiYet,
+}
+
+impl EditRefusal {
+    /// Decide it for one recalled hit's `wiki_id`.
+    fn of(tree: &WikiTree, wiki_id: &str) -> Option<Self> {
+        match WikiId::parse(wiki_id)
+            .ok()
+            .and_then(|id| tree.locate(&id).ok())
+        {
+            Some(handle) if handle.meta().smart => Some(Self::SmartWiki),
+            Some(_) => None,
+            None => Some(Self::NoWikiYet),
+        }
+    }
+
+    /// The half of the warning that says which case fired.
+    const fn as_reason(&self) -> &'static str {
+        match self {
+            Self::SmartWiki => {
+                "the wiki is smart — per-fragment governance is standard-wikis only, \
+                 a smart wiki is governed at the wiki level"
+            },
+            Self::NoWikiYet => {
+                "the fact is on no page yet (a capture still in the buffer), so there is \
+                 no wiki whose family could be read"
+            },
+        }
+    }
 }
 
 async fn apply_plan_validity_edits(
@@ -3907,14 +3951,17 @@ async fn apply_plan_validity_edits(
         if applied.iter().any(|a| a.fact_id == hit.fact_id) {
             continue; // the model repeated a target — first one wins
         }
-        // 6j.4: smart wikis have no per-fragment validity — their facts are
-        // content-indexed section rows governed at the wiki level. Refuse
-        // here (the dashboard twin gates this via `enforce_standard_wiki`).
-        if hit_wiki_is_smart(tree, &hit.wiki_id) {
+        // 6j.4: a per-fragment validity edit needs a standard wiki to land
+        // in. Smart wikis have none — their facts are content-indexed section
+        // rows governed at the wiki level — and a hit with no resolvable wiki
+        // has no family to read, so both are refused here ([`EditRefusal`];
+        // the dashboard twin gates this via `enforce_standard_wiki`).
+        if let Some(refusal) = EditRefusal::of(tree, &hit.wiki_id) {
             tracing::warn!(
                 fact_id = %hit.fact_id,
                 wiki_id = %hit.wiki_id,
-                "ingest: validity_edit targets a smart wiki — skipped (per-fragment validity is standard-wikis only)"
+                reason = refusal.as_reason(),
+                "ingest: validity_edit skipped"
             );
             continue;
         }
@@ -4156,15 +4203,19 @@ async fn apply_plan_acl_changes(
         if applied.iter().any(|a| a.fact_id == hit.fact_id) {
             continue; // the model repeated a target — first one wins
         }
-        // 6j.4: smart wikis have no per-fragment ACL — their governance is
-        // wiki-level (markerless). Refuse here so no fact_index row is
-        // mutated and no disclosure_audit row is written (the dashboard
-        // twin gates this via `enforce_standard_wiki`).
-        if hit_wiki_is_smart(tree, &hit.wiki_id) {
+        // 6j.4: a per-fragment ACL change needs a standard wiki to land in.
+        // Smart wikis have none — their governance is wiki-level and
+        // markerless — and a hit with no resolvable wiki has no family to
+        // read, so both are refused here ([`EditRefusal`]) and no
+        // `fact_index` row is mutated, no `disclosure_audit` row written (the
+        // dashboard twin gates this via `enforce_standard_wiki`).
+        if let Some(refusal) = EditRefusal::of(tree, &hit.wiki_id) {
             tracing::warn!(
                 fact_id = %hit.fact_id,
                 wiki_id = %hit.wiki_id,
-                "ingest: acl_change targets a smart wiki — skipped (per-fragment ACL is standard-wikis only; smart governance is wiki-level)"
+                reason = refusal.as_reason(),
+                "ingest: acl_change skipped — no fact_index row is touched and \
+                 no disclosure_audit row is written"
             );
             continue;
         }
@@ -8714,7 +8765,18 @@ pub async fn wiki_ingest_message(
                 ) {
                     Ok(req) => req,
                     Err(err) => {
-                        tracing::warn!(error = %err, "ingest: capture plan invalid");
+                        // Name what was lost. One bad extraction is dropped on
+                        // its own and the rest of the turn files (the `continue`
+                        // below), which is the right shape — and it makes the
+                        // loss invisible unless the line says WHICH claim went,
+                        // since the turn goes on to report itself as a capture.
+                        tracing::warn!(
+                            error = %err,
+                            dropped_body = %unit.body.unwrap_or("<no body>"),
+                            dropped_subject = %unit.subject_id.unwrap_or("<absent>"),
+                            "ingest: capture plan invalid — this extraction dropped, \
+                             the rest of the turn files"
+                        );
                         if legacy {
                             return Ok(fallback_with_unclaimed_media(
                                 pool,
@@ -12414,6 +12476,70 @@ mod tests {
         assert!(prompt.contains('…'));
     }
 
+    /// A caller that sends no conversation gets a prompt that says so, and a
+    /// caller that sends one gets it back.
+    ///
+    /// This is the difference between a bridge that keeps the last turns and a
+    /// bulk replay that offers each turn on its own, and it decides one rule
+    /// in Part 1: a fragment is rescued by `recent_messages` and stays `skip`
+    /// without them. Every turn of a corpus replayed with no window is
+    /// classified against `(none)`, so a continuation of an earlier sentence
+    /// is unresolvable by construction — not a judgement the model got wrong.
+    /// The two `known_*` rosters are the other half of the same shape: they
+    /// are read from what the memory has already FILED, so a replay that
+    /// promotes nothing until the end shows every turn an empty one.
+    #[test]
+    fn a_turn_offered_with_no_conversation_says_so_in_the_prompt() {
+        let policy = IngestPolicy::default();
+        let bare = build_prompt(
+            &req("...anyway, tell him Friday works.", "alice"),
+            &[],
+            &[],
+            &[],
+            &[],
+            &[],
+            None,
+            None,
+            &crate::locale::render_memory_language_directive(Some("en-GB")),
+            &[],
+            now_fixture(),
+            &policy,
+        );
+        assert!(
+            bare.contains("recent_messages:\n  (none)"),
+            "a turn sent on its own must say the conversation is absent"
+        );
+
+        let mut with_window = req("...anyway, tell him Friday works.", "alice");
+        with_window.recent_messages.push(RecentMessage {
+            role: MessageRole::User,
+            text: "About the tiler. Hang on.".to_owned(),
+            timestamp: None,
+        });
+        let carried = build_prompt(
+            &with_window,
+            &[],
+            &[],
+            &[],
+            &[],
+            &[],
+            None,
+            None,
+            &crate::locale::render_memory_language_directive(Some("en-GB")),
+            &[],
+            now_fixture(),
+            &policy,
+        );
+        assert!(
+            carried.contains("About the tiler. Hang on."),
+            "and one sent with the conversation must carry it"
+        );
+        assert!(
+            !carried.contains("recent_messages:\n  (none)"),
+            "the two must not read the same to the classifier"
+        );
+    }
+
     #[test]
     fn build_prompt_caps_recent_messages_at_policy() {
         let mut request = req("now", "alice");
@@ -15959,6 +16085,630 @@ mod tests {
                 .contains("The anchor rule is about the turn's own clock, and nothing else"),
             "the anchor rule no longer excludes ages and durations, so it licenses them again"
         );
+    }
+
+    /// The turns a public-demo corpus lost, and the one gate that lost them.
+    ///
+    /// A standing directive, a stated position, a withdrawal of one's own
+    /// claim and a plain sentence about somebody outside the roster all
+    /// reached the classifier and came back `skip` — the last one `recall`.
+    /// None of them is a hard case. What they share is that Part 1 never named
+    /// their shape, so each fell to whichever bullet claims what is left, and
+    /// everything downstream is gated on the intent. The prompt has to keep
+    /// naming all four, and it has to keep the fence that stops the same rules
+    /// swallowing an ordinary ack or a one-shot command.
+    #[test]
+    fn bundled_ingest_prompt_routes_directives_positions_and_withdrawals_to_capture() {
+        for needle in [
+            // The mechanism: an intent is a routing decision, not a verdict on
+            // whether this turn can do the work itself.
+            "leaves the memory something to do",
+            // A directive is not a fact and is still a capture.
+            "a standing directive is a `capture` turn",
+            // A statement is not made a lookup by a name inside it.
+            "A DECLARATIVE SENTENCE IS NEVER `recall` BECAUSE OF A NAME INSIDE IT",
+            // The two shapes `skip` was swallowing.
+            "AN ACK THAT CARRIES A DECISION IS NOT AN ACK",
+            "A DIRECTIVE THAT WOULD STILL BIND TOMORROW IS NOT CHIT-CHAT",
+        ] {
+            assert!(
+                BUNDLED_INGEST_PROMPT_MD.contains(needle),
+                "the bundled prompt no longer says: {needle}"
+            );
+        }
+        assert!(
+            BUNDLED_INGEST_PROMPT_MD.contains("COUNTER-EXAMPLES"),
+            "the fence that keeps the four new shapes from swallowing an ack, \
+             a one-shot command and a question is gone"
+        );
+    }
+
+    /// A standing directive is filed because the turn is a `capture`, and is
+    /// filed nowhere at all when it is not.
+    ///
+    /// `behaviour_rule` is read where extractions are read, and extractions
+    /// are read on `capture` (and the structural hybrid) and nowhere else. So
+    /// the flag is not what files a directive — the intent above it is, and a
+    /// classifier answering `skip` has thrown the rule away before a single
+    /// line of Part 7 applies. Filing per scope is covered by its own tests;
+    /// what this one pins is the gate over them.
+    #[tokio::test]
+    async fn a_standing_directive_is_filed_only_because_the_turn_is_a_capture() {
+        const TURN: &str = "One thing I keep forgetting to ask. Keep it short with me. \
+                            Give me the answer, not the preamble.";
+        const RULE: &str = "Answer concisely: give the answer without the preamble.";
+
+        // Classified the way the prompt now asks: a capture carrying one
+        // directive.
+        let (dir, tree, pool) = setup_agent_workdir().await;
+        let llm = FakeLlmBackend::new(
+            "fake",
+            "{\"intent\":\"capture\",\"extractions\":[{\
+              \"behaviour_rule\":true,\"behaviour_scope\":\"per-user\",\
+              \"body\":\"Answer concisely: give the answer without the preamble.\"}],\
+              \"suggested_seed\":\"Ok.\"}",
+        );
+        let resp = wiki_ingest_message(
+            &pool,
+            &tree,
+            fake_embedder(),
+            &llm,
+            None,
+            req_consumer(TURN, "alice", "botdeploy"),
+            &IngestPolicy::default(),
+        )
+        .await
+        .expect("ingest");
+        assert_eq!(resp.intent, IntentKind::Capture);
+        let filed = fact_index::find_by_filters(
+            &pool,
+            &fact_index::FactFilters {
+                wiki_id: Some("samvisebot".to_owned()),
+                ..Default::default()
+            },
+        )
+        .await
+        .unwrap();
+        assert_eq!(filed.len(), 1, "the directive reaches the agent's own wiki");
+        assert_eq!(filed[0].text, RULE);
+        drop(dir);
+
+        // The same words, classified `skip`. Nothing about the extraction
+        // changed — there simply is no extraction, because the intent decides
+        // whether one is read.
+        let (dir, tree, pool) = setup_agent_workdir().await;
+        let llm = FakeLlmBackend::new(
+            "fake",
+            "{\"intent\":\"skip\",\"extractions\":[],\"suggested_seed\":\"Ok.\"}",
+        );
+        let resp = wiki_ingest_message(
+            &pool,
+            &tree,
+            fake_embedder(),
+            &llm,
+            None,
+            req_consumer(TURN, "alice", "botdeploy"),
+            &IngestPolicy::default(),
+        )
+        .await
+        .expect("ingest");
+        assert_eq!(resp.intent, IntentKind::Skip);
+        assert!(
+            fact_index::find_by_filters(
+                &pool,
+                &fact_index::FactFilters {
+                    wiki_id: Some("samvisebot".to_owned()),
+                    ..Default::default()
+                },
+            )
+            .await
+            .unwrap()
+            .is_empty(),
+            "a directive classified `skip` is filed nowhere — the rule is lost with the turn"
+        );
+        assert_eq!(
+            fact_index::count_active_in_wiki(&pool, "alice")
+                .await
+                .unwrap(),
+            0,
+            "and it does not fall back into the user's own memory either"
+        );
+        assert!(
+            resp.rules.as_deref().unwrap_or_default().is_empty(),
+            "nothing is served back as a standing rule"
+        );
+        drop(dir);
+    }
+
+    /// Two people take opposite positions on one open decision, and both
+    /// stand.
+    ///
+    /// A stated position is durable knowledge, not chit-chat: it has to be
+    /// stored at all, which is the half that was being lost. And the fact
+    /// already on record is not overtaken by disagreeing with it — the second
+    /// speaker is not correcting the first, they are contradicting them, and a
+    /// memory that keeps only the later one has silently picked a winner.
+    #[tokio::test]
+    async fn two_positions_on_one_decision_are_both_stored_and_neither_overtakes_the_other() {
+        const TURN: &str = "I'm not convinced. Range in winter is the problem, \
+                            I'd take a hybrid.";
+        let (dir, tree, pool) = setup_family().await;
+        // Carol's position, already on record and readable by Bob — an
+        // unreadable fact could not be contradicted, because he would never be
+        // shown it.
+        let planted = capture::wiki_capture(
+            &tree,
+            &pool,
+            fake_embedder(),
+            CaptureRequest {
+                subject_external: None,
+                authored_refs: Vec::new(),
+                wiki_id: WikiId::parse("carol").unwrap(),
+                page: Some(PathBuf::from("cucina.md")),
+                body: "Carol wants an electric car: charging at home solves it.".into(),
+                subject: Principal::User("carol".into()),
+                allow: vec![Principal::User("bob".into())],
+                sender: None,
+                fact_type: Some("preference".into()),
+                page_description: None,
+                topics: vec!["car".into(), "electric".into()],
+                dedup_threshold: Some(0.99),
+                valid_from: None,
+                valid_to: None,
+                style: None,
+                salience: None,
+            },
+        )
+        .await
+        .expect("plant");
+
+        // The classifier states Bob's position and supersedes nothing; the
+        // reconciliation stage, shown Carol's fact, retires nothing either.
+        let classify = "{\"intent\":\"capture\",\"extractions\":[{\
+            \"subject_id\":\"user:bob\",\"fact_type\":\"preference\",\"style\":\"prosa\",\
+            \"salience\":\"normal\",\
+            \"body\":\"Bob prefers a hybrid: winter range is the problem with an electric car.\",\
+            \"topics\":[\"car\",\"hybrid\"],\"supersede_target\":null}],\
+            \"suggested_seed\":\"Noted.\"}";
+        let llm = ScriptedLlm::new(&[
+            classify,
+            "{\"closures\":[],\"validity_edits\":[],\"acl_changes\":[]}",
+        ]);
+        let resp = wiki_ingest_message(
+            &pool,
+            &tree,
+            fake_embedder(),
+            &llm,
+            None,
+            req(TURN, "bob"),
+            &IngestPolicy::default(),
+        )
+        .await
+        .expect("ingest");
+        assert_eq!(
+            resp.intent,
+            IntentKind::Capture,
+            "a stated position changes what the memory holds"
+        );
+
+        // An ordinary capture on a standard wiki waits in the buffer for the
+        // light dream to place it; what matters here is that it was taken.
+        let buffered = capture_buffer::find_all_buffered(&pool, 100).await.unwrap();
+        assert_eq!(buffered.len(), 1, "Bob's position was taken");
+        assert_eq!(buffered[0].subject, Principal::User("bob".into()));
+        assert!(
+            buffered[0].body.contains("hybrid"),
+            "and it is his claim, not a rewrite of Carol's: {}",
+            buffered[0].body
+        );
+
+        let carols = fact_index::find_by_id(&pool, &planted.fact_id)
+            .await
+            .expect("find")
+            .expect("row");
+        assert!(
+            carols.superseded_at.is_none() && carols.deleted_at.is_none(),
+            "disagreeing with a fact never retires it"
+        );
+        assert!(
+            carols.decay_reason.is_none() && carols.valid_to.is_none(),
+            "Carol's position still holds — the memory picked no winner"
+        );
+        drop(dir);
+    }
+
+    /// Withdrawing your own claim is a `capture`, and that is the only reason
+    /// the stage that can close it ever runs.
+    ///
+    /// The turn asserts nothing new, so its `extractions` are empty and it
+    /// looks from the outside exactly like an ack. What it carries is the
+    /// retirement, and the retirement is decided after the reading, by the
+    /// reconciliation stage — which runs on a `capture` turn and on no other.
+    /// The second half proves the gate rather than describing it: the script
+    /// holds ONE response, so a reconciliation call would exhaust it and
+    /// panic.
+    #[tokio::test]
+    async fn withdrawing_your_own_claim_reaches_the_stage_that_can_close_it() {
+        const TURN: &str = "Bob was right, it's the 15th. Close mine.";
+
+        async fn plant(tree: &WikiTree, pool: &SqlitePool) -> FactId {
+            capture::wiki_capture(
+                tree,
+                pool,
+                fake_embedder(),
+                CaptureRequest {
+                    subject_external: None,
+                    authored_refs: Vec::new(),
+                    wiki_id: WikiId::parse("alice").unwrap(),
+                    page: Some(PathBuf::from("cucina.md")),
+                    body: "Nora's birthday is on the 14th.".into(),
+                    subject: Principal::User("alice".into()),
+                    allow: Vec::new(),
+                    sender: None,
+                    fact_type: Some("bio".into()),
+                    page_description: None,
+                    topics: vec!["family".into(), "birthday".into()],
+                    dedup_threshold: Some(0.99),
+                    valid_from: None,
+                    valid_to: None,
+                    style: None,
+                    salience: None,
+                },
+            )
+            .await
+            .expect("plant")
+            .fact_id
+        }
+
+        // Classified as the prompt now asks. The classifier names no target:
+        // the retirement is the next stage's to decide.
+        let (dir, tree, pool) = setup_workdir().await;
+        let target = plant(&tree, &pool).await;
+        let reconcile = format!(
+            "{{\"closures\":[{{\"target\":\"{}\",\"reason\":\"retracted\",\"valid_to\":null}}],\
+              \"validity_edits\":[],\"acl_changes\":[]}}",
+            target.as_str()
+        );
+        let llm = ScriptedLlm::new(&[
+            "{\"intent\":\"capture\",\"extractions\":[],\"suggested_seed\":\"Done.\"}",
+            &reconcile,
+        ]);
+        let resp = wiki_ingest_message(
+            &pool,
+            &tree,
+            fake_embedder(),
+            &llm,
+            None,
+            req(TURN, "alice"),
+            &IngestPolicy::default(),
+        )
+        .await
+        .expect("ingest");
+        assert_eq!(resp.intent, IntentKind::Capture);
+        let row = fact_index::find_by_id(&pool, &target)
+            .await
+            .expect("find")
+            .expect("row");
+        assert_eq!(
+            row.decay_reason.as_deref(),
+            Some(fact_index::decay::RETRACTED),
+            "the speaker's own claim was withdrawn"
+        );
+        assert!(
+            row.valid_to.is_some(),
+            "and stamped when it stopped holding"
+        );
+        drop(dir);
+
+        // The same words read as an ack. ONE scripted response: reaching the
+        // reconciliation stage would exhaust the script and panic, so the
+        // assertion below is what a `skip` turn really leaves behind.
+        let (dir, tree, pool) = setup_workdir().await;
+        let target = plant(&tree, &pool).await;
+        let llm = ScriptedLlm::new(&["{\"intent\":\"skip\",\"extractions\":[],\
+                                      \"suggested_seed\":\"Ok.\"}"]);
+        let resp = wiki_ingest_message(
+            &pool,
+            &tree,
+            fake_embedder(),
+            &llm,
+            None,
+            req(TURN, "alice"),
+            &IngestPolicy::default(),
+        )
+        .await
+        .expect("ingest");
+        assert_eq!(resp.intent, IntentKind::Skip);
+        let row = fact_index::find_by_id(&pool, &target)
+            .await
+            .expect("find")
+            .expect("row");
+        assert!(
+            row.decay_reason.is_none() && row.valid_to.is_none(),
+            "under `skip` nothing can close it: the withdrawn claim stays live for ever"
+        );
+        drop(dir);
+    }
+
+    /// A plain sentence about somebody outside the roster is filed, not looked
+    /// up.
+    ///
+    /// The name is unresolvable, and that is exactly why the fact is worth
+    /// having — it is the subject of what is being written
+    /// (`subject_external`), not a reference to go and find. Read as a
+    /// reference it costs the fact twice over: the turn writes nothing, and
+    /// the name never enters the memory at all, so the next turn cannot
+    /// resolve it either.
+    #[tokio::test]
+    async fn a_statement_about_somebody_outside_the_roster_is_filed_not_looked_up() {
+        const TURN: &str = "Sam is taking over the deployment side.";
+        const PLAN: &str = "{\"intent\":\"capture\",\"extractions\":[{\
+            \"subject_id\":\"user:alice\",\"subject_external\":\"Sam\",\
+            \"fact_type\":\"state\",\"style\":\"prosa\",\
+            \"body\":\"Sam is taking over the deployment side.\",\
+            \"topics\":[\"work\",\"deployment\"]}],\"suggested_seed\":\"Noted.\"}";
+
+        let (dir, tree, pool) = setup_workdir().await;
+        let llm = FakeLlmBackend::new("fake", PLAN);
+        let resp = wiki_ingest_message(
+            &pool,
+            &tree,
+            fake_embedder(),
+            &llm,
+            None,
+            req(TURN, "alice"),
+            &IngestPolicy::default(),
+        )
+        .await
+        .expect("ingest");
+        assert_eq!(resp.intent, IntentKind::Capture);
+        let buffered = capture_buffer::find_all_buffered(&pool, 100).await.unwrap();
+        assert_eq!(buffered.len(), 1, "the statement is taken");
+        assert_eq!(
+            buffered[0].subject_external.as_deref(),
+            Some("Sam"),
+            "and it is filed as being ABOUT the person it names"
+        );
+        drop(dir);
+
+        // The same words read as a question about a name the memory might
+        // hold. A recall writes nothing, so the fact is gone and so is Sam.
+        let (dir, tree, pool) = setup_workdir().await;
+        let llm = FakeLlmBackend::new(
+            "fake",
+            "{\"intent\":\"recall\",\"extractions\":[],\"suggested_seed\":\"\"}",
+        );
+        let resp = wiki_ingest_message(
+            &pool,
+            &tree,
+            fake_embedder(),
+            &llm,
+            None,
+            req(TURN, "alice"),
+            &IngestPolicy::default(),
+        )
+        .await
+        .expect("ingest");
+        assert_eq!(resp.intent, IntentKind::Recall);
+        assert!(
+            capture_buffer::find_all_buffered(&pool, 100)
+                .await
+                .unwrap()
+                .is_empty(),
+            "a recall writes nothing: the name is never filed and cannot be resolved later"
+        );
+        drop(dir);
+    }
+
+    /// The subject fields are shown with VALUES in them, and the field name
+    /// is forbidden as one.
+    ///
+    /// On two turns of a public-demo corpus the classifier wrote the literal
+    /// string `subject_external` into `subject_id`, and both extractions were
+    /// dropped. The section explained both fields well and never showed one
+    /// worked pair with the values side by side, which is the only form that
+    /// makes "a principal here, a name there" unmistakable.
+    #[test]
+    fn bundled_ingest_prompt_shows_both_subject_fields_with_their_values() {
+        assert!(
+            BUNDLED_INGEST_PROMPT_MD
+                .contains("NEVER write the word `subject_external` — or any other field name"),
+            "the fence against writing a field name as a value is gone"
+        );
+        for pair in ["\"Pepper\"", "\"Marco\""] {
+            assert!(
+                BUNDLED_INGEST_PROMPT_MD.contains(pair),
+                "the worked subject pair carrying {pair} is gone from the prompt"
+            );
+        }
+    }
+
+    /// One extraction the engine cannot read is dropped alone; the rest of the
+    /// turn files.
+    ///
+    /// Both turns that hit this stored nothing, which reads exactly like the
+    /// bad extraction taking the turn down with it. It does not, and never
+    /// did — those turns each carried ONE extraction, so there was nothing
+    /// else to save. The belief was held long enough to be worth a test, and
+    /// the warning now names the claim that went, because a turn that drops
+    /// one of its facts still reports itself as a capture.
+    #[tokio::test]
+    async fn one_unreadable_subject_does_not_take_the_turn_s_other_captures_with_it() {
+        let (dir, tree, pool) = setup_workdir().await;
+        // The first extraction carries the FIELD NAME where a principal goes,
+        // which is what the classifier really emitted; the second is sound.
+        let plan = "{\"intent\":\"capture\",\"extractions\":[\
+            {\"subject_id\":\"subject_external\",\"fact_type\":\"episode\",\"style\":\"prosa\",\
+             \"body\":\"Pepper has been fed.\",\"topics\":[\"pets\",\"feeding\"]},\
+            {\"subject_id\":\"user:alice\",\"subject_external\":\"Marco\",\
+             \"fact_type\":\"plan\",\"style\":\"prosa-tecnica\",\
+             \"body\":\"Marco is dropping the tile samples round on Saturday.\",\
+             \"topics\":[\"renovation\",\"tiles\"]}],\"suggested_seed\":\"Noted.\"}";
+        let llm = FakeLlmBackend::new("fake", plan);
+        let resp = wiki_ingest_message(
+            &pool,
+            &tree,
+            fake_embedder(),
+            &llm,
+            None,
+            req("Pepper has been fed. I caught Marco on the phone.", "alice"),
+            &IngestPolicy::default(),
+        )
+        .await
+        .expect("ingest");
+        assert_eq!(resp.intent, IntentKind::Capture);
+        let buffered = capture_buffer::find_all_buffered(&pool, 100).await.unwrap();
+        assert_eq!(
+            buffered.len(),
+            1,
+            "the sound extraction files; only the unreadable one is dropped"
+        );
+        assert_eq!(
+            buffered[0].subject_external.as_deref(),
+            Some("Marco"),
+            "and it is the one whose subject the engine could read"
+        );
+        drop(dir);
+    }
+
+    /// A closure that says `superseded` closes the fact instead of being
+    /// thrown away.
+    ///
+    /// It is the shape that arrives when the stage really did see the fact
+    /// overtaken and had no successor id to name — three of the four times it
+    /// happened, the same answer carried a correct `supersedes` entry for a
+    /// different pair. Refusing the word left the fact open for ever, which is
+    /// the one outcome nobody wanted; `contradicted` is what the reason means,
+    /// and it is what the supersede chokepoint stamps anyway.
+    #[tokio::test]
+    async fn a_closure_reason_of_superseded_is_read_as_contradicted() {
+        let (dir, tree, pool) = setup_workdir().await;
+        let planted = capture::wiki_capture(
+            &tree,
+            &pool,
+            fake_embedder(),
+            CaptureRequest {
+                subject_external: None,
+                authored_refs: Vec::new(),
+                wiki_id: WikiId::parse("alice").unwrap(),
+                page: Some(PathBuf::from("cucina.md")),
+                body: "The boiler man is coming on Thursday the nineteenth.".into(),
+                subject: Principal::User("alice".into()),
+                allow: Vec::new(),
+                sender: None,
+                fact_type: Some("plan".into()),
+                page_description: None,
+                topics: vec!["house".into(), "boiler".into()],
+                dedup_threshold: Some(0.99),
+                valid_from: None,
+                valid_to: None,
+                style: None,
+                salience: None,
+            },
+        )
+        .await
+        .expect("plant");
+
+        let reconcile = format!(
+            "{{\"closures\":[{{\"target\":\"{}\",\"reason\":\"superseded\",\"valid_to\":null}}],\
+              \"validity_edits\":[],\"acl_changes\":[]}}",
+            planted.fact_id.as_str()
+        );
+        let llm = ScriptedLlm::new(&[
+            "{\"intent\":\"capture\",\"extractions\":[],\"suggested_seed\":\"Ok.\"}",
+            &reconcile,
+        ]);
+        wiki_ingest_message(
+            &pool,
+            &tree,
+            fake_embedder(),
+            &llm,
+            None,
+            req("The boiler man's been and gone.", "alice"),
+            &IngestPolicy::default(),
+        )
+        .await
+        .expect("ingest");
+
+        let row = fact_index::find_by_id(&pool, &planted.fact_id)
+            .await
+            .expect("find")
+            .expect("row");
+        assert_eq!(
+            row.decay_reason.as_deref(),
+            Some(fact_index::decay::CONTRADICTED),
+            "an out-of-vocabulary reason that means `contradicted` is read as it"
+        );
+        assert!(row.valid_to.is_some(), "and the window is shut");
+        drop(dir);
+    }
+
+    /// Both stages that may close a fact answer the case the refused word was
+    /// reached for.
+    ///
+    /// Saying "there is no `superseded` closure" and stopping leaves the model
+    /// with the question it asked: the fact IS overtaken and there is no
+    /// successor to name. Unanswered, it wrote the word anyway, four times.
+    #[test]
+    fn the_closing_stages_say_what_to_write_when_there_is_no_successor_to_name() {
+        assert!(
+            BUNDLED_INGEST_RECONCILE_MD.contains("the reason is\n   **\"contradicted\"**"),
+            "the reconciler no longer answers the no-successor case"
+        );
+        assert!(
+            BUNDLED_INGEST_CLOSURES_MD.contains("there is no \"superseded\""),
+            "the topic-closure pass no longer rules the word out"
+        );
+    }
+
+    /// The topic words are told which language they are written in.
+    ///
+    /// They are neither a machine key nor a sentence, so the LANGUAGE
+    /// directive's old two-way split left them unaddressed — and every worked
+    /// example of the field was Italian, including one whose own body is
+    /// English. An all-English corpus came back tagged `acquisto`, `finanze`,
+    /// `manutenzione`, and the compiled pages printed them among the keywords.
+    #[test]
+    fn bundled_ingest_prompt_writes_the_topic_words_in_the_memory_s_language() {
+        assert!(
+            BUNDLED_INGEST_PROMPT_MD
+                .contains("**They are written in the SAME LANGUAGE as the body**"),
+            "the topics section no longer says which language its words take"
+        );
+        assert!(
+            BUNDLED_INGEST_PROMPT_MD.contains("[\"car\", \"purchase\"]"),
+            "the English worked pair is gone, leaving only Italian examples to copy"
+        );
+        assert!(
+            !BUNDLED_INGEST_PROMPT_MD.contains("[\"strumenti\", \"configurazione\"]"),
+            "an English sentence is shown with Italian topics again — the defect as an example"
+        );
+    }
+
+    /// A fact with no page yet is not reported as a smart wiki.
+    ///
+    /// Both refusals are right and they are different events. Told apart, an
+    /// operator reading the log either goes and looks at wiki-level governance
+    /// or understands that the capture had simply not been placed yet; told as
+    /// one, they get the first answer and an empty `wiki_id` to go with it.
+    #[tokio::test]
+    async fn an_edit_on_a_fact_with_no_page_yet_is_not_reported_as_a_smart_wiki() {
+        let (dir, tree, _pool) = setup_workdir().await;
+        assert!(
+            EditRefusal::of(&tree, "alice").is_none(),
+            "a standard wiki is no refusal at all"
+        );
+        let refusal = EditRefusal::of(&tree, "").expect("an unresolvable wiki still refuses");
+        assert!(
+            matches!(refusal, EditRefusal::NoWikiYet),
+            "an absent wiki id is the buffered-capture case, not the smart one"
+        );
+        assert_ne!(
+            EditRefusal::NoWikiYet.as_reason(),
+            EditRefusal::SmartWiki.as_reason(),
+            "the two refusals must not read as the same event"
+        );
+        drop(dir);
     }
 
     /// Neither stage that judges a stored fact is told that duplicates get

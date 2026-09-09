@@ -168,8 +168,12 @@ pub async fn index(
                 }
             }
 
-            // Every entry below leads to a console a frozen deployment
-            // does not mount (`routes::build`), so the whole card goes.
+            // This card is a list of things to DO, and a frozen deployment
+            // does none of them: every control on the pages it links is
+            // refused by [`crate::read_only`]. The consoles themselves are
+            // mounted on every deployment and stay in the top bar, so an
+            // admin reading a shown instance still reaches all of them —
+            // what goes is the invitation to act, never the way in.
             @if user.is_admin && !frozen {
                 section.home-card {
                     h2 { "Admin actions" }
