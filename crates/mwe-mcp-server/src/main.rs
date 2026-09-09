@@ -1184,15 +1184,24 @@ fn warn_public_base_url(config: &Config) {
     }
 }
 
-/// The `workdir perms` line `doctor` prints.
+/// The `workdir perms` line `doctor` prints, on a platform that does or does
+/// not read permissions (`inspected`, from
+/// [`workdir_security::AUDIT_READS_PERMISSIONS`]).
 ///
 /// An empty finding list means two different things, and they are not
-/// interchangeable: on Unix nothing is reachable by another principal, and on
-/// Windows the permissions were never read at all — this module inspects POSIX
-/// mode bits and Windows expresses permissions as ACLs. Printing "owner-only"
-/// there would hand the operator a verdict nobody reached.
-fn workdir_perms_headline(findings: usize) -> String {
-    if !workdir_security::AUDIT_READS_PERMISSIONS {
+/// interchangeable: where the audit reads mode bits, nothing is reachable by
+/// another principal; where it does not, the permissions were never read at
+/// all — this module inspects POSIX mode bits and Windows expresses
+/// permissions as ACLs. Printing "owner-only" there would hand the operator a
+/// verdict nobody reached, and printing a count would be just as unfounded:
+/// [`workdir_security::audit`] yields nothing on such a platform, so
+/// `findings` carries no information about the workdir.
+///
+/// `inspected` is a parameter rather than a read of that constant inside, so
+/// a test can reach both branches wherever it runs — on one platform the
+/// constant would otherwise pin every call to the same half.
+fn workdir_perms_headline(inspected: bool, findings: usize) -> String {
+    if !inspected {
         return "workdir perms : not inspected — this platform expresses permissions as ACLs, \
                 not mode bits. Lock the workdir to the account the server runs as (INSTALL.md \
                 \"Run it as a service\")"
@@ -3039,7 +3048,13 @@ async fn cmd_doctor(workdir: &Path) -> Result<()> {
 
     // Workdir reachability: the wiki bytes are cleartext on disk, so the
     // per-reader ACL only holds if non-server principals cannot read them.
-    println!("{}", workdir_perms_headline(d.perm_findings.len()));
+    println!(
+        "{}",
+        workdir_perms_headline(
+            workdir_security::AUDIT_READS_PERMISSIONS,
+            d.perm_findings.len()
+        )
+    );
     if !d.perm_findings.is_empty() {
         for f in &d.perm_findings {
             println!(
@@ -3380,24 +3395,29 @@ mod tests {
 
     /// "Nothing reachable" and "nothing was read" both arrive as an empty
     /// finding list, and only one of them is good news. The line is chosen by
-    /// whether the audit can inspect this platform at all, so a Linux run
-    /// covers the Windows branch too.
+    /// whether the audit reads permissions, and both branches are checked
+    /// here on every platform.
     #[test]
     fn doctor_never_calls_an_uninspected_workdir_owner_only() {
-        // The branch this platform takes.
-        let clean = workdir_perms_headline(0);
-        if workdir_security::AUDIT_READS_PERMISSIONS {
-            assert!(clean.contains("owner-only"), "{clean}");
-        } else {
-            assert!(clean.contains("not inspected"), "{clean}");
-            assert!(!clean.contains("owner-only"), "{clean}");
-        }
-        // Findings are always reported as findings, on any platform.
-        let loose = workdir_perms_headline(3);
+        // Where mode bits are read, the line is a verdict and a count.
+        let clean = workdir_perms_headline(true, 0);
+        let loose = workdir_perms_headline(true, 3);
+        assert!(clean.contains("owner-only"), "{clean}");
         assert!(loose.contains('3'), "{loose}");
         assert!(loose.contains("reachable by other principals"), "{loose}");
+
+        // Where they are not, the audit yields nothing, so a count is as
+        // unfounded as a verdict: both say "not inspected" and claim neither.
+        let unread_clean = workdir_perms_headline(false, 0);
+        let unread_loose = workdir_perms_headline(false, 3);
+        for line in [&unread_clean, &unread_loose] {
+            assert!(line.contains("not inspected"), "{line}");
+            assert!(!line.contains("owner-only"), "{line}");
+            assert!(!line.contains("reachable by other principals"), "{line}");
+        }
+
         // Every line is the same field, so the report stays column-aligned.
-        for line in [&clean, &loose] {
+        for line in [&clean, &loose, &unread_clean, &unread_loose] {
             assert!(line.starts_with("workdir perms : "), "{line}");
         }
     }
