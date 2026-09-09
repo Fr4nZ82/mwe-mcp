@@ -76,9 +76,15 @@ jobs:
   # above is only where development happens. A promise nobody compiles
   # against is a number in a file, so this job checks the whole workspace
   # (tests and examples included) on exactly the declared floor.
+  # `RUSTUP_TOOLCHAIN` is what makes the floor bind, and it spells the version
+  # the way the action installs it (1.88.0): `rust-toolchain.toml` says
+  # `stable` and outranks the default the action sets, so the variable is the
+  # only thing keeping this job on the declared floor rather than on stable.
   msrv:
     name: cargo check (MSRV 1.88)
     runs-on: ubuntu-latest
+    env:
+      RUSTUP_TOOLCHAIN: "1.88.0"
     steps:
       - uses: actions/checkout@v5
       - uses: dtolnay/rust-toolchain@1.88
