@@ -1,8 +1,8 @@
 ---
 name: ingest-reconcile
 description: Reconciler — after the memory has been read, decide what this turn closes, replaces, re-dates or re-shares among the facts the turn actually saw; strict JSON out; change nothing rather than the wrong thing
-version: 1.7
-default_version_at_bootstrap: v1.3
+version: 1.8
+default_version_at_bootstrap: v1.8
 ---
 
 # Prompt: ingest-reconcile

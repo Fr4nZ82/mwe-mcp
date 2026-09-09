@@ -1,8 +1,8 @@
 ---
 name: ingest-closures
 description: Closure confirmer — topic-focused second recall pass for a closure-bearing turn whose targets missed the first recall window; strict JSON out; close nothing rather than a doubtful target
-version: 1.5
-default_version_at_bootstrap: v1.4
+version: 1.6
+default_version_at_bootstrap: v1.6
 ---
 
 # Prompt: ingest-closures
