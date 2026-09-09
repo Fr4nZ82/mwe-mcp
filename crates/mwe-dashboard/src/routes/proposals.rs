@@ -23,13 +23,12 @@
 //!   it on a row somebody can still answer, and never on a frozen
 //!   deployment, where nothing can be answered.
 //!
-//! **Offered is not the same as unreachable.** [`open_in_chat`] is a
-//! `GET`, and the freeze refuses by method: it is mounted and answerable
-//! on a frozen deployment by anybody who types its address, and it spends
-//! a model call when it is. Nothing links it there, which is all these
-//! pages can do about it; closing it is a change to
-//! [`crate::read_only`], whose refusal list matches whole paths and
-//! cannot express one with an id in the middle.
+//! Neither of the two chat primers is reachable on a frozen deployment
+//! either, address and all: they run the agentic loop, and
+//! [`crate::read_only::COSTLY_ROUTES`] refuses whatever can reach a model
+//! there whatever its method. So the listing withholding the link is
+//! about what a page should offer, not about what the guard allows —
+//! both hold, and each is worth having on its own.
 //!
 //! The rest of the module is what the chat and the links into it need:
 //!

@@ -11,6 +11,21 @@ semver-governed surface: breaking changes are called out explicitly.
 
 ## Unreleased
 
+### Fixed
+
+- **A read-only deployment can no longer be made to call a model.** The freeze
+  refused anything that would *change* something and let every read through on
+  the strength of its method, and four reads were spending real model calls
+  behind that rule: the two that open a proposal in the chat, the per-slot
+  reachability probe on the **Health** page — six calls, which that page starts
+  by itself as it paints, before anyone clicks anything — and the model listing
+  the **LLM** page fetches to fill its picker. On an instance shown to
+  strangers, with a passwordless door, that was somebody else's bill. Now every
+  route that can reach a model is refused there whatever its method, and says
+  which of the two reasons it was refused for. The pages that used to ask say
+  so plainly instead of showing a spinner that turns into an error. **Nothing
+  changes on an ordinary deployment.**
+
 ### Added
 
 - **A page for the proposals, so you can read them without asking the chat.**

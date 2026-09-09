@@ -473,3 +473,140 @@ async fn a_frozen_instance_reads_its_proposals_and_offers_no_way_to_answer_them(
         );
     }
 }
+
+/// Property 4: a frozen instance never calls a model, and the refusal
+/// says so.
+///
+/// The four `GET`s below used to pass on the strength of their method
+/// while spending real calls behind them — the two chat primers, the
+/// per-slot probe the Health page starts by itself as it paints, and the
+/// model listing the LLM console fetches to fill its picker. Asserted
+/// through the real router, by address, because the unit tests next to
+/// the guard assert the predicate and a mounted route could still answer
+/// around it.
+#[tokio::test]
+async fn a_frozen_instance_refuses_every_request_that_would_call_a_model() {
+    let (app, cookie, _pool, _dir) = frozen_app_with_admin().await;
+
+    for uri in [
+        "/proposals/0197fa00-0000-7000-8000-000000000001/open-in-chat",
+        "/proposals/in-flight/chat-turn",
+        "/admin/health/llm-slots",
+        "/admin/health/llm-slots?fragment=1",
+        "/admin/ollama-models",
+    ] {
+        let response = send(
+            &app,
+            Request::builder()
+                .uri(uri)
+                .header(header::COOKIE, cookie.clone())
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await;
+        assert_eq!(
+            response.status(),
+            StatusCode::FORBIDDEN,
+            "GET {uri} would call a model and must be refused"
+        );
+        let said = body_string(response).await;
+        assert!(
+            said.contains("never calls a language model"),
+            "GET {uri} must say why it was refused, not claim nothing can be changed: {said}"
+        );
+    }
+
+    // The counterpart, and the half that would break first if the
+    // patterns grew a prefix: the pages beside them still open, and the
+    // in-flight COUNT — which is one SQL query and no model — still
+    // answers.
+    for uri in [
+        "/proposals",
+        "/proposals/in-flight-count",
+        "/admin/health",
+        "/admin/llm-config",
+        "/dream",
+        "/dream/status",
+    ] {
+        let response = send(
+            &app,
+            Request::builder()
+                .uri(uri)
+                .header(header::COOKIE, cookie.clone())
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await;
+        assert_eq!(
+            response.status(),
+            StatusCode::OK,
+            "GET {uri} calls no model and must still open"
+        );
+    }
+}
+
+/// Shutting the door, then taking the handle off — in that order.
+///
+/// The Health page fetches the slot probe itself on load, so a frozen
+/// build that only refused it would show a stranger a spinner turning
+/// into a red error box. The page renders neither the id `ui.js` keys off
+/// nor the no-JS link.
+#[tokio::test]
+async fn a_frozen_health_page_does_not_ask_for_the_probe_it_would_be_refused() {
+    let (app, cookie, _pool, _dir) = frozen_app_with_admin().await;
+    let html = body_string(
+        send(
+            &app,
+            Request::builder()
+                .uri("/admin/health")
+                .header(header::COOKIE, cookie)
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await,
+    )
+    .await;
+    assert!(html.contains("LLM slots"), "the section stays: {html}");
+    assert!(
+        !html.contains(r#"id="llm-slots""#),
+        "the frozen page must not carry the hook ui.js fetches on: {html}"
+    );
+    assert!(
+        !html.contains("/dashboard/admin/health/llm-slots"),
+        "nor the link a JS-less visitor would follow: {html}"
+    );
+}
+
+/// An open instance is untouched: the four routes are mounted and answer
+/// as they always did. Without this the test above could be passing
+/// because somebody unmounted them.
+#[tokio::test]
+async fn an_open_instance_still_mounts_every_one_of_them() {
+    let (app, _dir) = make_app(false).await;
+    let cookie = setup_admin(&app).await;
+    for uri in [
+        "/proposals/0197fa00-0000-7000-8000-000000000001/open-in-chat",
+        "/proposals/in-flight/chat-turn",
+        "/admin/health/llm-slots?fragment=1",
+    ] {
+        let response = send(
+            &app,
+            Request::builder()
+                .uri(uri)
+                .header(header::COOKIE, cookie.clone())
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await;
+        assert_ne!(
+            response.status(),
+            StatusCode::FORBIDDEN,
+            "GET {uri} must not be refused on an open instance"
+        );
+        assert_ne!(
+            response.status(),
+            StatusCode::NOT_FOUND,
+            "GET {uri} must still be mounted on an open instance"
+        );
+    }
+}

@@ -70,7 +70,12 @@ a switch a panel admin can flip is not a switch that constrains a panel admin:
 - `instance.read_only: true` freezes the deployment. Signing in, reading and
   navigating keep working; facts, pages, comments, proposals, dreams, users,
   tokens, prompts and every configuration editor refuse. The background runs
-  that would rewrite memory on their own do not start.
+  that would rewrite memory on their own do not start. **No model is called,
+  by anybody, for any reason**: the few pages that would have asked one
+  something — the chat, the per-slot reachability probe on **Health**, the
+  model picker on **LLM** — say so instead of asking, and the addresses
+  behind them refuse even if a visitor types one by hand. A frozen
+  deployment on the public internet cannot be made to spend.
 - `instance.demo_identities: [alice, bob, carol]` puts a passwordless door on
   it, offering *Enter as…* for exactly those people. It **requires**
   `read_only`, and the server refuses to start otherwise. A session minted

@@ -119,7 +119,7 @@ fn render(
             "database and LLM handles. Reload to re-run."
         }
         (db_body(db))
-        (llm_slots_placeholder())
+        (llm_slots_placeholder(chrome.read_only))
         p.muted {
             "For boot-failure triage (the server won't start), the offline "
             code { "mwe-mcp doctor" } " CLI also checks the workdir lockfile, "
@@ -182,18 +182,32 @@ fn db_body(db: &DbDiagnostics) -> Markup {
 /// spinner that `ui.js` replaces with the probed table fetched from
 /// `/admin/health/llm-slots?fragment=1`. The `<noscript>` link is the
 /// honest fallback for a JS-less visitor.
-fn llm_slots_placeholder() -> Markup {
+///
+/// On a frozen deployment the probe is refused ([`crate::read_only`]
+/// lists it among the routes that reach a model — six calls, and this
+/// page starts them by itself as it paints). So the frozen build renders
+/// neither the id `ui.js` keys off nor the link: the door is shut first,
+/// and this is taking the handle off, in that order. A spinner that never
+/// resolves into a red box is worse than a sentence saying why.
+fn llm_slots_placeholder(frozen: bool) -> Markup {
     html! {
         h3 { "LLM slots" }
-        div id="llm-slots" {
+        @if frozen {
             p.muted {
-                span.spinner {}
-                " Probing LLM slot reachability…"
+                "Not probed here: reaching each slot means calling it, and this "
+                "instance never calls a model."
             }
-            noscript {
+        } @else {
+            div id="llm-slots" {
                 p.muted {
-                    a href="/dashboard/admin/health/llm-slots" {
-                        "Load LLM slot diagnostics"
+                    span.spinner {}
+                    " Probing LLM slot reachability…"
+                }
+                noscript {
+                    p.muted {
+                        a href="/dashboard/admin/health/llm-slots" {
+                            "Load LLM slot diagnostics"
+                        }
                     }
                 }
             }
@@ -322,11 +336,26 @@ mod tests {
 
     #[test]
     fn placeholder_carries_the_spinner_and_fetch_hook() {
-        let out = llm_slots_placeholder().into_string();
+        let out = llm_slots_placeholder(/* frozen */ false).into_string();
         // ui.js keys off this id; the spinner gives the loading feedback;
         // the noscript link is the JS-less fallback.
         assert!(out.contains(r#"id="llm-slots""#));
         assert!(out.contains("spinner"));
         assert!(out.contains("/dashboard/admin/health/llm-slots"));
+    }
+
+    /// A frozen deployment refuses the probe, so the page offers neither
+    /// of the two things that would start it: the id `ui.js` fetches on,
+    /// and the link a JS-less visitor would follow. Both would end in the
+    /// same `403`.
+    #[test]
+    fn a_frozen_page_offers_no_way_to_start_the_probe() {
+        let out = llm_slots_placeholder(/* frozen */ true).into_string();
+        assert!(!out.contains(r#"id="llm-slots""#), "{out}");
+        assert!(!out.contains("/dashboard/admin/health/llm-slots"), "{out}");
+        assert!(out.contains("never calls a model"), "{out}");
+        // The section is still there — a shown instance shows the whole
+        // product, and an admin must still see that the slots exist.
+        assert!(out.contains("LLM slots"), "{out}");
     }
 }

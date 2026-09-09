@@ -22,6 +22,11 @@ backend is not answering takes a while to give up and the rest of the page is
 not made to wait for it. This is where an unreachable provider or a wrong
 endpoint shows up, and a slot with no model at all reads **NO MODEL**.
 
+Dialling a slot means calling it, so on a read-only deployment this table is
+not offered at all: the section says so in place of the spinner, and the
+address behind it refuses. Everything else on the page is read from the
+database and answers there as it does anywhere.
+
 This page is the subset of `mwe-mcp doctor` that can be answered while the
 server is running. When the server will not start at all, the offline CLI is
 the one to use: it also checks the workdir lockfile, the token secret and a

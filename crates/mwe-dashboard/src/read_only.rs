@@ -36,6 +36,34 @@
 //! consequence is about content rather than routing: on a frozen instance
 //! those pages are readable by whoever walks in, so putting one on the
 //! public internet means having looked at what they print.
+//!
+//! # The second list: what may reach a model
+//!
+//! "Safe methods pass" is right for memory and wrong for money. A
+//! `GET` that spends is still a `GET`, and a frozen instance is the one
+//! we hand to strangers: **no model is ever called there** (founder,
+//! 2026-09-09). Four reads were doing it — the two chat primers behind
+//! the proposals, the per-slot reachability probe the Health page fetches
+//! on its own as the page paints, and the model listing the LLM console
+//! fetches to fill its picker.
+//!
+//! So [`COSTLY_ROUTES`] is a second list, and it is not about writing:
+//! every path on it is refused **whatever its method**, before the
+//! safe-method rule is reached. `*` stands for one path segment, which is
+//! what [`ALLOWED_WRITES`] cannot say and what a per-proposal address
+//! needs.
+//!
+//! Method-independence is what decides membership: a path belongs here
+//! only when **every** method on it reaches a model. Three do not, and
+//! [`COSTLY_ROUTES`] names them: their `GET` renders a page a frozen
+//! instance keeps on purpose, and only their mutating half calls a model,
+//! which the write rule already refuses.
+//!
+//! The list cannot defend itself: an unlisted read passes by default,
+//! which is the wrong direction for this one. Two tests hold it instead —
+//! one naming every entry and what it would otherwise spend, one reading
+//! the crate's own sources so a module that *starts* reaching for a model
+//! cannot do it quietly.
 
 use axum::extract::{Request, State};
 use axum::http::{Method, StatusCode};
@@ -89,13 +117,94 @@ pub const ALLOWED_WRITES: &[&str] = &[
 /// indistinguishable from a wall.
 pub const DEMO_ENTER: &str = "/demo/enter";
 
+/// The routes that can reach a **model**, as path patterns.
+///
+/// Refused on a frozen deployment whatever the method, because the cost
+/// of a call does not depend on the verb that started it. `*` matches
+/// exactly one non-empty segment; there is no prefix wildcard, so a new
+/// route under one of these prefixes is a decision somebody makes here
+/// rather than one they inherit.
+///
+/// - `/proposals/*/open-in-chat` and `/proposals/in-flight/chat-turn` —
+///   both run the agentic loop on the `operator_chat` slot to summarise
+///   what is pending. The proposals page reads the same rows with SQL and
+///   no model, which is what a frozen instance shows instead.
+/// - `/admin/health/llm-slots` — one round-trip **per slot**, so six
+///   calls, and `ui.js` fetches it by itself as the Health page paints:
+///   nobody has to click anything.
+/// - `/admin/ollama-models` — a listing rather than a completion, and
+///   free against a local Ollama, but it is still a stranger reaching the
+///   model host. `llm-config.js` degrades to an empty picker when it is
+///   refused.
+/// - `/chat/agentic`, `/dream/light`, `/dream/compile`, `/dream/full`,
+///   `/facts/*/edit/submit` — writes, and already refused as writes. They
+///   are named here anyway because a path on this list cannot be bought
+///   back by an [`ALLOWED_WRITES`] exemption, and one of them is the
+///   largest spend on the surface.
+///
+/// Deliberately **absent**, and each for the same reason: their `GET`
+/// renders a page a frozen instance keeps on purpose, and only their
+/// mutating half reaches a model, which the write rule refuses on its
+/// own. A method-independent list cannot hold them without taking the
+/// page with them.
+///
+/// - `/chat` — `GET` paints the chat page, `POST` runs a turn.
+/// - `/welcome` — `GET` is the wizard, `POST` puts a person's first words
+///   through the ingest.
+/// - `/wiki/*/delete` — `GET` is the confirmation page, and the `POST`
+///   starts a whole REM night when dissolving a wiki leaves facts with no
+///   page (`crate::routes::wiki_view`).
+///
+/// Absent for a different reason: `/admin/llm-catalog/refresh` downloads
+/// a catalogue of model names and prices and calls no model.
+pub const COSTLY_ROUTES: &[&str] = &[
+    "/proposals/*/open-in-chat",
+    "/proposals/in-flight/chat-turn",
+    "/admin/health/llm-slots",
+    "/admin/ollama-models",
+    "/chat/agentic",
+    "/dream/light",
+    "/dream/compile",
+    "/dream/full",
+    "/facts/*/edit/submit",
+];
+
+/// Does `pattern` describe `path`?
+///
+/// Segment by segment, with `*` standing for exactly one segment that is
+/// there. An empty segment never matches the wildcard, so `/proposals//`
+/// cannot walk into a pattern by having nothing where a name should be.
+fn matches_route(pattern: &str, path: &str) -> bool {
+    let mut pattern_segments = pattern.split('/');
+    let mut path_segments = path.split('/');
+    loop {
+        match (pattern_segments.next(), path_segments.next()) {
+            (None, None) => return true,
+            (Some("*"), Some(segment)) if !segment.is_empty() => {},
+            (Some(wanted), Some(got)) if wanted == got => {},
+            _ => return false,
+        }
+    }
+}
+
+/// Can this path reach a model? See [`COSTLY_ROUTES`].
+#[must_use]
+pub fn reaches_a_model(path: &str) -> bool {
+    COSTLY_ROUTES
+        .iter()
+        .any(|pattern| matches_route(pattern, path))
+}
+
 /// Mutating `GET`s that must still be refused.
 ///
-/// The guard's rule of thumb is "safe methods pass", and today every
-/// dashboard `GET` earns it. **Empty is not the same as absent**: a `GET`
-/// that stores something — a redirect target a provider sends a browser
-/// back to, carrying a credential — belongs here the day it is written,
-/// or the freeze will wave it through on the strength of its method.
+/// The rule of thumb after [`COSTLY_ROUTES`] has had its say is "safe
+/// methods pass", and today every remaining dashboard `GET` earns it:
+/// none of them stores anything. **Empty is not the same as absent**: a
+/// `GET` that stores something — a redirect target a provider sends a
+/// browser back to, carrying a credential — belongs here the day it is
+/// written, or the freeze will wave it through on the strength of its
+/// method. What a `GET` *spends* is the other list's question, not this
+/// one's.
 ///
 /// `/auth/link` is a mutating `GET` and is deliberately *not* here: it
 /// redeems a magic link into a session, which is identity, and a frozen
@@ -105,6 +214,13 @@ pub const REFUSED_READS: &[&str] = &[];
 /// Message shown to a human, and logged, when the mode refuses.
 pub const REFUSAL: &str =
     "This instance is read-only: memory and configuration cannot be changed here.";
+
+/// The refusal for a request that would have called a model.
+///
+/// Its own sentence because "cannot be changed here" would be a lie: the
+/// request changes nothing and is refused for what it would spend.
+pub const REFUSAL_COSTLY: &str =
+    "This instance is read-only: it never calls a language model, so this is not available here.";
 
 /// Would this request change memory or configuration?
 ///
@@ -117,6 +233,11 @@ pub const REFUSAL: &str =
 #[must_use]
 pub fn refuses(method: &Method, path: &str, demo_entrance: bool) -> bool {
     if REFUSED_READS.contains(&path) {
+        return true;
+    }
+    // Before the safe-method rule, because this list is about what a
+    // request costs and not about what it changes.
+    if reaches_a_model(path) {
         return true;
     }
     // `GET` / `HEAD` / `OPTIONS`: reading and navigation, the two things
@@ -141,8 +262,10 @@ pub async fn guard(State(state): State<DashboardState>, request: Request, next: 
         let method = request.method().clone();
         let path = request.uri().path().to_owned();
         if refuses(&method, &path, state.config.demo_entrance_enabled()) {
-            tracing::info!(%method, %path, "read-only instance: request refused");
-            return (StatusCode::FORBIDDEN, REFUSAL).into_response();
+            let costly = reaches_a_model(&path);
+            tracing::info!(%method, %path, costly, "read-only instance: request refused");
+            let sentence = if costly { REFUSAL_COSTLY } else { REFUSAL };
+            return (StatusCode::FORBIDDEN, sentence).into_response();
         }
     }
     next.run(request).await
@@ -271,6 +394,208 @@ mod tests {
     #[test]
     fn an_unknown_write_route_is_refused_by_default() {
         assert!(refused(&Method::POST, "/some/route/added/next/year"));
+    }
+
+    /// Every route that can reach a model, named one by one with the
+    /// address a request would really arrive on, and refused on both a
+    /// safe method and a mutating one.
+    ///
+    /// The safe half is the point: each of these four `GET`s used to pass
+    /// on the strength of its method while spending a model call behind
+    /// it. The other five are writes and were already refused; they are
+    /// asserted here so the one list stays the answer to "what can reach a
+    /// model".
+    #[test]
+    fn every_route_that_reaches_a_model_is_refused_whatever_the_method() {
+        // Left: the real address. Right: what it would have spent.
+        let costly = [
+            (
+                "/proposals/0197fa00-0000-7000-8000-000000000001/open-in-chat",
+                "an agentic turn on the operator_chat slot",
+            ),
+            (
+                "/proposals/in-flight/chat-turn",
+                "an agentic turn on the operator_chat slot",
+            ),
+            (
+                "/admin/health/llm-slots",
+                "one reachability probe per slot, six of them, fetched as the page paints",
+            ),
+            (
+                "/admin/ollama-models",
+                "a listing request to the model host",
+            ),
+            ("/chat/agentic", "an agentic turn"),
+            ("/dream/light", "a whole light dream"),
+            ("/dream/compile", "a whole compile pass"),
+            ("/dream/full", "a whole REM night"),
+            (
+                "/facts/0197fa00-0000-7000-8000-000000000001/edit/submit",
+                "an agentic turn on the operator_chat slot",
+            ),
+        ];
+        for (path, spends) in costly {
+            for method in [Method::GET, Method::POST] {
+                assert!(
+                    refused(&method, path),
+                    "{method} {path} would have cost {spends}"
+                );
+            }
+        }
+        assert_eq!(
+            costly.len(),
+            COSTLY_ROUTES.len(),
+            "a pattern was added to COSTLY_ROUTES without an address that exercises it"
+        );
+    }
+
+    /// And the neighbours still pass, which is the half that would break
+    /// first if the patterns grew a prefix wildcard.
+    ///
+    /// `/chat` and `/welcome` are the two that have to be read carefully:
+    /// their `GET` renders a page a frozen instance keeps on purpose, and
+    /// only their `POST` reaches a model — which the write rule refuses on
+    /// its own.
+    #[test]
+    fn the_pages_beside_a_costly_route_still_open() {
+        for path in [
+            "/proposals",
+            "/proposals/0197fa00-0000-7000-8000-000000000001",
+            "/proposals/in-flight-count",
+            "/chat",
+            "/welcome",
+            "/admin/health",
+            "/admin/llm-config",
+            "/dream",
+            "/dream/status",
+            "/dream/runs/7",
+            "/facts/0197fa00-0000-7000-8000-000000000001/edit",
+            "/wiki/alice/delete",
+        ] {
+            assert!(!refused(&Method::GET, path), "GET {path} must still open");
+        }
+        // The three whose write half is refused for being a write rather
+        // than for what it costs, so the sentence a visitor gets is the
+        // ordinary one. Their `GET` is a page, asserted above and here.
+        for path in ["/chat", "/welcome", "/wiki/alice/delete"] {
+            assert!(!reaches_a_model(path), "{path} is not on the costly list");
+            assert!(!refused(&Method::GET, path), "GET {path} is a page");
+            assert!(refused(&Method::POST, path), "POST {path}");
+        }
+    }
+
+    /// The wildcard stands for one segment that is there, and for nothing
+    /// else — not for a walked-in empty one, and not for two.
+    #[test]
+    fn the_wildcard_is_exactly_one_segment() {
+        assert!(matches_route(
+            "/proposals/*/open-in-chat",
+            "/proposals/x/open-in-chat"
+        ));
+        assert!(!matches_route(
+            "/proposals/*/open-in-chat",
+            "/proposals//open-in-chat"
+        ));
+        assert!(!matches_route(
+            "/proposals/*/open-in-chat",
+            "/proposals/a/b/open-in-chat"
+        ));
+        assert!(!matches_route("/proposals/*/open-in-chat", "/proposals/x"));
+        assert!(!matches_route(
+            "/proposals/*/open-in-chat",
+            "/proposals/x/open-in-chat/more"
+        ));
+    }
+
+    /// The net under [`COSTLY_ROUTES`], because the list cannot defend
+    /// itself: a read is allowed by default, so a new route that calls a
+    /// model would pass until somebody remembered this file.
+    ///
+    /// So the test reads the crate's own sources and asks which modules
+    /// touch a model at all — by the handle type, by the chokepoint that
+    /// resolves one, and by the three helpers a route uses to reach a
+    /// model without ever naming one: the two chat submissions, and the
+    /// call that hands a whole night to the Dream console. A module that
+    /// starts doing any of that fails here until somebody adds it below
+    /// **and** decides what its routes are.
+    ///
+    /// The needles are part of the contract: a third way into a model is a
+    /// third needle, and the day somebody writes one this test is where
+    /// they say so.
+    #[test]
+    fn no_module_reaches_a_model_without_this_file_knowing() {
+        const DOORS: &[&str] = &[
+            "LlmBackend",
+            "backend_for",
+            "OllamaBackend",
+            "agentic_submission",
+            "process_submission",
+            "spawn_dream",
+        ];
+        // Every module that touches one of the doors, and the routes of
+        // its that reach a model — `none` where the module holds the
+        // machinery but mounts no route of its own.
+        const AUDITED: &[(&str, &str)] = &[
+            ("lib.rs", "none — it re-exports the handle types"),
+            (
+                "state.rs",
+                "none — it is the chokepoint that resolves a backend",
+            ),
+            ("routes/chat.rs", "POST /chat and POST /chat/agentic"),
+            (
+                "routes/dream.rs",
+                "POST /dream/light, /dream/compile, /dream/full",
+            ),
+            ("routes/health.rs", "GET /admin/health/llm-slots"),
+            ("routes/llm_config.rs", "GET /admin/ollama-models"),
+            ("routes/facts.rs", "POST /facts/:id/edit/submit"),
+            (
+                "routes/proposals.rs",
+                "GET /proposals/:id/open-in-chat and /proposals/in-flight/chat-turn",
+            ),
+            ("routes/welcome.rs", "POST /welcome"),
+            (
+                "routes/wiki_view.rs",
+                "POST /wiki/:id/delete — it starts a whole REM night",
+            ),
+        ];
+
+        let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src");
+        let mut found: Vec<String> = Vec::new();
+        let mut stack = vec![root.clone()];
+        while let Some(dir) = stack.pop() {
+            for entry in std::fs::read_dir(&dir).expect("the crate's own sources are readable") {
+                let path = entry.expect("dir entry").path();
+                if path.is_dir() {
+                    stack.push(path);
+                    continue;
+                }
+                if path.extension().is_none_or(|e| e != "rs") {
+                    continue;
+                }
+                let name = path
+                    .strip_prefix(&root)
+                    .expect("under src/")
+                    .to_string_lossy()
+                    .replace('\\', "/");
+                // This file names the doors in order to look for them.
+                if name == "read_only.rs" {
+                    continue;
+                }
+                let body = std::fs::read_to_string(&path).expect("source is UTF-8");
+                if DOORS.iter().any(|door| body.contains(door)) {
+                    found.push(name);
+                }
+            }
+        }
+        found.sort();
+        let mut audited: Vec<&str> = AUDITED.iter().map(|(file, _)| *file).collect();
+        audited.sort_unstable();
+        assert_eq!(
+            found, audited,
+            "a module started reaching for a model, or stopped: decide what its routes are, \
+             put them in COSTLY_ROUTES if any of them can be reached by a GET, and name it here"
+        );
     }
 
     /// The passwordless door passes only where it is actually cut. On a
