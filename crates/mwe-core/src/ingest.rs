@@ -8396,7 +8396,7 @@ pub async fn wiki_ingest_message(
                 p
             } else {
                 tracing::warn!(
-                    text_preview = %resp.text.chars().take(200).collect::<String>(),
+                    text_preview = %truncate(&resp.text, 200),
                     "ingest: LLM returned unparseable JSON, falling back to skip"
                 );
                 return Ok(fallback_with_unclaimed_media(
@@ -8956,12 +8956,7 @@ pub async fn wiki_ingest_message(
                         // since the turn goes on to report itself as a capture.
                         tracing::warn!(
                             error = %err,
-                            dropped_body = %unit
-                                .body
-                                .unwrap_or("<no body>")
-                                .chars()
-                                .take(200)
-                                .collect::<String>(),
+                            dropped_body = %truncate(unit.body.unwrap_or("<no body>"), 200),
                             dropped_subject = %unit.subject_id.unwrap_or("<absent>"),
                             "ingest: capture plan invalid — this extraction dropped, \
                              the rest of the turn files"
@@ -21679,11 +21674,14 @@ mod tests {
         drop(dir);
     }
 
-    /// "nothing memorable → empty array". If the
-    /// model returns `capture` with an empty `extractions` array (and no
-    /// legacy top-level body/target), there is nothing to file — the
-    /// orchestrator demotes the turn to a skip with the canned seed rather
-    /// than writing an empty fact.
+    /// A `capture` that files nothing keeps its intent and still reads.
+    ///
+    /// An empty `extractions` array says the message stated nothing to write
+    /// down; it does not say what the message DOES. The gesture a turn like
+    /// this carries — «forget the greenhouse», «you were right, close mine» —
+    /// is settled on the reading side, so the turn must reach it: demoting to
+    /// a skip here would answer out of an empty context and lose the
+    /// withdrawal with the turn.
     #[tokio::test]
     async fn ingest_capture_with_empty_extractions_still_reads() {
         let (dir, tree, pool) = setup_workdir().await;

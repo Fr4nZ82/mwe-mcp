@@ -244,30 +244,52 @@ fn segment_fact_id(attrs: &RegionAttrs, db_acl: &FactAclMap) -> Option<FactId> {
 
 /// Does this line of prose give a redacted page something to stand on?
 ///
-/// The total-redaction collapse asks whether anything outside the fact
-/// regions would still be readable. A **thematic break** would not: a rule of
-/// dashes, asterisks or underscores is punctuation between things, it says
-/// nothing on its own, and on a page whose every fact is withheld it says the
-/// one thing the collapse exists to withhold — that the page has parts, and
-/// roughly where they are. So it does not count as an anchor, and a page made
-/// of facts plus a separator still collapses to the single callout.
+/// The total-redaction collapse asks whether anything outside the fact regions
+/// would still be readable. The answer is no for **everything the engine
+/// appends on its own account**, and that is the rule: a page's scaffolding is
+/// not its content. Two shapes reach a page that way, both written by the
+/// compiler where the writer left something out — a thematic break above the
+/// facts it adds back, and a bare line of `[[wikilinks]]` where the prose
+/// declined to carry them. Neither says anything of its own; on a page whose
+/// every fact is withheld they say the one thing the collapse exists to
+/// withhold, which is that the page has parts and roughly where they sit.
 ///
-/// Everything else does count, including a lone heading: a heading names
-/// something, and a reader shown a heading over `[redacted]` has been told
-/// what they may not read, which is a decision the page's author made.
+/// Everything a person wrote does count, a lone heading included: a heading
+/// names something, and a reader shown a heading over `[redacted]` has been
+/// told what they may not read, which is the author's decision to make.
 fn anchors_a_redacted_page(line: &str) -> bool {
     let trimmed = line.trim();
     if trimmed.is_empty() {
         return false;
     }
-    // CommonMark's thematic break: three or more of one marker, spaces
-    // allowed between them and nothing else on the line. The count matters —
-    // a single `-` is a list bullet, which is content.
-    let is_thematic_break = |marker: char| {
+    // CommonMark's thematic break: three or more of one marker, spaces allowed
+    // between them and nothing else. The count matters — a single `-` is a
+    // list bullet, which is content.
+    let thematic_break = ['-', '*', '_'].into_iter().any(|marker| {
         trimmed.chars().filter(|c| *c == marker).count() >= 3
             && trimmed.chars().all(|c| c == marker || c.is_whitespace())
-    };
-    !(is_thematic_break('-') || is_thematic_break('*') || is_thematic_break('_'))
+    });
+    // The rail floor's line: addresses of other pages and the separator
+    // between them, with no words of its own. Read by cutting each `[[…]]`
+    // out and asking what is left — the check has to be about the line's own
+    // shape, not about a link parser agreeing with it.
+    let mut rest = trimmed;
+    let mut saw_a_link = false;
+    while let Some(open) = rest.find("[[") {
+        let Some(close) = rest[open..].find("]]") else {
+            break;
+        };
+        if rest[..open]
+            .chars()
+            .any(|c| c != '\u{b7}' && !c.is_whitespace())
+        {
+            break;
+        }
+        saw_a_link = true;
+        rest = &rest[open + close + 2..];
+    }
+    let only_rails = saw_a_link && rest.chars().all(|c| c == '\u{b7}' || c.is_whitespace());
+    !(thematic_break || only_rails)
 }
 
 /// Render `text` for `sender_id`, applying the redaction policy.
@@ -799,6 +821,17 @@ Il secondo fatto.{{{{/}}}}"
             out.text
         );
 
+        // The other thing the engine appends on its own account: the rail
+        // floor's bare line of addresses, written when the prose declined to
+        // carry them. It names no claim either, so it holds nothing up.
+        let with_rails = format!("{private}\n\n[[alice/spesa]] · [[bob/hobbies]]\n");
+        let out = render_for_sender(&with_rails, &no_db(), "bilbo", &groups(&["amici"]));
+        assert_eq!(
+            out.text, FULLY_PRIVATE_CALLOUT,
+            "a line of bare links must not keep the page from collapsing: {}",
+            out.text
+        );
+
         // Real prose still anchors: one heading is enough, and it should be —
         // a heading names what is withheld, which is the author's decision.
         let with_heading = format!("# Il titolo\n\n{private}");
@@ -808,6 +841,15 @@ Il secondo fatto.{{{{/}}}}"
             "a page with real prose does not collapse"
         );
         assert!(out.text.contains("Il titolo"));
+
+        // And a sentence that merely BEGINS with a link is prose, not a rail
+        // line: the discriminator is that the line says nothing of its own.
+        let prose_with_a_link = format!("{private}\n\n[[alice/spesa]] è dove teniamo la lista.\n");
+        let out = render_for_sender(&prose_with_a_link, &no_db(), "bilbo", &groups(&["amici"]));
+        assert_ne!(
+            out.text, FULLY_PRIVATE_CALLOUT,
+            "a sentence carrying a link is still a sentence"
+        );
     }
 
     #[test]
