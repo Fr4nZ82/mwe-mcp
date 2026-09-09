@@ -1370,6 +1370,12 @@ enum CapturePlanError {
     /// we'd rather demote the whole turn to a skip with a warn log.
     #[error("supersede_target `{id}` is not in recalled_memory ({available})")]
     SupersedeTargetNotInRecall { id: String, available: String },
+    /// `supersede_target` named a standing directive from an ORDINARY
+    /// extraction. A directive is revised only by another directive, on the
+    /// behaviour-rule road; an ordinary claim reaching one is the model
+    /// crossing two kinds of memory.
+    #[error("supersede_target `{0}` is a standing directive — a rule is revised only by a rule")]
+    SupersedeTargetIsAStandingRule(String),
     /// `supersede_target` named a recalled fact OWNED by a different
     /// principal than the new capture's subject. Superseding means
     /// "replace a prior statement about the SAME subject"; closing
@@ -2030,6 +2036,16 @@ fn validate_supersede_target(
             },
         });
     };
+    // An ordinary capture never replaces a standing directive. A directive is
+    // revised by another directive, resolved against the rules in force
+    // (`resolve_behaviour_supersede`), and that branch does not come through
+    // here — so a rules-page target on an ordinary extraction is the model
+    // reaching across two kinds of memory, whatever it believed it was doing.
+    if crate::wiki::is_rules_page(&hit.source_path) {
+        return Err(CapturePlanError::SupersedeTargetIsAStandingRule(
+            raw.to_owned(),
+        ));
+    }
     // Same-subject guard: a capture may only supersede a fact about the
     // SAME subject. Superseding replaces a prior statement about this
     // subject; without this, an ingest from user X could close a fact
@@ -2408,6 +2424,12 @@ enum ClosurePlanError {
     /// `reason` is missing or outside the closed vocabulary.
     #[error("closure reason `{0}` is not one of completed|retracted|contradicted")]
     UnknownReason(String),
+    /// The target is a standing directive on a wiki's rules page. A rule is
+    /// retired or revised only by another rule, through the classifier's
+    /// `supersede_target` on a behaviour-rule extraction; an ordinary sentence
+    /// that happens to share the speaker cannot end one.
+    #[error("closure target `{0}` is a standing directive — a rule is retired only by a rule")]
+    TargetIsAStandingRule(String),
     /// The sender is none of the three the target is open to.
     /// A closure withdraws an assertion, so it is open to the subject, to
     /// whoever made the assertion, and to whoever the fact was SHARED with —
@@ -2462,6 +2484,15 @@ fn validate_closure<'a>(
     // was SHARED with — a claim handed to a household is the household's to
     // retire. A world fact shared with nobody and claimed by nobody stays
     // closable by no one from chat.
+    // A standing directive is not ended by a passing remark. The rules page is
+    // held out of every other pass; this verb reaches it because its targets
+    // come from the turn's own recall, where a rule surfaces like any other
+    // fact. Ending one is a rule's own business: a directive is revised by
+    // naming it in `supersede_target` on ANOTHER directive, which is a
+    // different road and stays open.
+    if crate::wiki::is_rules_page(&hit.source_path) {
+        return Err(ClosurePlanError::TargetIsAStandingRule(raw.to_owned()));
+    }
     if !crate::acl::sender_may_retract(
         &hit.subject_id,
         hit.sender_id.as_ref(),
@@ -2695,6 +2726,23 @@ fn vet_supersede<'a>(
         );
         return VettedSupersede::Unsound;
     };
+    // A standing directive is replaced only by another standing directive, and
+    // this stage cannot offer one: a behaviour rule is written straight to its
+    // scope's rules page and never enters `turn_facts`, so no successor this
+    // verb is allowed to name could ever be a rule. Rule-replaces-rule has its
+    // own road — `supersede_target` on a behaviour-rule extraction, resolved
+    // against the directives in force — and it does not pass through here.
+    // Belt to [`reconcile_candidates`]'s braces: that gate stops a rule
+    // reaching the stage, this one stops it being acted on if it ever does.
+    if wiki::is_rules_page(&prev.source_path) {
+        tracing::warn!(
+            target = target_raw,
+            successor = successor_raw,
+            "ingest: reconcile supersede names a standing directive as the replaced fact — \
+             refused (a rule is revised only by another rule)"
+        );
+        return VettedSupersede::Unsound;
+    }
     if !turn_facts.iter().any(|(id, _)| *id == successor_id) {
         tracing::warn!(
             successor = successor_raw,
@@ -3095,6 +3143,15 @@ fn closure_candidate_line(h: &RecallHit, now: &chrono::DateTime<chrono::Utc>) ->
 /// which is precisely the claim a correction arriving now is correcting. Costs
 /// one extra embed of the message; the buffered rows carry staged vectors.
 ///
+/// **A standing directive is not a candidate either**, unless this turn laid
+/// one down itself. Every other pass holds the rules page outside its
+/// perimeter; this stage is the one that reached it, and it is the only one
+/// that can take a fact away — so an ordinary sentence arrived beside a rule
+/// the same person had set, and retired it. A rule is revised only by another
+/// rule, on the classifier's own road, so a turn that filed no rule has no
+/// business naming one; a turn that did keeps them, because it may be
+/// weighing its new directive against the ones in force.
+///
 /// **The facts this turn filed are not candidates.** Their ids seed the
 /// union's dedup set, so whichever leg surfaces one drops it the way it drops
 /// a repeat, and no verb can name it. They reach the stage by the other door,
@@ -3106,6 +3163,10 @@ fn closure_candidate_line(h: &RecallHit, now: &chrono::DateTime<chrono::Utc>) ->
 /// exclusion costs it no slots — its default is three, and the turn's own
 /// claims are the buffered rows nearest the message being searched, so they
 /// would take the whole slot before any older candidate reached it.
+#[allow(
+    clippy::too_many_arguments,
+    reason = "three candidate legs, each with its own scope, plus what this turn produced"
+)]
 async fn reconcile_candidates(
     pool: &SqlitePool,
     embedder: &Arc<dyn Embedder>,
@@ -3115,21 +3176,33 @@ async fn reconcile_candidates(
     sender_ctx: &SenderContext,
     fresh_top_k: usize,
     turn_facts: &[(FactId, String)],
+    turn_filed_a_rule: bool,
 ) -> Vec<RecallHit> {
     let mut out: Vec<RecallHit> = Vec::new();
     let mut seen: std::collections::HashSet<String> = turn_facts
         .iter()
         .map(|(id, _)| id.as_str().to_owned())
         .collect();
+    // A standing directive is not judged against an ordinary sentence. Every
+    // other pass already holds the rules page out of its perimeter; this stage
+    // is the one that reached it, and it is the only one that can take a fact
+    // away — so a passing remark about dinner arrived as a candidate beside
+    // "answer me concisely", the two shared a speaker and a wiki, and the
+    // remark was recorded as replacing the rule. A rule may be revised, but
+    // only by another rule: that path is the classifier's `supersede_target`
+    // on a behaviour-rule extraction, which never comes through here. A turn
+    // that filed no rule of its own has no business naming one at all, and a
+    // turn that did keeps them so the two can be weighed against each other.
+    let admits_rules = |h: &RecallHit| turn_filed_a_rule || !wiki::is_rules_page(&h.source_path);
     for h in flat {
-        if seen.insert(h.fact_id.as_str().to_owned()) {
+        if admits_rules(h) && seen.insert(h.fact_id.as_str().to_owned()) {
             out.push(h.clone());
         }
     }
     match recall::facts_on_pages(pool, injected_pages, sender_ctx, RECONCILE_CANDIDATE_CAP).await {
         Ok(hits) => {
             for h in hits {
-                if seen.insert(h.fact_id.as_str().to_owned()) {
+                if admits_rules(&h) && seen.insert(h.fact_id.as_str().to_owned()) {
                     out.push(h);
                 }
             }
@@ -3153,7 +3226,7 @@ async fn reconcile_candidates(
     {
         Ok(hits) => {
             for h in hits {
-                if seen.insert(h.fact_id.as_str().to_owned()) {
+                if admits_rules(&h) && seen.insert(h.fact_id.as_str().to_owned()) {
                     out.push(h);
                 }
             }
@@ -3771,6 +3844,13 @@ enum ValidityEditPlanError {
     /// A provided bound did not parse as ISO-8601 / RFC3339.
     #[error("validity_edit date `{0}` is not ISO-8601")]
     BadDate(String),
+    /// The target is a standing directive on a wiki's rules page. Shutting a
+    /// rule's window stops it steering the agent, so re-dating one from an
+    /// ordinary turn ends it under another name.
+    #[error(
+        "validity_edit target `{0}` is a standing directive — a rule is re-dated only by a rule"
+    )]
+    TargetIsAStandingRule(String),
 }
 
 /// Validate one requested validity edit against this turn's recall window.
@@ -3810,6 +3890,14 @@ fn validate_validity_edit<'a>(
     // The retraction gate: closing a fact's validity withdraws an assertion,
     // so its subject may do it, so may whoever made it, and so may whoever it
     // was shared with. Rewriting and the ACL stay with the subject — see
+    // A standing directive is out of this verb's reach for the same reason it
+    // is out of the closure verb's: a closed window stops a rule steering the
+    // agent (`fact_index::find_behaviour_rules` refuses one whose window has
+    // shut), so re-dating a rule from an ordinary turn ends it by another
+    // name.
+    if crate::wiki::is_rules_page(&hit.source_path) {
+        return Err(ValidityEditPlanError::TargetIsAStandingRule(raw.to_owned()));
+    }
     // [`crate::acl::sender_may_retract`].
     if !crate::acl::sender_may_retract(
         &hit.subject_id,
@@ -8374,6 +8462,12 @@ pub async fn wiki_ingest_message(
     // the supersede verb needs them all, because a fact that replaces another
     // has to be NAMEABLE before it can inherit that fact's audience.
     let mut turn_facts: Vec<(FactId, String)> = Vec::new();
+    // Whether this turn laid down a standing directive of its own. It decides
+    // one thing: whether the reconciliation stage is shown the directives
+    // already in force. A turn that states a rule may be weighing it against
+    // them; a turn about dinner may not, and the stage is the only one that
+    // can take a fact away.
+    let mut turn_filed_a_rule = false;
     // The person's answer to a slot question asked on an earlier turn, when
     // this `disambig_choice` is one of ours. Any other choice — the
     // classifier's own disambiguation — parses as `None` here and leaves the
@@ -8545,6 +8639,7 @@ pub async fn wiki_ingest_message(
                                 "ingest: behaviour-rule filed on its scope's rules page"
                             );
                             captured_any = true;
+                            turn_filed_a_rule = true;
                             if capture_id.is_none() {
                                 capture_id = Some(fact_id);
                             }
@@ -9500,6 +9595,7 @@ pub async fn wiki_ingest_message(
             &sender_ctx,
             policy.recall_fresh_top_k,
             &turn_facts,
+            turn_filed_a_rule,
         )
         .await;
         reconcile_journal.extend(
@@ -16661,6 +16757,24 @@ mod tests {
         );
     }
 
+    /// Both closing stages are told that a standing directive is not theirs.
+    ///
+    /// The engine refuses it either way, but a stage that is not told keeps
+    /// naming rules and having its entries thrown out, and the refusal is
+    /// silent to the person whose rule it was about to end.
+    #[test]
+    fn the_closing_stages_leave_standing_directives_alone() {
+        assert!(
+            BUNDLED_INGEST_RECONCILE_MD
+                .contains("A STANDING DIRECTIVE IS NOT YOURS TO TOUCH, WITH ANY OF THE FOUR VERBS"),
+            "the reconciler is no longer told to leave the rules alone"
+        );
+        assert!(
+            BUNDLED_INGEST_CLOSURES_MD.contains("Never close a standing directive"),
+            "the topic-closure pass is no longer told to leave the rules alone"
+        );
+    }
+
     /// The topic words are told which language they are written in.
     ///
     /// They are neither a machine key nor a sentence, so the LANGUAGE
@@ -16707,6 +16821,233 @@ mod tests {
             EditRefusal::NoWikiYet.as_reason(),
             EditRefusal::SmartWiki.as_reason(),
             "the two refusals must not read as the same event"
+        );
+        drop(dir);
+    }
+
+    /// The standing directive Zoe laid down survives the sentence about
+    /// dinner two days later.
+    ///
+    /// The rules page is held out of every structural pass — the compiler's
+    /// gather, refile, dedup, the navigator's walk — and the one stage that
+    /// reached it is the only one that can take a fact away. So an ordinary
+    /// remark arrived as a candidate beside «answer me concisely», the two
+    /// shared a speaker and a wiki, and the remark was recorded as replacing
+    /// the rule: the directive died, the page it lived on emptied overnight,
+    /// and the turn that would have widened it three weeks later had nothing
+    /// left to widen.
+    #[tokio::test]
+    async fn an_ordinary_remark_cannot_replace_a_standing_directive() {
+        let (dir, tree, pool) = setup_agent_workdir().await;
+
+        // Day one: the directive.
+        let rule_llm = FakeLlmBackend::new(
+            "fake",
+            "{\"intent\":\"capture\",\"extractions\":[{\
+              \"behaviour_rule\":true,\"behaviour_scope\":\"per-user\",\
+              \"body\":\"Answer concisely: give the answer without the preamble.\"}],\
+              \"suggested_seed\":\"Ok.\"}",
+        );
+        let rule_resp = wiki_ingest_message(
+            &pool,
+            &tree,
+            fake_embedder(),
+            &rule_llm,
+            None,
+            req_consumer(
+                "Keep it short with me. Give me the answer, not the preamble.",
+                "alice",
+                "botdeploy",
+            ),
+            &IngestPolicy::default(),
+        )
+        .await
+        .expect("ingest");
+        let rule_id = rule_resp.capture_id.expect("the directive is filed");
+
+        // Two days later: an ordinary remark, and a reconciliation stage that
+        // reaches for the rule. Its verdict is scripted the way the failing
+        // run answered — this test is about what the engine does with it.
+        // The CLOSURE verb, deliberately: it names no successor, so nothing
+        // but the rules-page guard can refuse it. A scripted `supersedes`
+        // would be turned away by the older rule that a successor must be a
+        // fact this turn filed, and the test would pass without proving
+        // anything.
+        let reconcile = format!(
+            "{{\"closures\":[{{\"target\":\"{}\",\"reason\":\"contradicted\",\
+              \"valid_to\":null}}],\"supersedes\":[],\
+              \"validity_edits\":[],\"acl_changes\":[]}}",
+            rule_id.as_str(),
+        );
+        let llm = ScriptedLlm::new(&[
+            "{\"intent\":\"capture\",\"extractions\":[{\
+              \"subject_id\":\"user:alice\",\"fact_type\":\"preference\",\"style\":\"prosa\",\
+              \"body\":\"Zoe would rather not have rice again tomorrow.\",\
+              \"topics\":[\"meals\",\"rice\"]}],\"suggested_seed\":\"Noted.\"}",
+            &reconcile,
+        ]);
+        wiki_ingest_message(
+            &pool,
+            &tree,
+            fake_embedder(),
+            &llm,
+            None,
+            req_consumer("Can we not do rice again tomorrow.", "alice", "botdeploy"),
+            &IngestPolicy::default(),
+        )
+        .await
+        .expect("ingest");
+
+        let rule = fact_index::find_by_id(&pool, &rule_id)
+            .await
+            .expect("find")
+            .expect("the directive is still a row");
+        assert!(
+            rule.superseded_at.is_none() && rule.deleted_at.is_none(),
+            "a remark about dinner does not replace a standing directive"
+        );
+        assert!(
+            rule.valid_to.is_none() && rule.decay_reason.is_none(),
+            "and it does not end one either: a closed window stops a rule steering the agent"
+        );
+        // The remark itself is kept, on its own account.
+        let buffered = capture_buffer::find_all_buffered(&pool, 100).await.unwrap();
+        assert_eq!(buffered.len(), 1, "the remark is a fact of its own");
+        assert!(
+            buffered[0].body.contains("rice"),
+            "and it is the remark, not the rule: {}",
+            buffered[0].body
+        );
+        drop(dir);
+    }
+
+    /// The road that IS allowed to revise a directive stays open: another
+    /// directive, naming the one it replaces.
+    ///
+    /// The guards above refuse a rule to the four reconciliation verbs, and
+    /// that must not close the one door a rule is meant to go through. This is
+    /// the door: a behaviour-rule extraction carrying `supersede_target`,
+    /// resolved against the directives in force.
+    #[tokio::test]
+    async fn a_standing_directive_is_revised_by_another_standing_directive() {
+        let (dir, tree, pool) = setup_agent_workdir().await;
+        let first = wiki_ingest_message(
+            &pool,
+            &tree,
+            fake_embedder(),
+            &FakeLlmBackend::new(
+                "fake",
+                "{\"intent\":\"capture\",\"extractions\":[{\
+                  \"behaviour_rule\":true,\"behaviour_scope\":\"per-user\",\
+                  \"body\":\"Answer concisely: give the answer without the preamble.\"}],\
+                  \"suggested_seed\":\"Ok.\"}",
+            ),
+            None,
+            req_consumer(
+                "Keep it short with me. Give me the answer, not the preamble.",
+                "alice",
+                "botdeploy",
+            ),
+            &IngestPolicy::default(),
+        )
+        .await
+        .expect("ingest")
+        .capture_id
+        .expect("the first directive is filed");
+
+        let revise = format!(
+            "{{\"intent\":\"capture\",\"extractions\":[{{\
+              \"behaviour_rule\":true,\"behaviour_scope\":\"per-user\",\
+              \"supersede_target\":\"{}\",\
+              \"body\":\"You can be chatty again.\"}}],\"suggested_seed\":\"Ok.\"}}",
+            first.as_str()
+        );
+        wiki_ingest_message(
+            &pool,
+            &tree,
+            fake_embedder(),
+            &FakeLlmBackend::new("fake", &revise),
+            None,
+            req_consumer("You can be chatty with me again.", "alice", "botdeploy"),
+            &IngestPolicy::default(),
+        )
+        .await
+        .expect("ingest");
+
+        let rules = recall_behaviour_rules(&pool, &req_consumer("?", "alice", "botdeploy")).await;
+        let bodies: Vec<&str> = rules.iter().map(|(_, body, _)| body.as_str()).collect();
+        assert!(
+            bodies.iter().any(|b| b.contains("chatty")),
+            "the new directive is in force: {bodies:?}"
+        );
+        assert!(
+            !bodies.iter().any(|b| b.contains("without the preamble")),
+            "and the one it names stops steering the agent: {bodies:?}"
+        );
+        drop(dir);
+    }
+
+    /// Widening a directive to every assistant reaches the sender's own
+    /// memory, and takes nothing away on the way.
+    ///
+    /// The scope is read from the addressee, so «and I mean with every
+    /// assistant» is the same directive at a wider reach — filed in the
+    /// SENDER's identity wiki, where every consumer serving them reads it.
+    /// What this pins is that the widening road is not the reconciliation
+    /// road: nothing is retired by an ordinary verb on the way through.
+    #[tokio::test]
+    async fn widening_a_directive_to_every_assistant_files_it_in_the_senders_own_memory() {
+        let (dir, tree, pool) = setup_agent_workdir().await;
+        // `alice` is the speaker here, and a user-global rule lands in her own
+        // identity wiki rather than the agent's.
+        sqlx::query("INSERT INTO enrollment_users (user_id, is_admin) VALUES ('alice', 0)")
+            .execute(&pool)
+            .await
+            .unwrap();
+        wiki_ingest_message(
+            &pool,
+            &tree,
+            fake_embedder(),
+            &FakeLlmBackend::new(
+                "fake",
+                "{\"intent\":\"capture\",\"extractions\":[{\
+                  \"behaviour_rule\":true,\"behaviour_scope\":\"user-global\",\
+                  \"body\":\"Answer concisely: give the answer without the preamble.\"}],\
+                  \"suggested_seed\":\"Ok.\"}",
+            ),
+            None,
+            req_consumer(
+                "And I mean with every assistant, not just this one. The short answers, all of them.",
+                "alice",
+                "botdeploy",
+            ),
+            &IngestPolicy::default(),
+        )
+        .await
+        .expect("ingest");
+
+        let in_her_own = fact_index::find_by_filters(
+            &pool,
+            &fact_index::FactFilters {
+                wiki_id: Some("alice".to_owned()),
+                ..Default::default()
+            },
+        )
+        .await
+        .unwrap();
+        assert_eq!(
+            in_her_own.len(),
+            1,
+            "a directive addressed to every assistant lives with the person, not the agent"
+        );
+        assert!(
+            crate::wiki::is_rules_page(&in_her_own[0].source_path),
+            "on her rules page: {}",
+            in_her_own[0].source_path
+        );
+        assert!(
+            in_her_own[0].valid_to.is_none() && in_her_own[0].decay_reason.is_none(),
+            "and it arrives in force, not already closed"
         );
         drop(dir);
     }
@@ -18370,6 +18711,7 @@ mod tests {
             &SenderContext::user("alice"),
             10,
             &[],
+            false,
         )
         .await;
         assert!(
@@ -18435,6 +18777,7 @@ mod tests {
             &SenderContext::user("alice"),
             1,
             &[(this_turn.clone(), "alice ha comprato il latte".to_owned())],
+            false,
         )
         .await;
 

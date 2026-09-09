@@ -91,6 +91,18 @@ semver-governed surface: breaking changes are called out explicitly.
 
 ### Fixed
 
+- **A rule you set the assistant cannot be wiped out by an unrelated remark.**
+  A standing instruction — *«keep it short with me»*, *«never bring up my
+  mother's health»* — lives apart from ordinary facts, and every part of the
+  engine leaves it alone except the one step that decides what a message
+  retires. That step was being shown the rules alongside everything else, so a
+  passing sentence about dinner, two days later and from the same person, could
+  be recorded as having replaced the instruction: the rule stopped applying,
+  the page it lived on emptied that night, and the later sentence meant to
+  widen it had nothing left to widen. A rule is now out of that step's reach
+  entirely, unless the message is itself laying down a rule. Changing an
+  instruction still works exactly as before, by saying another one.
+
 - **Four kinds of sentence the memory was letting go past it.** A rule you lay
   down for the assistant (*«keep it short with me»*), a preference or a
   position you take in a discussion that is still open (*«I'd take the hybrid
