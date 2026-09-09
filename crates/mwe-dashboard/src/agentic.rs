@@ -140,6 +140,10 @@ pub enum AgenticTool {
     /// source or dest is refused), act-first + born-applied receipt. Write
     /// tool.
     WikiMoveFact,
+    /// Set a standing behaviour rule for ONE person — the only road there is,
+    /// because a rule about how the assistant treats somebody is refused in
+    /// conversation, whoever asks. Admin-only. Write tool.
+    WikiSetBehaviourRule,
     /// Delete **one page** of a standard wiki. Facts the operator *sent* are
     /// tombstoned; a foreign-authored fact is *handed back* intact to the
     /// capture buffer, and the next placement pass writes it where its subject
@@ -192,6 +196,7 @@ impl AgenticTool {
             Self::WikiForget => "wiki_forget",
             Self::WikiSupersede => "wiki_supersede",
             Self::WikiMoveFact => "wiki_move_fact",
+            Self::WikiSetBehaviourRule => "wiki_set_behaviour_rule",
             Self::WikiDeletePage => "wiki_delete_page",
             Self::WikiRequestForget => "wiki_request_forget",
             Self::StructureProposalVote => "structure_proposal_vote",
@@ -214,6 +219,7 @@ impl AgenticTool {
             "wiki_forget" => Some(Self::WikiForget),
             "wiki_supersede" => Some(Self::WikiSupersede),
             "wiki_move_fact" => Some(Self::WikiMoveFact),
+            "wiki_set_behaviour_rule" => Some(Self::WikiSetBehaviourRule),
             "wiki_delete_page" => Some(Self::WikiDeletePage),
             "wiki_request_forget" => Some(Self::WikiRequestForget),
             "structure_proposal_vote" => Some(Self::StructureProposalVote),
@@ -237,6 +243,7 @@ pub fn tool_descriptors() -> Vec<Tool> {
     out.extend(batch_fact_tool_descriptors());
     out.extend(correction_tool_descriptors());
     out.extend(move_fact_tool_descriptors());
+    out.extend(set_behaviour_rule_tool_descriptors());
     out.extend(delete_page_tool_descriptors());
     out.extend(request_forget_tool_descriptors());
     out.extend(vote_tool_descriptors());
@@ -505,6 +512,58 @@ fn correction_tool_descriptors() -> Vec<Tool> {
     }]
 }
 
+/// The operator chat's road to a standing behaviour rule.
+///
+/// It exists because the conversational road is closed on purpose: a person
+/// cannot dictate how the assistant treats ANOTHER person by talking to it —
+/// the classifier refuses that shape and files nothing (prompt Part 7) — and
+/// somebody has to be able to set one. That somebody is the admin, here.
+fn set_behaviour_rule_tool_descriptors() -> Vec<Tool> {
+    vec![Tool {
+        name: AgenticTool::WikiSetBehaviourRule.name().to_owned(),
+        description: "Set a standing behaviour rule for ONE person — how the \
+            assistant is to behave with them (e.g. 'leggi a voce alta tutte le \
+            risposte che mandi a bob'). Act-first and final. \
+            WRITE TOOL — call this only after the operator has explicitly \
+            confirmed in the current turn the person, the scope and the wording. \
+            ADMIN-ONLY, and this chat is the ONLY place a rule about somebody \
+            else can be set: said in an ordinary conversation the same sentence \
+            is refused and stored nowhere, whoever says it. \
+            The rule text is written as an IMPERATIVE addressed to the assistant \
+            and names the person in the third person, because it is read back \
+            cold by an assistant that was never in this conversation: \
+            'Read aloud every reply you send to Bob.', never 'read aloud my \
+            replies'. Scope `every-assistant` puts it in the person's own memory \
+            and every assistant serving them applies it; scope `this-assistant` \
+            puts it in one agent's memory and needs that agent named, because \
+            this chat is not an assistant and has no 'this' to infer."
+            .to_owned(),
+        parameters: json!({
+            "type": "object",
+            "properties": {
+                "user_id": {
+                    "type": "string",
+                    "description": "The person the rule is about — the enrolled user id whose conversations it governs."
+                },
+                "scope": {
+                    "type": "string",
+                    "enum": ["every-assistant", "this-assistant"],
+                    "description": "`every-assistant`: the rule travels with the person and every assistant serving them applies it. `this-assistant`: it binds one agent only, named in `agent_id`."
+                },
+                "agent_id": {
+                    "type": "string",
+                    "description": "REQUIRED when scope is `this-assistant`: the agent the rule binds (an enrolled identity flagged as an agent). Omitted for `every-assistant`."
+                },
+                "rule": {
+                    "type": "string",
+                    "description": "The rule, as ONE imperative sentence addressed to the assistant, naming the person in the third person."
+                }
+            },
+            "required": ["user_id", "scope", "rule"]
+        }),
+    }]
+}
+
 fn move_fact_tool_descriptors() -> Vec<Tool> {
     vec![Tool {
         name: AgenticTool::WikiMoveFact.name().to_owned(),
@@ -713,6 +772,7 @@ pub async fn dispatch(
         AgenticTool::WikiForget => dispatch_wiki_forget(arguments, ctx).await,
         AgenticTool::WikiSupersede => dispatch_wiki_supersede(arguments, ctx).await,
         AgenticTool::WikiMoveFact => dispatch_wiki_move_fact(arguments, ctx).await,
+        AgenticTool::WikiSetBehaviourRule => dispatch_wiki_set_behaviour_rule(arguments, ctx).await,
         AgenticTool::WikiDeletePage => dispatch_wiki_delete_page(arguments, ctx).await,
         AgenticTool::WikiRequestForget => dispatch_wiki_request_forget(arguments, ctx).await,
         AgenticTool::StructureProposalVote => dispatch_proposal_vote(arguments, ctx).await,
@@ -1661,6 +1721,182 @@ async fn load_and_gate_movable_fact(
     Ok((row, source_wiki_id, source_page))
 }
 
+#[derive(Debug, Deserialize)]
+struct WikiSetBehaviourRuleArgs {
+    user_id: String,
+    scope: String,
+    #[serde(default)]
+    agent_id: Option<String>,
+    rule: String,
+}
+
+#[derive(Debug, Serialize)]
+struct WikiSetBehaviourRuleReport {
+    fact_id: String,
+    user_id: String,
+    scope: String,
+    /// The wiki the rule now lives in: the person's own for
+    /// `every-assistant`, the agent's for `this-assistant`.
+    home_wiki_id: String,
+    rule: String,
+}
+
+/// Check the person a rule is about, and turn the requested scope into the wiki
+/// the rule will live in.
+///
+/// Both scopes file under the SAME subject — the person — so the home wiki is
+/// the whole of the difference, and it is what the rules channel reads them
+/// back by. `every-assistant` is the person's own wiki; `this-assistant` is one
+/// agent's, and that agent has to be NAMED, because this chat is not one of the
+/// person's assistants and has no "this" to stand for.
+async fn resolve_behaviour_rule_target(
+    ctx: &AgenticContext<'_>,
+    tool: &'static str,
+    user_id: &str,
+    args: &WikiSetBehaviourRuleArgs,
+) -> Result<(mwe_core::ingest::BehaviourScope, String), AgenticToolError> {
+    if !mwe_core::enrollment::principal_exists(
+        ctx.pool,
+        &mwe_core::types::Principal::User(user_id.to_owned()),
+    )
+    .await
+    .map_err(|e| AgenticToolError::InternalFailure {
+        tool,
+        detail: e.to_string(),
+    })? {
+        return Err(AgenticToolError::InvalidArguments {
+            tool,
+            detail: format!("`{user_id}` is not an enrolled user — a rule is set for a person"),
+        });
+    }
+    if mwe_core::enrollment::is_agent(ctx.pool, user_id)
+        .await
+        .map_err(|e| AgenticToolError::InternalFailure {
+            tool,
+            detail: e.to_string(),
+        })?
+    {
+        return Err(AgenticToolError::InvalidArguments {
+            tool,
+            detail: format!(
+                "`{user_id}` is an agent, not a person — a behaviour rule says how an assistant \
+                 treats somebody, so name the person it is about"
+            ),
+        });
+    }
+
+    match args.scope.trim() {
+        "every-assistant" => Ok((
+            mwe_core::ingest::BehaviourScope::UserGlobal,
+            user_id.to_owned(),
+        )),
+        "this-assistant" => {
+            let agent = args
+                .agent_id
+                .as_deref()
+                .map(str::trim)
+                .filter(|s| !s.is_empty())
+                .ok_or_else(|| AgenticToolError::InvalidArguments {
+                    tool,
+                    detail: "scope `this-assistant` needs an agent_id: this chat is not an \
+                             assistant, so there is no 'this' to infer"
+                        .to_owned(),
+                })?;
+            if !mwe_core::enrollment::is_agent(ctx.pool, agent)
+                .await
+                .map_err(|e| AgenticToolError::InternalFailure {
+                    tool,
+                    detail: e.to_string(),
+                })?
+            {
+                return Err(AgenticToolError::InvalidArguments {
+                    tool,
+                    detail: format!("`{agent}` is not an agent — name the assistant to bind"),
+                });
+            }
+            Ok((mwe_core::ingest::BehaviourScope::PerUser, agent.to_owned()))
+        },
+        other => Err(AgenticToolError::InvalidArguments {
+            tool,
+            detail: format!("unknown scope `{other}` — use `every-assistant` or `this-assistant`"),
+        }),
+    }
+}
+
+/// Set a standing behaviour rule for one person.
+///
+/// The conversational road to this is closed on purpose — a rule about how the
+/// assistant treats somebody else is refused there, whoever says it — so this
+/// is the only one, and it is the admin's. Refuses: a non-admin, an unknown or
+/// blank person, a person who is really an agent (a behaviour rule governs how
+/// an assistant treats a PERSON), `this-assistant` without an agent to bind, an
+/// `agent_id` that is not an agent, an empty rule, and a smart home wiki.
+///
+/// Both scopes file the rule under the SAME subject — the person it is about —
+/// and differ only in which wiki it lives in, which is exactly what the rules
+/// channel reads them back by (`mwe_core::ingest::file_behaviour_rule`).
+async fn dispatch_wiki_set_behaviour_rule(
+    arguments: &serde_json::Value,
+    ctx: &AgenticContext<'_>,
+) -> Result<String, AgenticToolError> {
+    let tool = AgenticTool::WikiSetBehaviourRule.name();
+    if !ctx.is_admin {
+        return Err(AgenticToolError::InvalidArguments {
+            tool,
+            detail: "setting a rule about how the assistant treats somebody is admin-only, and \
+                     this chat is the only place it can be done at all"
+                .to_owned(),
+        });
+    }
+    let args: WikiSetBehaviourRuleArgs =
+        serde_json::from_value(arguments.clone()).map_err(|e| {
+            AgenticToolError::InvalidArguments {
+                tool,
+                detail: e.to_string(),
+            }
+        })?;
+
+    let rule = args.rule.trim();
+    if rule.is_empty() {
+        return Err(AgenticToolError::InvalidArguments {
+            tool,
+            detail: "the rule is empty — write it as one imperative sentence".to_owned(),
+        });
+    }
+    let user_id = args.user_id.trim();
+    let (scope, home) = resolve_behaviour_rule_target(ctx, tool, user_id, &args).await?;
+    ensure_standard_wiki(ctx, tool, &home)?;
+    let home_id = WikiId::parse(&home).map_err(|e| AgenticToolError::InvalidArguments {
+        tool,
+        detail: format!("`{home}` is not a usable wiki id: {e}"),
+    })?;
+
+    let fact_id = mwe_core::ingest::file_behaviour_rule(
+        ctx.tree,
+        ctx.pool,
+        Arc::clone(&ctx.embedder),
+        home_id,
+        mwe_core::types::Principal::User(user_id.to_owned()),
+        scope,
+        rule,
+        None,
+    )
+    .await
+    .map_err(|e| AgenticToolError::InternalFailure {
+        tool,
+        detail: e.to_string(),
+    })?;
+
+    let report = WikiSetBehaviourRuleReport {
+        fact_id: fact_id.as_str().to_owned(),
+        user_id: user_id.to_owned(),
+        scope: args.scope.trim().to_owned(),
+        home_wiki_id: home,
+        rule: rule.to_owned(),
+    };
+    serialise_result("rule_set", &report)
+}
+
 async fn dispatch_wiki_move_fact(
     arguments: &serde_json::Value,
     ctx: &AgenticContext<'_>,
@@ -2178,6 +2414,7 @@ mod tests {
             AgenticTool::WikiForget,
             AgenticTool::WikiSupersede,
             AgenticTool::WikiMoveFact,
+            AgenticTool::WikiSetBehaviourRule,
             AgenticTool::WikiDeletePage,
             AgenticTool::WikiRequestForget,
             AgenticTool::StructureProposalVote,
@@ -2204,6 +2441,10 @@ mod tests {
             ("Replace a fact", "wiki_supersede"),
             ("forget everything I said", "wiki_forget"),
             ("Move one fact", "wiki_move_fact"),
+            (
+                "Set a standing rule for one person",
+                "wiki_set_behaviour_rule",
+            ),
             ("proposals still waiting on you", "structure_proposal_list"),
             ("vote on a forget request", "structure_proposal_vote"),
         ] {
@@ -2973,6 +3214,191 @@ mod tests {
             .unwrap()
             .unwrap();
         assert_eq!(row.wiki_id, "alice", "fact untouched after refused move");
+        drop(dir);
+    }
+
+    // ---------- the operator chat's road to a behaviour rule ----------
+    /// Setting a rule for a person: where each scope puts it.
+    ///
+    /// This chat is the ONLY place a rule about somebody else can be set: the
+    /// conversational road is refused for everyone, the admin included, so if
+    /// this tool is wrong there is no other. What decides where the rule lands
+    /// is the scope alone — `every-assistant` files it in the person's own
+    /// wiki, `this-assistant` in the named agent's — while the SUBJECT is the
+    /// person either way, which is what the rules channel reads them back by.
+    #[tokio::test]
+    async fn dispatch_wiki_set_behaviour_rule_files_where_the_scope_says() {
+        let (dir, pool, tree) = move_fact_tree().await;
+        let embedder: Arc<dyn Embedder> =
+            Arc::new(mwe_core::embedder::FakeEmbedder::new("fake", 4));
+        sqlx::query("INSERT INTO enrollment_users (user_id, is_admin) VALUES ('alice', 0)")
+            .execute(&pool)
+            .await
+            .unwrap();
+        sqlx::query(
+            "INSERT INTO enrollment_users (user_id, is_admin, is_agent) VALUES ('salute', 0, 1)",
+        )
+        .execute(&pool)
+        .await
+        .unwrap();
+        let admin = AgenticContext {
+            pool: &pool,
+            tree: &tree,
+            embedder: Arc::clone(&embedder),
+            sender_ctx: SenderContext::user("boss"),
+            is_admin: true,
+            reveal: false,
+        };
+
+        // every-assistant → the PERSON's own wiki, subject = the person.
+        dispatch(
+            "wiki_set_behaviour_rule",
+            &json!({
+                "user_id": "alice",
+                "scope": "every-assistant",
+                "rule": "Read aloud every reply you send to Alice."
+            }),
+            &admin,
+        )
+        .await
+        .expect("admin may set a rule for a person");
+        let rows = mwe_core::fact_index::find_by_filters(
+            &pool,
+            &mwe_core::fact_index::FactFilters {
+                wiki_id: Some("alice".to_owned()),
+                ..Default::default()
+            },
+        )
+        .await
+        .unwrap();
+        let rule_rows: Vec<_> = rows
+            .iter()
+            .filter(|r| mwe_core::wiki::is_rules_page(&r.source_path))
+            .collect();
+        assert_eq!(
+            rule_rows.len(),
+            1,
+            "the rule lives in the person's own wiki"
+        );
+        assert_eq!(
+            rule_rows[0].subject_id,
+            "user:alice".parse().unwrap(),
+            "and it is filed under the person it is about, not the admin who set it"
+        );
+
+        // this-assistant → the AGENT's wiki, subject still the person.
+        dispatch(
+            "wiki_set_behaviour_rule",
+            &json!({
+                "user_id": "alice",
+                "scope": "this-assistant",
+                "agent_id": "salute",
+                "rule": "Keep it short with Alice."
+            }),
+            &admin,
+        )
+        .await
+        .expect("a rule bound to one agent");
+        let on_agent = mwe_core::fact_index::find_by_filters(
+            &pool,
+            &mwe_core::fact_index::FactFilters {
+                wiki_id: Some("salute".to_owned()),
+                ..Default::default()
+            },
+        )
+        .await
+        .unwrap();
+        assert_eq!(
+            on_agent.len(),
+            1,
+            "it lives in the agent's wiki, not the person's"
+        );
+        assert_eq!(
+            on_agent[0].subject_id,
+            "user:alice".parse().unwrap(),
+            "still filed under the person, which is how recall finds it for her"
+        );
+
+        drop(dir);
+    }
+
+    /// Everything `wiki_set_behaviour_rule` refuses, and why each refusal has
+    /// to exist. The tool is the ONLY road to a rule about somebody else — the
+    /// conversational one is closed for everyone — so a wrong argument that
+    /// slipped through here would file a standing directive against the wrong
+    /// person with nothing downstream to catch it.
+    #[tokio::test]
+    async fn dispatch_wiki_set_behaviour_rule_refuses_what_it_must() {
+        let (dir, pool, tree) = move_fact_tree().await;
+        let embedder: Arc<dyn Embedder> =
+            Arc::new(mwe_core::embedder::FakeEmbedder::new("fake", 4));
+        sqlx::query("INSERT INTO enrollment_users (user_id, is_admin) VALUES ('alice', 0)")
+            .execute(&pool)
+            .await
+            .unwrap();
+        sqlx::query(
+            "INSERT INTO enrollment_users (user_id, is_admin, is_agent) VALUES ('salute', 0, 1)",
+        )
+        .execute(&pool)
+        .await
+        .unwrap();
+        let admin = AgenticContext {
+            pool: &pool,
+            tree: &tree,
+            embedder: Arc::clone(&embedder),
+            sender_ctx: SenderContext::user("boss"),
+            is_admin: true,
+            reveal: false,
+        };
+
+        // A non-admin is refused: this is the operator's authority, and it is
+        // the only road there is.
+        let plain = AgenticContext {
+            pool: &pool,
+            tree: &tree,
+            embedder: Arc::clone(&embedder),
+            sender_ctx: SenderContext::user("alice"),
+            is_admin: false,
+            reveal: false,
+        };
+        let err = dispatch(
+            "wiki_set_behaviour_rule",
+            &json!({ "user_id": "alice", "scope": "every-assistant", "rule": "Be brief." }),
+            &plain,
+        )
+        .await
+        .expect_err("a non-admin may not set a behaviour rule");
+        assert!(
+            matches!(&err, AgenticToolError::InvalidArguments { detail, .. } if detail.contains("admin-only")),
+            "{err:?}"
+        );
+
+        // `this-assistant` with nothing to bind: this chat is not an assistant,
+        // so there is no "this" to guess at.
+        let err = dispatch(
+            "wiki_set_behaviour_rule",
+            &json!({ "user_id": "alice", "scope": "this-assistant", "rule": "Be brief." }),
+            &admin,
+        )
+        .await
+        .expect_err("a per-agent rule must name its agent");
+        assert!(
+            matches!(&err, AgenticToolError::InvalidArguments { detail, .. } if detail.contains("agent_id")),
+            "{err:?}"
+        );
+
+        // A rule is set for a PERSON: an agent named in `user_id` is refused.
+        let err = dispatch(
+            "wiki_set_behaviour_rule",
+            &json!({ "user_id": "salute", "scope": "every-assistant", "rule": "Be brief." }),
+            &admin,
+        )
+        .await
+        .expect_err("an agent is not somebody the assistant treats");
+        assert!(
+            matches!(&err, AgenticToolError::InvalidArguments { detail, .. } if detail.contains("is an agent")),
+            "{err:?}"
+        );
         drop(dir);
     }
 

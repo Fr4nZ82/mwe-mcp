@@ -879,6 +879,9 @@ struct LlmIngestPlan {
     /// per-fact value lives on [`LlmExtraction::behaviour_scope`].
     #[serde(default)]
     behaviour_scope: Option<String>,
+    /// Mirror of [`LlmExtraction::behaviour_about`] for the same fallback.
+    #[serde(default)]
+    behaviour_about: Option<String>,
     #[serde(default)]
     topics: Vec<String>,
     #[serde(default)]
@@ -1151,6 +1154,17 @@ struct LlmExtraction {
     /// See [`CaptureUnit::behaviour_scope`] and the dispatch in [`run`].
     #[serde(default)]
     behaviour_scope: Option<String>,
+    /// The person a behaviour rule is ABOUT, when that is not the speaker —
+    /// "read aloud every reply you send to Bob", said by anyone but Bob.
+    ///
+    /// The classifier names them; it does not decide what happens next, exactly
+    /// as it does not decide who is admin. The engine refuses the rule and says
+    /// so on the one-shot notice channel: nobody sets how the assistant treats
+    /// another person by talking to it, because every behaviour rule is filed
+    /// under whoever dictated it and there is no way to say "about them" yet.
+    /// The dashboard's operator chat is the road that exists.
+    #[serde(default)]
+    behaviour_about: Option<String>,
     #[serde(default)]
     topics: Vec<String>,
     #[serde(default)]
@@ -1236,6 +1250,9 @@ struct CaptureUnit<'a> {
     /// filed subject = user in THEIR identity wiki. The engine, not the model,
     /// enforces authority (the model never sees who is admin).
     behaviour_scope: Option<&'a str>,
+    /// Borrowed view of [`LlmExtraction::behaviour_about`] — the person the
+    /// rule is about when that is not the speaker. Refused by the dispatch.
+    behaviour_about: Option<&'a str>,
     topics: &'a [String],
     body: Option<&'a str>,
     supersede_target: Option<&'a str>,
@@ -1289,6 +1306,7 @@ impl LlmIngestPlan {
                     engine_rule: e.engine_rule,
                     behaviour_rule: e.behaviour_rule,
                     behaviour_scope: e.behaviour_scope.as_deref(),
+                    behaviour_about: e.behaviour_about.as_deref(),
                     topics: &e.topics,
                     body: e.body.as_deref(),
                     supersede_target: e.supersede_target.as_deref(),
@@ -1328,6 +1346,7 @@ impl LlmIngestPlan {
                 engine_rule: self.engine_rule,
                 behaviour_rule: self.behaviour_rule,
                 behaviour_scope: self.behaviour_scope.as_deref(),
+                behaviour_about: self.behaviour_about.as_deref(),
                 topics: &self.topics,
                 body: self.body.as_deref(),
                 supersede_target: self.supersede_target.as_deref(),
@@ -5702,13 +5721,15 @@ fn append_sender_rule(tree: &WikiTree, sender_id: &str, rule: &str) -> Result<bo
 /// the home wiki tells per-user and user-global apart.
 const BEHAVIOUR_RULES_PAGE: &str = crate::wiki::RULES_FILENAME;
 
-/// The governance scope of a behaviour-rule — who may set it and how widely it
-/// applies. Read from the grammatical **addressee** by the classifier
-/// (`behaviour_scope`, prompt Part 7), enforced by the engine. *soul vs
+/// The governance scope of a behaviour-rule: who may set it, and how widely it
+/// applies.
+///
+/// Read from the grammatical **addressee** by the classifier
+/// (`behaviour_scope`, prompt Part 7) and enforced by the engine. *soul vs
 /// operational* (style vs tools) is just an optional content tag now — it no
 /// longer routes anything; this scope axis does.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
-enum BehaviourScope {
+pub enum BehaviourScope {
     /// Addressed to THE ASSISTANT IN FRONT OF THE SPEAKER — a second person or
     /// an imperative, a "you" being told what to do ("rispondimi in audio",
     /// "chiamami X"): they told THIS agent, so it shapes how THIS agent behaves
@@ -5834,6 +5855,50 @@ async fn capture_behaviour_rule(
         BehaviourScope::PerUser | BehaviourScope::UserGlobal => Principal::User(sender.to_owned()),
         BehaviourScope::AgentWide => Principal::User(target.clone()),
     };
+    let fact_id = file_behaviour_rule(
+        tree,
+        pool,
+        embedder,
+        wiki_id,
+        subject,
+        scope,
+        rule,
+        supersede.map(|old| (old, request.turn_now())),
+    )
+    .await?;
+    Ok(Some(fact_id))
+}
+
+/// Write one behaviour rule onto a wiki's `@rules.md`, with the home wiki and
+/// the subject already decided by the caller.
+///
+/// The two callers decide them from different things and must agree on
+/// everything after. [`capture_behaviour_rule`] reads them off the turn — whose
+/// consumer is speaking, who the sender is. The dashboard's operator chat is
+/// handed them by the admin, who is not a consumer and therefore has no "this
+/// agent" to infer and must name one. What they share, and what this function
+/// exists to keep in one copy, is the part a second implementation would drift
+/// on: the reserved page the rules channel reads, the `rule` fact type, the
+/// technical-prose style, and the card the page is seeded with the first time
+/// it is created.
+///
+/// `supersede` carries the fact being replaced together with the clock the
+/// replacement is stamped at; `None` is additive, and the capture layer dedups
+/// it against the same subject's existing rules.
+///
+/// # Errors
+///
+/// As [`capture::wiki_capture`] / [`capture::wiki_supersede`].
+pub async fn file_behaviour_rule(
+    tree: &WikiTree,
+    pool: &SqlitePool,
+    embedder: Arc<dyn Embedder>,
+    home: WikiId,
+    subject: Principal,
+    scope: BehaviourScope,
+    rule: &str,
+    supersede: Option<(&FactId, chrono::DateTime<chrono::Utc>)>,
+) -> crate::capture::Result<FactId> {
     let page_description = match scope {
         BehaviourScope::PerUser => {
             "How this agent should behave, per requesting user (per-user \
@@ -5849,9 +5914,8 @@ async fn capture_behaviour_rule(
              prose."
         },
     };
-
     let cap_req = CaptureRequest {
-        wiki_id,
+        wiki_id: home,
         subject_external: None,
         page: Some(PathBuf::from(BEHAVIOUR_RULES_PAGE)),
         body: rule.to_owned(),
@@ -5870,15 +5934,13 @@ async fn capture_behaviour_rule(
         salience: None,
         authored_refs: Vec::new(),
     };
-    // Supersede when the user revises a directive the classifier was shown;
-    // else additive (deduped against this user's own rules by subject scope).
     let outcome = match supersede {
-        Some(old) => {
-            capture::wiki_supersede(tree, pool, embedder, old, cap_req, request.turn_now()).await?
+        Some((old, now)) => {
+            capture::wiki_supersede(tree, pool, embedder, old, cap_req, now).await?
         },
         None => capture::wiki_capture(tree, pool, embedder, cap_req).await?,
     };
-    Ok(Some(outcome.fact_id))
+    Ok(outcome.fact_id)
 }
 
 /// File a fact the agent states about ITSELF — the self side of agent-authored
@@ -8797,6 +8859,9 @@ pub async fn wiki_ingest_message(
     // `rules` field carries a one-shot notice so the agent declines politely
     // this turn.
     let mut agent_wide_denied = false;
+    // A rule whose subject is somebody other than the speaker: refused for
+    // everyone, the admin included, and answered on the notice channel.
+    let mut rule_about_other_denied = false;
     // A list item the turn could NOT file, because its page name did not
     // survive: the classifier named a reserved page, or the wiki is already at
     // its list limit. The item is refused rather than parked, and the `rules`
@@ -8963,6 +9028,28 @@ pub async fn wiki_ingest_message(
                         tracing::warn!("ingest: behaviour_rule extraction has no body — dropped");
                         continue;
                     };
+                    // A rule ABOUT SOMEBODY ELSE is refused before anything
+                    // else is asked of it, and the admin is refused too: this
+                    // road is closed, not gated. The engine files every
+                    // behaviour rule under whoever dictated it, so there is no
+                    // way to say "about them" here — the dashboard's operator
+                    // chat is where a rule for another person is set
+                    // (`wiki_set_behaviour_rule`). Naming the case is the
+                    // classifier's job and refusing it is this one's, exactly
+                    // as with the admin gate below.
+                    if let Some(about) = unit
+                        .behaviour_about
+                        .map(str::trim)
+                        .filter(|a| !a.is_empty() && *a != request.sender_id.as_str())
+                    {
+                        rule_about_other_denied = true;
+                        tracing::info!(
+                            sender_id = request.sender_id.as_str(),
+                            about,
+                            "ingest: behaviour rule about another person — refused (operator chat only)"
+                        );
+                        continue;
+                    }
                     let scope = BehaviourScope::from_hint(unit.behaviour_scope);
                     let mut supersede = behaviour_supersede_target(unit, &behaviour_rules);
                     let touches_everyone = scope == BehaviourScope::AgentWide
@@ -10211,6 +10298,17 @@ pub async fn wiki_ingest_message(
         .map(ListRefusal::notice)
         .or_else(|| refused_rule_retraction.map(|r| r.notice().to_owned()))
         .or_else(|| {
+            rule_about_other_denied.then(|| {
+                "NOTE — the user asked to set a rule about how you treat SOMEBODY ELSE. \
+             Nobody can do that by talking to you, the administrator included, so it \
+             was not applied and nothing was stored. Tell the user plainly that a rule \
+             about another person is not set in conversation: that person can set it \
+             for themselves by telling you, and an administrator can set one for them \
+             from the dashboard's operator chat. Do not adopt the rule."
+                    .to_owned()
+            })
+        })
+        .or_else(|| {
             agent_wide_denied.then(|| {
                 "NOTE — the user asked to set a rule that would apply to EVERYONE (an \
              agent-wide directive). Only the administrator may do that, so it was \
@@ -11076,6 +11174,7 @@ mod tests {
             engine_rule: false,
             behaviour_rule: false,
             behaviour_scope: None,
+            behaviour_about: None,
             topics: &no_ids,
             body: Some("latte"),
             supersede_target: None,
@@ -11165,6 +11264,7 @@ mod tests {
             engine_rule: false,
             behaviour_rule: false,
             behaviour_scope: None,
+            behaviour_about: None,
             topics: &no_ids,
             body: Some("qualcosa"),
             supersede_target: None,
@@ -11283,6 +11383,7 @@ mod tests {
             engine_rule: false,
             behaviour_rule: false,
             behaviour_scope: None,
+            behaviour_about: None,
             topics: Vec::new(),
             body: Some("comprare il latte".into()),
             needs_disambig: false,
@@ -11336,6 +11437,7 @@ mod tests {
             engine_rule: false,
             behaviour_rule: false,
             behaviour_scope: None,
+            behaviour_about: None,
             topics: Vec::new(),
             body: Some("a fact".into()),
             needs_disambig: false,
@@ -11385,6 +11487,7 @@ mod tests {
             engine_rule: false,
             behaviour_rule: false,
             behaviour_scope: None,
+            behaviour_about: None,
             topics: vec!["coffee".into()],
             body: Some("alice prefers coffee black".into()),
             needs_disambig: false,
@@ -11442,6 +11545,7 @@ mod tests {
             engine_rule: false,
             behaviour_rule: false,
             behaviour_scope: None,
+            behaviour_about: None,
             topics: Vec::new(),
             body: Some("alice prefers coffee black".into()),
             needs_disambig: false,
@@ -11487,6 +11591,7 @@ mod tests {
             engine_rule: false,
             behaviour_rule: false,
             behaviour_scope: None,
+            behaviour_about: None,
             topics: Vec::new(),
             body: Some("alice prefers tea".into()),
             needs_disambig: false,
@@ -11567,6 +11672,7 @@ mod tests {
             engine_rule: false,
             behaviour_rule: false,
             behaviour_scope: None,
+            behaviour_about: None,
             topics: Vec::new(),
             body: Some("public fact".into()),
             needs_disambig: false,
@@ -11990,6 +12096,7 @@ mod tests {
             engine_rule: false,
             behaviour_rule: false,
             behaviour_scope: None,
+            behaviour_about: None,
             topics: Vec::new(),
             body: Some("alice prefers tea now".into()),
             needs_disambig: false,
@@ -16651,6 +16758,98 @@ mod tests {
             BUNDLED_INGEST_PROMPT_MD.contains("COUNTER-EXAMPLES"),
             "the fence that keeps the four new shapes from swallowing an ack, \
              a one-shot command and a question is gone"
+        );
+    }
+
+    /// A rule about how to treat SOMEBODY ELSE is refused in conversation, and
+    /// the admin is refused with everybody else.
+    ///
+    /// The road is closed, not gated: the engine files every behaviour rule
+    /// under whoever dictated it, so "read aloud every reply you send to bob"
+    /// from anyone but bob has nowhere to go — routed per-user it would bind
+    /// the SPEAKER and fire when the speaker talks, never when bob does. Read
+    /// as a rule for everyone it used to reach the admin gate instead, and an
+    /// ordinary user was refused for a rule they had not asked to set. So the
+    /// classifier names the case (`behaviour_about`) and the engine answers it,
+    /// on the same one-shot channel the admin refusal uses. What must NOT
+    /// change with it: the very same sentence from bob about HIMSELF is an
+    /// ordinary directive and still files.
+    #[tokio::test]
+    async fn a_rule_about_another_person_is_refused_in_conversation_for_everyone() {
+        const RULE: &str = "Leggi a voce alta tutte le risposte che invii a bob.";
+
+        async fn attempt(sender: &str, about: Option<&str>, admin: bool) -> (String, usize) {
+            let (dir, tree, pool) = setup_agent_workdir().await;
+            if admin {
+                sqlx::query("INSERT INTO enrollment_users (user_id, is_admin) VALUES (?, 1)")
+                    .bind(sender)
+                    .execute(&pool)
+                    .await
+                    .unwrap();
+            }
+            let about_field =
+                about.map_or_else(String::new, |a| format!(r#""behaviour_about":"{a}","#));
+            let plan = format!(
+                r#"{{"intent":"capture","extractions":[{{"behaviour_rule":true,"behaviour_scope":"per-user",{about_field}"body":"{RULE}"}}]}}"#
+            );
+            let llm = FakeLlmBackend::new("fake", &plan);
+            let resp = wiki_ingest_message(
+                &pool,
+                &tree,
+                fake_embedder(),
+                &llm,
+                None,
+                req_consumer(
+                    "leggi a voce alta le risposte che mandi a bob",
+                    sender,
+                    "botdeploy",
+                ),
+                &IngestPolicy::default(),
+            )
+            .await
+            .expect("ingest");
+            let filed = fact_index::find_by_filters(&pool, &fact_index::FactFilters::default())
+                .await
+                .unwrap()
+                .into_iter()
+                .filter(|r| crate::wiki::is_rules_page(&r.source_path))
+                .count();
+            let rules = resp.rules.unwrap_or_default();
+            drop(dir);
+            (rules, filed)
+        }
+
+        // An ordinary user, naming somebody else: refused, nothing stored, and
+        // told which refusal it was.
+        let (rules, filed) = attempt("alice", Some("bob"), false).await;
+        assert_eq!(filed, 0, "a rule about another person is stored nowhere");
+        assert!(
+            rules.contains("SOMEBODY ELSE") && rules.contains("operator chat"),
+            "the person is told what was refused and where it CAN be set: {rules}"
+        );
+        assert!(
+            !rules.contains("reserved to the admin"),
+            "and not with the agent-wide refusal, which is about a rule they never asked for"
+        );
+
+        // The admin, in conversation: the same refusal. This road is closed,
+        // not gated — the dashboard's operator chat is the one that is open.
+        let (rules, filed) = attempt("alice", Some("bob"), true).await;
+        assert_eq!(
+            filed, 0,
+            "the admin is refused too — in conversation nobody may"
+        );
+        assert!(
+            rules.contains("SOMEBODY ELSE"),
+            "and hears the same answer, not a different one: {rules}"
+        );
+
+        // The same sentence from the person it is about: an ordinary directive.
+        let (rules, filed) = attempt("bob", None, false).await;
+        assert_eq!(filed, 1, "bob setting it about himself still files");
+        assert!(
+            rules.contains(RULE),
+            "and it comes back as a rule in force: {rules}"
         );
     }
 

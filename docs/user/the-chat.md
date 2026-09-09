@@ -21,7 +21,28 @@ example each:
 | *"that is wrong — I moved to Bologna in March"* | Replaces a fact with a corrected version. |
 | *"forget everything I said about the old job"* | Lists the matching facts, then forgets the ones you confirm. |
 | *"move this fact onto the health page"* | Moves one fact to another page or wiki (admin only). |
+| *"read aloud every reply you send to Bob"* | Sets a standing rule for one person (admin only). |
 | *"what have I got pending?"* | Reviews what is still waiting on you, and casts your vote on a forget request. |
+
+### Standing rules for somebody else
+
+A standing rule is how you tell an assistant to behave — *keep it short with
+me*, *call me Franz*. You set your own simply by saying them in an ordinary
+conversation, and they stick.
+
+A rule about **somebody else** is different, and this chat is the only place it
+can be set. Said in an ordinary conversation — *«read aloud every reply you send
+to Bob»* — it is refused and nothing is stored, whoever says it, an
+administrator included. Two things follow: Bob can always set his own by telling
+an assistant himself, and an administrator can set one for him here.
+
+When you set one here you say three things: **who** it is about, **how far it
+reaches**, and **the rule itself**, written as an instruction naming the person
+— *"Read aloud every reply you send to Bob."*, not *"read aloud my replies"*,
+because it is read back later by an assistant that was never in this
+conversation. How far it reaches is either **every assistant** Bob talks to,
+which travels with him, or **one assistant**, which you name — this chat is not
+one of his assistants, so there is no *this one* for it to assume.
 
 ## Things waiting on you
 

@@ -195,6 +195,12 @@ semver-governed surface: breaking changes are called out explicitly.
   as it always did, and an administrator can set one for him from the
   dashboard's operator chat.
 
+  **And that chat can now do it.** *"Read aloud every reply you send to Bob"*,
+  said to the operator chat by an administrator, sets a standing rule for one
+  person: you say who it is about, whether it reaches every assistant they talk
+  to or one you name, and the rule itself. It is the only road there is, which
+  is why it exists. Written down in the guide, under **The chat**.
+
 - **Four kinds of sentence the memory was letting go past it.** A rule you lay
   down for the assistant (*«keep it short with me»*), a preference or a
   position you take in a discussion that is still open (*«I'd take the hybrid

@@ -791,6 +791,8 @@ pub fn help_body() -> Markup {
                 "List the matching facts, then forget the ones you confirm."))
             (help_row("\u{201C}move this fact onto the health page\u{201D}",
                 "Move one fact to another page or wiki (admin only)."))
+            (help_row("\u{201C}read aloud every reply you send to Bob\u{201D}",
+                "Set a standing rule for one person (admin only). This is the only place a rule about somebody else can be set \u{2014} said in an ordinary conversation it is refused."))
             (help_row("\u{201C}what have I got pending?\u{201D}",
                 "Review the proposals still waiting on you, and vote on a forget request."))
         }
