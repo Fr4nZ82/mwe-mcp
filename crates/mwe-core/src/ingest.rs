@@ -2443,9 +2443,14 @@ enum RuleRetractionRefused {
     NeedsTheAdmin,
     /// The rule is somebody else's.
     ///
-    /// Rare by construction: a speaker is only ever shown the rules that bind
-    /// THEM, so the id they can name is either their own or the agent's. It
-    /// stays as the fail-closed answer for a row that is neither.
+    /// **Unreachable through the road a person walks**, and kept anyway. A
+    /// speaker is shown only the rules that bind THEM, so the id they can name
+    /// is their own or the agent's, and a rule that is neither never reaches
+    /// `withdraw_target` — what a person naming somebody else's rule really
+    /// gets is [`Self::NotAmongTheRulesInForce`]. This is the fail-closed
+    /// answer for a row that is neither the agent's nor theirs, so a caller
+    /// added tomorrow with a wider set in hand refuses by default instead of
+    /// falling through to `Allowed`.
     NotYours,
     /// The turn asked to drop a rule and named none the memory holds — or
     /// named one this speaker was not shown. Nothing was withdrawn, and
@@ -2589,7 +2594,12 @@ async fn withdraw_named_rule(
                         tree,
                         Arc::clone(embedder),
                         &target,
-                        &turn_now.format("%-d %B %Y").to_string(),
+                        // UTC, and it says so. The engine converts no zones
+                        // anywhere — it hands the model the instant and the
+                        // zone name and lets it do the arithmetic — so a bare
+                        // date here would be read as local and be a day out
+                        // for half the world.
+                        &turn_now.format("%-d %B %Y (UTC)").to_string(),
                     )
                     .await
                     {
@@ -5630,6 +5640,10 @@ fn sender_rules(tree: &WikiTree, sender_id: &str) -> Option<String> {
         .ok()?
         .read_page(Path::new(crate::wiki::RULES_FILENAME))
         .ok()?;
+    // The page's own identity card is not policy: `description:` and `style:`
+    // are what the engine says ABOUT the page, and read back as the sender's
+    // standing instructions they become sentences nobody dictated.
+    let body = crate::wiki::MarkdownDoc::parse(&body).map_or_else(|| body.clone(), |doc| doc.body);
     let prose: String = crate::parser::parse(&body)
         .events
         .into_iter()
@@ -5638,9 +5652,15 @@ fn sender_rules(tree: &WikiTree, sender_id: &str) -> Option<String> {
             _ => None,
         })
         .collect();
+    // What survives is what the PERSON said. Headings are the page's
+    // furniture, and so is everything the engine writes on its own account —
+    // the withdrawal note above all, which would otherwise be read back as an
+    // instruction the sender never gave (`crate::wiki::is_engine_furniture`).
     let policy = prose
         .lines()
-        .filter(|line| !line.trim_start().starts_with('#'))
+        .filter(|line| {
+            !line.trim_start().starts_with('#') && !crate::wiki::is_engine_furniture(line)
+        })
         .collect::<Vec<_>>()
         .join("\n");
     (!policy.trim().is_empty()).then_some(policy)
@@ -10791,6 +10811,54 @@ mod tests {
     }
 
     // ---------- sender rules.md read ----------
+
+    /// The sender's standing policy is what the SENDER said, and nothing the
+    /// engine wrote on the same page.
+    ///
+    /// That page carries three things a person did not dictate: the page's own
+    /// `description:`/`style:` card, the headings, and the note the engine
+    /// leaves when a directive is withdrawn. Read back as policy they become
+    /// instructions nobody gave — and the withdrawal note is the worst of the
+    /// three, because it turns "you took a rule back" into a standing sentence
+    /// about rules being taken back.
+    #[test]
+    fn the_senders_policy_is_their_own_words_and_not_the_pages_furniture() {
+        let dir = tempfile::tempdir().unwrap();
+        let wikis = dir.path().join("wikis");
+        std::fs::create_dir_all(&wikis).unwrap();
+        write_wiki(&wikis, "alice", "Alice", "wiki-user", None);
+        std::fs::write(
+            wikis.join("alice").join(crate::wiki::RULES_FILENAME),
+            format!(
+                "---\ndescription: How this agent should behave.\nstyle: prosa-tecnica\n---\n\n\
+                 # Le regole\n\n\
+                 Health information is always private.\n\n\
+                 {}\n",
+                crate::wiki::withdrawn_note("10 September 2026 (UTC)")
+            ),
+        )
+        .unwrap();
+        let tree = WikiTree::open(dir.path()).expect("open tree");
+
+        let policy = sender_rules(&tree, "alice").expect("the person's own words survive");
+        assert!(
+            policy.contains("Health information is always private."),
+            "the policy lost what the person actually said: {policy}"
+        );
+        for furniture in [
+            "description:",
+            "style:",
+            "# Le regole",
+            crate::wiki::WITHDRAWN_NOTE_PREFIX,
+        ] {
+            assert!(
+                !policy.contains(furniture),
+                "the policy carries the page's furniture, not the sender's words: \
+                 {furniture:?} in {policy:?}"
+            );
+        }
+        drop(dir);
+    }
 
     #[test]
     fn sender_rules_reads_actor_rules_md_else_none() {
@@ -17634,7 +17702,7 @@ mod tests {
             "the rule's own words are untouched: {page}"
         );
         assert!(
-            page.contains("_withdrawn on "),
+            page.contains(crate::wiki::WITHDRAWN_NOTE_PREFIX),
             "and the page says it was withdrawn: {page}"
         );
         // The marker survived, so nothing collected it as an orphan.
@@ -18021,6 +18089,13 @@ mod tests {
         assert!(
             closure_candidate_line(&rule, &now).contains("STANDING RULE"),
             "the closure confirmer is not told its candidate is a rule"
+        );
+        // The reconciler's line does NOT carry the mark, and must not: a rule
+        // never reaches that stage, so a label there would announce a
+        // permission the stage does not have.
+        assert!(
+            !reconcile_candidate_line(&rule, &now).contains("STANDING RULE"),
+            "the reconciler is labelling a candidate it can never be shown"
         );
         assert!(
             !closure_candidate_line(&plain, &now).contains("STANDING RULE"),

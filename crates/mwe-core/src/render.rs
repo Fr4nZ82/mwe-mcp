@@ -245,51 +245,18 @@ fn segment_fact_id(attrs: &RegionAttrs, db_acl: &FactAclMap) -> Option<FactId> {
 /// Does this line of prose give a redacted page something to stand on?
 ///
 /// The total-redaction collapse asks whether anything outside the fact regions
-/// would still be readable. The answer is no for **everything the engine
-/// appends on its own account**, and that is the rule: a page's scaffolding is
-/// not its content. Two shapes reach a page that way, both written by the
-/// compiler where the writer left something out — a thematic break above the
-/// facts it adds back, and a bare line of `[[wikilinks]]` where the prose
-/// declined to carry them. Neither says anything of its own; on a page whose
-/// every fact is withheld they say the one thing the collapse exists to
-/// withhold, which is that the page has parts and roughly where they sit.
+/// would still be readable, and the answer is no for everything the engine
+/// appends on its own account — [`crate::wiki::is_engine_furniture`] is that
+/// rule, shared with the reader of the sender's standing policy so the two
+/// cannot drift. Scaffolding says nothing of its own, and on a page whose
+/// every fact is withheld it says the one thing the collapse exists to
+/// withhold: that the page has parts, and roughly where they sit.
 ///
 /// Everything a person wrote does count, a lone heading included: a heading
 /// names something, and a reader shown a heading over `[redacted]` has been
 /// told what they may not read, which is the author's decision to make.
 fn anchors_a_redacted_page(line: &str) -> bool {
-    let trimmed = line.trim();
-    if trimmed.is_empty() {
-        return false;
-    }
-    // CommonMark's thematic break: three or more of one marker, spaces allowed
-    // between them and nothing else. The count matters — a single `-` is a
-    // list bullet, which is content.
-    let thematic_break = ['-', '*', '_'].into_iter().any(|marker| {
-        trimmed.chars().filter(|c| *c == marker).count() >= 3
-            && trimmed.chars().all(|c| c == marker || c.is_whitespace())
-    });
-    // The rail floor's line: addresses of other pages and the separator
-    // between them, with no words of its own. Read by cutting each `[[…]]`
-    // out and asking what is left — the check has to be about the line's own
-    // shape, not about a link parser agreeing with it.
-    let mut rest = trimmed;
-    let mut saw_a_link = false;
-    while let Some(open) = rest.find("[[") {
-        let Some(close) = rest[open..].find("]]") else {
-            break;
-        };
-        if rest[..open]
-            .chars()
-            .any(|c| c != '\u{b7}' && !c.is_whitespace())
-        {
-            break;
-        }
-        saw_a_link = true;
-        rest = &rest[open + close + 2..];
-    }
-    let only_rails = saw_a_link && rest.chars().all(|c| c == '\u{b7}' || c.is_whitespace());
-    !(thematic_break || only_rails)
+    !line.trim().is_empty() && !crate::wiki::is_engine_furniture(line)
 }
 
 /// Render `text` for `sender_id`, applying the redaction policy.
@@ -829,6 +796,19 @@ Il secondo fatto.{{{{/}}}}"
         assert_eq!(
             out.text, FULLY_PRIVATE_CALLOUT,
             "a line of bare links must not keep the page from collapsing: {}",
+            out.text
+        );
+
+        // The third shape the engine writes on its own account: the note it
+        // leaves on a rules page when a directive is withdrawn.
+        let with_a_note = format!(
+            "{private}\n\n{}\n",
+            crate::wiki::withdrawn_note("10 September 2026 (UTC)")
+        );
+        let out = render_for_sender(&with_a_note, &no_db(), "bilbo", &groups(&["amici"]));
+        assert_eq!(
+            out.text, FULLY_PRIVATE_CALLOUT,
+            "a withdrawal note must not keep the page from collapsing: {}",
             out.text
         );
 

@@ -507,9 +507,14 @@ pub async fn strip_fact_region(
 /// - the marker survives, so the orphan sweep in [`reindex_file`] has nothing
 ///   to collect — the trap that makes CUTTING a live row's region unsafe
 ///   ([`strip_fact_region`] refuses exactly that);
-/// - the note is untagged prose, which on a rules page is read by anyone who
-///   may open the page and discloses nothing: it says a rule stopped, not
-///   what the rule said.
+/// - the note is untagged prose, so anyone who may open the page reads it.
+///   What it discloses is small and deliberate: that a directive was withdrawn
+///   and on what day. Not which directive — the rule's own words stay inside
+///   the region, where the per-fragment ACL still governs them — so a reader
+///   who may not read the rule learns that one stopped, and no more. That is
+///   the price of the page being a truthful list of what binds the assistant,
+///   and it is worth paying; it is not nothing, and calling it nothing is how
+///   a disclosure gets waved through.
 ///
 /// Idempotent: a second withdrawal of the same rule writes nothing.
 pub async fn note_rule_withdrawn(
@@ -538,7 +543,7 @@ pub async fn note_rule_withdrawn(
     if end > raw.len() || !raw.is_char_boundary(end) {
         return Ok(false);
     }
-    let note = format!("\n_withdrawn on {on}_\n");
+    let note = format!("\n{}\n", crate::wiki::withdrawn_note(on));
     if raw[end..].starts_with(&note) {
         return Ok(false);
     }

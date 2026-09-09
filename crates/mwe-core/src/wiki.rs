@@ -232,6 +232,82 @@ pub fn is_rules_page(source_path: &str) -> bool {
     names_page(source_path, RULES_FILENAME)
 }
 
+/// The line the engine writes on a rules page when a directive is withdrawn.
+///
+/// Defined here, next to the predicate that recognises it, because a writer
+/// and two readers have to agree on one shape: [`crate::reindex`] writes it,
+/// [`is_engine_furniture`] keeps it out of the sender's policy and out of the
+/// redaction anchor. A format string copied into three files drifts the first
+/// time somebody rewords it, and it drifts silently — the readers just stop
+/// recognising the line.
+#[must_use]
+pub fn withdrawn_note(on: &str) -> String {
+    format!("{WITHDRAWN_NOTE_PREFIX}{on}_")
+}
+
+/// The opening of [`withdrawn_note`], which is what the readers match on.
+pub const WITHDRAWN_NOTE_PREFIX: &str = "_withdrawn on ";
+
+/// Is this line something the ENGINE wrote about the page, rather than
+/// something a person said?
+///
+/// One rule with several readers, and they must not drift: what the engine
+/// adds on its own account is scaffolding, and scaffolding is not content.
+/// It does not hold a redacted page up ([`crate::render`]), and it is not part
+/// of anybody's standing policy ([`crate::ingest`] reads that page's prose as
+/// the sender's own words).
+///
+/// Three shapes reach a page this way:
+///
+/// - a **thematic break**, written above the facts the compiler adds back when
+///   the writer left them untagged;
+/// - a bare line of **`[[wikilinks]]`**, the rail floor's appendix when the
+///   prose declined to carry them;
+/// - a **withdrawal note** ([`withdrawn_note`]), saying a directive stopped
+///   binding and when.
+///
+/// A person's own line is content however short, a lone heading included.
+#[must_use]
+pub fn is_engine_furniture(line: &str) -> bool {
+    let trimmed = line.trim();
+    if trimmed.is_empty() {
+        return false;
+    }
+    if trimmed.starts_with(WITHDRAWN_NOTE_PREFIX) && trimmed.ends_with('_') {
+        return true;
+    }
+    // CommonMark's thematic break: three or more of one marker, spaces allowed
+    // between them and nothing else. The count matters — a single `-` is a
+    // list bullet, which is content.
+    let thematic_break = ['-', '*', '_'].into_iter().any(|marker| {
+        trimmed.chars().filter(|c| *c == marker).count() >= 3
+            && trimmed.chars().all(|c| c == marker || c.is_whitespace())
+    });
+    if thematic_break {
+        return true;
+    }
+    // A line of nothing but addresses of other pages and the separator between
+    // them. Read by cutting each `[[…]]` out and asking what is left, so the
+    // check is about the line's own shape and not about a link parser agreeing
+    // with it.
+    let mut rest = trimmed;
+    let mut saw_a_link = false;
+    while let Some(open) = rest.find("[[") {
+        let Some(close) = rest[open..].find("]]") else {
+            break;
+        };
+        if rest[..open]
+            .chars()
+            .any(|c| c != '\u{b7}' && !c.is_whitespace())
+        {
+            break;
+        }
+        saw_a_link = true;
+        rest = &rest[open + close + 2..];
+    }
+    saw_a_link && rest.chars().all(|c| c == '\u{b7}' || c.is_whitespace())
+}
+
 /// Filename of the per-actor **project signposts** page
 /// (`<wiki_dir>/@projects.md`).
 ///
@@ -2425,6 +2501,44 @@ mod tests {
     }
 
     // ---------- MarkdownDoc ----------
+
+    /// The three shapes the engine writes, and the lines it must not claim.
+    ///
+    /// Two readers depend on this answer and they answer different questions
+    /// with it — whether a redacted page still has something to stand on, and
+    /// whether a line is part of the sender's standing policy. A shape added
+    /// to the writer and forgotten here does not fail: it quietly becomes
+    /// content, which is how a withdrawal note ended up inside somebody's
+    /// policy and holding a private page open.
+    #[test]
+    fn engine_furniture_is_the_three_shapes_the_engine_writes_and_nothing_else() {
+        for line in [
+            "---",
+            "***",
+            "  - - -  ",
+            "[[alice/spesa]] · [[bob/hobbies]]",
+            "[[alice/spesa]]",
+            &withdrawn_note("10 September 2026"),
+        ] {
+            assert!(
+                is_engine_furniture(line),
+                "the engine writes this and must not count it as content: {line:?}"
+            );
+        }
+        for line in [
+            "# Un titolo",
+            "- una voce di elenco",
+            "Health information is always private.",
+            "[[alice/spesa]] è dove teniamo la lista.",
+            "_withdrawn_",
+            "",
+        ] {
+            assert!(
+                !is_engine_furniture(line),
+                "a person wrote this and it must count: {line:?}"
+            );
+        }
+    }
 
     #[test]
     fn markdown_doc_parses_simple_frontmatter() {
