@@ -12,8 +12,20 @@
 //! The reveal-aware surface used as the probe is the recall-traces journal
 //! (cheap to seed: one row, no wiki tree, no embedder). It reads
 //! `reveal::active` exactly like `/facts` and the wiki pages do — that
-//! single predicate is where the lock lives, which is the whole reason one
-//! probe is enough.
+//! single predicate is where the *lens* lives, so one probe covers every
+//! surface that widens through it.
+//!
+//! Two routes do **not** go through that predicate: the two exports read
+//! `config.admin_reveal_locked` themselves, because what they hand over is
+//! not a widened view of a page but the whole subtree as a file, and a
+//! deployment that will not widen must not hand that over either. They are
+//! the last two tests here, and they need a wiki tree the predicate probe
+//! does without.
+//!
+//! Why they are pinned at all: on a shown instance every operator console
+//! is readable by whoever presses a button, the freeze refuses changes and
+//! not reading, and these two `GET`s are the only ones that give away more
+//! than the page they are on. This switch is the whole of what stops them.
 
 mod common;
 
@@ -22,12 +34,18 @@ use std::sync::Arc;
 use axum::Router;
 use axum::body::Body;
 use axum::http::{Request, StatusCode, header};
-use common::{body_string, extract_cookie_value, extract_set_cookie, send};
+use common::{
+    body_string, extract_cookie_value, extract_set_cookie, make_app_with_memory_config, send,
+};
+use mwe_core::capture::{CaptureAction, CaptureRequest, wiki_capture};
 use mwe_core::db;
 use mwe_core::delegations::DelegationCache;
+use mwe_core::embedder::{Embedder, FakeEmbedder};
 use mwe_core::jwt::{BlacklistCache, TokenSecret};
 use mwe_core::recall_nav::HopTrace;
 use mwe_core::recall_trace::{self, RecallTrace, TraceSource};
+use mwe_core::types::{Principal, WikiId};
+use mwe_core::wiki::WikiTree;
 use mwe_dashboard::{DashboardConfig, DashboardState, router};
 use sqlx::SqlitePool;
 
@@ -251,4 +269,102 @@ async fn an_unlocked_deployment_still_offers_the_toggle() {
     assert!(response.status().is_redirection(), "{}", response.status());
     let set = extract_set_cookie(&response, "mwe_admin_reveal").expect("reveal cookie");
     assert!(set.contains("mwe_admin_reveal=1"), "{set}");
+}
+
+// ---------------------------------------------------------------------
+// The two exports, which read the switch directly rather than through
+// `reveal::active`.
+// ---------------------------------------------------------------------
+
+/// Put one fact on a page of alice's wiki, so the two exports have
+/// something to refuse to hand over. Without it a passing test could be
+/// passing because the archive is empty.
+async fn capture_fact(pool: &SqlitePool, tree: &WikiTree) {
+    let embedder: Arc<dyn Embedder> = Arc::new(FakeEmbedder::new("fake-bge-m3", 8));
+    let req = CaptureRequest {
+        subject_external: None,
+        authored_refs: Vec::new(),
+        wiki_id: WikiId::parse("alice").expect("wiki id"),
+        page: Some(std::path::PathBuf::from("cucina.md")),
+        body: "Alice likes tea".to_owned(),
+        subject: "user:alice".parse::<Principal>().expect("principal"),
+        allow: vec![],
+        sender: None,
+        fact_type: None,
+        topics: vec![],
+        dedup_threshold: Some(1.01),
+        valid_from: None,
+        valid_to: None,
+        style: None,
+        page_description: None,
+        salience: None,
+    };
+    let outcome = wiki_capture(tree, pool, embedder, req)
+        .await
+        .expect("capture");
+    assert!(matches!(outcome.action, CaptureAction::Captured { .. }));
+}
+
+/// GET `uri` as the signed-in admin and return the status.
+async fn get_status(app: &Router, uri: &str, cookie: &str) -> StatusCode {
+    send(
+        app,
+        Request::builder()
+            .uri(uri)
+            .header(header::COOKIE, cookie)
+            .body(Body::empty())
+            .unwrap(),
+    )
+    .await
+    .status()
+}
+
+/// **The wiki subtree is refused at the route, not hidden on the page.**
+///
+/// Both halves are asserted here rather than left to the reader: unlocked
+/// the same request from the same admin comes back `200`, so the refusal
+/// is the lock's doing and not a broken fixture, an absent wiki or a
+/// session that never authenticated.
+#[tokio::test]
+async fn the_wiki_export_is_refused_while_reveal_is_locked() {
+    for (locked, expected) in [(false, StatusCode::OK), (true, StatusCode::FORBIDDEN)] {
+        let (app, pool, tree, _dir) = make_app_with_memory_config(DashboardConfig {
+            admin_reveal_locked: locked,
+            ..DashboardConfig::default()
+        })
+        .await;
+        let cookie = login_as_admin(&app).await;
+        capture_fact(&pool, &tree).await;
+
+        assert_eq!(
+            get_status(&app, "/wiki/alice/export", &cookie).await,
+            expected,
+            "admin_reveal_locked = {locked}"
+        );
+    }
+}
+
+/// **And so is everything the memory holds about one person.**
+///
+/// Same shape, and the same reason for asserting the unlocked half: this
+/// route answers `403` under the lock and an attachment without it, so a
+/// build that broke the download entirely could not pass as a build that
+/// locks it.
+#[tokio::test]
+async fn the_person_export_is_refused_while_reveal_is_locked() {
+    for (locked, expected) in [(false, StatusCode::OK), (true, StatusCode::FORBIDDEN)] {
+        let (app, pool, tree, _dir) = make_app_with_memory_config(DashboardConfig {
+            admin_reveal_locked: locked,
+            ..DashboardConfig::default()
+        })
+        .await;
+        let cookie = login_as_admin(&app).await;
+        capture_fact(&pool, &tree).await;
+
+        assert_eq!(
+            get_status(&app, "/users/alice/export", &cookie).await,
+            expected,
+            "admin_reveal_locked = {locked}"
+        );
+    }
 }

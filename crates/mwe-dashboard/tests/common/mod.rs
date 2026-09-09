@@ -17,7 +17,7 @@ use mwe_core::delegations::DelegationCache;
 use mwe_core::embedder::FakeEmbedder;
 use mwe_core::jwt::{BlacklistCache, TokenSecret};
 use mwe_core::wiki::WikiTree;
-use mwe_dashboard::{DashboardState, MemoryHandles, router};
+use mwe_dashboard::{DashboardConfig, DashboardState, MemoryHandles, router};
 use sqlx::SqlitePool;
 
 /// Build a fresh dashboard router backed by an isolated temp workdir.
@@ -42,6 +42,16 @@ pub async fn make_app() -> (Router, tempfile::TempDir) {
 /// auto-wiki creation, memory explorer, chat).
 #[allow(dead_code, reason = "used by some sibling test files only")]
 pub async fn make_app_with_memory() -> (Router, SqlitePool, WikiTree, tempfile::TempDir) {
+    make_app_with_memory_config(DashboardConfig::default()).await
+}
+
+/// [`make_app_with_memory`] with the on-disk `instance:` settings chosen
+/// by the caller — the switches a running deployment reads once at boot
+/// and no dashboard page can change.
+#[allow(dead_code, reason = "used by some sibling test files only")]
+pub async fn make_app_with_memory_config(
+    config: DashboardConfig,
+) -> (Router, SqlitePool, WikiTree, tempfile::TempDir) {
     let dir = tempfile::tempdir().expect("tempdir");
     let pool = db::open_or_init(dir.path()).await.expect("open db");
     let secret = TokenSecret::new(vec![0xEFu8; 32]).expect("secret");
@@ -60,8 +70,9 @@ pub async fn make_app_with_memory() -> (Router, SqlitePool, WikiTree, tempfile::
         )),
         workdir: dir.path().to_path_buf(),
     };
-    let state =
-        DashboardState::new(pool.clone(), secret, blacklist, delegations).with_memory(memory);
+    let state = DashboardState::new(pool.clone(), secret, blacklist, delegations)
+        .with_memory(memory)
+        .with_config(config);
     (router(state), pool, tree, dir)
 }
 
