@@ -13,6 +13,28 @@ semver-governed surface: breaking changes are called out explicitly.
 
 ### Fixed
 
+- **A receipt goes to one person, and carries only that person's facts.** When
+  one turn closed, re-dated or re-shared several facts at once — which happens
+  whenever somebody tidies up things that were shared with them — the memory
+  wrote a single note, addressed it to whoever the first fact belonged to, and
+  put a hundred-and-twenty-character preview of **every** fact in it, plus the
+  sentence that had been typed. So one person could read the opening of another
+  person's fact, and what a third had said, in a note about their own. Now
+  there is one note per person, each carrying only their own facts, and the
+  sentence somebody typed reaches only them. The same held for the nightly
+  passes, and holds no longer.
+- **The people asked to vote on a forget request can now see it.** A request to
+  forget somebody's fact is put to everybody who can read that fact, and the
+  request itself was addressed only to whoever asked for the forget — so the
+  voters were told to go and vote and found nothing on the **Proposals** page,
+  nothing in the chat and nothing in the badge. Silence lets a forget through
+  after seven days, so this was a vote nobody could cast. They see it now, and
+  nobody else does.
+- **The chat and the Proposals page answer "what may I see" the same way.** The
+  chat handed any signed-in person the notes the nightly run addresses to
+  nobody, which the page keeps for the admin, and the badge counted rows the
+  page then withheld. All three read by one rule now.
+
 - **A read-only deployment can no longer be made to call a model.** The freeze
   refused anything that would *change* something and let every read through on
   the strength of its method, and four reads were spending real model calls

@@ -157,6 +157,14 @@ pub const DEMO_ENTER: &str = "/demo/enter";
 ///
 /// Absent for a different reason: `/admin/llm-catalog/refresh` downloads
 /// a catalogue of model names and prices and calls no model.
+///
+/// And absent because they are not language models at all, though they do
+/// spend when the embedder is a remote one (the embedding backend in
+/// `mwe_core::config`): `/facts/*/delete` and `/users/*/forget` re-embed
+/// what they touch. Both are `POST`-only routes, so the write rule
+/// already closes them on a frozen deployment and nothing more is needed
+/// here; they are named so the next reader knows they were weighed rather
+/// than missed.
 pub const COSTLY_ROUTES: &[&str] = &[
     "/proposals/*/open-in-chat",
     "/proposals/in-flight/chat-turn",
@@ -507,6 +515,45 @@ mod tests {
         ));
     }
 
+    /// Every source file of this crate that names one of `doors`, as its
+    /// path under `src/`, sorted.
+    ///
+    /// Reads the crate's own tree at test time: that is what makes the
+    /// audit below a net rather than a list somebody has to remember.
+    /// This file is skipped because it names the doors in order to look
+    /// for them.
+    fn modules_touching(doors: &[&str]) -> Vec<String> {
+        let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src");
+        let mut found: Vec<String> = Vec::new();
+        let mut stack = vec![root.clone()];
+        while let Some(dir) = stack.pop() {
+            for entry in std::fs::read_dir(&dir).expect("the crate's own sources are readable") {
+                let path = entry.expect("dir entry").path();
+                if path.is_dir() {
+                    stack.push(path);
+                    continue;
+                }
+                if path.extension().is_none_or(|e| e != "rs") {
+                    continue;
+                }
+                let name = path
+                    .strip_prefix(&root)
+                    .expect("under src/")
+                    .to_string_lossy()
+                    .replace('\\', "/");
+                if name == "read_only.rs" {
+                    continue;
+                }
+                let body = std::fs::read_to_string(&path).expect("source is UTF-8");
+                if doors.iter().any(|door| body.contains(door)) {
+                    found.push(name);
+                }
+            }
+        }
+        found.sort();
+        found
+    }
+
     /// The net under [`COSTLY_ROUTES`], because the list cannot defend
     /// itself: a read is allowed by default, so a new route that calls a
     /// model would pass until somebody remembered this file.
@@ -531,11 +578,19 @@ mod tests {
             "agentic_submission",
             "process_submission",
             "spawn_dream",
+            // The embedder is not a language model, but a remote one is
+            // billed the same way, so the same net watches it.
+            "memory.embedder",
+            "Arc<dyn Embedder>",
         ];
         // Every module that touches one of the doors, and the routes of
         // its that reach a model — `none` where the module holds the
         // machinery but mounts no route of its own.
         const AUDITED: &[(&str, &str)] = &[
+            (
+                "agentic.rs",
+                "none — it is the tool dispatcher the chat routes run",
+            ),
             ("lib.rs", "none — it re-exports the handle types"),
             (
                 "state.rs",
@@ -548,10 +603,17 @@ mod tests {
             ),
             ("routes/health.rs", "GET /admin/health/llm-slots"),
             ("routes/llm_config.rs", "GET /admin/ollama-models"),
-            ("routes/facts.rs", "POST /facts/:id/edit/submit"),
+            (
+                "routes/facts.rs",
+                "POST /facts/:id/edit/submit, and POST /facts/:id/delete for the embedder",
+            ),
             (
                 "routes/proposals.rs",
-                "GET /proposals/:id/open-in-chat and /proposals/in-flight/chat-turn",
+                "GET /proposals/:id/open-in-chat and GET /proposals/in-flight/chat-turn",
+            ),
+            (
+                "routes/users.rs",
+                "POST /users/:id/forget — it re-embeds what it removes",
             ),
             ("routes/welcome.rs", "POST /welcome"),
             (
@@ -560,35 +622,7 @@ mod tests {
             ),
         ];
 
-        let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src");
-        let mut found: Vec<String> = Vec::new();
-        let mut stack = vec![root.clone()];
-        while let Some(dir) = stack.pop() {
-            for entry in std::fs::read_dir(&dir).expect("the crate's own sources are readable") {
-                let path = entry.expect("dir entry").path();
-                if path.is_dir() {
-                    stack.push(path);
-                    continue;
-                }
-                if path.extension().is_none_or(|e| e != "rs") {
-                    continue;
-                }
-                let name = path
-                    .strip_prefix(&root)
-                    .expect("under src/")
-                    .to_string_lossy()
-                    .replace('\\', "/");
-                // This file names the doors in order to look for them.
-                if name == "read_only.rs" {
-                    continue;
-                }
-                let body = std::fs::read_to_string(&path).expect("source is UTF-8");
-                if DOORS.iter().any(|door| body.contains(door)) {
-                    found.push(name);
-                }
-            }
-        }
-        found.sort();
+        let found = modules_touching(DOORS);
         let mut audited: Vec<&str> = AUDITED.iter().map(|(file, _)| *file).collect();
         audited.sort_unstable();
         assert_eq!(
@@ -596,6 +630,36 @@ mod tests {
             "a module started reaching for a model, or stopped: decide what its routes are, \
              put them in COSTLY_ROUTES if any of them can be reached by a GET, and name it here"
         );
+        // The description is half the entry, and the half that says what
+        // was decided. Every `GET` named in one has to be on the costly
+        // list, which is the whole invariant this file exists for: a safe
+        // method that reaches a model is refused, and saying so in prose
+        // without doing it would be worse than saying nothing.
+        for (file, routes) in AUDITED {
+            assert!(
+                !routes.is_empty(),
+                "{file} is audited with nothing said about its routes"
+            );
+            for word in routes
+                .split_whitespace()
+                .skip_while(|w| *w != "GET")
+                .skip(1)
+            {
+                if !word.starts_with('/') {
+                    continue;
+                }
+                // `:id` in a description stands for a real segment.
+                let concrete = word
+                    .split('/')
+                    .map(|seg| if seg.starts_with(':') { "x" } else { seg })
+                    .collect::<Vec<_>>()
+                    .join("/");
+                assert!(
+                    reaches_a_model(&concrete),
+                    "{file} says it serves GET {concrete}, which is not on COSTLY_ROUTES"
+                );
+            }
+        }
     }
 
     /// The passwordless door passes only where it is actually cut. On a

@@ -2674,6 +2674,13 @@ fn validity_close_context(closures: &[AppliedClosure], gesture: Option<&str>) ->
 /// Record a batch of already-applied validity closures as one
 /// **born-applied** `wiki_promote` receipt (variant `validity_close`).
 ///
+/// ⚠️ **Every fact handed in here belongs to the addressee.** The receipt
+/// stores a 120-character preview of each one and repeats them in the
+/// question label, and nothing re-projects that per reader — so a batch
+/// spanning two owners would show each of them the other's text. Callers
+/// group first ([`crate::proposals::group_by_recipient`]) and call this
+/// once per group.
+///
 /// The ingest orchestrator has already stamped every target
 /// (`fact_index::close_validity` / `capture_buffer::close_validity`);
 /// this writes the receipt — the act-first pattern. The ingest caller also
@@ -2823,6 +2830,13 @@ fn validity_edit_context(edits: &[AppliedValidityEdit], gesture: Option<&str>) -
 
 /// Record a batch of already-applied validity-date corrections as one
 /// **born-applied** `wiki_promote` receipt (variant `validity_edit`).
+///
+/// ⚠️ **Every fact handed in here belongs to the addressee.** The receipt
+/// stores a 120-character preview of each one and repeats them in the
+/// question label, and nothing re-projects that per reader — so a batch
+/// spanning two owners would show each of them the other's text. Callers
+/// group first ([`crate::proposals::group_by_recipient`]) and call this
+/// once per group.
 ///
 /// The sibling of [`emit_validity_close_receipt`], for a *correction* of
 /// the dates rather than a completion/retraction: the ingest orchestrator
@@ -2979,6 +2993,13 @@ fn acl_change_context(changes: &[AppliedAclChange], gesture: Option<&str>) -> Va
 
 /// Record a batch of already-applied per-fact ACL changes as one
 /// **born-applied** `wiki_promote` receipt (variant `acl_change`).
+///
+/// ⚠️ **Every fact handed in here belongs to the addressee.** The receipt
+/// stores a 120-character preview of each one and repeats them in the
+/// question label, and nothing re-projects that per reader — so a batch
+/// spanning two owners would show each of them the other's text. Callers
+/// group first ([`crate::proposals::group_by_recipient`]) and call this
+/// once per group.
 ///
 /// The sibling of [`emit_validity_close_receipt`], for a sharing change:
 /// the ingest orchestrator has already stamped every target's ACL

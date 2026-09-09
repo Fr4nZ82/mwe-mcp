@@ -623,9 +623,9 @@ fn vote_tool_descriptors() -> Vec<Tool> {
             majority it is forgotten early. Votes are FINAL — one per member. This votes AS the \
             signed-in member (the engine refuses anyone not in the request's eligible set, the \
             requester, or a re-vote); relay the engine's reason on a refusal. The pending \
-            requests a member owes a vote on arrive in the `pending_votes` recall reminder — \
-            the proposal read tools are scoped to the REQUESTER, so a voter cannot browse the \
-            request here; never report it as nonexistent. Call only after the member has \
+            requests a member owes a vote on arrive in the `pending_votes` recall reminder, and \
+            `structure_proposal_list` shows them too — a voter is inside the read scope of the \
+            request they are being asked about. Call only after the member has \
             EXPLICITLY said how to vote in the current turn — never guess."
             .to_owned(),
         parameters: json!({
@@ -633,7 +633,7 @@ fn vote_tool_descriptors() -> Vec<Tool> {
             "properties": {
                 "proposal_id": {
                     "type": "string",
-                    "description": "Opaque id of the `fact_forget` request to vote on (from the member's `pending_votes` reminder — a voter cannot browse it via `structure_proposal_list`)."
+                    "description": "Opaque id of the `fact_forget` request to vote on (from the member's `pending_votes` reminder, or from `structure_proposal_list`, which shows a voter the requests put to them)."
                 },
                 "vote": {
                     "type": "string",
@@ -942,21 +942,16 @@ const CONTEXT_SUMMARY_CHARS: usize = 120;
 /// Recipient filter for the proposal **read** tools
 /// (`structure_proposal_list` / `_get`).
 ///
-/// Everyone — admins included — is scoped to their own proposals
-/// (those addressed to them plus the unaddressed / admin-fallback bucket)
-/// by default. A proposal's `context` carries the underlying fact text,
-/// which is per-fragment ACL'd and is **not** re-projected per reader, so
-/// listing every recipient's proposals would leak other users' content.
-/// The admin ACL-reveal switch — dashboard-wide, explicit, bannered —
-/// lifts the scope to every recipient, the same posture the facts table and
-/// wiki pages already take. `ctx.reveal` is only ever `true` for an admin
-/// (`crate::reveal::active` gates on the role).
+/// The chat reads proposals by the same rule the proposals page reads
+/// them by, out of the same function
+/// ([`crate::routes::proposals::readable_scope`]) — a chat that listed
+/// what the page withholds would make the page's restraint decorative,
+/// and the two used to disagree about the rows addressed to nobody, which
+/// the chat handed to anybody who asked. A proposal's `context` carries
+/// the fact text the change was about, and nothing re-projects it per
+/// reader, so this scope **is** the read ACL for that text.
 fn proposal_recipient_scope(ctx: &AgenticContext<'_>) -> RecipientScope {
-    if ctx.reveal {
-        RecipientScope::Everybody
-    } else {
-        RecipientScope::AddresseeOrNobody(format!("user:{}", ctx.sender_ctx.sender_id))
-    }
+    crate::routes::proposals::readable_scope(&ctx.sender_ctx.sender_id, ctx.is_admin, ctx.reveal)
 }
 
 async fn dispatch_proposal_list(

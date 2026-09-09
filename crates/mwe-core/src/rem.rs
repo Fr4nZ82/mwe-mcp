@@ -2897,8 +2897,20 @@ async fn run_auto_promote(
                 None,
             )
             .await?;
-            let recipient =
-                proposals::recipient_from_fact(&moving[0].subject_id, moving[0].sender_id.as_ref());
+            // A split moves a run of facts as one operation, so its receipt
+            // cannot be written once per person the way a closure's can.
+            // When the run belongs to more than one of them, the receipt is
+            // addressed to nobody: it describes a change to the shape of the
+            // memory that concerns all of them and is nobody's in
+            // particular, and the alternative is telling whoever happens to
+            // own the first fact how many of everybody else's moved with it.
+            let recipient = {
+                let mut people = moving
+                    .iter()
+                    .map(|f| proposals::recipient_from_fact(&f.subject_id, f.sender_id.as_ref()));
+                let first = people.next().flatten();
+                people.all(|p| p == first).then_some(first).flatten()
+            };
             let hot = moving.iter().map(|f| f.recall_count_30d).max();
             let hints = ParagraphToFileHints {
                 trigger_page_facts: Some(mass),
@@ -5030,9 +5042,9 @@ async fn run_completion_sweep(
             .copied()
             .unwrap_or(false);
         match judge_completion_case(pool, tree, llm, cycle_id, &case, agent).await {
-            Ok(Some((receipt_id, closed))) => {
+            Ok(Some((receipt_ids, closed))) => {
                 closed_this_cycle.extend(closed.iter().cloned());
-                report.receipts.push(receipt_id);
+                report.receipts.extend(receipt_ids);
                 report.closed.extend(closed);
             },
             Ok(None) => {},
@@ -5059,7 +5071,7 @@ async fn judge_completion_case(
     cycle_id: &str,
     case: &CompletionCase<'_>,
     agent_family: bool,
-) -> Result<Option<(String, Vec<String>)>> {
+) -> Result<Option<(Vec<String>, Vec<String>)>> {
     let candidates_text = case
         .candidates
         .iter()
@@ -5207,66 +5219,75 @@ async fn judge_completion_case(
         return Ok(None);
     }
 
-    // The same act-first paper trail as the ingest half: one receipt per
-    // evidence fact + the dashboard notice.
-    let recipient =
-        proposals::recipient_from_fact(&applied_subject(case, &applied), sender_of(case, &applied));
+    // The same act-first paper trail as the ingest half: a receipt per
+    // person whose fact was closed, never one for the batch.
+    // The evidence's own text rides in the gesture, so the gesture goes
+    // only to the person that evidence belongs to. Everyone else is told
+    // that a fact of theirs was closed, and not by what.
     let gesture = format!(
         "REM completion sweep — evidence: {}",
         fact_preview(&case.evidence.text)
     );
-    let receipt = match promote::emit_validity_close_receipt(
-        pool,
-        &applied,
-        Some(&gesture),
-        None,
-        recipient.clone(),
-    )
-    .await
+    let evidence_recipient =
+        proposals::recipient_from_fact(&case.evidence.subject_id, case.evidence.sender_id.as_ref());
+    let mut receipts = Vec::new();
+    for (recipient, closed) in
+        proposals::group_by_recipient(&applied, |c| completion_recipient(case, c))
     {
-        Ok(r) => r,
-        Err(e) => {
-            wal::fail_rem_op(pool, op_id, &format!("{e}")).await?;
-            return Err(RemError::Proposals(match e {
-                promote::DirectPromoteError::Receipt(p) => p,
-                promote::DirectPromoteError::Apply(a) => {
-                    ProposalsError::Db(sqlx::Error::Protocol(a.to_string()))
-                },
-            }));
-        },
-    };
+        let said = (recipient == evidence_recipient).then_some(gesture.as_str());
+        let receipt = match promote::emit_validity_close_receipt(
+            pool,
+            &closed,
+            said,
+            None,
+            recipient.clone(),
+        )
+        .await
+        {
+            Ok(r) => r,
+            Err(e) => {
+                wal::fail_rem_op(pool, op_id, &format!("{e}")).await?;
+                return Err(RemError::Proposals(match e {
+                    promote::DirectPromoteError::Receipt(p) => p,
+                    promote::DirectPromoteError::Apply(a) => {
+                        ProposalsError::Db(sqlx::Error::Protocol(a.to_string()))
+                    },
+                }));
+            },
+        };
+        receipts.push(receipt.proposal_id);
+    }
     wal::complete_rem_op(pool, op_id).await?;
     let closed = applied
         .iter()
         .map(|c| c.fact_id.as_str().to_owned())
         .collect();
-    Ok(Some((receipt.proposal_id, closed)))
+    Ok(Some((receipts, closed)))
 }
 
-/// Subject principal of the first closed target (the receipt addressee
-/// follows the closed fact, as everywhere else).
-fn applied_subject(
+/// The addressee of ONE closed target: the person its own fact names,
+/// falling back to the evidence's when the target is not in the case's
+/// candidate list.
+///
+/// Per target rather than per batch, because the sweep can close facts
+/// belonging to several people and each of them gets a receipt of their
+/// own ([`proposals::group_by_recipient`]).
+fn completion_recipient(
     case: &CompletionCase<'_>,
-    applied: &[promote::AppliedClosure],
-) -> crate::types::Principal {
+    closed: &promote::AppliedClosure,
+) -> Option<String> {
     case.candidates
         .iter()
-        .find(|c| c.fact_id == applied[0].fact_id)
+        .find(|c| c.fact_id == closed.fact_id)
         .map_or_else(
-            || case.evidence.subject_id.clone(),
-            |c| c.subject_id.clone(),
+            || {
+                proposals::recipient_from_fact(
+                    &case.evidence.subject_id,
+                    case.evidence.sender_id.as_ref(),
+                )
+            },
+            |c| proposals::recipient_from_fact(&c.subject_id, c.sender_id.as_ref()),
         )
-}
-
-/// Sender attribution of the first closed target, for the addressee.
-fn sender_of<'a>(
-    case: &'a CompletionCase<'_>,
-    applied: &[promote::AppliedClosure],
-) -> Option<&'a crate::types::Principal> {
-    case.candidates
-        .iter()
-        .find(|c| c.fact_id == applied[0].fact_id)
-        .and_then(|c| c.sender_id.as_ref())
 }
 
 // ---------- Cross-wiki refile sweep sub-job ----------
@@ -6031,8 +6052,8 @@ async fn run_contradiction_sweep(
             .copied()
             .unwrap_or(false);
         match judge_contradiction_case(pool, tree, llm, cycle_id, &seed, &candidates, agent).await {
-            Ok(Some((receipt_id, closed))) => {
-                report.receipts.push(receipt_id);
+            Ok(Some((receipt_ids, closed))) => {
+                report.receipts.extend(receipt_ids);
                 report.closed.extend(closed);
             },
             Ok(None) => {},
@@ -6079,7 +6100,7 @@ async fn judge_contradiction_case(
     seed: &FactIndexRow,
     candidates: &[FactIndexRow],
     agent_family: bool,
-) -> Result<Option<(String, Vec<String>)>> {
+) -> Result<Option<(Vec<String>, Vec<String>)>> {
     let successor_text = match &seed.superseded_by {
         Some(succ) => fact_index::find_by_id(pool, succ)
             .await?
@@ -6241,41 +6262,51 @@ async fn judge_contradiction_case(
         return Ok(None);
     }
 
-    let first = candidates
-        .iter()
-        .find(|c| c.fact_id == applied[0].fact_id)
-        .unwrap_or(seed);
-    let recipient = proposals::recipient_from_fact(&first.subject_id, first.sender_id.as_ref());
+    // The seed's own text rides in the gesture, so it goes only to the
+    // person the seed belongs to; the rest are told that a fact of theirs
+    // fell, and not what it fell with.
     let gesture = format!(
         "REM contradiction sweep — fell with: {}",
         fact_preview(&seed.text)
     );
-    let receipt = match promote::emit_validity_close_receipt(
-        pool,
-        &applied,
-        Some(&gesture),
-        None,
-        recipient.clone(),
-    )
-    .await
-    {
-        Ok(r) => r,
-        Err(e) => {
-            wal::fail_rem_op(pool, op_id, &format!("{e}")).await?;
-            return Err(RemError::Proposals(match e {
-                promote::DirectPromoteError::Receipt(p) => p,
-                promote::DirectPromoteError::Apply(a) => {
-                    ProposalsError::Db(sqlx::Error::Protocol(a.to_string()))
-                },
-            }));
-        },
-    };
+    let seed_recipient = proposals::recipient_from_fact(&seed.subject_id, seed.sender_id.as_ref());
+    let mut receipts = Vec::new();
+    for (recipient, closed) in proposals::group_by_recipient(&applied, |c| {
+        let row = candidates
+            .iter()
+            .find(|k| k.fact_id == c.fact_id)
+            .unwrap_or(seed);
+        proposals::recipient_from_fact(&row.subject_id, row.sender_id.as_ref())
+    }) {
+        let said = (recipient == seed_recipient).then_some(gesture.as_str());
+        let receipt = match promote::emit_validity_close_receipt(
+            pool,
+            &closed,
+            said,
+            None,
+            recipient.clone(),
+        )
+        .await
+        {
+            Ok(r) => r,
+            Err(e) => {
+                wal::fail_rem_op(pool, op_id, &format!("{e}")).await?;
+                return Err(RemError::Proposals(match e {
+                    promote::DirectPromoteError::Receipt(p) => p,
+                    promote::DirectPromoteError::Apply(a) => {
+                        ProposalsError::Db(sqlx::Error::Protocol(a.to_string()))
+                    },
+                }));
+            },
+        };
+        receipts.push(receipt.proposal_id);
+    }
     wal::complete_rem_op(pool, op_id).await?;
     let closed = applied
         .iter()
         .map(|c| c.fact_id.as_str().to_owned())
         .collect();
-    Ok(Some((receipt.proposal_id, closed)))
+    Ok(Some((receipts, closed)))
 }
 
 // ---------- Recall-repair sub-job (self-correcting REM) ----------

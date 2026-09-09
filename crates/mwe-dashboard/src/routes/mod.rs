@@ -41,7 +41,7 @@ mod logout;
 mod media;
 mod password_reset;
 mod prompts;
-mod proposals;
+pub(crate) mod proposals;
 mod recall_settings;
 mod recall_traces;
 mod redirect;

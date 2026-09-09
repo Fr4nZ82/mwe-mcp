@@ -134,11 +134,11 @@ async fn in_flight_count_requires_auth() {
     );
 }
 
-/// An admin is scoped to their **own** in-flight items by default — a
-/// proposal addressed to another user does not show in the badge count
-/// (it carries that user's fact text, per-fragment ACL'd). The admin
-/// ACL-reveal cookie lifts the scope to the whole deployment, the same
-/// posture the facts table takes.
+/// An admin is scoped to their **own** in-flight items by default, plus
+/// the ones addressed to nobody: a proposal addressed to another user
+/// does not show in the badge count, because it carries that user's fact
+/// text. The admin ACL-reveal cookie lifts the scope to the whole
+/// deployment, the same posture the facts table takes.
 #[tokio::test]
 async fn admin_count_is_scoped_to_self_without_reveal_full_with_reveal() {
     let (app, pool, _tree, _dir) = make_app_with_memory().await;
@@ -162,6 +162,12 @@ async fn admin_count_is_scoped_to_self_without_reveal_full_with_reveal() {
     assert_eq!(revealed["pending"], 2, "{revealed}");
 }
 
+/// A person counts what the proposals page will show them, and nothing
+/// else — the badge is a promise that there is something to open, so it
+/// reads by the same rule the page reads by
+/// (`routes::proposals::readable_scope`). The rows addressed to nobody are
+/// the nightly run's receipts, which name pages across every wiki: the
+/// admin's, not a reader's.
 #[tokio::test]
 async fn non_admin_count_is_scoped_to_recipient() {
     let (app, pool, _tree, _dir) = make_app_with_memory().await;
@@ -170,14 +176,14 @@ async fn non_admin_count_is_scoped_to_recipient() {
 
     // Addressed to bilbo → counts for bilbo.
     seed_proposal(&pool, "p-mine", "pending", Some("user:bilbo")).await;
-    // Unaddressed (admin-fallback) → also counts for bilbo (pre-0032 rule).
+    // Unaddressed → the admin's, not his.
     seed_proposal(&pool, "p-unaddressed", "pending", None).await;
     // Addressed to someone else → must NOT count for bilbo.
     seed_proposal(&pool, "p-frodo", "pending", Some("user:frodo")).await;
 
-    // Bilbo: his own + the unaddressed one = 2.
+    // Bilbo: his own, and only his own.
     let bilbo_json = fetch_count(&app, &bilbo).await;
-    assert_eq!(bilbo_json["pending"], 2, "{bilbo_json}");
+    assert_eq!(bilbo_json["pending"], 1, "{bilbo_json}");
 
     // Admin without reveal: scoped exactly like a normal user — only the
     // unaddressed admin-fallback row (frodo's and bilbo's stay hidden).

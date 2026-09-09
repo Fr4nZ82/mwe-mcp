@@ -283,6 +283,22 @@ pub enum RecipientScope {
     Addressee(String),
 }
 
+/// The clause that lets an **elector** read the request they are voting
+/// on.
+///
+/// A `fact_forget` request is addressed to whoever asked for the forget
+/// ([`crate::votes::open_forget_request`]), and the people being asked to
+/// vote are everybody else who can read the fact. Scoping on the
+/// addressee alone therefore hides the ballot from exactly the people it
+/// is a question for: they were told to go and vote and then shown
+/// nothing. So the electorate reads it too.
+///
+/// Narrowed to the one kind that has an electorate, so no other row is
+/// ever matched by a stray `eligible_voters` key.
+const ELECTOR_CLAUSE: &str = "(kind = 'fact_forget' AND EXISTS (\
+     SELECT 1 FROM json_each(structure_proposals.context, '$.eligible_voters') \
+      WHERE json_each.value = ?))";
+
 impl RecipientScope {
     /// The principal the scope narrows to, if it narrows at all.
     const fn principal(&self) -> Option<&String> {
@@ -292,14 +308,37 @@ impl RecipientScope {
         }
     }
 
+    /// The bare user id inside the principal, which is the form the
+    /// electorate is stored in (`["frodo"]`, not `["user:frodo"]`).
+    fn voter_id(&self) -> Option<&str> {
+        self.principal().and_then(|p| p.strip_prefix("user:"))
+    }
+
     /// The `WHERE` clause that expresses the scope, or `None` for
     /// [`Self::Everybody`].
-    const fn sql(&self) -> Option<&'static str> {
+    ///
+    /// Owned rather than `&'static` because the electorate arm is
+    /// assembled from two pieces; [`Self::binds`] answers with the values
+    /// in the same order.
+    fn sql(&self) -> Option<String> {
         match self {
             Self::Everybody => None,
             // 0032: addressed to me OR unaddressed (admin-fallback bucket).
-            Self::AddresseeOrNobody(_) => Some("(recipient_id = ? OR recipient_id IS NULL)"),
-            Self::Addressee(_) => Some("recipient_id = ?"),
+            Self::AddresseeOrNobody(_) => Some(format!(
+                "(recipient_id = ? OR recipient_id IS NULL OR {ELECTOR_CLAUSE})"
+            )),
+            Self::Addressee(_) => Some(format!("(recipient_id = ? OR {ELECTOR_CLAUSE})")),
+        }
+    }
+
+    /// The values [`Self::sql`] expects, in order: the principal, then the
+    /// bare id the electorate is stored under.
+    fn binds(&self) -> Vec<String> {
+        match (self.principal(), self.voter_id()) {
+            (None, _) => Vec::new(),
+            (Some(principal), voter) => {
+                vec![principal.clone(), voter.unwrap_or(principal).to_owned()]
+            },
         }
     }
 }
@@ -411,14 +450,15 @@ pub async fn list(pool: &SqlitePool, filters: &ListFilters) -> Result<Vec<Propos
                 applied_at, applied_by, recipient_id
            FROM structure_proposals",
     );
-    let mut clauses: Vec<&'static str> = Vec::new();
+    let mut clauses: Vec<&str> = Vec::new();
     if filters.status.is_some() {
         clauses.push("status = ?");
     }
     if filters.kind.is_some() {
         clauses.push("kind = ?");
     }
-    if let Some(clause) = filters.recipient.sql() {
+    let scope_clause = filters.recipient.sql();
+    if let Some(clause) = scope_clause.as_deref() {
         clauses.push(clause);
     }
     if !clauses.is_empty() {
@@ -434,8 +474,8 @@ pub async fn list(pool: &SqlitePool, filters: &ListFilters) -> Result<Vec<Propos
     if let Some(k) = &filters.kind {
         q = q.bind(k);
     }
-    if let Some(r) = filters.recipient.principal() {
-        q = q.bind(r);
+    for value in filters.recipient.binds() {
+        q = q.bind(value);
     }
     let rows: Vec<ListTuple> = q.bind(limit).fetch_all(pool).await?;
 
@@ -471,11 +511,11 @@ pub async fn get(
     );
     if let Some(clause) = scope.sql() {
         sql.push_str(" AND ");
-        sql.push_str(clause);
+        sql.push_str(&clause);
     }
     let mut q = sqlx::query_as::<_, ListTuple>(&sql).bind(proposal_id);
-    if let Some(r) = scope.principal() {
-        q = q.bind(r);
+    for value in scope.binds() {
+        q = q.bind(value);
     }
     q.fetch_optional(pool).await?.map(decode).transpose()
 }
@@ -519,25 +559,25 @@ fn parse_status_lenient(s: &str) -> ProposalStatus {
 /// Count the `pending` rows — the proposals still waiting on somebody.
 ///
 /// The only rows anybody can still act on: once a proposal is applied
-/// the change stands. Scoped by `recipient`: pass
-/// `Some("user:<id>")` to count only the rows addressed to that user
-/// plus the unaddressed/admin-fallback ones, or `None` for the
-/// deployment-wide count (admin view).
+/// the change stands. `scope` is the same read ACL [`list`] takes, so the
+/// badge counts exactly what the page will show — a badge that counts a
+/// row the page then withholds sends somebody looking for something that
+/// is not there.
 ///
 /// Used by the dashboard in-flight badge.
 ///
 /// # Errors
 ///
 /// - [`ProposalsError::Db`] for any SQL failure.
-pub async fn count_pending(pool: &SqlitePool, recipient: Option<&str>) -> Result<i64> {
+pub async fn count_pending(pool: &SqlitePool, scope: &RecipientScope) -> Result<i64> {
     let mut sql = String::from("SELECT COUNT(*) FROM structure_proposals WHERE status = 'pending'");
-    if recipient.is_some() {
-        // 0032: scope to the caller — addressed to me OR unaddressed.
-        sql.push_str(" AND (recipient_id = ? OR recipient_id IS NULL)");
+    if let Some(clause) = scope.sql() {
+        sql.push_str(" AND ");
+        sql.push_str(&clause);
     }
     let mut q = sqlx::query_scalar::<_, i64>(&sql);
-    if let Some(r) = recipient {
-        q = q.bind(r);
+    for value in scope.binds() {
+        q = q.bind(value);
     }
     Ok(q.fetch_one(pool).await?)
 }
@@ -568,6 +608,38 @@ pub fn recipient_from_fact(
         return Some(format!("user:{id}"));
     }
     None
+}
+
+/// Split a batch of applied changes into one group per addressee.
+///
+/// A turn closes what it contradicts, and a sweep closes a whole cluster:
+/// either can touch facts belonging to **different people**, because
+/// somebody a fact was shared with may close it. One receipt for the
+/// batch would then be addressed to whoever the first fact happened to
+/// name, and would carry a preview of everybody else's text to them —
+/// the receipts store 120 characters of each fact they record, and
+/// nothing re-projects that per reader.
+///
+/// So the emitters group first and write one receipt per group, each
+/// carrying only the facts of the person who receives it. Groups keep
+/// first-appearance order, so a batch with one addressee stays one
+/// receipt and the common case is unchanged.
+///
+/// `recipient_of` is [`recipient_from_fact`] applied to whatever the
+/// caller has that knows the fact's subject and author.
+pub fn group_by_recipient<T: Clone>(
+    items: &[T],
+    recipient_of: impl Fn(&T) -> Option<String>,
+) -> Vec<(Option<String>, Vec<T>)> {
+    let mut groups: Vec<(Option<String>, Vec<T>)> = Vec::new();
+    for item in items {
+        let recipient = recipient_of(item);
+        match groups.iter_mut().find(|(who, _)| *who == recipient) {
+            Some((_, batch)) => batch.push(item.clone()),
+            None => groups.push((recipient, vec![item.clone()])),
+        }
+    }
+    groups
 }
 
 /// Whether `caller_sender_id` may apply a proposal whose addressee is
@@ -2109,6 +2181,131 @@ mod tests {
         .await
         .unwrap();
         assert_eq!(ids(everybody), ["p-mine", "p-nobody", "p-theirs"]);
+    }
+
+    /// A batch that touches several people is split into one group each,
+    /// keeping the order they first appear in.
+    #[test]
+    fn a_batch_is_split_into_one_group_per_person() {
+        let items = ["frodo", "bilbo", "frodo", "nobody"];
+        let groups = group_by_recipient(&items, |who| {
+            (*who != "nobody").then(|| format!("user:{who}"))
+        });
+        assert_eq!(groups.len(), 3);
+        assert_eq!(groups[0].0.as_deref(), Some("user:frodo"));
+        assert_eq!(groups[0].1, ["frodo", "frodo"]);
+        assert_eq!(groups[1].0.as_deref(), Some("user:bilbo"));
+        assert_eq!(groups[2].0, None);
+    }
+
+    /// A batch with one addressee stays one receipt: the common case is
+    /// untouched by the split.
+    #[test]
+    fn one_addressee_is_still_one_group() {
+        let items = [1, 2, 3];
+        let groups = group_by_recipient(&items, |_| Some("user:frodo".to_owned()));
+        assert_eq!(groups.len(), 1);
+        assert_eq!(groups[0].1, [1, 2, 3]);
+    }
+
+    /// The people being asked to vote can read the request.
+    ///
+    /// A forget request is addressed to whoever asked for the forget, and
+    /// the electorate is everybody else who can read the fact. Scoping on
+    /// the addressee alone hid the ballot from exactly the people it is a
+    /// question for — and both halves matter: the elector reads it, and a
+    /// third person still does not.
+    #[tokio::test]
+    async fn an_elector_reads_the_forget_request_and_a_stranger_does_not() {
+        let (_workdir, pool) = fresh_pool().await;
+        sqlx::query(
+            "INSERT INTO structure_proposals (proposal_id, kind, context, questions, \
+             proposed_at, timeout_at, status, recipient_id) \
+             VALUES ('p-vote', ?, ?, '[]', ?, ?, 'pending', 'user:frodo')",
+        )
+        .bind(kind::FACT_FORGET)
+        .bind(
+            serde_json::json!({
+                "variant": "fact_forget",
+                "fact_id": "0197fa00-0000-7000-8000-000000000001",
+                "requester": "frodo",
+                "eligible_voters": ["bilbo", "carol"],
+            })
+            .to_string(),
+        )
+        .bind(chrono::Utc::now().to_rfc3339())
+        .bind((chrono::Utc::now() + chrono::Duration::days(7)).to_rfc3339())
+        .execute(&pool)
+        .await
+        .unwrap();
+
+        let seen_by = |who: &str| {
+            let pool = pool.clone();
+            let scope = RecipientScope::Addressee(format!("user:{who}"));
+            async move {
+                list(
+                    &pool,
+                    &ListFilters {
+                        recipient: scope,
+                        ..Default::default()
+                    },
+                )
+                .await
+                .unwrap()
+                .len()
+            }
+        };
+        assert_eq!(seen_by("frodo").await, 1, "the requester is the addressee");
+        assert_eq!(seen_by("bilbo").await, 1, "an elector is being asked");
+        assert_eq!(seen_by("carol").await, 1, "so is the other elector");
+        assert_eq!(seen_by("sam").await, 0, "nobody else is");
+
+        // The count the badge reads answers the same way, or it promises
+        // something the page will not show.
+        assert_eq!(
+            count_pending(&pool, &RecipientScope::Addressee("user:bilbo".to_owned()))
+                .await
+                .unwrap(),
+            1
+        );
+        assert_eq!(
+            count_pending(&pool, &RecipientScope::Addressee("user:sam".to_owned()))
+                .await
+                .unwrap(),
+            0
+        );
+    }
+
+    /// The elector clause is scoped to the one kind that has an
+    /// electorate, so a stray key on another row never widens a scope.
+    #[tokio::test]
+    async fn only_a_forget_request_has_an_electorate() {
+        let (_workdir, pool) = fresh_pool().await;
+        sqlx::query(
+            "INSERT INTO structure_proposals (proposal_id, kind, context, questions, \
+             proposed_at, timeout_at, status, recipient_id) \
+             VALUES ('p-other', ?, ?, '[]', ?, ?, 'pending', 'user:frodo')",
+        )
+        .bind(kind::SLOT_CONFLICT)
+        .bind(serde_json::json!({ "eligible_voters": ["bilbo"] }).to_string())
+        .bind(chrono::Utc::now().to_rfc3339())
+        .bind((chrono::Utc::now() + chrono::Duration::hours(24)).to_rfc3339())
+        .execute(&pool)
+        .await
+        .unwrap();
+        let rows = list(
+            &pool,
+            &ListFilters {
+                recipient: RecipientScope::Addressee("user:bilbo".to_owned()),
+                ..Default::default()
+            },
+        )
+        .await
+        .unwrap();
+        assert!(
+            rows.is_empty(),
+            "only fact_forget puts a question to voters"
+        );
     }
 
     /// One `pending` row with an explicit addressee.

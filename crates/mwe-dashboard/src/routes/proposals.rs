@@ -59,12 +59,17 @@
 //!   recipient, the same posture the facts table and the wiki pages take.
 //!   It is admin-only, so a reader can never widen past themself.
 //!
-//! The badge count ([`in_flight_count`]) is scoped a shade more loosely —
-//! it hands everybody the unaddressed bucket, because a *pending* row
-//! nobody was addressed with is one anybody may answer. The two agree
-//! wherever it matters: no kind that is still emitted `pending`
-//! (`fact_forget`, `slot_conflict`) leaves its addressee empty except
-//! where the fact belongs to a group nobody spoke for.
+//! - **An elector** sees a forget request they are being asked to vote
+//!   on. That row is addressed to whoever asked for the forget, and the
+//!   people being asked are everybody else who can read the fact, so
+//!   scoping on the addressee alone hid the ballot from exactly the
+//!   people it is a question for.
+//!
+//! The badge count and the chat's proposal tools read by the same rule,
+//! from the same function: a badge that counts a row the page withholds
+//! sends somebody looking for something that is not there, and a chat
+//! that lists what the page hides makes the page's restraint
+//! decorative.
 
 use axum::Router;
 use axum::extract::{Path, Query, State};
@@ -109,17 +114,41 @@ const PAGE_TITLE: &str = "Proposals";
 /// the read side will hand over.
 const PAGE_LIMIT: i64 = proposals::MAX_LIST_TOP_K;
 
-/// Whose rows this reader may see. See the module header — this is the
-/// read ACL for everything the two pages print.
-fn readable_scope(state: &DashboardState, user: &SessionUser, jar: &CookieJar) -> RecipientScope {
-    let me = format!("user:{}", user.sender_id);
-    if crate::reveal::active(state, user, jar) {
+/// Whose rows this reader may see — **the** read ACL for proposals, and
+/// the only one.
+///
+/// Three surfaces ask the question and they must not answer it
+/// differently: this page, the badge count ([`in_flight_count`]) and the
+/// chat's proposal tools ([`crate::agentic`]). A badge that counts what
+/// the page withholds sends somebody looking for something that is not
+/// there; a chat that lists what the page hides makes the page's
+/// restraint decorative. So the rule lives here once and they all call
+/// it.
+///
+/// See the module header for what the three cases mean. The electorate of
+/// a forget request is folded in by the scope itself
+/// ([`RecipientScope`]), because being asked to vote is exactly a reason
+/// to be shown the question.
+#[must_use]
+pub fn readable_scope(sender_id: &str, is_admin: bool, reveal: bool) -> RecipientScope {
+    let me = format!("user:{sender_id}");
+    if reveal {
         RecipientScope::Everybody
-    } else if user.is_admin {
+    } else if is_admin {
         RecipientScope::AddresseeOrNobody(me)
     } else {
         RecipientScope::Addressee(me)
     }
+}
+
+/// [`readable_scope`] for a page handler, which holds the session and the
+/// cookie jar rather than the two answers.
+fn scope_for(state: &DashboardState, user: &SessionUser, jar: &CookieJar) -> RecipientScope {
+    readable_scope(
+        &user.sender_id,
+        user.is_admin,
+        crate::reveal::active(state, user, jar),
+    )
 }
 
 /// The `?status=` filter on the listing.
@@ -150,7 +179,7 @@ async fn index(
         &ListFilters {
             status,
             kind: None,
-            recipient: readable_scope(&state, &user, &jar),
+            recipient: scope_for(&state, &user, &jar),
             top_k: Some(PAGE_LIMIT),
         },
     )
@@ -185,14 +214,10 @@ async fn detail(
     // The scope is applied by the same query that finds the row, so
     // there is no path here that loads a proposal first and checks
     // afterwards.
-    let row = proposals::get(
-        &state.pool,
-        &proposal_id,
-        &readable_scope(&state, &user, &jar),
-    )
-    .await
-    .map_err(|e| DashboardError::Internal(format!("proposals::get: {e}")))?
-    .ok_or(DashboardError::NotFound)?;
+    let row = proposals::get(&state.pool, &proposal_id, &scope_for(&state, &user, &jar))
+        .await
+        .map_err(|e| DashboardError::Internal(format!("proposals::get: {e}")))?
+        .ok_or(DashboardError::NotFound)?;
     let body = render_detail_body(&row, reveal, crate::read_only::hides_writes(&state));
     Ok(Html(layout::authenticated_page(
         chrome, PAGE_TITLE, &user, &body,
@@ -211,23 +236,15 @@ struct InFlightCountJson {
 /// badge fetches client-side (the shell layout is a pure sync render, so
 /// it cannot touch the DB itself; see [`crate::ui::layout`]).
 ///
-/// ACL-scoped to the signed-in user: everyone — admins included — counts
-/// only rows addressed to them plus the unaddressed/admin-fallback ones
-/// (`recipient = Some("user:<sender>")`). The admin ACL-reveal switch
-/// ([`crate::reveal::active`]) lifts the scope to the whole deployment
-/// (`recipient = None`), the same posture the facts table takes — because
-/// a proposal's `context` carries per-fragment-ACL'd fact text, so an
-/// unconditional admin-wide count would leak other users' content. The
-/// predicate is `false` for any non-admin, so a non-admin is always
-/// scoped.
+/// Counted through [`readable_scope`], the same rule the listing reads
+/// by: the badge is a promise that there is something to open, and it has
+/// to be a promise the page keeps.
 async fn in_flight_count(
     State(state): State<DashboardState>,
     user: SessionUser,
     jar: CookieJar,
 ) -> Result<axum::Json<InFlightCountJson>> {
-    let recipient =
-        (!crate::reveal::active(&state, &user, &jar)).then(|| format!("user:{}", user.sender_id));
-    let pending = proposals::count_pending(&state.pool, recipient.as_deref())
+    let pending = proposals::count_pending(&state.pool, &scope_for(&state, &user, &jar))
         .await
         .map_err(|e| DashboardError::Internal(format!("count_pending: {e}")))?;
     Ok(axum::Json(InFlightCountJson { pending }))

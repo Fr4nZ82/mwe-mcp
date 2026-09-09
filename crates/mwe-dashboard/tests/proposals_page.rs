@@ -459,3 +459,83 @@ async fn an_open_instance_reads_its_proposals_and_offers_the_chat() {
     assert_eq!(status, StatusCode::OK);
     assert!(html.contains("Who may vote"), "{html}");
 }
+
+/// The people being asked to vote can read the ballot.
+///
+/// A forget request is addressed to whoever asked for the forget, and the
+/// electorate is everybody else who can read the fact. Scoping on the
+/// addressee alone hid the request from exactly the people it is a
+/// question for: they were told to go and vote and shown nothing.
+#[tokio::test]
+async fn an_elector_reads_the_forget_request_the_requester_does_too_and_a_stranger_does_not() {
+    let (app, pool, _tree, _dir) = make_app_with_memory().await;
+    let admin = login_as_admin(&app).await;
+    let bob = login_as_user(&app, &admin, "bob").await;
+    let carol = login_as_user(&app, &admin, "carol").await;
+    let dave = login_as_user(&app, &admin, "dave").await;
+
+    seed(
+        &pool,
+        "p-vote",
+        "fact_forget",
+        &serde_json::json!({
+            "variant": "fact_forget",
+            "fact_id": "0197fa00-0000-7000-8000-000000000001",
+            "requester": "bob",
+            "eligible_voters": ["carol"],
+        }),
+        "pending",
+        Some("user:bob"),
+        chrono::Utc::now(),
+    )
+    .await;
+
+    // The requester: it is addressed to them.
+    let (status, html) = get_page(&app, "/proposals", &bob).await;
+    assert_eq!(status, StatusCode::OK);
+    assert!(
+        html.contains("A request to forget"),
+        "the requester: {html}"
+    );
+
+    // The elector: they are the one being asked.
+    let (status, html) = get_page(&app, "/proposals", &carol).await;
+    assert_eq!(status, StatusCode::OK);
+    assert!(
+        html.contains("A request to forget"),
+        "the elector must see it: {html}"
+    );
+    let (status, _) = get_page(&app, "/proposals/p-vote", &carol).await;
+    assert_eq!(status, StatusCode::OK, "and must be able to open it");
+
+    // Nobody else.
+    let (_, html) = get_page(&app, "/proposals", &dave).await;
+    assert!(
+        !html.contains("A request to forget"),
+        "a stranger must not: {html}"
+    );
+    let (status, _) = get_page(&app, "/proposals/p-vote", &dave).await;
+    assert_eq!(status, StatusCode::NOT_FOUND);
+
+    // The badge promises exactly what the page will show.
+    let count = |cookie: String| {
+        let app = app.clone();
+        async move {
+            let response = send(
+                &app,
+                Request::builder()
+                    .uri("/proposals/in-flight-count")
+                    .header(header::COOKIE, cookie)
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await;
+            let body = body_string(response).await;
+            serde_json::from_str::<serde_json::Value>(&body).unwrap()["pending"]
+                .as_i64()
+                .unwrap()
+        }
+    };
+    assert_eq!(count(carol).await, 1, "the elector is told there is one");
+    assert_eq!(count(dave).await, 0, "and a stranger is not");
+}

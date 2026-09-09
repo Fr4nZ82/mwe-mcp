@@ -3745,52 +3745,85 @@ async fn apply_plan_closures(
 /// follows REM's convention (`recipient_from_fact` on the first closed
 /// target): a well-formed Principal wire string, while `applied_by`
 /// stays the raw session sender for the audit column.
+/// The addressee of each applied change, from the recall hit that named
+/// the fact, grouped so one receipt goes to each person.
+///
+/// See [`proposals::group_by_recipient`] for why the grouping exists at
+/// all: a turn may close facts belonging to several people, and a receipt
+/// carries a preview of every fact it records.
+fn group_for_receipts<T: Clone>(
+    applied: &[T],
+    recall_hits: &[RecallHit],
+    fact_of: impl Fn(&T) -> &FactId,
+) -> Vec<(Option<String>, Vec<T>)> {
+    proposals::group_by_recipient(applied, |item| {
+        let wanted = fact_of(item);
+        recall_hits
+            .iter()
+            .find(|h| &h.fact_id == wanted)
+            .and_then(|h| proposals::recipient_from_fact(&h.subject_id, h.sender_id.as_ref()))
+    })
+}
+
+/// Is this receipt going to the person whose words caused the change?
+///
+/// The gesture stored on a receipt is the turn's own sentence, so it goes
+/// only to whoever said it. A person told that a fact of theirs was
+/// closed learns that, and not what was being talked about in somebody
+/// else's conversation.
+fn spoken_by(recipient: Option<&str>, request: &IngestRequest) -> bool {
+    recipient == Some(format!("user:{}", request.sender_id).as_str())
+}
+
 async fn emit_closure_paper_trail(
     pool: &SqlitePool,
     applied: &[promote::AppliedClosure],
     recall_hits: &[RecallHit],
     request: &IngestRequest,
 ) {
-    let recipient = recall_hits
-        .iter()
-        .find(|h| h.fact_id == applied[0].fact_id)
-        .and_then(|h| proposals::recipient_from_fact(&h.subject_id, h.sender_id.as_ref()));
     let gesture = truncate(&request.text, 160);
-    match promote::emit_validity_close_receipt(
-        pool,
-        applied,
-        Some(&gesture),
-        Some(request.sender_id.as_str()),
-        recipient.clone(),
-    )
-    .await
-    {
-        Ok(receipt) => {
-            let payload = serde_json::json!({
-                "proposal_id": receipt.proposal_id,
-                "variant": "validity_close",
-                "closed_facts": applied
-                    .iter()
-                    .map(|c| c.fact_id.as_str())
-                    .collect::<Vec<_>>(),
-                "recipient_id": recipient,
-                "dashboard_path": proposals::proposal_dashboard_path(&receipt.proposal_id),
-            });
-            if let Err(err) = events::insert_event(
-                pool,
-                EventKind::StructureApplied,
-                Some(applied[0].wiki_id.as_str()),
-                Some(applied[0].fact_id.as_str()),
-                &payload,
-            )
-            .await
-            {
-                tracing::warn!(error = %err, "ingest: closure notice event failed");
-            }
-        },
-        Err(err) => {
-            tracing::warn!(error = %err, "ingest: closures applied but receipt failed");
-        },
+    for (recipient, closed) in group_for_receipts(applied, recall_hits, |c| &c.fact_id) {
+        // The words that closed them are the speaker's own. They ride the
+        // receipt the speaker reads and no other: a person told that a
+        // fact of theirs was closed does not thereby get to read the
+        // sentence somebody else said in their own conversation.
+        let said = spoken_by(recipient.as_deref(), request).then_some(gesture.as_str());
+        match promote::emit_validity_close_receipt(
+            pool,
+            &closed,
+            said,
+            Some(request.sender_id.as_str()),
+            recipient.clone(),
+        )
+        .await
+        {
+            Ok(receipt) => {
+                let payload = serde_json::json!({
+                    "proposal_id": receipt.proposal_id,
+                    "variant": "validity_close",
+                    "closed_facts": closed
+                        .iter()
+                        .map(|c| c.fact_id.as_str())
+                        .collect::<Vec<_>>(),
+                    "recipient_id": recipient,
+                    "dashboard_path": proposals::proposal_dashboard_path(&receipt.proposal_id),
+                });
+                if let Err(err) = events::insert_event(
+                    pool,
+                    EventKind::StructureApplied,
+                    Some(closed[0].wiki_id.as_str()),
+                    Some(closed[0].fact_id.as_str()),
+                    &payload,
+                )
+                .await
+                {
+                    tracing::warn!(error = %err, "ingest: closure notice event failed");
+                }
+            },
+            Err(err) => {
+                tracing::warn!(error = %err, "ingest: closures applied but receipt failed");
+            },
+        }
     }
 }
 
@@ -4170,46 +4203,45 @@ async fn emit_validity_edit_paper_trail(
     recall_hits: &[RecallHit],
     request: &IngestRequest,
 ) {
-    let recipient = recall_hits
-        .iter()
-        .find(|h| h.fact_id == applied[0].fact_id)
-        .and_then(|h| proposals::recipient_from_fact(&h.subject_id, h.sender_id.as_ref()));
     let gesture = truncate(&request.text, 160);
-    match promote::emit_validity_edit_receipt(
-        pool,
-        applied,
-        Some(&gesture),
-        Some(request.sender_id.as_str()),
-        recipient.clone(),
-    )
-    .await
-    {
-        Ok(receipt) => {
-            let payload = serde_json::json!({
-                "proposal_id": receipt.proposal_id,
-                "variant": "validity_edit",
-                "edited_facts": applied
-                    .iter()
-                    .map(|e| e.fact_id.as_str())
-                    .collect::<Vec<_>>(),
-                "recipient_id": recipient,
-                "dashboard_path": proposals::proposal_dashboard_path(&receipt.proposal_id),
-            });
-            if let Err(err) = events::insert_event(
-                pool,
-                EventKind::StructureApplied,
-                Some(applied[0].wiki_id.as_str()),
-                Some(applied[0].fact_id.as_str()),
-                &payload,
-            )
-            .await
-            {
-                tracing::warn!(error = %err, "ingest: validity_edit notice event failed");
-            }
-        },
-        Err(err) => {
-            tracing::warn!(error = %err, "ingest: validity_edits applied but receipt failed");
-        },
+    for (recipient, edited) in group_for_receipts(applied, recall_hits, |e| &e.fact_id) {
+        let said = spoken_by(recipient.as_deref(), request).then_some(gesture.as_str());
+        match promote::emit_validity_edit_receipt(
+            pool,
+            &edited,
+            said,
+            Some(request.sender_id.as_str()),
+            recipient.clone(),
+        )
+        .await
+        {
+            Ok(receipt) => {
+                let payload = serde_json::json!({
+                    "proposal_id": receipt.proposal_id,
+                    "variant": "validity_edit",
+                    "edited_facts": edited
+                        .iter()
+                        .map(|e| e.fact_id.as_str())
+                        .collect::<Vec<_>>(),
+                    "recipient_id": recipient,
+                    "dashboard_path": proposals::proposal_dashboard_path(&receipt.proposal_id),
+                });
+                if let Err(err) = events::insert_event(
+                    pool,
+                    EventKind::StructureApplied,
+                    Some(edited[0].wiki_id.as_str()),
+                    Some(edited[0].fact_id.as_str()),
+                    &payload,
+                )
+                .await
+                {
+                    tracing::warn!(error = %err, "ingest: validity_edit notice event failed");
+                }
+            },
+            Err(err) => {
+                tracing::warn!(error = %err, "ingest: validity_edits applied but receipt failed");
+            },
+        }
     }
 }
 
@@ -4473,47 +4505,46 @@ async fn emit_acl_change_paper_trail(
     recall_hits: &[RecallHit],
     request: &IngestRequest,
 ) {
-    let recipient = recall_hits
-        .iter()
-        .find(|h| h.fact_id == applied[0].fact_id)
-        .and_then(|h| proposals::recipient_from_fact(&h.subject_id, h.sender_id.as_ref()));
     let gesture = truncate(&request.text, 160);
-    match promote::emit_acl_change_receipt(
-        pool,
-        applied,
-        Some(&gesture),
-        Some(request.sender_id.as_str()),
-        recipient.clone(),
-    )
-    .await
-    {
-        Ok(receipt) => {
-            let payload = serde_json::json!({
-                "proposal_id": receipt.proposal_id,
-                "variant": "acl_change",
-                "changed_facts": applied
-                    .iter()
-                    .map(|c| c.fact_id.as_str())
-                    .collect::<Vec<_>>(),
-                "widening": applied.iter().any(|c| c.widening),
-                "recipient_id": recipient,
-                "dashboard_path": proposals::proposal_dashboard_path(&receipt.proposal_id),
-            });
-            if let Err(err) = events::insert_event(
-                pool,
-                EventKind::StructureApplied,
-                Some(applied[0].wiki_id.as_str()),
-                Some(applied[0].fact_id.as_str()),
-                &payload,
-            )
-            .await
-            {
-                tracing::warn!(error = %err, "ingest: acl_change notice event failed");
-            }
-        },
-        Err(err) => {
-            tracing::warn!(error = %err, "ingest: acl_changes applied but receipt failed");
-        },
+    for (recipient, changed) in group_for_receipts(applied, recall_hits, |c| &c.fact_id) {
+        let said = spoken_by(recipient.as_deref(), request).then_some(gesture.as_str());
+        match promote::emit_acl_change_receipt(
+            pool,
+            &changed,
+            said,
+            Some(request.sender_id.as_str()),
+            recipient.clone(),
+        )
+        .await
+        {
+            Ok(receipt) => {
+                let payload = serde_json::json!({
+                    "proposal_id": receipt.proposal_id,
+                    "variant": "acl_change",
+                    "changed_facts": changed
+                        .iter()
+                        .map(|c| c.fact_id.as_str())
+                        .collect::<Vec<_>>(),
+                    "widening": changed.iter().any(|c| c.widening),
+                    "recipient_id": recipient,
+                    "dashboard_path": proposals::proposal_dashboard_path(&receipt.proposal_id),
+                });
+                if let Err(err) = events::insert_event(
+                    pool,
+                    EventKind::StructureApplied,
+                    Some(changed[0].wiki_id.as_str()),
+                    Some(changed[0].fact_id.as_str()),
+                    &payload,
+                )
+                .await
+                {
+                    tracing::warn!(error = %err, "ingest: acl_change notice event failed");
+                }
+            },
+            Err(err) => {
+                tracing::warn!(error = %err, "ingest: acl_changes applied but receipt failed");
+            },
+        }
     }
 }
 
@@ -18127,6 +18158,140 @@ mod tests {
                 .unwrap();
         assert_eq!(n, 1);
         drop(dir);
+    }
+
+    /// One turn, two facts, two people: two receipts, and neither carries
+    /// the other's words.
+    ///
+    /// Somebody a fact was shared with may close it, so a single turn can
+    /// close facts belonging to several people. The receipt stores 120
+    /// characters of each fact it records and nothing re-projects that per
+    /// reader, so one receipt for the batch would have handed whoever the
+    /// first fact named a preview of everybody else's.
+    ///
+    /// The gesture is asserted absent from both: the sentence was said by
+    /// a third person, and neither addressee gets to read what was being
+    /// talked about in somebody else's conversation.
+    #[tokio::test]
+    async fn a_turn_closing_two_peoples_facts_writes_one_receipt_each() {
+        let (dir, _tree, pool) = setup_workdir().await;
+        // A second household member, so the turn below closes one fact of
+        // each — which is the whole premise. The tree is reopened with him
+        // in it, so the fixture's first handle is never the one used.
+        let wikis = dir.path().join("wikis");
+        write_wiki(&wikis, "bob", "Bob", "wiki-user", None);
+        let tree = WikiTree::open(dir.path()).expect("reopen with bob");
+        sqlx::query(
+            "INSERT INTO enrollment_users (user_id, aliases, is_admin) VALUES ('bob','[]',0)",
+        )
+        .execute(&pool)
+        .await
+        .unwrap();
+        let alices = plant_fact_carol_can_close(&tree, &pool, "alice", "alice wants Jumanji").await;
+        let bobs = plant_fact_carol_can_close(&tree, &pool, "bob", "bob wants Casablanca").await;
+
+        let llm_resp = format!(
+            "{{\"intent\":\"capture\",\"extractions\":[],\
+             \"closures\":[{{\"target\":\"{a}\",\"reason\":\"completed\",\
+             \"valid_to\":\"2026-06-10T22:00:00Z\"}},\
+             {{\"target\":\"{b}\",\"reason\":\"completed\",\
+             \"valid_to\":\"2026-06-10T22:00:00Z\"}}],\
+             \"suggested_seed\":\"Segnati come visti.\"}}",
+            a = alices.as_str(),
+            b = bobs.as_str(),
+        );
+        let llm = ScriptedLlm::new(&[
+            &llm_resp,
+            "{\"closures\":[],\"validity_edits\":[],\"acl_changes\":[]}",
+        ]);
+        wiki_ingest_message(
+            &pool,
+            &tree,
+            fake_embedder(),
+            &llm,
+            None,
+            req("li abbiamo visti tutti e due ieri sera", "carol"),
+            &IngestPolicy::default(),
+        )
+        .await
+        .expect("ingest");
+
+        let rows: Vec<(String, Option<String>)> = sqlx::query_as(
+            "SELECT context, recipient_id FROM structure_proposals \
+              WHERE kind = 'wiki_promote' ORDER BY recipient_id",
+        )
+        .fetch_all(&pool)
+        .await
+        .expect("receipts");
+        assert_eq!(
+            rows.len(),
+            2,
+            "one receipt per person, not one for the batch"
+        );
+
+        for (context, recipient) in &rows {
+            let printed: serde_json::Value = serde_json::from_str(context).unwrap();
+            assert_eq!(printed["variant"], "validity_close");
+            assert_eq!(
+                printed["closed"].as_array().expect("closed").len(),
+                1,
+                "a receipt carries only its own reader's fact"
+            );
+            let (mine, theirs) = match recipient.as_deref() {
+                Some("user:alice") => ("Jumanji", "Casablanca"),
+                Some("user:bob") => ("Casablanca", "Jumanji"),
+                other => panic!("unexpected addressee {other:?}"),
+            };
+            assert!(
+                context.contains(mine),
+                "{recipient:?} must read its own: {context}"
+            );
+            assert!(
+                !context.contains(theirs),
+                "{recipient:?} must not read the other person's fact: {context}"
+            );
+            assert!(
+                printed.get("gesture").is_none(),
+                "the sentence was carol's, and neither addressee said it: {context}"
+            );
+        }
+        drop(dir);
+    }
+
+    /// One fact owned and authored by `subject`, shared with carol so she
+    /// can close it in a turn of her own.
+    async fn plant_fact_carol_can_close(
+        tree: &WikiTree,
+        pool: &SqlitePool,
+        subject: &str,
+        body: &str,
+    ) -> FactId {
+        capture::wiki_capture(
+            tree,
+            pool,
+            fake_embedder(),
+            CaptureRequest {
+                subject_external: None,
+                authored_refs: Vec::new(),
+                wiki_id: WikiId::parse(subject).unwrap(),
+                page: Some(PathBuf::from("cucina.md")),
+                body: body.to_owned(),
+                subject: Principal::User(subject.to_owned()),
+                allow: vec![Principal::User("carol".into())],
+                sender: Some(Principal::User(subject.to_owned())),
+                fact_type: Some("plan".into()),
+                page_description: None,
+                topics: vec!["film".into()],
+                dedup_threshold: Some(0.99),
+                valid_from: None,
+                valid_to: None,
+                style: None,
+                salience: None,
+            },
+        )
+        .await
+        .expect("plant")
+        .fact_id
     }
 
     /// A closure whose `valid_to` is a MALFORMED non-ISO string (an

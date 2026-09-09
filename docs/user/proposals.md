@@ -72,9 +72,23 @@ Nothing was changed.
 ## Who sees what
 
 You see the proposals **addressed to you**: the ones about your own facts, and
-the ones about something you said. You do not see anybody else's, because the
-note carries the material the change was about — a fact in full, or the first
-part of one — and that material is yours or theirs, never both.
+the ones about something you said. A note carries the material the change was
+about — a fact in full, or the first 120 characters of one — so a note about
+somebody else's fact is not yours to read, and you are not shown it.
+
+Two cases put somebody else's words in front of you on purpose, because you
+cannot answer without them.
+
+- **A forget request you are voting on.** You are one of the people who can
+  read the fact, which is why you are being asked, and the request names the
+  fact so you know what you are voting about.
+- **Two answers to one question.** The page shows both values, the one on
+  record and the one that was said instead, with who said each. You are being
+  asked which is right, and the question cannot be put without them.
+
+When one turn closes several facts belonging to several people, the memory
+writes **one note each**, and each carries only its own reader's facts. The
+sentence somebody typed goes only to the person who typed it.
 
 The admin also sees the ones addressed to nobody in particular, which is most
 of what the nightly run writes. With **Admin reveal** turned on in Settings,
