@@ -57,13 +57,6 @@ ignore = [
     # `maud 0.27` (which already removed `proc-macro-error`) lands in
     # workspace.dependencies.
     "RUSTSEC-2024-0370",
-    # `rsa 0.9.x` Marvin Attack: pulled in by `sqlx-macros-core` for
-    # the unused mysql backend (we configure `sqlx = { features = ["sqlite"] }`
-    # explicitly). The crate is compiled but never reached at runtime,
-    # so the timing side-channel is not exploitable in mwe-mcp.
-    # Re-evaluate once `rsa 0.10` (constant-time rewrite) is released
-    # and sqlx-mysql picks it up.
-    "RUSTSEC-2023-0071",
 ]
 
 [sources]
