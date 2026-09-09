@@ -5265,13 +5265,19 @@ async fn judge_completion_case(
     Ok(Some((receipts, closed)))
 }
 
-/// The addressee of ONE closed target: the person its own fact names,
-/// falling back to the evidence's when the target is not in the case's
-/// candidate list.
+/// The addressee of ONE closed target: the person its own fact names, and
+/// **nobody** when the target is not in the case's candidate list.
 ///
 /// Per target rather than per batch, because the sweep can close facts
 /// belonging to several people and each of them gets a receipt of their
 /// own ([`proposals::group_by_recipient`]).
+///
+/// The empty answer is deliberate. Falling back to the evidence's owner
+/// would address a receipt about somebody else's fact to them, which is
+/// the mistake this whole grouping exists to stop; unaddressed puts it
+/// where an unowned receipt belongs. Unreachable today — the closures are
+/// built from the candidates — and the same answer the ingest side gives
+/// for a closed fact its recall never returned.
 fn completion_recipient(
     case: &CompletionCase<'_>,
     closed: &promote::AppliedClosure,
@@ -5279,15 +5285,7 @@ fn completion_recipient(
     case.candidates
         .iter()
         .find(|c| c.fact_id == closed.fact_id)
-        .map_or_else(
-            || {
-                proposals::recipient_from_fact(
-                    &case.evidence.subject_id,
-                    case.evidence.sender_id.as_ref(),
-                )
-            },
-            |c| proposals::recipient_from_fact(&c.subject_id, c.sender_id.as_ref()),
-        )
+        .and_then(|c| proposals::recipient_from_fact(&c.subject_id, c.sender_id.as_ref()))
 }
 
 // ---------- Cross-wiki refile sweep sub-job ----------
@@ -6272,11 +6270,14 @@ async fn judge_contradiction_case(
     let seed_recipient = proposals::recipient_from_fact(&seed.subject_id, seed.sender_id.as_ref());
     let mut receipts = Vec::new();
     for (recipient, closed) in proposals::group_by_recipient(&applied, |c| {
-        let row = candidates
+        // A closed target that is not among the candidates belongs to
+        // nobody we can name: falling back to the seed's owner would
+        // address somebody else's receipt to them. Unreachable today, and
+        // the same answer the ingest side gives.
+        candidates
             .iter()
             .find(|k| k.fact_id == c.fact_id)
-            .unwrap_or(seed);
-        proposals::recipient_from_fact(&row.subject_id, row.sender_id.as_ref())
+            .and_then(|row| proposals::recipient_from_fact(&row.subject_id, row.sender_id.as_ref()))
     }) {
         let said = (recipient == seed_recipient).then_some(gesture.as_str());
         let receipt = match promote::emit_validity_close_receipt(

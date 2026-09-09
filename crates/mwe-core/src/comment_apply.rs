@@ -332,7 +332,6 @@ async fn apply_page(
     };
 
     let known: HashSet<&str> = facts.iter().map(|f| f.fact_id.as_str()).collect();
-    let reason = move_reason(comments);
 
     // Fact ids a `remove` op in THIS batch targets. Ops apply in emission
     // order, and the LLM may emit a corrected `add` before its paired
@@ -374,7 +373,7 @@ async fn apply_page(
                     wiki_id,
                     source_path,
                     op,
-                    &reason,
+                    comments,
                     report,
                 )
                 .await?;
@@ -679,7 +678,7 @@ async fn apply_add(
 /// **born-applied** — the `_direct` wrappers mint the receipt.
 #[allow(
     clippy::too_many_arguments,
-    reason = "the contained move threads the page facts, containment set, source wiki/page, subject, the op, and the receipt reason"
+    reason = "the contained move threads the page facts, containment set, source wiki/page, subject, the op, and the page's comments"
 )]
 async fn apply_move(
     pool: &SqlitePool,
@@ -689,7 +688,7 @@ async fn apply_move(
     wiki_id: &WikiId,
     source_path: &str,
     op: &RawOp,
-    reason: &str,
+    comments: &[(i64, String, Option<String>)],
     report: &mut CommentApplyReport,
 ) -> Result<()> {
     let Some(fid_str) = op.fact_id.as_deref() else {
@@ -714,6 +713,10 @@ async fn apply_move(
         .find(|f| f.fact_id.as_str() == fid_str)
         .expect("fid is in `known`, built from `facts`");
     let recipient = proposals::recipient_from_fact(&row.subject_id, row.sender_id.as_ref());
+    // Built here rather than once for the page: the receipt is addressed to
+    // the owner of THIS fact, and the page's comments can be several
+    // people's.
+    let reason = move_reason(comments, recipient.as_deref());
 
     // Is this a cross-wiki move? Only when a dest wiki is named AND it differs
     // from the source wiki; an absent or same-wiki dest_wiki_id is a same-wiki
@@ -745,7 +748,7 @@ async fn apply_move(
             dest_wiki_id,
             dest_page,
             recipient,
-            reason,
+            &reason,
             report,
         )
         .await
@@ -758,7 +761,7 @@ async fn apply_move(
             source_path,
             op,
             recipient,
-            reason,
+            &reason,
             report,
         )
         .await
@@ -1016,11 +1019,30 @@ fn describe_destinations(tree: &WikiTree, wiki_id: &WikiId, source_path: &str) -
     )
 }
 
-/// Build the one-line `reason` woven into a move receipt from the page's
-/// pending comments. A bounded excerpt keeps the audit string readable.
-fn move_reason(comments: &[(i64, String, Option<String>)]) -> String {
+/// Build the one-line `reason` woven into ONE move receipt, out of the
+/// comments its own addressee wrote. A bounded excerpt keeps the audit
+/// string readable.
+///
+/// ⚠️ **A page's pending comments can be several people's, and a receipt
+/// goes to the owner of the one fact that moved.** Weaving every comment
+/// into every receipt would hand each owner what the others wrote —
+/// the same shape as the sentence a turn types, which rides only the
+/// receipt of whoever said it ([`crate::proposals::group_by_recipient`]).
+/// So a receipt quotes its reader's own comments and nothing else, and
+/// says only that a comment asked for the move when they wrote none.
+///
+/// `recipient` is a `Principal` wire string (`"user:frodo"`); a comment's
+/// author is the bare id the dashboard stamps on it.
+fn move_reason(comments: &[(i64, String, Option<String>)], recipient: Option<&str>) -> String {
+    let reader = recipient.and_then(|r| r.strip_prefix("user:"));
     let joined = comments
         .iter()
+        .filter(|(_, _, author)| match (reader, author.as_deref()) {
+            (Some(reader), Some(author)) => author == reader,
+            // An unaddressed receipt, or a comment nobody signed: quote
+            // neither, because there is nobody it is safe to quote to.
+            _ => false,
+        })
         .map(|(_, body, _)| body.trim())
         .filter(|b| !b.is_empty())
         .collect::<Vec<_>>()
@@ -1207,6 +1229,57 @@ mod tests {
     use crate::embedder::FakeEmbedder;
     use crate::llm::FakeLlmBackend;
     use std::sync::Arc;
+
+    /// A page's pending comments can be several people's, and one move
+    /// mints a receipt per moved fact, each addressed to that fact's
+    /// owner. So the reason woven into a receipt quotes its own reader's
+    /// comments and nobody else's — the same rule as the sentence a turn
+    /// types.
+    #[test]
+    fn a_move_receipt_quotes_only_the_comments_its_reader_wrote() {
+        let comments = vec![
+            (
+                1,
+                "put this on the kitchen page".to_owned(),
+                Some("frodo".to_owned()),
+            ),
+            (
+                2,
+                "and this one is about my health".to_owned(),
+                Some("bilbo".to_owned()),
+            ),
+        ];
+
+        let frodos = move_reason(&comments, Some("user:frodo"));
+        assert!(frodos.contains("put this on the kitchen page"), "{frodos}");
+        assert!(
+            !frodos.contains("about my health"),
+            "frodo must not read bilbo's comment: {frodos}"
+        );
+
+        let bilbos = move_reason(&comments, Some("user:bilbo"));
+        assert!(bilbos.contains("about my health"), "{bilbos}");
+        assert!(
+            !bilbos.contains("kitchen page"),
+            "bilbo must not read frodo's comment: {bilbos}"
+        );
+    }
+
+    /// A receipt nobody is addressed with quotes nothing, and so does one
+    /// whose reader wrote no comment: the fallback says a comment asked
+    /// for the move without saying what it said.
+    #[test]
+    fn a_receipt_with_no_comment_of_its_own_quotes_none() {
+        let comments = vec![
+            (1, "move it".to_owned(), Some("frodo".to_owned())),
+            // A comment the dashboard could not stamp an author on.
+            (2, "unsigned".to_owned(), None),
+        ];
+        for reader in [None, Some("user:carol"), Some("group:famiglia")] {
+            let reason = move_reason(&comments, reader);
+            assert_eq!(reason, "dashboard comment", "{reader:?} got {reason}");
+        }
+    }
 
     async fn setup() -> (tempfile::TempDir, WikiTree, SqlitePool) {
         let dir = tempfile::tempdir().unwrap();

@@ -13,6 +13,13 @@ semver-governed surface: breaking changes are called out explicitly.
 
 ### Fixed
 
+- **A note about a move quotes only the comment its reader left.** A page can
+  carry pending comments from several people, and one round of them can move
+  several facts belonging to several owners. Every note written about those
+  moves repeated the same line, built from **all** the comments on the page at
+  once — so each owner read what the others had asked for. Each note now quotes
+  its own reader's comments, and says only that a comment asked for the move
+  when they wrote none.
 - **A receipt goes to one person, and carries only that person's facts.** When
   one turn closed, re-dated or re-shared several facts at once — which happens
   whenever somebody tidies up things that were shared with them — the memory
