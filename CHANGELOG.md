@@ -114,9 +114,17 @@ semver-governed surface: breaking changes are called out explicitly.
   passing sentence about dinner, two days later and from the same person, could
   be recorded as having replaced the instruction: the rule stopped applying,
   the page it lived on emptied that night, and the later sentence meant to
-  widen it had nothing left to widen. A rule is now out of that step's reach
-  entirely, unless the message is itself laying down a rule. Changing an
-  instruction still works exactly as before, by saying another one.
+  widen it had nothing left to widen.
+
+  **What you can do to an instruction, from now on, you do by talking about
+  the instruction.** Take one back by saying so — *«forget the rule about
+  keeping it short»* — and it stops applying, provided it was yours. Change one
+  by giving another in its place, as before. Nothing else reaches it: a
+  sentence about something else cannot end it, cannot re-date it, and cannot
+  change who it applies to, whatever else that sentence is about. Who an
+  instruction binds was settled when you gave it — this assistant, everyone on
+  it, or every assistant you talk to — and that is not something a later
+  message adjusts by accident.
 
 - **Four kinds of sentence the memory was letting go past it.** A rule you lay
   down for the assistant (*«keep it short with me»*), a preference or a
