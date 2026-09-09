@@ -159,6 +159,27 @@ semver-governed surface: breaking changes are called out explicitly.
   it, or every assistant you talk to — and that is not something a later
   message adjusts by accident.
 
+- **Telling the assistant how you want to be treated is a rule now, not a note
+  on your card.** *«I'd like the summaries as a voice message»*, *«answers for
+  me have to be short»* — phrased that way, those were being filed as a taste
+  of yours, a line on your identity card next to your phone number and what you
+  do not eat. To a person the two read alike; they are not alike. Nobody can
+  act on a taste, so an instruction filed as one was never handed to the
+  assistant as an instruction, could not be changed by giving another in its
+  place, and did not go away when you asked it to stop. The dividing line is
+  whether the sentence only comes true if the assistant behaves differently. If
+  it does, it is an instruction. If it stays true with no assistant in the room
+  — *«I prefer tea»*, *«I avoid the oven in hot weather»* — it is a fact about
+  you, and nothing about it changes.
+
+  **And how you phrase it decides who it binds.** Say it to the assistant in
+  front of you — *«answer me in audio»*, *«call me Franz»* — and it stays with
+  that assistant, the one you were speaking to. Say it about yourself, without
+  telling anyone in particular to do it — *«I'd like the answers in audio»* —
+  and it is yours: it travels with you, and every assistant you talk to applies
+  it. Until now an instruction stayed with whichever assistant happened to hear
+  it unless you spelled out «every assistant», which is not how anybody speaks.
+
 - **Four kinds of sentence the memory was letting go past it.** A rule you lay
   down for the assistant (*«keep it short with me»*), a preference or a
   position you take in a discussion that is still open (*«I'd take the hybrid

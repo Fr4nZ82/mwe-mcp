@@ -1128,12 +1128,15 @@ struct LlmExtraction {
     behaviour_rule: bool,
     /// Behaviour-rule scope (only read when `behaviour_rule` is `true`),
     /// read from the grammatical addressee.
-    /// `"per-user"` (or absent) = addressed to the speaker ("with me / my
-    /// things", or a bare imperative) — open to any user, filed per-user.
-    /// `"agent-wide"` = impersonal / universal ("with everyone", or a how-the-agent-
-    /// works directive with no per-speaker scope) — admin-only, filed
-    /// subject = agent. `"user-global"` = explicitly every-assistant ("tutti gli
-    /// assistenti") — open to any user, filed in THEIR identity wiki. Default
+    /// `"per-user"` (or absent) = addressed to the assistant in front of the
+    /// speaker, in the second person or the imperative ("rispondimi in audio",
+    /// "chiamami X") — open to any user, filed per-user.
+    /// `"agent-wide"` = for everyone this agent serves rather than for the
+    /// speaker ("with everyone", or a how-the-agent-works directive with no
+    /// per-speaker scope) — admin-only, filed subject = agent.
+    /// `"user-global"` = addressed to nobody, an impersonal statement of how
+    /// the speaker wants to be treated ("vorrei che le risposte fossero in
+    /// audio") — open to any user, filed in THEIR identity wiki. Default
     /// on omission: per-user (the open side).
     /// See [`CaptureUnit::behaviour_scope`] and the dispatch in [`run`].
     #[serde(default)]
@@ -1215,12 +1218,13 @@ struct CaptureUnit<'a> {
     behaviour_rule: bool,
     /// Behaviour-rule scope discriminator (only read when `behaviour_rule`),
     /// read from the addressee.
-    /// `Some("per-user")` / `None` → addressed to the speaker → any user may
-    /// set it, filed subject = user in the agent's wiki.
-    /// `Some("agent-wide")` → impersonal / universal → admin-only, filed
-    /// subject = agent. `Some("user-global")` → explicitly every-assistant →
-    /// any user, filed subject = user in THEIR identity wiki. The engine, not
-    /// the model, enforces authority (the model never sees who is admin).
+    /// `Some("per-user")` / `None` → addressed to the assistant in front of
+    /// the speaker → any user may set it, filed subject = user in the agent's
+    /// wiki. `Some("agent-wide")` → for everyone this agent serves → admin-only,
+    /// filed subject = agent. `Some("user-global")` → addressed to nobody, an
+    /// impersonal statement of how the speaker wants to be treated → any user,
+    /// filed subject = user in THEIR identity wiki. The engine, not the model,
+    /// enforces authority (the model never sees who is admin).
     behaviour_scope: Option<&'a str>,
     topics: &'a [String],
     body: Option<&'a str>,
@@ -5616,20 +5620,27 @@ const BEHAVIOUR_RULES_PAGE: &str = crate::wiki::RULES_FILENAME;
 /// longer routes anything; this scope axis does.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 enum BehaviourScope {
-    /// Addressed to the speaker ("with me / my things", or a bare imperative
-    /// with no audience): shapes how the agent behaves WITH THIS USER. Open to
-    /// **anyone** — it only touches them; filed `subject = the user` in the
-    /// calling agent's wiki, recalled only for that user on that agent. The
-    /// default when the addressee is unclear.
+    /// Addressed to THE ASSISTANT IN FRONT OF THE SPEAKER — a second person or
+    /// an imperative, a "you" being told what to do ("rispondimi in audio",
+    /// "chiamami X"): they told THIS agent, so it shapes how THIS agent behaves
+    /// WITH THIS USER. Open to **anyone** — it only touches them; filed
+    /// `subject = the user` in the calling agent's wiki, recalled only for that
+    /// user on that agent. Also what [`BehaviourScope::from_hint`] falls back
+    /// to for a hint it cannot read, since it is the narrowest of the three.
     PerUser,
-    /// Impersonal / universal ("con tutti / con chiunque", or a how-the-agent-
-    /// works directive with no per-speaker scope): changes the agent's
-    /// behaviour for EVERYONE. **Admin-only**; filed `subject = the agent`,
-    /// recalled for every user.
+    /// FOR EVERYONE THIS AGENT SERVES rather than for the speaker — it names
+    /// no beneficiary at all, or names all of them ("con tutti / con chiunque",
+    /// or a how-the-agent-works directive with no per-speaker scope): changes
+    /// the agent's behaviour for EVERYONE. **Admin-only**; filed
+    /// `subject = the agent`, recalled for every user.
     AgentWide,
-    /// Explicitly addressed to EVERY assistant the user talks to ("tutti gli
-    /// assistenti", "con qualunque assistente", "chiunque tu sia"): the user's
-    /// own standing rule for all their consumers. Open to
+    /// Addressed to NOBODY — an impersonal or general statement of how the
+    /// speaker wants to be treated, carrying no "you" that means the assistant
+    /// about to reply ("vorrei che le risposte fossero in audio"), a
+    /// third-person report of one included: they said how they want to be
+    /// treated and not who is to do it, so it is the user's own standing rule
+    /// for all their consumers. Naming every assistant outright ("con qualunque
+    /// assistente") is the clearest case of this, not the trigger. Open to
     /// **anyone** — it binds only their own conversations; filed `subject = the
     /// sender` in the sender's IDENTITY wiki, recalled by every consumer
     /// serving them.
@@ -5640,9 +5651,11 @@ impl BehaviourScope {
     /// Map the classifier's `behaviour_scope` string to a scope. Only the
     /// explicit wire tokens widen the reach — `"agent-wide"` (everyone on this
     /// agent, admin-gated) and `"user-global"` (this user on every agent);
-    /// anything else — including absent or a bare imperative — defaults to
-    /// **per-user**, the open side that touches only the speaker on this one
-    /// agent.
+    /// anything else, absent included, falls back to **per-user**. That
+    /// fallback is a guard on a malformed answer and not a reading of the turn:
+    /// which scope a directive has is decided by the addressee, in the prompt's
+    /// Part 7, and per-user is simply the narrowest of the three to land on
+    /// when the wire says nothing legible.
     fn from_hint(hint: Option<&str>) -> Self {
         match hint {
             Some("agent-wide") => Self::AgentWide,
@@ -8831,14 +8844,16 @@ pub async fn wiki_ingest_message(
                 // the scope's home rules page, never in the user's fact
                 // memory. GOVERNANCE (behaviour-rule scope from the
                 // addressee, prompt Part 7):
-                //  - PER-USER (addressed to the speaker, or a bare imperative)
-                //    is open to anyone — filed subject=user in the agent's wiki,
-                //    recalled only for them on this agent.
-                //  - AGENT-WIDE (impersonal / universal) changes the agent for
+                //  - PER-USER (addressed to the assistant in front of the
+                //    speaker — second person or imperative) is open to anyone —
+                //    filed subject=user in the agent's wiki, recalled only for
+                //    them on this agent.
+                //  - AGENT-WIDE (for everyone this agent serves) changes it for
                 //    EVERYONE → ADMIN-ONLY, filed subject=agent. A non-admin's
                 //    agent-wide directive is refused (not filed); a one-shot
                 //    notice on the `rules` field tells the agent to decline.
-                //  - USER-GLOBAL (explicitly every-assistant) is open to
+                //  - USER-GLOBAL (addressed to nobody — an impersonal
+                //    statement of how the speaker wants to be treated) is open to
                 //    anyone — the user's own rule, filed subject=user in THEIR
                 //    identity wiki, recalled by every consumer serving them.
                 // Written live so it takes effect next turn; revised in place
@@ -15916,11 +15931,11 @@ mod tests {
         drop(dir);
     }
 
-    /// A USER-GLOBAL behaviour-rule (explicitly every-assistant)
-    /// is filed in the SENDER's identity wiki, owned by the sender — and the
-    /// rules channel serves it to every consumer serving that user, the
-    /// bindingless smart consumer included. No admin gate: it binds only the
-    /// user's own conversations.
+    /// A USER-GLOBAL behaviour-rule — here in its clearest shape, the speaker
+    /// naming every assistant outright — is filed in the SENDER's identity
+    /// wiki, owned by the sender, and the rules channel serves it to every
+    /// consumer serving that user, the bindingless smart consumer included. No
+    /// admin gate: it binds only the user's own conversations.
     #[tokio::test]
     async fn user_global_rule_lands_in_sender_wiki_and_reaches_every_consumer() {
         let (dir, tree, pool) = setup_agent_workdir().await;
@@ -16502,6 +16517,192 @@ mod tests {
             "the fence that keeps the four new shapes from swallowing an ack, \
              a one-shot command and a question is gone"
         );
+    }
+
+    /// The scope of a directive is read from WHO WAS ADDRESSED, and a taste
+    /// about the assistant's own conduct is a directive.
+    ///
+    /// Production filed «the user prefers to receive a summary as an audio
+    /// message» as a `preference` on the speaker's identity card: an
+    /// instruction to the assistant, stored as knowledge about her, where the
+    /// rules channel can never reach it. Two sentences of Part 7 let that
+    /// through. The boundary test offered "telling the agent how to conduct
+    /// itself" and "stating something true about the user" as an exclusive
+    /// choice, and that sentence answers yes to BOTH — so the nearest
+    /// `fact_type` bullet won it. And the scope rule asked the user to name
+    /// every assistant EXPLICITLY before a directive could travel with them,
+    /// which no ordinary sentence does. Both are replaced by one reading:
+    /// addressed to the assistant in front of you ⇒ this assistant only;
+    /// addressed to nobody ⇒ every assistant serving that person.
+    #[test]
+    fn bundled_ingest_prompt_reads_a_directive_and_its_scope_from_the_addressee() {
+        for needle in [
+            // The scope criterion, in both directions.
+            "THE SCOPE IS READ IN TWO STEPS, AND THE SECOND ONE IS THE ADDRESSEE",
+            "the second person or the imperative",
+            "an impersonal or general sentence about how the answers are to be",
+            // A consumer's own third-person summary does not launder a
+            // directive into a fact, and does not pin it to that consumer.
+            "A directive REPORTED IN THE THIRD PERSON belongs here too",
+            // The taste-that-is-a-directive, and the test that decides it.
+            "is a `behaviour_rule`, and never a preference on their card",
+            "WHO HAS TO ACT for the sentence to come true",
+            // The `fact_type` list is where the wrong answer actually gets
+            // picked, so it carries the pointer back to Part 7.
+            "A taste whose object is the ASSISTANT'S OWN CONDUCT is not one of these",
+        ] {
+            assert!(
+                BUNDLED_INGEST_PROMPT_MD.contains(needle),
+                "the bundled prompt no longer says: {needle}"
+            );
+        }
+        assert!(
+            BUNDLED_INGEST_PROMPT_MD.contains("TRUE WITH NO ASSISTANT IN THE ROOM"),
+            "the fence is gone — without it the tie-breaker promotes every ordinary \
+             preference into a standing directive"
+        );
+        // The rule it replaces has to be gone, not merely outvoted: while it
+        // stands, an impersonal directive still needs the user to name every
+        // assistant before it can leave the agent it was said to.
+        assert!(
+            !BUNDLED_INGEST_PROMPT_MD.contains("needs the user to name every assistant EXPLICITLY"),
+            "the old scope rule is still in the prompt, contradicting the new one"
+        );
+    }
+
+    /// Where a directive lands, in the three directions the addressee sends
+    /// it — and what filing it as a taste costs.
+    ///
+    /// Said to the assistant in front of the speaker, it is that assistant's
+    /// rule and lives in the AGENT's wiki. Said impersonally, it is the
+    /// SPEAKER's rule and lives in their own wiki, where every assistant
+    /// serving them picks it up (the full serving matrix — bound consumer,
+    /// bindingless consumer, and never another user — is
+    /// [`user_global_rule_lands_in_sender_wiki_and_reaches_every_consumer`];
+    /// what this pins is the contrast between the two homes). Filed as an
+    /// ordinary taste it is taken all the same, into the captures buffer as
+    /// knowledge about the speaker, and the rules channel stays EMPTY —
+    /// [`recall_behaviour_rules`] reads `@rules.md` pages and nothing else,
+    /// so an instruction filed as knowledge is never applied as a standing
+    /// directive, never revised by a supersede and never withdrawn by asking
+    /// the agent to stop.
+    ///
+    /// Which of the three the model picks is Part 7's job, pinned on the
+    /// prompt text by
+    /// [`bundled_ingest_prompt_reads_a_directive_and_its_scope_from_the_addressee`];
+    /// what this test pins is that picking differently lands differently.
+    #[tokio::test]
+    async fn a_directive_lands_where_the_addressee_sends_it_and_a_taste_lands_nowhere() {
+        const RULE: &str = "Manda a questo utente i riassunti e i verdetti finali come \
+                            messaggio audio.";
+
+        async fn ingest_as(json: &str, turn: &str) -> (TempDir, SqlitePool) {
+            let (dir, tree, pool) = setup_agent_workdir().await;
+            let llm = FakeLlmBackend::new("fake", json);
+            wiki_ingest_message(
+                &pool,
+                &tree,
+                fake_embedder(),
+                &llm,
+                None,
+                req_consumer(turn, "alice", "botdeploy"),
+                &IngestPolicy::default(),
+            )
+            .await
+            .expect("ingest");
+            (dir, pool)
+        }
+        async fn rules_page_of(pool: &SqlitePool, wiki: &str) -> Vec<String> {
+            fact_index::find_by_filters(
+                pool,
+                &fact_index::FactFilters {
+                    wiki_id: Some(wiki.to_owned()),
+                    ..Default::default()
+                },
+            )
+            .await
+            .unwrap()
+            .into_iter()
+            .filter(|r| crate::wiki::is_rules_page(&r.source_path))
+            .map(|r| r.text)
+            .collect()
+        }
+
+        // 1. «Mandami i verdetti in audio» — the speaker addresses the
+        //    assistant in front of them, so the rule is that assistant's.
+        let (dir, pool) = ingest_as(
+            "{\"intent\":\"capture\",\"extractions\":[{\
+              \"behaviour_rule\":true,\"behaviour_scope\":\"per-user\",\
+              \"body\":\"Manda a questo utente i riassunti e i verdetti finali come \
+              messaggio audio.\"}]}",
+            "mandami tu i riassunti e i verdetti finali in audio",
+        )
+        .await;
+        assert_eq!(
+            rules_page_of(&pool, "samvisebot").await,
+            vec![RULE.to_owned()],
+            "a rule told to this assistant lives in this assistant's wiki"
+        );
+        assert!(
+            rules_page_of(&pool, "alice").await.is_empty(),
+            "and nothing of it is written into the speaker's own memory"
+        );
+        drop(dir);
+
+        // 2. «Vorrei che i verdetti fossero in audio» — nobody is addressed,
+        //    so the rule is the speaker's and travels with them.
+        let (dir, pool) = ingest_as(
+            "{\"intent\":\"capture\",\"extractions\":[{\
+              \"behaviour_rule\":true,\"behaviour_scope\":\"user-global\",\
+              \"body\":\"Manda a questo utente i riassunti e i verdetti finali come \
+              messaggio audio.\"}]}",
+            "vorrei che i riassunti e i verdetti finali fossero in formato audio",
+        )
+        .await;
+        assert_eq!(
+            rules_page_of(&pool, "alice").await,
+            vec![RULE.to_owned()],
+            "a rule addressed to nobody lives in the speaker's own wiki"
+        );
+        assert!(
+            rules_page_of(&pool, "samvisebot").await.is_empty(),
+            "and the assistant that happened to hear it keeps nothing"
+        );
+        assert_eq!(
+            recall_behaviour_rules(&pool, &req_consumer("?", "alice", "botdeploy"))
+                .await
+                .iter()
+                .map(|(_, b, s)| (b.as_str(), *s))
+                .collect::<Vec<_>>(),
+            vec![(RULE, BehaviourScope::UserGlobal)],
+            "and it is served as the user's own everywhere-rule"
+        );
+        drop(dir);
+
+        // 3. «Preferisco il caffè» — true with no assistant in the room, so
+        //    it stays a taste and reaches no rules page at all.
+        let (dir, pool) = ingest_as(
+            "{\"intent\":\"capture\",\"extractions\":[{\
+              \"fact_type\":\"preference\",\"salience\":\"normal\",\
+              \"body\":\"Alice preferisce il caffè al tè.\"}]}",
+            "preferisco il caffè al tè",
+        )
+        .await;
+        let buffered = capture_buffer::find_all_buffered(&pool, 100).await.unwrap();
+        assert_eq!(buffered.len(), 1, "the taste was captured all the same");
+        assert_eq!(buffered[0].subject, Principal::User("alice".into()));
+        assert!(
+            rules_page_of(&pool, "samvisebot").await.is_empty()
+                && rules_page_of(&pool, "alice").await.is_empty(),
+            "a taste reaches no rules page — not the agent's, not the speaker's"
+        );
+        assert!(
+            recall_behaviour_rules(&pool, &req_consumer("?", "alice", "botdeploy"))
+                .await
+                .is_empty(),
+            "and the rules channel stays empty: knowledge is never served as a directive"
+        );
+        drop(dir);
     }
 
     /// A standing directive is filed because the turn is a `capture`, and is
