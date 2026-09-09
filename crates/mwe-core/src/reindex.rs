@@ -492,6 +492,26 @@ pub async fn strip_fact_region(
     if row.superseded_at.is_none() && row.deleted_at.is_none() {
         return Ok(false);
     }
+    cut_region(pool, tree, embedder, fact_id, &row).await
+}
+
+/// The cut itself: find the span, check it really brackets this fact's
+/// marker, rewrite the page, re-sync the surviving offsets and settle the
+/// row's own.
+///
+/// Every check here is about the BYTES being safe to cut. Whether the row has
+/// earned the cut at all is [`strip_fact_region`]'s question, and its answer
+/// is narrow for a reason: `reindex_file` below runs the orphan sweep, which
+/// marks a row forgotten when its marker is gone from disk. Cut an ACTIVE
+/// row's region and the sweep tombstones it — so only a row already retired
+/// may be cut.
+async fn cut_region(
+    pool: &SqlitePool,
+    tree: &WikiTree,
+    embedder: Arc<dyn Embedder>,
+    fact_id: &FactId,
+    row: &fact_index::FactIndexRow,
+) -> Result<bool> {
     let (Some(start), Some(end)) = (row.region_start, row.region_end) else {
         return Ok(false);
     };

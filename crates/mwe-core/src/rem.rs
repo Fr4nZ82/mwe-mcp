@@ -1960,6 +1960,10 @@ async fn run_revisor_jaccard(
             .collect();
         // Channel-page membership per fact: dedup pairs never cross the
         // boundary (both sides on a reserved channel page, or neither).
+        // A directive the speaker has taken back: its window is shut, the
+        // channel already refuses to serve it, and it must not be weighed
+        // against the ones still in force.
+        let withdrawn: Vec<bool> = facts.iter().map(|f| f.valid_to.is_some()).collect();
         let on_channel_page: Vec<bool> = facts
             .iter()
             .map(|f| wiki::is_channel_page(&f.source_path))
@@ -1994,6 +1998,17 @@ async fn run_revisor_jaccard(
                 // and refile skips. A structural channel invariant, not a
                 // semantic gate: rule-vs-rule pairs still go to the LLM.
                 if on_channel_page[new_idx] != on_channel_page[old_idx] {
+                    continue;
+                }
+                // A WITHDRAWN rule is nobody's twin. Closing a directive's
+                // window is how a person takes it back, and the channel stops
+                // serving it at once — but the row stays live and stays on the
+                // page (cutting its region would hand it to the orphan sweep,
+                // which tombstones a marker-less active row), so it arrives
+                // here like any other. Paired against a rule in force it can
+                // retire one that IS being obeyed, on the strength of words
+                // nobody follows any more.
+                if on_channel_page[new_idx] && (withdrawn[new_idx] || withdrawn[old_idx]) {
                     continue;
                 }
                 // Identity-core stickiness: background dedup never retires a

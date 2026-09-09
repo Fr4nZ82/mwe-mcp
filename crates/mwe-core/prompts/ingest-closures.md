@@ -1,8 +1,8 @@
 ---
 name: ingest-closures
 description: Closure confirmer — topic-focused second recall pass for a closure-bearing turn whose targets missed the first recall window; strict JSON out; close nothing rather than a doubtful target
-version: 1.7
-default_version_at_bootstrap: v1.7
+version: 1.8
+default_version_at_bootstrap: v1.8
 ---
 
 # Prompt: ingest-closures
@@ -52,7 +52,7 @@ Decide which candidates this message actually closes. Rules:
 
 - **Read the message together with its completion.** WHAT IT SAYS IN FULL, below, is this same message with what the speaker left out written in — "I bought it" → "I bought the milk" — worked out earlier this turn from the conversation, which you cannot see. When it is there, that is the sentence to match candidates against: a closure gesture is the kind of message that leaves its subject in the exchange before it, and "I bought it" names nothing on its own words. It says `(none)` when the message already said everything. It is a reading and not the user's words, so where the two disagree the message above wins.
 - A closure is a PRECISION instrument: close ONLY a candidate whose text plainly matches what the message covers. When no candidate matches, return an empty list — closing nothing is always safe (a missed closure is recoverable later; a wrong closure forgets the wrong thing). Never close a candidate merely because it is vaguely related or on the same page.
-- **Never close a standing directive** — a rule the user laid down for the assistant ("answer me concisely"). It is not an ordinary claim and an ordinary message does not end one; a directive is retired only by another directive, which is decided elsewhere. Name one here and the entry is refused.
+- **A standing directive takes `retracted` and nothing else.** A candidate marked `STANDING RULE` is a rule the user laid down for the assistant ("answer me concisely"). Close it only when the message plainly withdraws THAT RULE — «forget the one about short answers» — and only with reason `retracted`; `completed` and `contradicted` on a rule are refused, because a rule is not an intention anybody carries out and an ordinary sentence does not make a directive false. Whose rule it is, the engine checks for you: a rule belongs to whoever dictated it, one that applies to everyone belongs to the administrator, and a retraction from anybody else is refused and the person is told.
 - `reason` is exactly one of: "completed" (a consumable intention was CARRIED OUT — bought, watched, done), "retracted" (the user takes it back, calls it off, or abandons it), "contradicted" (invalidated by what the message states without being directly replaced). **Those three and nothing else — and there is no "superseded".** This pass has no verb for a replacement and needs none: a fact the message overtakes is closed as "contradicted", because closing it is all you can do here and the word for "made false by what was said" is that one.
 - **"completed" and "retracted" look the same from outside and mean opposite things.** Both end an intention; only whether THE THING HAPPENED separates them. It did → "completed". It did not — cancelled, called off, refused, dropped, somebody was told it is not happening → "retracted". A message that reports doing something ABOUT a plan is not a message that reports doing the plan, and "completed" on a thing that never happened puts a false event in the memory.
 - Saying a fact again is not closing it. A restatement — the same claim in other words, a second report of the same value, a more precise wording of the same thing — asks nothing of you, and nothing downstream folds two live values into one later either. "contradicted" needs the message to assert something the candidate cannot be true alongside.

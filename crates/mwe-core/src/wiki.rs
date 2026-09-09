@@ -221,10 +221,11 @@ pub fn is_identity_card_page(source_path: &str) -> bool {
 
 /// True when `source_path` is a wiki's reserved policy page [`RULES_FILENAME`].
 ///
-/// It is the rules pipeline's home for behaviour-rule facts, **outside every
-/// structural sweep's perimeter** (compiler gather, refile nomination, and
-/// the cross-page half of dedup all key on this predicate). Keyed on the
-/// file name (`source_path` is a workdir-relative `wikis/<id>/…` path) so a
+/// It is the rules pipeline's home for behaviour-rule facts, and the
+/// structural sweeps keep off it: the compiler's gather and refile nomination
+/// skip it outright, and dedup pairs a rule only with another rule, never
+/// with an ordinary fact — all three key on this predicate. Keyed on the file
+/// name (`source_path` is a workdir-relative `wikis/<id>/…` path) so a
 /// content page like `house_rules.md` is not caught.
 #[must_use]
 pub fn is_rules_page(source_path: &str) -> bool {
@@ -250,8 +251,8 @@ pub fn is_rules_page(source_path: &str) -> bool {
 ///
 /// Written only by the deterministic channel
 /// ([`crate::signposts`]) — never by the ingest classifier, never by the
-/// compiler — and, like [`RULES_FILENAME`], fenced out of every structural
-/// sweep ([`is_channel_page`]). Unlike `@rules.md` it stays **recallable**
+/// compiler — and, like [`RULES_FILENAME`], kept off by the structural sweeps
+/// ([`is_channel_page`]). Unlike `@rules.md` it stays **recallable**
 /// and navigable: delivery through ordinary recall is the entire point.
 pub const PROJECTS_FILENAME: &str = "@projects.md";
 
