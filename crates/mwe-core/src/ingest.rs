@@ -17928,6 +17928,53 @@ mod tests {
         }
     }
 
+    /// A repeated measurement is a history, and the reconciler is told so
+    /// where it decides a supersede — not at the end of the paragraph that
+    /// decides one.
+    ///
+    /// Two weighings of the same cat three days apart, «3.9 kilos» and «4.05,
+    /// same scales as Wednesday», became one: the reconciler superseded the
+    /// first, and the reading of 15 July is gone from the record along with
+    /// the trend the speaker had just described. The rule against it was
+    /// already in the prompt, word for word — and it was the last clause of
+    /// the same long paragraph whose earlier clause says a number-and-a-date
+    /// pair IS a supersede. It is its own rule now, before the pair is named,
+    /// with the cue the turn itself carried: a message that COMPARES the new
+    /// value with the old one is asserting that both are true.
+    #[test]
+    fn bundled_reconcile_prompt_keeps_a_repeated_measurement_as_a_history() {
+        assert!(
+            BUNDLED_INGEST_RECONCILE_MD
+                .contains("A MEASUREMENT TAKEN ON A DAY IS NEVER SUPERSEDED BY THE NEXT ONE."),
+            "the measurement rule is gone, and a weight history collapses to its last reading"
+        );
+        assert!(
+            BUNDLED_INGEST_RECONCILE_MD.contains("same scales as Wednesday"),
+            "the comparison cue is gone — it is the evidence the turn itself carries"
+        );
+        // Its own paragraph is the point of the change: as a closing clause of
+        // the paragraph that OPENS by calling a number-and-a-date pair a
+        // supersede, it was read after the case it contradicts.
+        assert!(
+            BUNDLED_INGEST_RECONCILE_MD
+                .lines()
+                .any(|l| l.trim_start().starts_with("**A MEASUREMENT TAKEN ON A DAY")),
+            "the measurement rule is a clause inside another paragraph again"
+        );
+        let (rule_at, verb_three_at) = (
+            BUNDLED_INGEST_RECONCILE_MD
+                .find("A MEASUREMENT TAKEN ON A DAY")
+                .expect("the rule"),
+            BUNDLED_INGEST_RECONCILE_MD
+                .find("3. `validity_edits`")
+                .expect("the next verb"),
+        );
+        assert!(
+            rule_at < verb_three_at,
+            "the measurement rule belongs to the supersede verb, not to a later one"
+        );
+    }
+
     /// A bare day of the month has one right answer, and a person named only
     /// by relationship is not resolved by reaching for the roster.
     ///
