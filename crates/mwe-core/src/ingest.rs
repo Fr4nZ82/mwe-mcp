@@ -1827,9 +1827,9 @@ enum ListRefusal {
     /// The wiki already holds [`MAX_LIST_PAGES_PER_WIKI`] lists and this item
     /// would mint one more.
     WikiAtListCap,
-    /// The extraction is list-shaped and names no usable page — the field the
-    /// prompt requires of a `lista` extraction was absent, or what it held was
-    /// not a page name this engine will coin.
+    /// The extraction is list-shaped and no usable page name reached the write:
+    /// the field the prompt requires of a `lista` extraction is absent, or what
+    /// it holds is not a name this engine will coin a page from.
     ///
     /// The commonest of the three by far, and the one that must never be
     /// reported as the cap: a memory holding one list would be telling its
@@ -1860,12 +1860,15 @@ impl ListRefusal {
                 "that memory already holds the maximum number of lists, so no new one could be created"
             },
             Self::NoPageNamed => {
-                "no list was named for it, and a list item is not filed on a page chosen for it later"
+                "no usable list was named for it — either none was given, or the name given is \
+                 not one a page can be made from — and a list item is never filed on a page \
+                 picked for it afterwards"
             },
         };
         let what_to_do = match self {
             Self::NoPageNamed => {
-                "Ask them WHICH list it belongs on, by name, and say it will be saved once they do."
+                "Ask them WHICH list it belongs on, by name, and tell them to say the item \
+                 again along with it: nothing is being held for them in the meantime."
             },
             _ => {
                 "Tell them plainly that this item was not remembered and why, so they can retry \
@@ -22688,8 +22691,12 @@ mod tests {
 
         let rules = resp.rules.unwrap_or_default();
         assert!(
-            rules.contains("was NOT saved") && rules.contains("no list was named"),
+            rules.contains("was NOT saved") && rules.contains("no usable list was named"),
             "the notice must name the reason that actually fired: {rules}"
+        );
+        assert!(
+            rules.contains("nothing is being held for them"),
+            "the engine keeps nothing, so the notice must not promise it will: {rules}"
         );
         assert!(
             !rules.contains("maximum number of lists"),
