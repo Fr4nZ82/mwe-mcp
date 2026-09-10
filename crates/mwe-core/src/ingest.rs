@@ -7381,14 +7381,14 @@ async fn identity_core_roster(
 /// the model is shown complete is a set it may act against. No-op when empty.
 ///
 /// **Complete among what this speaker may read, which is not always all of
-/// it** ([`identity_core_roster`] filters on [`crate::acl::can_read`]). A
-/// value whose audience excludes the speaker is left out, so the model can
-/// see no conflict with it and the turn files the second value beside the
-/// first — and neither the speaker nor the value's owner is told. Showing it
-/// is not the answer either: the question the engine asks quotes the stored
-/// value back, and quoting it is the disclosure the ACL exists to prevent.
-/// The prompt therefore tells the model that an absence here proves nothing,
-/// and the case where two values end up on one card unnoticed is open.
+/// it** ([`IdentityCore::served`]). A value whose audience excludes the
+/// speaker is left out, and showing it is not an option: the question a
+/// declared conflict raises quotes the stored value back, and quoting it is
+/// the disclosure the audience list exists to prevent. So the prompt tells the
+/// model that an absence here proves nothing, and the slot it cannot see is
+/// compared by the engine instead
+/// ([`hidden_value_filling_the_same_slot`]), which reads neither value out to
+/// anybody.
 fn push_identity_core_section(out: &mut String, facts: &[StoredValue]) {
     if facts.is_empty() {
         return;
@@ -18588,13 +18588,13 @@ mod tests {
     /// prompt says so where the model is told it may rely on it.
     ///
     /// A card's slots are filtered by the speaker's own read access
-    /// ([`identity_core_roster`]), so a value with a narrower audience is not
+    /// ([`IdentityCore::served`]), so a value with a narrower audience is not
     /// in the block at all. Told the block was simply complete, the model
-    /// reads an absence as an empty slot: Alice stated a second mobile number
-    /// for Zoe, Zoe's own number was private to her, and both were filed on
-    /// her card with nothing asked of anybody. What a speaker who cannot see
-    /// the first value should be asked is open; what the model must not do is
-    /// conclude there is nothing there.
+    /// reads an absence as an empty slot and writes a second value beside a
+    /// first it was never shown. The engine catches that pair itself
+    /// ([`hidden_value_filling_the_same_slot`]) — but only when the claim
+    /// names its slot, which the model does because the prompt asks, and it
+    /// asks because it knows the absence proves nothing.
     #[test]
     fn bundled_ingest_prompt_does_not_promise_a_complete_identity_core() {
         assert!(
