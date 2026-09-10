@@ -5979,7 +5979,7 @@ async fn capture_behaviour_rule(
 /// `supersede` carries the fact being replaced together with the clock the
 /// replacement is stamped at; `None` is additive, and the capture layer dedups
 /// it against the rules already on **this** page
-/// ([`capture::ChannelScope`]).
+/// (`capture::ChannelScope`).
 ///
 /// The whole outcome comes back, not just an id: a dedup skip mints a fresh
 /// id for the audit trail without writing anything, so a caller that reports

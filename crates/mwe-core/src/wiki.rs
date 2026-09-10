@@ -177,7 +177,7 @@ impl std::fmt::Display for PageStyle {
 /// sweep never nominates one; dedup pairs never cross the rules-page
 /// boundary (the REM revisor works one wiki at a time and pairs both sides
 /// here or neither, and a capture-time pair must be on the very same page —
-/// [`crate::capture::ChannelScope`]); the REM validity sweeps fence it out
+/// `crate::capture::ChannelScope`); the REM validity sweeps fence it out
 /// too (never a contradiction
 /// *satellite*, never completion *evidence* nor a completion candidate);
 /// and the recall navigator never opens it (channel-only delivery) — so a
@@ -506,7 +506,7 @@ pub fn is_signpost_page(source_path: &str) -> bool {
 /// restatement of a signpost by an ordinary fact would swallow it). This
 /// predicate answers *is it a channel page*; **which** channel page is the
 /// other half of the capture-time question, and
-/// [`crate::capture::ChannelScope`] asks it — the page a rule sits on is the
+/// `crate::capture::ChannelScope` asks it — the page a rule sits on is the
 /// scope that rule binds.
 ///
 /// This is the predicate for *that perimeter only*. The two pages differ
