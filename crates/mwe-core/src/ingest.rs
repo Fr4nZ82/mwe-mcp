@@ -1820,6 +1820,14 @@ enum ListRefusal {
     /// The wiki already holds [`MAX_LIST_PAGES_PER_WIKI`] lists and this item
     /// would mint one more.
     WikiAtListCap,
+    /// The extraction is list-shaped and names no usable page — the field the
+    /// prompt requires of a `lista` extraction was absent, or what it held was
+    /// not a page name this engine will coin.
+    ///
+    /// The commonest of the three by far, and for a while the one nobody could
+    /// see: every list item that ended up with no page was reported as the
+    /// CAP, so a memory holding one list told its owner it held the maximum.
+    NoPageNamed,
 }
 
 impl ListRefusal {
@@ -1827,6 +1835,7 @@ impl ListRefusal {
         match self {
             Self::ReservedName => "reserved_page_name",
             Self::WikiAtListCap => "wiki_at_list_cap",
+            Self::NoPageNamed => "no_list_page_named",
         }
     }
 
@@ -1843,9 +1852,21 @@ impl ListRefusal {
             Self::WikiAtListCap => {
                 "that memory already holds the maximum number of lists, so no new one could be created"
             },
+            Self::NoPageNamed => {
+                "no list was named for it, and a list item is not filed on a page chosen for it later"
+            },
+        };
+        let what_to_do = match self {
+            Self::NoPageNamed => {
+                "Ask them WHICH list it belongs on, by name, and say it will be saved once they do."
+            },
+            _ => {
+                "Tell them plainly that this item was not remembered and why, so they can retry \
+                  on an existing list."
+            },
         };
         format!(
-            "NOTE — the user asked to put something on a list and it was NOT saved: {why}.              Tell them plainly that this item was not remembered and why, so they can retry              on an existing list. Do NOT say it was noted or remembered."
+            "NOTE — the user asked to put something on a list and it was NOT saved: {why}.              {what_to_do} Do NOT say it was noted or remembered."
         )
     }
 }
@@ -1882,14 +1903,19 @@ pub const MAX_LIST_PAGES_PER_WIKI: usize = 32;
 ///
 /// Soft on error: a count that cannot be taken lets the capture through
 /// unchanged — a limit is not worth dropping a turn's work over.
+///
+/// Returns whether the cap is what took the page away. The caller has to tell
+/// this apart from the other two ways a list claim ends up with no page,
+/// because what the user is told names the reason: a memory holding one list
+/// must not be described to its owner as holding the maximum.
 async fn refuse_new_list_over_cap(
     pool: &SqlitePool,
     cap_req: &mut CaptureRequest,
     unit: &CaptureUnit<'_>,
     list_pages: &[fact_index::ListPage],
-) -> std::result::Result<(), fact_index::FactIndexError> {
+) -> std::result::Result<bool, fact_index::FactIndexError> {
     if !is_list_shaped(unit) {
-        return Ok(());
+        return Ok(false);
     }
     let wiki_id = cap_req.wiki_id.as_str().to_owned();
     let Some(page) = cap_req
@@ -1899,18 +1925,18 @@ async fn refuse_new_list_over_cap(
         .and_then(|n| n.to_str())
         .map(str::to_owned)
     else {
-        return Ok(());
+        return Ok(false);
     };
     // Already a list here — adding to it is never growth.
     if list_pages
         .iter()
         .any(|l| l.wiki_id == wiki_id && l.page == page)
     {
-        return Ok(());
+        return Ok(false);
     }
     let held = fact_index::count_list_pages_in_wiki(pool, &wiki_id).await?;
     if held < MAX_LIST_PAGES_PER_WIKI {
-        return Ok(());
+        return Ok(false);
     }
     tracing::warn!(
         wiki_id,
@@ -1920,7 +1946,7 @@ async fn refuse_new_list_over_cap(
         "ingest: wiki is at its list limit — the new list is not minted, the fact goes to the buffer"
     );
     cap_req.page = None;
-    Ok(())
+    Ok(true)
 }
 
 fn validate_capture_plan(
@@ -8932,9 +8958,11 @@ pub async fn wiki_ingest_message(
     // A rule whose subject is somebody other than the speaker: refused for
     // everyone, the admin included, and answered on the notice channel.
     let mut rule_about_other_denied = false;
-    // A list item the turn could NOT file, because its page name did not
-    // survive: the classifier named a reserved page, or the wiki is already at
-    // its list limit. The item is refused rather than parked, and the `rules`
+    // A list item the turn could NOT file, because no usable page name reached
+    // the write: none was given, the classifier named a reserved page, or the
+    // wiki is already at its list limit. Which of the three is what the user
+    // is told, so they are kept apart ([`ListRefusal`]). The item is refused
+    // rather than parked, and the `rules`
     // field carries a one-shot notice so the agent tells the user it was not
     // saved. Founder, 2026-08-18: *«se si raggiungono 32 liste il messaggio
     // dev'essere scartato e avvisato l'utente, generato un errore»*, and
@@ -9497,11 +9525,14 @@ pub async fn wiki_ingest_message(
                 // shown, which would hide a list and have the turn mint a
                 // second copy of it live. Growth only: an existing list is
                 // always addable-to, however many the wiki already has.
-                if let Err(e) =
-                    refuse_new_list_over_cap(pool, &mut cap_req, &unit, &list_pages).await
-                {
-                    tracing::warn!(error = %e, "ingest: list-page cap check failed");
-                }
+                let cap_took_the_page =
+                    match refuse_new_list_over_cap(pool, &mut cap_req, &unit, &list_pages).await {
+                        Ok(fired) => fired,
+                        Err(e) => {
+                            tracing::warn!(error = %e, "ingest: list-page cap check failed");
+                            false
+                        },
+                    };
 
                 // **A list item never waits.** Both refusals above express
                 // themselves the same way — the claim ends up with no page —
@@ -9512,13 +9543,20 @@ pub async fn wiki_ingest_message(
                 // is a wrong answer, not a partial one, and the user must know
                 // to retry or free a list.
                 if is_list_shaped(&unit) && cap_req.page.is_none() {
-                    let reason = if unit.target_page.is_some_and(|p| {
+                    // Three roads end here and the user is told which one, so
+                    // the cap is claimed only when the cap is what fired. Read
+                    // as an else-branch it swallowed the other two, and the
+                    // commonest of them — the classifier naming no page at all
+                    // — reported a memory holding one list as full.
+                    let reason = if cap_took_the_page {
+                        ListRefusal::WikiAtListCap
+                    } else if unit.target_page.is_some_and(|p| {
                         normalize_capture_page(Some(p))
                             .is_some_and(|c| wiki::names_reserved_page(&c))
                     }) {
                         ListRefusal::ReservedName
                     } else {
-                        ListRefusal::WikiAtListCap
+                        ListRefusal::NoPageNamed
                     };
                     tracing::error!(
                         wiki_id = %cap_req.wiki_id,
@@ -22106,6 +22144,54 @@ mod tests {
             "the turn must tell the user: {rules}"
         );
 
+        drop(dir);
+    }
+
+    /// A list item with no list named is refused for THAT reason, and the
+    /// user is not told their memory is full.
+    ///
+    /// Three roads end in "this list item has no page" and they were read as
+    /// one: reserved name first, everything else the cap. So the commonest of
+    /// them — the classifier emitting `style: "lista"` and no `target_page` at
+    /// all — told the person that the memory already held the maximum number
+    /// of lists. It held one. A refusal the user cannot act on is bad; a
+    /// refusal that describes their own memory wrongly is worse, because they
+    /// have no way to find out it is untrue.
+    #[tokio::test]
+    async fn a_list_item_with_no_list_named_says_so_and_not_that_the_memory_is_full() {
+        let (dir, tree, pool) = setup_workdir().await;
+        let llm = FakeLlmBackend::new(
+            "fake",
+            "{\"intent\":\"capture\",\"extractions\":[{\"subject_id\":\"user:alice\",\
+              \"body\":\"Crisps (not plain) are needed.\",\"style\":\"lista\",\
+              \"requested_container\":true,\"fact_type\":\"plan\",\"topics\":[]}]}",
+        );
+        let resp = wiki_ingest_message(
+            &pool,
+            &tree,
+            fake_embedder(),
+            &llm,
+            None,
+            req("crisps, the ones that aren't plain", "alice"),
+            &IngestPolicy::default(),
+        )
+        .await
+        .expect("ingest");
+
+        let rules = resp.rules.unwrap_or_default();
+        assert!(
+            rules.contains("was NOT saved") && rules.contains("no list was named"),
+            "the notice must name the reason that actually fired: {rules}"
+        );
+        assert!(
+            !rules.contains("maximum number of lists"),
+            "one list is not the maximum, and the person cannot check: {rules}"
+        );
+        assert_eq!(
+            capture_buffer::count_buffered(&pool).await.unwrap(),
+            0,
+            "a list item is refused, never parked"
+        );
         drop(dir);
     }
 
