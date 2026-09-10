@@ -1594,6 +1594,28 @@ fn people_the_turn_names(
     named
 }
 
+/// Whether a fact's own prose names the enrolled user `subject`.
+///
+/// [`people_the_turn_names`] asked of the `body` instead of the turn, and by
+/// the same match ([`recall::turn_subjects`]), so the two cannot disagree
+/// about what counts as naming somebody. It answers the question the subject
+/// guard leaves open: when the guard takes a fact off a person the turn never
+/// named, does the sentence still say they are the one it is about?
+///
+/// No sender is passed — a `body` is written in the third person, and a
+/// first-person word in one says nothing about this subject.
+pub(crate) fn body_names_user(
+    body: Option<&str>,
+    known_users: &[enrollment::EnrolledUserLite],
+    subject: &str,
+) -> bool {
+    body.is_some_and(|text| {
+        recall::turn_subjects(text, "", known_users)
+            .iter()
+            .any(|id| id == subject)
+    })
+}
+
 /// The turn's own words: the current message, then the recent window the
 /// prompt showed alongside it, capped the same way the prompt caps it.
 fn turn_words(request: &IngestRequest, policy: &IngestPolicy) -> String {
@@ -9315,6 +9337,20 @@ pub async fn wiki_ingest_message(
                 // card. Re-owning to the sender leaves the name in the prose
                 // where the fact reads correctly; claiming the card does
                 // not.
+                //
+                // That last sentence holds when the prose name is a real
+                // person the roster does not know — «Roberto Sackville is
+                // retiring in June», which reads correctly wherever it is
+                // filed. It does NOT hold when the prose carries the name the
+                // subject was just taken from: there the model reached for a
+                // roster entry to identify somebody the turn named only by
+                // relationship ("Mum"), and the same reach is in both fields.
+                // The subject moves and the sentence still says «Alice's
+                // birthday is on 15 April», which is a claim about a real
+                // person that nobody made. The prompt forbids the reach in
+                // both fields; this line makes the survivor findable, since a
+                // fact filed under the right person can still say the wrong
+                // one.
                 if let Some(raw) = unit.subject_id
                     && let Ok(Principal::User(subject)) = Principal::from_str(raw)
                     && subject != request.sender_id
@@ -9324,6 +9360,7 @@ pub async fn wiki_ingest_message(
                     tracing::warn!(
                         subject = raw,
                         sender_id = request.sender_id.as_str(),
+                        body_still_names_them = body_names_user(unit.body, &known_users, &subject),
                         "ingest: the turn never named this enrolled user — re-owned to the sender"
                     );
                     unit.subject_id = None;
@@ -17851,6 +17888,86 @@ mod tests {
                 "the worked subject pair carrying {pair} is gone from the prompt"
             );
         }
+    }
+
+    /// A bare day of the month has one right answer, and a person named only
+    /// by relationship is not resolved by reaching for the roster.
+    ///
+    /// Both sentences come from one scene of a public-demo replay. On 3 April
+    /// «Nora's birthday is on the 14th» was stored as «14 May» — a month
+    /// nothing in the turn pointed at — while a related turn two days later
+    /// resolved the same bare ordinal to April, because the prompt called "the
+    /// 5th" an anchor to resolve and never said which month it lands in. Then
+    /// «Mum's birthday is the 15th, not the 14th», said by Bob, was stored as
+    /// «Alice's birthday is on 15 April»: the roster holds one enrolled
+    /// mother, so the model reached for her. The subject guard caught the
+    /// filing and could not catch the sentence — the `subject_id` rule forbade
+    /// that reach and said nothing about the prose.
+    #[test]
+    fn bundled_ingest_prompt_pins_a_bare_ordinal_and_an_unnamed_relative() {
+        assert!(
+            BUNDLED_INGEST_PROMPT_MD.contains("A BARE DAY OF THE MONTH TAKES THE NEAREST ONE"),
+            "the bare day-of-month rule is gone: a month becomes a guess again"
+        );
+        assert!(
+            BUNDLED_INGEST_PROMPT_MD.contains(
+                "Said on 3 April, \"the 14th\" is 14 April, not 14 May and not 14 March."
+            ),
+            "the worked bare-ordinal example, which is the whole of the rule, is gone"
+        );
+        assert!(
+            BUNDLED_INGEST_PROMPT_MD.contains(
+                "A PERSON THE TURN NAMES ONLY BY RELATIONSHIP IS UNRESOLVED IN THE `body` TOO"
+            ),
+            "the prose half of the no-look-alike rule is gone"
+        );
+    }
+
+    /// The guard's own test, asked of the prose: does the sentence still name
+    /// the person the fact was just taken off?
+    ///
+    /// The two cases are the reason the guard leaves the body alone in the
+    /// first place. A name the roster does not hold reads correctly wherever
+    /// the fact is filed; the name the subject was taken FROM does not, and
+    /// telling them apart is what makes the warning worth reading.
+    #[test]
+    fn the_body_is_read_for_the_name_the_subject_was_taken_from() {
+        let roster = vec![
+            enrollment::EnrolledUserLite {
+                user_id: "alice".to_owned(),
+                aliases: Vec::new(),
+                is_agent: false,
+            },
+            enrollment::EnrolledUserLite {
+                user_id: "bob".to_owned(),
+                aliases: vec!["Bobby".to_owned()],
+                is_agent: false,
+            },
+        ];
+        assert!(
+            body_names_user(Some("Alice's birthday is on 15 April."), &roster, "alice"),
+            "the sentence says the person the subject guard just refused"
+        );
+        assert!(
+            !body_names_user(
+                Some("Bob's mother's birthday is on the 15th."),
+                &roster,
+                "alice"
+            ),
+            "a relationship is not a name, so nothing here is about Alice"
+        );
+        assert!(
+            !body_names_user(
+                Some("Roberto Sackville is retiring in June."),
+                &roster,
+                "bob"
+            ),
+            "a name the roster does not hold reads correctly wherever it is filed"
+        );
+        assert!(
+            body_names_user(Some("Bobby is retiring in June."), &roster, "bob"),
+            "a declared alias names its person"
+        );
     }
 
     /// A conversational gag is a family of directive, not a scope, and a room

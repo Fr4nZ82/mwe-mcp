@@ -1669,7 +1669,10 @@ fn people_the_segment_names(
 /// Dropping the subject is what re-owns the fact: an absent one falls to the
 /// uploader at the file phase ([`candidate_acl`]), the same landing an
 /// unenrolled subject takes, and the name stays in the body prose where the
-/// sentence still reads correctly.
+/// sentence still reads correctly — which holds for a name the roster does not
+/// carry, and not for the name the subject was just taken from. See
+/// [`crate::ingest::body_names_user`], where the conversational twin of this
+/// guard reads the prose for exactly that.
 fn subject_the_segment_never_named<'a>(
     cand: &'a CandidateFact,
     named: &[String],
