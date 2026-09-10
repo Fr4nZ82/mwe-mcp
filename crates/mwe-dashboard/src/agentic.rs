@@ -1732,6 +1732,8 @@ struct WikiSetBehaviourRuleArgs {
 
 #[derive(Debug, Serialize)]
 struct WikiSetBehaviourRuleReport {
+    /// The rule now standing at this scope — the row just written, or the one
+    /// already on the page when the write deduped into it.
     fact_id: String,
     user_id: String,
     scope: String,
@@ -1871,7 +1873,7 @@ async fn dispatch_wiki_set_behaviour_rule(
         detail: format!("`{home}` is not a usable wiki id: {e}"),
     })?;
 
-    let fact_id = mwe_core::ingest::file_behaviour_rule(
+    let outcome = mwe_core::ingest::file_behaviour_rule(
         ctx.tree,
         ctx.pool,
         Arc::clone(&ctx.embedder),
@@ -1886,9 +1888,18 @@ async fn dispatch_wiki_set_behaviour_rule(
         tool,
         detail: e.to_string(),
     })?;
+    // A dedup skip mints an id without writing a row, so the id to report is
+    // the rule that is actually on the page — the admin asked for a rule to
+    // stand and it does, but not the one this call would have written.
+    let fact_id = match &outcome.action {
+        capture::CaptureAction::Skipped {
+            matched_fact_id, ..
+        } => matched_fact_id.as_str().to_owned(),
+        _ => outcome.fact_id.as_str().to_owned(),
+    };
 
     let report = WikiSetBehaviourRuleReport {
-        fact_id: fact_id.as_str().to_owned(),
+        fact_id,
         user_id: user_id.to_owned(),
         scope: args.scope.trim().to_owned(),
         home_wiki_id: home,

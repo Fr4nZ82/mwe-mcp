@@ -591,7 +591,7 @@ async fn apply_add(
     // an earlier `add` carries its corrected replacement.
     let mut candidates = fact_index::find_active_by_subject(pool, &subject_id).await?;
     candidates.retain(|c| !batch_removals.contains(c.fact_id.as_str()));
-    let on_channel_page = crate::wiki::is_channel_page(source_path);
+    let channel = crate::capture::ChannelScope::of(wiki_id.as_str(), source_path);
     if let Some((dup, score)) = crate::capture::best_dedup_candidate(
         &candidates,
         &crate::capture::Audience {
@@ -599,7 +599,7 @@ async fn apply_add(
             allow: &allow_ids,
             sender: commenter,
         },
-        on_channel_page,
+        channel,
         text,
         None,
     ) && score >= crate::recall::DEFAULT_DEDUP_THRESHOLD

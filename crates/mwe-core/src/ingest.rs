@@ -5809,8 +5809,10 @@ impl BehaviourScope {
 ///   the per-user fallback and this home coincide (its wiki IS the user's), so
 ///   the two scopes deliberately collapse there.
 ///
-/// Returns the new `fact_id`, or `None` when no target wiki could be located
-/// (the rule is dropped, mirroring the best-effort posture of [`append_sender_rule`]).
+/// Returns the capture outcome — which says whether the rule was written or
+/// was already standing on that page, word for word — or `None` when no target
+/// wiki could be located (the rule is dropped, mirroring the best-effort
+/// posture of [`append_sender_rule`]).
 async fn capture_behaviour_rule(
     tree: &WikiTree,
     pool: &SqlitePool,
@@ -5819,7 +5821,7 @@ async fn capture_behaviour_rule(
     rule: &str,
     scope: BehaviourScope,
     supersede: Option<&FactId>,
-) -> Result<Option<FactId>> {
+) -> Result<Option<crate::capture::CaptureOutcome>> {
     let sender = request.sender_id.as_str();
     // Target wiki: a USER-GLOBAL rule lives in the sender's own identity wiki
     // whoever is calling; the agent-scoped rules live in the calling agent's
@@ -5855,7 +5857,7 @@ async fn capture_behaviour_rule(
         BehaviourScope::PerUser | BehaviourScope::UserGlobal => Principal::User(sender.to_owned()),
         BehaviourScope::AgentWide => Principal::User(target.clone()),
     };
-    let fact_id = file_behaviour_rule(
+    let outcome = file_behaviour_rule(
         tree,
         pool,
         embedder,
@@ -5866,7 +5868,7 @@ async fn capture_behaviour_rule(
         supersede.map(|old| (old, request.turn_now())),
     )
     .await?;
-    Ok(Some(fact_id))
+    Ok(Some(outcome))
 }
 
 /// Write one behaviour rule onto a wiki's `@rules.md`, with the home wiki and
@@ -5884,7 +5886,12 @@ async fn capture_behaviour_rule(
 ///
 /// `supersede` carries the fact being replaced together with the clock the
 /// replacement is stamped at; `None` is additive, and the capture layer dedups
-/// it against the same subject's existing rules.
+/// it against the rules already on **this** page
+/// ([`capture::ChannelScope`]).
+///
+/// The whole outcome comes back, not just an id: a dedup skip mints a fresh
+/// id for the audit trail without writing anything, so a caller that reports
+/// that id as the rule it filed is naming a fact nobody can read back.
 ///
 /// # Errors
 ///
@@ -5898,7 +5905,7 @@ pub async fn file_behaviour_rule(
     scope: BehaviourScope,
     rule: &str,
     supersede: Option<(&FactId, chrono::DateTime<chrono::Utc>)>,
-) -> crate::capture::Result<FactId> {
+) -> crate::capture::Result<crate::capture::CaptureOutcome> {
     let page_description = match scope {
         BehaviourScope::PerUser => {
             "How this agent should behave, per requesting user (per-user \
@@ -5934,13 +5941,10 @@ pub async fn file_behaviour_rule(
         salience: None,
         authored_refs: Vec::new(),
     };
-    let outcome = match supersede {
-        Some((old, now)) => {
-            capture::wiki_supersede(tree, pool, embedder, old, cap_req, now).await?
-        },
-        None => capture::wiki_capture(tree, pool, embedder, cap_req).await?,
-    };
-    Ok(outcome.fact_id)
+    match supersede {
+        Some((old, now)) => capture::wiki_supersede(tree, pool, embedder, old, cap_req, now).await,
+        None => capture::wiki_capture(tree, pool, embedder, cap_req).await,
+    }
 }
 
 /// File a fact the agent states about ITSELF — the self side of agent-authored
@@ -9096,18 +9100,46 @@ pub async fn wiki_ingest_message(
                     )
                     .await?
                     {
-                        Some(fact_id) => {
+                        // The rule already stands, word for word, on the very
+                        // page this scope reads back: nothing was written and
+                        // `outcome.fact_id` names a row that does not exist.
+                        // Say so, and hand the caller the rule that IS there —
+                        // reporting the fresh id as "filed" is how a page the
+                        // reader then finds empty gets announced as written.
+                        Some(crate::capture::CaptureOutcome {
+                            action:
+                                CaptureAction::Skipped {
+                                    matched_fact_id,
+                                    similarity,
+                                },
+                            ..
+                        }) => {
                             tracing::info!(
                                 sender_id = request.sender_id.as_str(),
                                 consumer_id = request.consumer_id.as_deref().unwrap_or("none"),
-                                fact_id = fact_id.as_str(),
+                                matched_fact_id = matched_fact_id.as_str(),
+                                similarity,
+                                scope = ?scope,
+                                rule,
+                                "ingest: behaviour-rule already standing at this scope — nothing written"
+                            );
+                            captured_any = true;
+                            if capture_id.is_none() {
+                                capture_id = Some(matched_fact_id);
+                            }
+                        },
+                        Some(outcome) => {
+                            tracing::info!(
+                                sender_id = request.sender_id.as_str(),
+                                consumer_id = request.consumer_id.as_deref().unwrap_or("none"),
+                                fact_id = outcome.fact_id.as_str(),
                                 scope = ?scope,
                                 rule,
                                 "ingest: behaviour-rule filed on its scope's rules page"
                             );
                             captured_any = true;
                             if capture_id.is_none() {
-                                capture_id = Some(fact_id);
+                                capture_id = Some(outcome.fact_id);
                             }
                         },
                         None => {
@@ -15942,6 +15974,148 @@ mod tests {
                 && !rows[0].source_path.ends_with("behaviour_rules.md"),
             "behaviour rule stored on rules.md, was: {}",
             rows[0].source_path
+        );
+        drop(dir);
+    }
+
+    /// «And I mean with every assistant, not just this one»: the rule already
+    /// set on the agent reaches the person's OWN rules page, word for word.
+    ///
+    /// Promotion restates the directive on purpose — the words are the same
+    /// and the scope is not — so the write-time dedup must compare it against
+    /// the page it is headed for and no other
+    /// ([`crate::capture::ChannelScope`]). Folded into the agent's copy, the
+    /// person's own rules page stays empty while the turn reports a rule
+    /// filed, and every other assistant serving them never hears the rule.
+    ///
+    /// The ADDITIVE half of the widening, which is the half that meets the
+    /// dedup: [`widening_a_directive_to_every_assistant_files_it_in_the_senders_own_memory`]
+    /// covers the road where the classifier names the rule it is replacing,
+    /// and a supersede writes without asking the dedup anything. The
+    /// classifier is only shown the rules in force on THIS consumer, so a
+    /// promotion said to a second assistant has no id to name and arrives
+    /// here.
+    #[tokio::test]
+    async fn a_rule_widened_to_every_assistant_reaches_the_users_own_rules_page() {
+        const RULE: &str = "Answer concisely: the answer without the preamble.";
+        let (dir, tree, pool) = setup_agent_workdir().await;
+        let policy = IngestPolicy::default();
+        let per_user = format!(
+            "{{\"intent\":\"capture\",\"extractions\":[{{\
+             \"behaviour_rule\":true,\"behaviour_scope\":\"per-user\",\
+             \"body\":\"{RULE}\"}}],\"suggested_seed\":\"Ok.\"}}"
+        );
+        wiki_ingest_message(
+            &pool,
+            &tree,
+            fake_embedder(),
+            &FakeLlmBackend::new("fake", &per_user),
+            None,
+            req_consumer("keep it short with me", "alice", "botdeploy"),
+            &policy,
+        )
+        .await
+        .expect("ingest");
+
+        let widened = per_user.replace("per-user", "user-global");
+        let resp = wiki_ingest_message(
+            &pool,
+            &tree,
+            fake_embedder(),
+            &FakeLlmBackend::new("fake", &widened),
+            None,
+            req_consumer("and I mean with every assistant", "alice", "botdeploy"),
+            &policy,
+        )
+        .await
+        .expect("ingest");
+
+        let own = fact_index::find_by_filters(
+            &pool,
+            &fact_index::FactFilters {
+                wiki_id: Some("alice".to_owned()),
+                ..Default::default()
+            },
+        )
+        .await
+        .unwrap();
+        assert_eq!(
+            own.len(),
+            1,
+            "the widened rule must be written on the person's own rules page"
+        );
+        assert_eq!(own[0].text, RULE);
+        assert!(own[0].source_path.ends_with("@rules.md"));
+        assert_eq!(
+            resp.capture_id.as_ref(),
+            Some(&own[0].fact_id),
+            "the turn's anchor id is the rule that was written"
+        );
+        // The agent's own copy is untouched: promotion adds a scope, it does
+        // not retire the rule the assistant was already following.
+        assert_eq!(
+            fact_index::count_active_in_wiki(&pool, "samvisebot")
+                .await
+                .unwrap(),
+            1
+        );
+        drop(dir);
+    }
+
+    /// Saying a standing rule twice at the SAME scope writes nothing, and the
+    /// turn's anchor id is the rule that is actually on the page.
+    ///
+    /// A dedup skip mints a fresh id for the audit trail without writing a
+    /// row, so reporting that id says a rule was filed and names a fact
+    /// nobody can read back.
+    #[tokio::test]
+    async fn a_rule_repeated_at_its_own_scope_reports_the_rule_that_stands() {
+        let (dir, tree, pool) = setup_agent_workdir().await;
+        let policy = IngestPolicy::default();
+        let json = "{\"intent\":\"capture\",\"extractions\":[{\
+            \"behaviour_rule\":true,\"behaviour_scope\":\"per-user\",\
+            \"body\":\"Answer concisely.\"}],\"suggested_seed\":\"Ok.\"}";
+        let first = wiki_ingest_message(
+            &pool,
+            &tree,
+            fake_embedder(),
+            &FakeLlmBackend::new("fake", json),
+            None,
+            req_consumer("keep it short", "alice", "botdeploy"),
+            &policy,
+        )
+        .await
+        .expect("ingest");
+        let again = wiki_ingest_message(
+            &pool,
+            &tree,
+            fake_embedder(),
+            &FakeLlmBackend::new("fake", json),
+            None,
+            req_consumer("keep it short", "alice", "botdeploy"),
+            &policy,
+        )
+        .await
+        .expect("ingest");
+
+        assert_eq!(
+            fact_index::count_active_in_wiki(&pool, "samvisebot")
+                .await
+                .unwrap(),
+            1,
+            "one rule, said twice"
+        );
+        assert_eq!(
+            again.capture_id, first.capture_id,
+            "the second turn points at the rule that stands, not at an id nothing wrote"
+        );
+        let anchor = again.capture_id.expect("an anchor id");
+        assert!(
+            fact_index::find_by_id(&pool, &anchor)
+                .await
+                .expect("find")
+                .is_some(),
+            "the anchor id must name a fact that exists"
         );
         drop(dir);
     }

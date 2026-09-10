@@ -290,13 +290,18 @@ pub struct ForgetOutcome {
 ///   subject), but per-user facts that merely share a wiki (an agent's
 ///   behaviour rules, each owned by the user who dictated it) never
 ///   collide. Each fragment keeps its own subject.
-/// - **Never across the channel-page boundary** ([`crate::wiki::is_channel_page`]:
-///   both sides on a reserved channel page, or neither): a new behaviour
-///   rule must not be skipped as a duplicate of an ordinary fact that
-///   happens to restate it (the rule would then never reach `@rules.md`, so
-///   the behaviour-rules channel would never serve it), and the same holds
-///   for a project signpost on `@projects.md`. Rule-vs-rule and
-///   signpost-vs-signpost still dedup.
+/// - **Never across the channel-page boundary, and never across two channel
+///   pages** ([`ChannelScope`]): a new behaviour rule must not be skipped as a
+///   duplicate of an ordinary fact that happens to restate it (the rule would
+///   then never reach `@rules.md`, so the behaviour-rules channel would never
+///   serve it), and the same holds for a project signpost on `@projects.md`.
+///   A channel-page claim dedups against **its own page and nothing else**,
+///   because that page IS the scope of what it holds: the same sentence on
+///   the kitchen assistant's `@rules.md` and on Zoe's own `@rules.md` are two
+///   different standing rules — one binds that one assistant, the other binds
+///   every assistant she talks to — so widening a rule from the first to the
+///   second is precisely the case where identical words are not a duplicate.
+///   Same page, same words still dedups.
 /// - `exclude` skips one fact id — a light-dream retry after a partial
 ///   promotion must not dedup a capture against its own fact.
 ///
@@ -364,10 +369,43 @@ impl Audience<'_> {
     }
 }
 
+/// The reserved channel page an incoming claim is headed for — the wiki it
+/// will be filed in, and the channel's file name inside it.
+///
+/// A channel page is not a place a claim happens to sit: it is the claim's
+/// **scope**, read back by a dedicated reader for exactly the audience that
+/// page serves. Which page a standing rule lives on is the difference between
+/// «this assistant answers me concisely» and «every assistant answers me
+/// concisely», so the pair below is part of what tells two rules apart.
+#[derive(Debug, Clone, Copy)]
+pub(crate) struct ChannelScope<'a> {
+    wiki_id: &'a str,
+    page: &'a str,
+}
+
+impl<'a> ChannelScope<'a> {
+    /// The scope of a claim headed for `page` in `wiki_id`, or `None` when
+    /// that page is not a channel page — an ordinary claim, which dedups
+    /// against ordinary prose and never against a channel.
+    pub(crate) fn of(wiki_id: &'a str, page: &'a str) -> Option<Self> {
+        crate::wiki::is_channel_page(page).then_some(Self { wiki_id, page })
+    }
+
+    /// Whether `row` sits on this very channel page.
+    ///
+    /// Channel pages live at a wiki's root under a reserved name, so the wiki
+    /// id plus the file name identify one exactly — and `row.source_path` is
+    /// workdir-relative while `page` is wiki-relative, which is why the file
+    /// name is compared and not the two paths.
+    fn holds(&self, row: &FactIndexRow) -> bool {
+        row.wiki_id == self.wiki_id && crate::wiki::names_page(&row.source_path, self.page)
+    }
+}
+
 pub(crate) fn best_dedup_candidate<'a>(
     candidates: &'a [FactIndexRow],
     audience: &Audience<'_>,
-    on_channel_page: bool,
+    channel: Option<ChannelScope<'_>>,
     body: &str,
     exclude: Option<&FactId>,
 ) -> Option<(&'a FactIndexRow, f32)> {
@@ -383,7 +421,11 @@ pub(crate) fn best_dedup_candidate<'a>(
         if !audience.same_as_row(row) {
             continue;
         }
-        if crate::wiki::is_channel_page(&row.source_path) != on_channel_page {
+        let same_channel = channel.as_ref().map_or_else(
+            || !crate::wiki::is_channel_page(&row.source_path),
+            |scope| scope.holds(row),
+        );
+        if !same_channel {
             continue;
         }
         let hay = recall::ngrams(
@@ -409,8 +451,9 @@ pub(crate) fn best_dedup_candidate<'a>(
 ///    page path).
 /// 2. Locate the target wiki (errors if the wiki id is unknown).
 /// 3. Embed the body via the supplied [`Embedder`].
-/// 4. Fetch every active fact in the wiki, compute jaccard 6-gram on
-///    the body, take the max score.
+/// 4. Fetch every active fact about the same subject, wherever it is filed,
+///    keep the ones [`best_dedup_candidate`] admits, compute jaccard 6-gram
+///    on the body and take the max score.
 /// 5. If score ≥ `dedup_threshold` → `CaptureAction::Skipped`.
 /// 6. Otherwise: render the marker region and `insert` the index row
 ///    (offsets NULL — the commit point), then `atomic_write` the page
@@ -498,13 +541,14 @@ pub async fn wiki_capture_with_source(
     // in another one). A duplicate is the same claim about the same subject;
     // the wiki each copy lives in is provisional and moves.
     let candidates = fact_index::find_active_by_subject(pool, &req.subject).await?;
-    let on_channel_page = crate::wiki::is_channel_page(&page.to_string_lossy());
+    let page_str = page.to_string_lossy();
+    let channel = ChannelScope::of(&wiki_id_str, &page_str);
     let audience = Audience {
         subject: &req.subject,
         allow: &req.allow,
         sender: req.sender.as_ref(),
     };
-    let best = best_dedup_candidate(&candidates, &audience, on_channel_page, &req.body, None);
+    let best = best_dedup_candidate(&candidates, &audience, channel, &req.body, None);
     tracing::debug!(
         wiki_id = %wiki_id_str,
         candidates = candidates.len(),
@@ -1027,18 +1071,24 @@ mod tests {
         pool
     }
 
-    fn seed_alice(tree: &WikiTree) {
-        let dir = tree.wikis_dir().join("alice");
+    fn seed_wiki(tree: &WikiTree, wiki_id: &str) {
+        let dir = tree.wikis_dir().join(wiki_id);
         std::fs::create_dir_all(&dir).unwrap();
-        let meta = "---\n\
-                    wiki_id: alice\n\
-                    wiki_type: wiki-user\n\
-                    parent_wiki_id: null\n\
-                    slug: alice\n\
-                    title: Alice\n\
-                    acl_default: 'user:alice'\n\
-                    ---\n";
+        let meta = format!(
+            "---\n\
+             wiki_id: {wiki_id}\n\
+             wiki_type: wiki-user\n\
+             parent_wiki_id: null\n\
+             slug: {wiki_id}\n\
+             title: {wiki_id}\n\
+             acl_default: 'user:{wiki_id}'\n\
+             ---\n"
+        );
         std::fs::write(dir.join("_meta.md"), meta).unwrap();
+    }
+
+    fn seed_alice(tree: &WikiTree) {
+        seed_wiki(tree, "alice");
     }
 
     fn embedder() -> Arc<dyn Embedder> {
@@ -1591,6 +1641,64 @@ mod tests {
                 matched_fact_id, ..
             } => assert_eq!(matched_fact_id, first_rule.fact_id),
             other => panic!("expected rule-vs-rule Skipped, got {other:?}"),
+        }
+    }
+
+    /// Promoting a rule from one assistant to every assistant: the same words
+    /// on a DIFFERENT rules page are a different rule, and the second one is
+    /// written.
+    ///
+    /// Which rules page a standing directive lives on is its scope — the
+    /// assistant's own page binds that assistant, the person's identity wiki
+    /// binds every assistant serving them — so "and I mean with every
+    /// assistant, not just this one" restates the words on purpose. Folded
+    /// into the first, the promotion is lost and the person's own rules page
+    /// stays empty while the log says a rule was filed.
+    #[tokio::test]
+    async fn a_rule_widened_to_every_assistant_is_not_a_duplicate_of_the_agents_own() {
+        let dir = tempdir().unwrap();
+        let tree = WikiTree::open(dir.path()).unwrap();
+        seed_alice(&tree);
+        seed_wiki(&tree, "kitchen");
+        let pool = make_pool().await;
+
+        // The rule as first set, on the assistant's own rules page.
+        let mut on_the_agent = sample_request("Answer concisely: the answer without the preamble.");
+        on_the_agent.wiki_id = WikiId::parse("kitchen").unwrap();
+        on_the_agent.page = Some(PathBuf::from(crate::wiki::RULES_FILENAME));
+        let agent_rule = wiki_capture(&tree, &pool, embedder(), on_the_agent)
+            .await
+            .unwrap();
+
+        // The same words widened to the person's own rules page. Same
+        // subject, same audience, same sender — everything the dedup compares
+        // except the page, which is the whole difference.
+        let mut everywhere = sample_request("Answer concisely: the answer without the preamble.");
+        everywhere.page = Some(PathBuf::from(crate::wiki::RULES_FILENAME));
+        let widened = wiki_capture(&tree, &pool, embedder(), everywhere)
+            .await
+            .unwrap();
+        assert!(
+            matches!(widened.action, CaptureAction::Captured { .. }),
+            "the widened rule must reach the person's own rules page, got {:?}",
+            widened.action
+        );
+        assert_ne!(widened.fact_id, agent_rule.fact_id);
+
+        // And the fence holds in the other direction: repeating it to the
+        // same assistant is still one rule.
+        let mut again = sample_request("Answer concisely: the answer without the preamble.");
+        again.wiki_id = WikiId::parse("kitchen").unwrap();
+        again.page = Some(PathBuf::from(crate::wiki::RULES_FILENAME));
+        match wiki_capture(&tree, &pool, embedder(), again)
+            .await
+            .unwrap()
+            .action
+        {
+            CaptureAction::Skipped {
+                matched_fact_id, ..
+            } => assert_eq!(matched_fact_id, agent_rule.fact_id),
+            other => panic!("the same rule at the same scope is one rule, got {other:?}"),
         }
     }
 

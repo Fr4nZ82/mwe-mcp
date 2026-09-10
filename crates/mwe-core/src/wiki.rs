@@ -175,8 +175,10 @@ impl std::fmt::Display for PageStyle {
 /// placement ([`crate::planner`]); `gather_standard_facts`
 /// skips any fact whose page is this one ([`is_rules_page`]); the REM refile
 /// sweep never nominates one; dedup pairs never cross the rules-page
-/// boundary (both sides here, or neither — capture-time and REM revisor
-/// alike); the REM validity sweeps fence it out too (never a contradiction
+/// boundary (the REM revisor works one wiki at a time and pairs both sides
+/// here or neither, and a capture-time pair must be on the very same page —
+/// [`crate::capture::ChannelScope`]); the REM validity sweeps fence it out
+/// too (never a contradiction
 /// *satellite*, never completion *evidence* nor a completion candidate);
 /// and the recall navigator never opens it (channel-only delivery) — so a
 /// behaviour rule keeps living here and `recall_behaviour_rules` keeps
@@ -196,7 +198,7 @@ pub const RULES_FILENAME: &str = "@rules.md";
 /// go quietly invisible to its own channel — the rule would sit on disk and
 /// the reader would never look there. Same stance the marker grammar takes
 /// on `owner=` / `subject=`.
-fn names_page(source_path: &str, name: &str) -> bool {
+pub(crate) fn names_page(source_path: &str, name: &str) -> bool {
     let Some(last) = std::path::Path::new(source_path)
         .file_name()
         .and_then(|n| n.to_str())
@@ -501,7 +503,11 @@ pub fn is_signpost_page(source_path: &str) -> bool {
 /// REM refile never nominates them, the contradiction and completion
 /// sweeps never use them as satellites or evidence, and dedup pairs never
 /// cross the boundary (both sides on a channel page, or neither — else a
-/// restatement of a signpost by an ordinary fact would swallow it).
+/// restatement of a signpost by an ordinary fact would swallow it). This
+/// predicate answers *is it a channel page*; **which** channel page is the
+/// other half of the capture-time question, and
+/// [`crate::capture::ChannelScope`] asks it — the page a rule sits on is the
+/// scope that rule binds.
 ///
 /// This is the predicate for *that perimeter only*. The two pages differ
 /// on delivery — rules reach the consumer through the `rules` field and

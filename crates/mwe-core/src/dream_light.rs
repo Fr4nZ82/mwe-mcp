@@ -440,10 +440,10 @@ async fn screen_one(
     // A waiting claim is never on a channel page: the three of them
     // (`@rules.md`, `@projects.md`, `@projects_diary.md`) are written by their
     // own deterministic paths, inside the turn, and never queue here. So the
-    // fence below reads "compare me against ordinary prose only", which also
+    // `None` below reads "compare me against ordinary prose only", which also
     // keeps a rule from being deduped away by a claim that merely sounds like
-    // it ([`crate::wiki::is_channel_page`]).
-    let on_channel_page = false;
+    // it ([`crate::capture::ChannelScope`]).
+    let channel = None;
     let audience = crate::capture::Audience {
         subject: &cap.subject,
         allow: &cap.allow,
@@ -452,7 +452,7 @@ async fn screen_one(
     if let Some((dup, score)) = crate::capture::best_dedup_candidate(
         &active,
         &audience,
-        on_channel_page,
+        channel,
         &cap.body,
         Some(&cap.capture_id),
     ) && score >= policy.dedup_threshold
