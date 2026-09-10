@@ -1663,10 +1663,24 @@ fn moved_addresses<'a>(
 /// opening that copy is served regions whose facts live elsewhere, which
 /// the per-page ACL map answers by redacting all of them.
 ///
+/// **The entry has to be the moved page's own.** A concept slug is the page
+/// STEM and carries no wiki, so `orto.md` in two wikis is one key: rewriting
+/// whichever entry the stem finds would drag a namesake in another wiki along
+/// with this move, and nothing downstream would say so. The entry is rewritten
+/// only when it names the wiki the page is LEAVING; an entry naming a third
+/// wiki belongs to that namesake and is left exactly as it is. The moved page
+/// then has no registry entry of its own, which is the safe direction — the
+/// next rebuild mints one from where its facts now are, and its facts moved.
+///
 /// Best-effort like its plan sibling, and loud for the same reason: the
 /// files and the rows have already moved, so a failure here is a seam to
 /// repair, not a reason to undo a move that stands.
-fn follow_page_in_registry(tree: &WikiTree, page_name: &str, dest_wiki_id: &str) {
+fn follow_page_in_registry(
+    tree: &WikiTree,
+    page_name: &str,
+    source_wiki_id: &str,
+    dest_wiki_id: &str,
+) {
     let now = chrono::Utc::now().to_rfc3339();
     let mut registry = match crate::planner::load_concept_registry(tree, &now) {
         Ok(r) => r,
@@ -1680,6 +1694,16 @@ fn follow_page_in_registry(tree: &WikiTree, page_name: &str, dest_wiki_id: &str)
         return;
     };
     if entry.wiki_id == dest_wiki_id {
+        return;
+    }
+    if entry.wiki_id != source_wiki_id {
+        tracing::warn!(
+            slug = %slug,
+            entry_wiki_id = %entry.wiki_id,
+            source_wiki_id,
+            dest_wiki_id,
+            "promote: the registry entry for this slug belongs to another wiki — left alone"
+        );
         return;
     }
     dest_wiki_id.clone_into(&mut entry.wiki_id);
@@ -1835,6 +1859,7 @@ async fn apply_pages_to_new_wiki(
         follow_page_in_registry(
             tree,
             &page.rel_in_wiki.to_string_lossy(),
+            source_wiki_id,
             new_wiki_id.as_str(),
         );
         retarget_links_after_move(
@@ -2023,6 +2048,7 @@ async fn move_pages(
         follow_page_in_registry(
             tree,
             &page.rel_in_wiki.to_string_lossy(),
+            &ctx.source_wiki_id,
             target_wiki_id.as_str(),
         );
         spec_pages.push(GroupedPage {
@@ -3242,6 +3268,7 @@ async fn apply_pages_into_wiki(
         follow_page_in_registry(
             tree,
             &page.rel_in_wiki.to_string_lossy(),
+            source_wiki_id,
             target_id.as_str(),
         );
         retarget_links_after_move(
@@ -4289,6 +4316,63 @@ Un'altra pagina: [[bruno/orto]].
                 .wiki_id,
             "bob",
             "the registry still names the wiki the page left, so the next compile puts it back",
+        );
+    }
+
+    /// A page with the same name in a THIRD wiki is not dragged along by
+    /// somebody else's move.
+    ///
+    /// A concept slug is the page stem and carries no wiki, so `orto.md` in
+    /// two wikis is one registry key. Following the moved page by that key
+    /// alone would repoint a namesake nobody touched — its files and its rows
+    /// stay where they are while the registry starts naming another wiki, and
+    /// the next rebuild renders it there against facts that are not in it. The
+    /// entry is only followed when it names the wiki the page is leaving.
+    #[tokio::test]
+    async fn a_rehome_leaves_a_namesake_in_another_wiki_alone() {
+        let (_dir, tree, pool) = setup().await;
+        seed_wiki(&tree, "bob");
+        seed_wiki(&tree, "carol");
+        capture_one(&tree, &pool, embedder(), "orto.md", "note sull'orto").await;
+
+        // The registry knows one `orto`, and it is CAROL's.
+        let now = "2026-06-08T00:00:00Z";
+        {
+            let mut reg = crate::planner::load_concept_registry(&tree, now).expect("registry");
+            reg.entries.insert(
+                "orto".to_owned(),
+                crate::planner::ConceptRegistryEntry {
+                    slug: "orto".to_owned(),
+                    title: "Orto".to_owned(),
+                    description: String::new(),
+                    style: None,
+                    wiki_id: "carol".to_owned(),
+                    created_at: now.to_owned(),
+                },
+            );
+            crate::planner::save_concept_registry(&tree, &reg).expect("seed registry");
+        }
+
+        let ctx = json!({
+            "variant": VARIANT_PAGES_REHOME,
+            "source_wiki_id": "alice",
+            "target_wiki_id": "bob",
+            "pages": ["orto.md"],
+        });
+        apply_pages_rehome(
+            &pool,
+            &tree,
+            &ctx,
+            &json!({"variant": VARIANT_PAGES_REHOME}),
+        )
+        .await
+        .expect("apply");
+
+        let reg = crate::planner::load_concept_registry(&tree, now).expect("registry loads");
+        assert_eq!(
+            reg.entries.get("orto").expect("carol keeps hers").wiki_id,
+            "carol",
+            "a move out of alice must not repoint carol's page of the same name",
         );
     }
 }
