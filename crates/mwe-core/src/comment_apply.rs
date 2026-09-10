@@ -640,6 +640,7 @@ async fn apply_add(
         subject_external,
         // A comment adds prose to a page; it never fills an identity slot.
         slot: None,
+        slot_value: None,
         allow_ids,
         sender_id: commenter.cloned(),
         fact_type: None,
@@ -1317,6 +1318,7 @@ mod tests {
             &NewFact {
                 subject_external: None,
                 slot: None,
+                slot_value: None,
                 authored_refs: Vec::new(),
                 fact_id: FactId::parse(id).unwrap(),
                 wiki_id: "alice".to_owned(),
@@ -1615,6 +1617,7 @@ mod tests {
             &NewFact {
                 subject_external: None,
                 slot: None,
+                slot_value: None,
                 authored_refs: Vec::new(),
                 fact_id: FactId::parse(&standing).unwrap(),
                 wiki_id: "alice".to_owned(),
@@ -2081,6 +2084,7 @@ mod tests {
         let req = CaptureRequest {
             subject_external: None,
             slot: None,
+            slot_value: None,
             authored_refs: Vec::new(),
             wiki_id: WikiId::parse("alice").unwrap(),
             page: Some(std::path::PathBuf::from(page)),

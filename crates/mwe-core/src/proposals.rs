@@ -96,12 +96,13 @@ pub mod kind {
     /// A turn asserted a second, different value for a slot somebody else's
     /// fact already fills, and the speaker has no standing to rewrite it.
     ///
-    /// The question goes to the person that fact is about, or to whoever said
-    /// it: *the memory says this, somebody else says that — does yours still
-    /// hold?* Only they answer it, and the recommended answer is **keep**, so
-    /// a proposal nobody reaches leaves the stored value exactly where it was.
-    /// Nothing else in the engine ever chooses between two values of one slot
-    /// — see [`super::apply_slot_conflict`].
+    /// The question goes to the person that fact is about — the card is
+    /// theirs, whoever happened to state what is on it: *the memory says this,
+    /// somebody else says that — does yours still hold?* Only they answer it,
+    /// and the recommended answer is **keep**, so a proposal nobody reaches
+    /// leaves the stored value exactly where it was. Nothing else in the
+    /// engine ever chooses between two values of one slot — see
+    /// [`super::apply_slot_conflict`].
     pub const SLOT_CONFLICT: &str = "slot_conflict";
 
     /// Every canonical kind.
@@ -610,6 +611,66 @@ pub fn recipient_from_fact(
     None
 }
 
+/// The addressee of a question about somebody's identity card: its SUBJECT,
+/// whoever happened to say the value that is on it.
+///
+/// A card belongs to the person it is about, and the one question this
+/// addresses — *are these two values both yours, and which is right?* — is
+/// theirs to answer. [`recipient_from_fact`] answers a different question
+/// (*who should hear that this fact changed?*) and prefers the author for good
+/// reasons of its own; borrowing it here sent the question to whoever had
+/// spoken last, so a number on Zoe's card that Bob had given went to Bob to
+/// settle.
+///
+/// A group's card has no single person to write to, and the recipient column
+/// addresses one: those stay **unaddressed**, which is the bucket the admin
+/// already works. Writing `group:<id>` there instead would address it to
+/// somebody nothing lets act — no member can apply it and the listing hides
+/// it from all of them.
+#[must_use]
+pub fn recipient_of_the_card(subject: &crate::types::Principal) -> Option<String> {
+    match subject {
+        crate::types::Principal::User(id) => Some(format!("user:{id}")),
+        crate::types::Principal::Group(_) => None,
+    }
+}
+
+/// Whether a question about this fact and this slot is already waiting on
+/// somebody, and which one.
+///
+/// Three turns restating the same value are one disagreement: without this the
+/// card's owner gets the same question three times, each carrying the value
+/// they were the only one entitled to read. The pair *(fact already stored,
+/// slot)* is the identity of the question — the asserted value may be worded
+/// differently each time and it is still the same box being argued over.
+///
+/// The scan is over PENDING rows — `idx_struct_status` — and not over the
+/// table, which is the whole history of everything the memory rearranged and
+/// which nothing prunes.
+///
+/// # Errors
+///
+/// - [`ProposalsError::Db`] for any SQL failure.
+pub async fn pending_slot_conflict(
+    pool: &SqlitePool,
+    kept: &crate::types::FactId,
+    slot: &str,
+) -> Result<Option<String>> {
+    let found: Option<(String,)> = sqlx::query_as(
+        "SELECT proposal_id FROM structure_proposals
+          WHERE kind = ? AND status = 'pending'
+            AND json_extract(context, '$.kept_fact_id') = ?
+            AND json_extract(context, '$.slot') = ?
+          LIMIT 1",
+    )
+    .bind(kind::SLOT_CONFLICT)
+    .bind(kept.as_str())
+    .bind(slot)
+    .fetch_optional(pool)
+    .await?;
+    Ok(found.map(|(id,)| id))
+}
+
 /// Split a batch of applied changes into one group per addressee.
 ///
 /// A turn closes what it contradicts, and a sweep closes a whole cluster:
@@ -852,8 +913,12 @@ const SLOT_QUESTION_ID: &str = "verdict";
 /// words without going back to the store.
 #[derive(Debug, Clone)]
 pub struct SlotConflict {
-    /// The one thing both values state, in the words the classifier used —
-    /// "the date of birth", "where they live".
+    /// The one thing both values state. A box of the identity card
+    /// (`ingest::CARD_SLOTS`) where the question comes from a card, and the
+    /// reconciler's own free wording — "the wifi password" — where it comes
+    /// from a supersede somebody could not apply. Together with
+    /// [`Self::kept_fact_id`] it is what makes two questions the same question
+    /// ([`pending_slot_conflict`]).
     pub slot: String,
     /// Who the stored fact is about.
     pub subject: crate::types::Principal,
@@ -870,10 +935,19 @@ pub struct SlotConflict {
     /// Who asserted it.
     pub asserted_by: crate::types::Principal,
     /// The asserted value as a filed fact, when it was filed. `None` when the
-    /// engine held it back, and then answering `retire` retires the old value
-    /// without minting a new one — the asserted words stay in this row, and
-    /// whoever is entitled to state them says them in their own turn.
+    /// engine held it back — and then the words are in [`Self::parked`]
+    /// instead, waiting on this answer.
     pub successor: Option<crate::types::FactId>,
+    /// The asserted value PARKED in the capture buffer
+    /// (`capture_buffer::CaptureStatus::Held`): written down, in no queue, read
+    /// by nothing. Answering `retire` releases it into the queue, so the card
+    /// ends up saying what the recipient just said is right; answering `keep`,
+    /// or letting the question time out, drops it.
+    ///
+    /// `None` alongside a [`Self::successor`] (the claim was filed, so there is
+    /// nothing to park) and `None` when the parking itself failed, which costs
+    /// the answer its second half and nothing else.
+    pub parked: Option<crate::types::FactId>,
     /// Why the assertion could not simply replace the fact, in one clause the
     /// recipient can read.
     pub refusal: String,
@@ -922,6 +996,7 @@ impl SlotConflict {
             "asserted_text": self.asserted_text,
             "asserted_by": self.asserted_by.to_string(),
             "successor_fact_id": self.successor.as_ref().map(|f| f.as_str().to_owned()),
+            "parked_capture_id": self.parked.as_ref().map(|f| f.as_str().to_owned()),
             "refusal": self.refusal,
         })
     }
@@ -930,16 +1005,18 @@ impl SlotConflict {
 /// Open the slot conflict as a pending proposal addressed to whoever can
 /// settle it, and return its `proposal_id`.
 ///
-/// Addressed with [`recipient_from_fact`] on the fact ALREADY stored, not on
-/// the assertion: the question is about that fact, and the person entitled to
-/// answer it is its subject or its author — never the speaker who could not
-/// rewrite it.
+/// Addressed to the SUBJECT of the card ([`recipient_of_the_card`]) and never
+/// to the author of the value stored on it. The two are often the same person
+/// and the question reads the same either way — but a value on Zoe's card that
+/// Bob happened to state is still Zoe's, and sending Bob the question hands
+/// him a decision about somebody else's record while the notice the speaker
+/// gets, this guide and the changelog all say Zoe was asked.
 ///
 /// **`keep` is the recommended answer**, which is what the timeout sweep
 /// applies. A conflict nobody answers therefore leaves the memory as it
-/// stands, and that is the correct outcome rather than a fallback: the stored
-/// value was stated by somebody entitled to state it, and silence is not a
-/// reason to drop it.
+/// stands — the stored value kept, the parked claim dropped — and that is the
+/// correct outcome rather than a fallback: the stored value was stated by
+/// somebody entitled to state it, and silence is not a reason to drop it.
 ///
 /// # Errors
 ///
@@ -947,6 +1024,22 @@ impl SlotConflict {
 /// - [`ProposalsError::Json`] when the context or questions cannot be
 ///   serialised.
 pub async fn emit_slot_conflict(pool: &SqlitePool, c: &SlotConflict) -> Result<String> {
+    // What "no" actually does depends on whether there is another value to
+    // install: the one that was said is either filed already (a successor) or
+    // parked waiting on this answer. With neither — the parking failed — the
+    // answer can only retire what is stored, and the option says so rather
+    // than promising a replacement that will not arrive.
+    let has_a_replacement = c.successor.is_some() || c.parked.is_some();
+    let retire_text = if has_a_replacement {
+        "No — it is wrong; stop asserting it, and record what was said instead."
+    } else {
+        "No — it is wrong; stop asserting it."
+    };
+    let keep_text = if has_a_replacement {
+        "Yes — it still holds; keep it, and drop what was said instead."
+    } else {
+        "Yes — it still holds; keep it and write nothing."
+    };
     let questions = serde_json::json!([{
         "id": SLOT_QUESTION_ID,
         "text": c.question(),
@@ -954,13 +1047,13 @@ pub async fn emit_slot_conflict(pool: &SqlitePool, c: &SlotConflict) -> Result<S
             {
                 "id": SLOT_VERDICT_KEEP,
                 "value": SLOT_VERDICT_KEEP,
-                "text": "Yes — it still holds; keep it and write nothing.",
+                "text": keep_text,
                 "recommended": true,
             },
             {
                 "id": SLOT_VERDICT_RETIRE,
                 "value": SLOT_VERDICT_RETIRE,
-                "text": "No — it is wrong; stop asserting it.",
+                "text": retire_text,
                 "recommended": false,
             },
         ],
@@ -968,7 +1061,7 @@ pub async fn emit_slot_conflict(pool: &SqlitePool, c: &SlotConflict) -> Result<S
     emit_proposal(
         pool,
         EmitParams::new(kind::SLOT_CONFLICT, c.context(), questions)
-            .with_recipient(recipient_from_fact(&c.subject, c.kept_sender.as_ref())),
+            .with_recipient(recipient_of_the_card(&c.subject)),
     )
     .await
 }
@@ -976,15 +1069,26 @@ pub async fn emit_slot_conflict(pool: &SqlitePool, c: &SlotConflict) -> Result<S
 /// Apply a `slot_conflict` proposal: the recipient said whether the stored
 /// value still holds.
 ///
-/// - `keep` — nothing happens, and that is the whole answer.
-/// - `retire` — the stored value stops being asserted. With a
-///   `successor_fact_id` (the assertion was filed and only the replacement was
-///   refused) the two are welded, so a reader of the old value is sent to the
-///   fact that replaced it; without one the window is closed as `contradicted`
-///   and no fact is minted here. **The engine never writes a claim on
-///   somebody's behalf from a dashboard click**: whoever is entitled to state
-///   the new value states it in their own turn, and the words they were told
-///   stay in this row until they do.
+/// - `keep` — the stored value stands and the claim that argued with it is
+///   dropped. This is also what the timeout sweep applies, so silence leaves
+///   the card exactly as it was.
+/// - `retire` — the stored value stops being asserted, and the value the
+///   recipient just called right takes its place. With a `successor_fact_id`
+///   (the claim was filed and only the replacement was refused) the two are
+///   welded, so a reader of the old value is sent to the fact that replaced
+///   it. With a `parked_capture_id` (the claim was never written) the parked
+///   words are released into the queue, and the light dream promotes them onto
+///   the card like any other capture — authored by whoever said them, about
+///   whoever this card belongs to.
+///
+///   **This is not the engine writing a claim on somebody's behalf.** It is
+///   the person the card belongs to saying which of two values is theirs,
+///   which is the one answer nobody else could give and the whole reason they
+///   were asked. Retiring the old value and leaving the box empty made the
+///   answer a half-answer: the right value existed only inside the question.
+///
+/// Releasing and dropping are both best-effort — the verdict on the stored
+/// value is the load-bearing half and it has already landed.
 ///
 /// # Errors
 ///
@@ -1009,12 +1113,23 @@ async fn apply_slot_conflict(
         .get(SLOT_QUESTION_ID)
         .and_then(Value::as_str)
         .unwrap_or(SLOT_VERDICT_KEEP);
+    let parked = context
+        .get("parked_capture_id")
+        .and_then(Value::as_str)
+        .map(crate::types::FactId::parse)
+        .transpose()
+        .map_err(|e| ApplyError::InvalidPayload(format!("slot_conflict parked: {e}")))?;
     if verdict != SLOT_VERDICT_RETIRE {
+        // The card stands, so the words that argued with it are not memory and
+        // never were.
+        let dropped = drop_parked_claim(pool, parked.as_ref()).await;
         return Ok(serde_json::json!({
             "variant": kind::SLOT_CONFLICT,
             "verdict": SLOT_VERDICT_KEEP,
             "kept_fact_id": kept_raw,
             "retired": 0,
+            "released": 0,
+            "dropped": i32::from(dropped),
         }));
     }
     let successor = context
@@ -1039,13 +1154,49 @@ async fn apply_slot_conflict(
         .map_err(|e| ApplyError::HandlerData(format!("slot_conflict closure: {e}")))?
         .map_or(0, |_| 1),
     };
+    let released = match parked.as_ref() {
+        Some(id) => match crate::capture_buffer::release_held(pool, id).await {
+            Ok(moved) => moved,
+            Err(e) => {
+                tracing::warn!(
+                    error = %e,
+                    parked_capture_id = id.as_str(),
+                    "proposals: the parked claim stayed parked — the stored value is retired \
+                     and the box is empty until somebody states it again"
+                );
+                false
+            },
+        },
+        None => false,
+    };
     Ok(serde_json::json!({
         "variant": kind::SLOT_CONFLICT,
         "verdict": SLOT_VERDICT_RETIRE,
         "kept_fact_id": kept_raw,
         "successor_fact_id": successor.as_ref().map(|f| f.as_str().to_owned()),
+        "parked_capture_id": parked.as_ref().map(|f| f.as_str().to_owned()),
         "retired": retired,
+        "released": i32::from(released),
+        "dropped": 0,
     }))
+}
+
+/// Drop the claim parked behind a slot question, and say whether one was
+/// there. Best-effort: a row that outlives its question is invisible to every
+/// reader of the buffer, so failing here leaves nothing a person can see.
+async fn drop_parked_claim(pool: &SqlitePool, parked: Option<&crate::types::FactId>) -> bool {
+    let Some(id) = parked else { return false };
+    match crate::capture_buffer::discard_held(pool, id).await {
+        Ok(dropped) => dropped,
+        Err(e) => {
+            tracing::warn!(
+                error = %e,
+                parked_capture_id = id.as_str(),
+                "proposals: a parked claim could not be dropped (it stays out of every queue)"
+            );
+            false
+        },
+    }
 }
 
 /// Internal state-flip for the manual apply path: bump
@@ -1805,6 +1956,7 @@ mod tests {
             &crate::fact_index::NewFact {
                 subject_external: None,
                 slot: None,
+                slot_value: None,
                 authored_refs: Vec::new(),
                 fact_id: fact_id.clone(),
                 wiki_id: "bob".to_owned(),
@@ -1842,6 +1994,7 @@ mod tests {
             asserted_text: "born on 8 July 2012".to_owned(),
             asserted_by: "user:carol".parse().unwrap(),
             successor: successor.cloned(),
+            parked: None,
             refusal: "they are neither its subject nor the person who said it".to_owned(),
         }
     }
@@ -1918,13 +2071,15 @@ mod tests {
         drop(dir);
     }
 
-    /// Answering `retire` with no filed replacement retires the old value and
-    /// mints nothing.
+    /// Answering `retire` with neither a filed replacement nor a parked claim
+    /// retires the old value and mints nothing.
     ///
-    /// This is the held-back capture: the assertion never became a fact, and
-    /// the apply chassis is not the place one is born. The window closes as
-    /// `contradicted`, the asserted words stay on the proposal row, and
-    /// whoever is entitled to state them states them in their own turn.
+    /// The apply chassis is not a place a fact is born out of nothing: it
+    /// welds a successor that was filed, or releases a claim that was parked,
+    /// and where there is neither the window simply closes as `contradicted`.
+    /// A conflict raised on this shape is one whose parking failed, and the
+    /// answer's load-bearing half — the stored value stops being asserted —
+    /// still lands.
     #[tokio::test]
     async fn retiring_without_a_successor_mints_nothing() {
         let (dir, pool, tree) = fresh_pool_and_tree().await;

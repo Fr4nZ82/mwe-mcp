@@ -172,7 +172,10 @@ cannot be otherwise: the plan reads a page's links off its own prose, and prose
 does not say which pass wrote a sentence. `compiler::link_targets` carries the
 reasoning.
 
-## System prompt
+## Prompt
+
+The standing brief in full, and — first, because it is the one placeholder that
+does not sit in it — where the language directive rides instead.
 
 **`{locale}`** — substituted before the prompt reaches the model with the
 single-line `LANGUAGE` directive from

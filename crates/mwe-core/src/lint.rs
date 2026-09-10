@@ -632,6 +632,7 @@ mod tests {
             &fact_index::NewFact {
                 subject_external: None,
                 slot: None,
+                slot_value: None,
                 authored_refs: Vec::new(),
                 fact_id: fact_id.clone(),
                 wiki_id: "alice".into(),
@@ -690,6 +691,7 @@ mod tests {
             &fact_index::NewFact {
                 subject_external: None,
                 slot: None,
+                slot_value: None,
                 authored_refs: Vec::new(),
                 fact_id: fact_id.clone(),
                 wiki_id: "alice".into(),

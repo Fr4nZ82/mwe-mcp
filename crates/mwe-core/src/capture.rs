@@ -214,6 +214,9 @@ pub struct CaptureRequest {
     /// (see [`fact_index::FactIndexRow::slot`]). Opaque pass-through: this
     /// layer records it and reads nothing into it.
     pub slot: Option<String>,
+    /// The bare value that slot holds (see
+    /// [`fact_index::FactIndexRow::slot_value`]), on the same terms.
+    pub slot_value: Option<String>,
     /// Project-wiki pages this fact's turn authored, as plain
     /// `[[wiki_id/page]]` wikilinks ([`fact_index::NewFact::authored_refs`]).
     /// Threaded from `wiki_ingest_message`'s `metadata.authored_refs` so
@@ -655,6 +658,7 @@ pub async fn wiki_capture_with_source(
         subject_id: req.subject,
         subject_external: req.subject_external.clone(),
         slot: req.slot.clone(),
+        slot_value: req.slot_value.clone(),
         allow_ids: req.allow,
         sender_id: req.sender,
         fact_type: req.fact_type,
@@ -1121,6 +1125,7 @@ mod tests {
         CaptureRequest {
             subject_external: None,
             slot: None,
+            slot_value: None,
             authored_refs: Vec::new(),
             wiki_id: WikiId::parse("alice").unwrap(),
             page: Some(PathBuf::from("intro.md")),
@@ -1186,6 +1191,7 @@ mod tests {
         CaptureRequest {
             subject_external: None,
             slot: None,
+            slot_value: None,
             authored_refs: Vec::new(),
             wiki_id: WikiId::parse("alice").unwrap(),
             page: Some(PathBuf::from("spesa.md")),

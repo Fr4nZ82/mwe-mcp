@@ -2175,6 +2175,7 @@ mod tests {
             &fact_index::NewFact {
                 subject_external: None,
                 slot: None,
+                slot_value: None,
                 fact_id: FactId::parse(id).unwrap(),
                 wiki_id: wiki.to_owned(),
                 source_path: source_path.to_owned(),
@@ -3116,6 +3117,7 @@ mod tests {
             &fact_index::NewFact {
                 subject_external: None,
                 slot: None,
+                slot_value: None,
                 authored_refs: Vec::new(),
                 fact_id: FactId::parse(UUID_1).unwrap(),
                 wiki_id: "alice".to_owned(),

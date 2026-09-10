@@ -2083,6 +2083,7 @@ mod tests {
         FactIndexRow {
             subject_external: None,
             slot: None,
+            slot_value: None,
             authored_refs: Vec::new(),
             fact_id: FactId::parse(fact_id).expect("parse"),
             wiki_id: "alice".to_owned(),

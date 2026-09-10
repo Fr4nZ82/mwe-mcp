@@ -117,6 +117,7 @@ async fn capture_fact(
     let req = CaptureRequest {
         subject_external: None,
         slot: None,
+        slot_value: None,
         authored_refs: Vec::new(),
         wiki_id: WikiId::parse(wiki_id).unwrap(),
         page: Some(std::path::PathBuf::from(page)),
@@ -455,6 +456,7 @@ async fn capture_fact_owned(
     let req = CaptureRequest {
         subject_external: None,
         slot: None,
+        slot_value: None,
         authored_refs: Vec::new(),
         wiki_id: WikiId::parse(wiki_id).unwrap(),
         page: Some(std::path::PathBuf::from(page)),

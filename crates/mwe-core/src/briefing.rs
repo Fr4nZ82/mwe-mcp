@@ -1539,6 +1539,7 @@ mod tests {
             &crate::fact_index::NewFact {
                 subject_external: None,
                 slot: None,
+                slot_value: None,
                 fact_id: crate::types::FactId::parse(id).unwrap(),
                 wiki_id: wiki.to_owned(),
                 source_path: format!("wikis/{wiki}/appunti.md"),

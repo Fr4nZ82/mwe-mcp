@@ -413,6 +413,7 @@ mod tests {
         let fact = fact_index::NewFact {
             subject_external: None,
             slot: None,
+            slot_value: None,
             authored_refs: Vec::new(),
             fact_id: FactId::parse(id).unwrap(),
             wiki_id: wiki.to_owned(),

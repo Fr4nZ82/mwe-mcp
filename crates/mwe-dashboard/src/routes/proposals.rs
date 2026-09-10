@@ -896,6 +896,10 @@ const FIELD_LABELS: &[(&str, &str)] = &[
     ("new_wiki_title", "Its name"),
     ("page_path", "The page"),
     ("pages", "The pages"),
+    (
+        "parked_capture_id",
+        "The other value, waiting on this answer",
+    ),
     ("preview", "The fact, as far as it fits"),
     ("prev_allow_ids", "Was readable by"),
     ("prev_subject_id", "Was about"),

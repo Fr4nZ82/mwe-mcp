@@ -71,12 +71,24 @@ semver-governed surface: breaking changes are called out explicitly.
   either value out. Nothing is written; **you** are asked, with both values,
   because you are the one person entitled to see them both; and the person who
   spoke is told only that what they said was not saved and that it has been
-  passed to you — not what is on record, and not which detail it was. Saying
-  what your card already says opens nothing, and where the speaker may read the
-  value the question reaches them as before.
+  passed to you — not what is on record, and not which detail it was. If one
+  message does this about two people, both are named to them.
 
-  Facts written before this release do not record which detail they fill, so
-  they take no part in the comparison until they are stated again.
+  It compares the **values** and not the sentences around them, so «Zoe can be
+  reached on 07700 900314» and «Zoe's mobile number is 07700 900314.» are one
+  number said twice and nobody is asked anything. Which detail a fact fills is
+  named from a fixed list, so *birth date* and *birthday* cannot be two details
+  that never meet — in a memory kept in two languages they would have been
+  three. A card fact whose detail is not on that list records none and behaves
+  as every fact behaved before the list existed.
+
+  Where the speaker may read the value the question reaches them as before —
+  and now it reaches them even when the classifier read the card and failed to
+  say the two disagreed, because the same comparison runs there too.
+
+  Facts written before this release do not record which detail they fill, or
+  what they put in it, so they take no part in the comparison until they are
+  stated again.
 
 - **A page for the proposals, so you can read them without asking the chat.**
   The memory keeps rearranging how your facts are filed — it makes a page for a
@@ -130,11 +142,16 @@ semver-governed surface: breaking changes are called out explicitly.
   the answer. Keep it and nothing changes; replace it and the old value is
   retired, pointing at the new one. If the person asking is not entitled to
   rewrite that value — it is somebody else's, and they neither said it nor are
-  it — the question goes to whoever is, as a proposal waiting in the dashboard;
-  until they answer, the card keeps what it had. No model ever chooses between
-  the two, and no value is lost in silence. The engine also stops turning an
-  age into a birth date: *«he is about 14 in July»* is stored as an age, not
-  converted into a day nobody said.
+  it — the question goes to **the person whose card it is**, whoever happened
+  to state what is on it, as a proposal waiting in the dashboard. What they
+  said is held aside meanwhile, read by nothing: the owner saying *it is wrong*
+  retires the stored value and releases those words onto the card, recorded as
+  theirs; the owner keeping their own value drops them, and so does the
+  deadline passing. Until then the card keeps what it had. The same detail is
+  asked about once, however many times somebody restates it. No model ever
+  chooses between the two, and no value is lost in silence. The engine also
+  stops turning an age into a birth date: *«he is about 14 in July»* is stored
+  as an age, not converted into a day nobody said.
 - **Traces shows what the last step of a turn was asked, and what it answered.**
   One call at the end of every turn decides whether the message retires,
   replaces, re-dates or re-shares something already stored — the only call that
@@ -203,7 +220,11 @@ semver-governed surface: breaking changes are called out explicitly.
   it. Until now an instruction stayed with whichever assistant happened to hear
   it unless you spelled out «every assistant», which is not how anybody speaks.
   Drawing the line yourself still works and still wins: *«qui le risposte le
-  voglio brevi»* stays with the assistant you said it to.
+  voglio brevi»* stays with the assistant you said it to. Widening one **moves**
+  it rather than adding a second: the narrower copy sitting on the assistant
+  you first said it to is retired, so no assistant ends up reading the same
+  instruction twice. That holds whichever road the widening came by — your own
+  words, or an administrator setting it for you from the operator chat.
 
   **You cannot set a rule about how somebody else is treated by talking to the
   assistant, and now you are told so.** *«Leggi a voce alta tutte le risposte
@@ -222,6 +243,11 @@ semver-governed surface: breaking changes are called out explicitly.
   to or one you name, and the rule itself. It is the only road there is, which
   is why it exists. Written down in the guide, under **The chat**.
 
+- **A message that goes wrong in two ways is now reported in both.** One
+  message can lose an item off a list *and* say something about somebody
+  else's card, and only the first of those reached you: the other went
+  unmentioned, so an item you believed was on your list was not there. Every
+  one of these notices is now said, one sentence each.
 - **Four kinds of sentence the memory was letting go past it.** A rule you lay
   down for the assistant (*«keep it short with me»*), a preference or a
   position you take in a discussion that is still open (*«I'd take the hybrid

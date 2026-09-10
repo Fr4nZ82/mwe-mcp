@@ -80,6 +80,7 @@ async fn capture_fact(pool: &SqlitePool, tree: &WikiTree, page: &str, body: &str
     let req = CaptureRequest {
         subject_external: None,
         slot: None,
+        slot_value: None,
         authored_refs: Vec::new(),
         wiki_id: WikiId::parse("alice").unwrap(),
         page: Some(PathBuf::from(page)),
@@ -2211,6 +2212,7 @@ async fn capture_fact_in(
     let req = CaptureRequest {
         subject_external: None,
         slot: None,
+        slot_value: None,
         authored_refs: Vec::new(),
         wiki_id: WikiId::parse(wiki_id).unwrap(),
         page: Some(PathBuf::from(page)),

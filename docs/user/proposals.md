@@ -54,11 +54,14 @@ Two things arrive as a question.
 **Two answers to one question.** Your identity card holds a handful of things
 there can only be one of — when you were born, where you live, how to reach
 you. When somebody states a different value for one of them and is not entitled
-to overwrite it, nothing is written and the question comes to you: the value on
-record, who said it and when, the value that was said instead, and who said
-that. **You have 24 hours.** Say nothing and the card keeps what it had — that
-is the answer marked as the one that happens by itself, and it is deliberate:
-the stored value was put there by somebody entitled to put it there.
+to overwrite it, nothing is written and the question comes to you, because the
+card is yours whoever happened to state what is on it: the value on record, who
+said it and when, the value that was said instead, and who said that. Answer
+that the stored value still holds and what they said is dropped; answer that it
+is wrong and the stored value stops being asserted and theirs takes its place.
+**You have 24 hours.** Say nothing and the card keeps what it had — that is the
+answer marked as the one that happens by itself, and it is deliberate: the
+stored value was put there by somebody entitled to put it there.
 
 **A request to forget a fact.** When somebody asks for a fact to be forgotten
 and they are not the one who said it, everybody who can read that fact is asked

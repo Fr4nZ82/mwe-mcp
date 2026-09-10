@@ -3173,6 +3173,7 @@ mod tests {
             &crate::fact_index::NewFact {
                 subject_external: None,
                 slot: None,
+                slot_value: None,
                 authored_refs: Vec::new(),
                 fact_id: fid.clone(),
                 wiki_id: "alice".to_owned(),
@@ -3204,6 +3205,7 @@ mod tests {
             &crate::fact_index::NewFact {
                 subject_external: None,
                 slot: None,
+                slot_value: None,
                 authored_refs: Vec::new(),
                 fact_id: fid.clone(),
                 wiki_id: "alice".to_owned(),
@@ -3330,6 +3332,7 @@ mod tests {
             &crate::fact_index::NewFact {
                 subject_external: None,
                 slot: None,
+                slot_value: None,
                 authored_refs: Vec::new(),
                 fact_id: fid.clone(),
                 wiki_id: "alice".to_owned(),
@@ -3413,6 +3416,7 @@ mod tests {
             &crate::fact_index::NewFact {
                 subject_external: None,
                 slot: None,
+                slot_value: None,
                 authored_refs: Vec::new(),
                 fact_id: fid.clone(),
                 wiki_id: "alice".to_owned(),
@@ -3520,6 +3524,7 @@ mod tests {
                     &crate::fact_index::NewFact {
                         subject_external: None,
                         slot: None,
+                        slot_value: None,
                         authored_refs: Vec::new(),
                         fact_id: fid.clone(),
                         wiki_id: "alice".to_owned(),
@@ -3668,6 +3673,7 @@ mod tests {
             &crate::fact_index::NewFact {
                 subject_external: None,
                 slot: None,
+                slot_value: None,
                 authored_refs: Vec::new(),
                 fact_id: fid.clone(),
                 wiki_id: "alice".to_owned(),
@@ -3733,6 +3739,7 @@ mod tests {
             &crate::fact_index::NewFact {
                 subject_external: None,
                 slot: None,
+                slot_value: None,
                 authored_refs: Vec::new(),
                 fact_id: fid.clone(),
                 wiki_id: "alice".to_owned(),
@@ -5397,6 +5404,7 @@ mod tests {
             &crate::fact_index::NewFact {
                 subject_external: None,
                 slot: None,
+                slot_value: None,
                 authored_refs: Vec::new(),
                 fact_id: fid.clone(),
                 wiki_id: "alice".to_owned(),

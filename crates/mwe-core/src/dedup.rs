@@ -360,6 +360,7 @@ mod tests {
         let req = CaptureRequest {
             subject_external: None,
             slot: None,
+            slot_value: None,
             authored_refs: Vec::new(),
             wiki_id: WikiId::parse("alice").unwrap(),
             page: Some(PathBuf::from("cucina.md")),
@@ -394,6 +395,7 @@ mod tests {
         let req = CaptureRequest {
             subject_external: None,
             slot: None,
+            slot_value: None,
             authored_refs: refs.to_vec(),
             wiki_id: WikiId::parse("alice").unwrap(),
             page: Some(PathBuf::from("cucina.md")),

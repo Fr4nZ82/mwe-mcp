@@ -111,6 +111,15 @@ pub enum CaptureStatus {
     /// The light dream found an exact/near duplicate; the capture resolved to an
     /// existing fact instead of a new one.
     SkippedDup,
+    /// Parked: written down, and deliberately NOT in the queue. It is a claim
+    /// somebody made about a slot of somebody else's identity card that they
+    /// were not entitled to settle — the card's owner has been asked, and the
+    /// words wait here for their answer rather than being lost with the turn.
+    /// No reader of the buffer sees it: the light dream, the placement pass
+    /// and the fresh-recall slot all select `status = 'buffered'`.
+    /// [`release_held`] puts it in the queue, [`discard_held`] drops it, and
+    /// exactly one of the two runs when the proposal is answered or times out.
+    Held,
 }
 
 impl CaptureStatus {
@@ -121,6 +130,7 @@ impl CaptureStatus {
             Self::Buffered => "buffered",
             Self::Promoted => "promoted",
             Self::SkippedDup => "skipped_dup",
+            Self::Held => "held",
         }
     }
 
@@ -130,6 +140,7 @@ impl CaptureStatus {
         match s {
             "promoted" => Self::Promoted,
             "skipped_dup" => Self::SkippedDup,
+            "held" => Self::Held,
             _ => Self::Buffered,
         }
     }
@@ -168,6 +179,9 @@ pub struct BufferedCapture {
     /// promoted fact carries the same one.
     /// See [`crate::fact_index::FactIndexRow::slot`].
     pub slot: Option<String>,
+    /// The bare value that slot holds, carried on the same terms.
+    /// See [`crate::fact_index::FactIndexRow::slot_value`].
+    pub slot_value: Option<String>,
     /// Extra principals granted read access via `allow=`.
     pub allow: Vec<Principal>,
     /// Cross-user attribution (who captured the fact). Always materialized
@@ -419,6 +433,57 @@ pub async fn buffer_capture_with_source(
     source_ref: Option<String>,
     staging: BufferStaging,
 ) -> Result<BufferOutcome> {
+    write_capture(
+        pool,
+        req,
+        supersede_hint,
+        source_kind,
+        source_ref,
+        staging,
+        CaptureStatus::Buffered,
+    )
+    .await
+}
+
+/// Park a classified capture OUT of the queue — [`CaptureStatus::Held`].
+///
+/// The claim is written down and nothing reads it: it is a value somebody
+/// stated for a slot of somebody else's identity card without the standing to
+/// settle it, and the card's owner has been asked which of the two is right.
+/// Losing the words would mean asking the owner a question whose answer
+/// nobody could act on; queueing them would be writing the claim the engine
+/// just decided not to write. So they wait, and the answer moves them
+/// ([`release_held`]) or drops them ([`discard_held`]).
+///
+/// # Errors
+///
+/// See [`CaptureBufferError`].
+pub async fn park_capture(
+    pool: &SqlitePool,
+    req: CaptureRequest,
+    staging: BufferStaging,
+) -> Result<BufferOutcome> {
+    write_capture(
+        pool,
+        req,
+        None,
+        "ingest",
+        None,
+        staging,
+        CaptureStatus::Held,
+    )
+    .await
+}
+
+async fn write_capture(
+    pool: &SqlitePool,
+    req: CaptureRequest,
+    supersede_hint: Option<FactId>,
+    source_kind: &str,
+    source_ref: Option<String>,
+    staging: BufferStaging,
+    status: CaptureStatus,
+) -> Result<BufferOutcome> {
     let CaptureRequest {
         // The plan's destination stops here. It is the live route's — the
         // `lista` item and the container the user asked for this turn, both of
@@ -455,8 +520,10 @@ pub async fn buffer_capture_with_source(
         // The NAME of what the claim is about, when that is not a principal:
         // decided at capture and carried unchanged through the wait.
         subject_external,
-        // The identity-card slot it fills, on the same terms.
+        // The identity-card slot it fills, and the bare value it puts in it,
+        // on the same terms.
         slot,
+        slot_value,
     } = req;
     validate_buffer_body(&body)?;
     // Mirror capture.rs: sender is always materialized (= subject when
@@ -471,12 +538,13 @@ pub async fn buffer_capture_with_source(
         subject,
         subject_external,
         slot,
+        slot_value,
         allow,
         sender,
         fact_type,
         topics,
         supersede_hint,
-        status: CaptureStatus::Buffered,
+        status,
         captured_at: chrono::Utc::now().to_rfc3339(),
         processed_at: None,
         resolved_fact_id: None,
@@ -499,9 +567,56 @@ pub async fn buffer_capture_with_source(
     tracing::info!(
         capture_id = %cap.capture_id,
         subject = %cap.subject,
-        "capture_buffer: BUFFERED"
+        status = cap.status.as_str(),
+        "capture_buffer: written"
     );
     Ok(BufferOutcome { capture_id })
+}
+
+/// Move a parked claim into the queue: `held → buffered`.
+///
+/// The card's owner answered that the value the memory held is wrong, which
+/// is the entitlement the speaker lacked — so the words they said are now a
+/// claim like any other and the light dream promotes them. Returns whether a
+/// parked row was there to move (`false` for a row already released, dropped
+/// or never parked). `captured_at` is left as it was: the claim was captured
+/// when it was said, and the wait is not a second capture.
+///
+/// # Errors
+///
+/// DB errors.
+pub async fn release_held(pool: &SqlitePool, capture_id: &FactId) -> Result<bool> {
+    let rows = sqlx::query(
+        "UPDATE capture_buffer
+            SET status = 'buffered'
+          WHERE capture_id = ? AND status = 'held'",
+    )
+    .bind(capture_id.as_str())
+    .execute(pool)
+    .await?
+    .rows_affected();
+    Ok(rows > 0)
+}
+
+/// Drop a parked claim: the card's owner kept what the memory held, or said
+/// nothing until the question timed out. Returns whether a parked row was
+/// there to drop.
+///
+/// Deleted rather than left in a terminal state: it was never memory — no
+/// page carries it, no fact was minted, and nothing reads it back. What was
+/// said is on the proposal that asked about it, which is where the record of
+/// the exchange belongs.
+///
+/// # Errors
+///
+/// DB errors.
+pub async fn discard_held(pool: &SqlitePool, capture_id: &FactId) -> Result<bool> {
+    let rows = sqlx::query("DELETE FROM capture_buffer WHERE capture_id = ? AND status = 'held'")
+        .bind(capture_id.as_str())
+        .execute(pool)
+        .await?
+        .rows_affected();
+    Ok(rows > 0)
 }
 
 fn validate_buffer_body(body: &str) -> Result<()> {
@@ -692,8 +807,9 @@ pub async fn rebuffer_fact(pool: &SqlitePool, fact_id: &FactId, now: &str) -> Re
             (capture_id, body, subject_id, allow_ids, sender_id, fact_type,
              topics, status, captured_at, source_kind, source_ref,
              valid_from, valid_to, decay_reason, style, salience,
-             authored_refs, embedding, embedding_dim, subject_external, slot)
-         VALUES (?, ?, ?, ?, ?, ?, ?, 'buffered', ?, 'rebuffer', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+             authored_refs, embedding, embedding_dim, subject_external, slot,
+             slot_value)
+         VALUES (?, ?, ?, ?, ?, ?, ?, 'buffered', ?, 'rebuffer', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
          ON CONFLICT(capture_id) DO UPDATE SET
              status = 'buffered', processed_at = NULL, resolved_fact_id = NULL",
     )
@@ -716,6 +832,7 @@ pub async fn rebuffer_fact(pool: &SqlitePool, fact_id: &FactId, now: &str) -> Re
     .bind(i64::try_from(row.embedding.len()).unwrap_or(i64::MAX))
     .bind(row.subject_external.clone())
     .bind(row.slot.clone())
+    .bind(row.slot_value.clone())
     .execute(&mut *tx)
     .await?;
     sqlx::query("DELETE FROM fact_index WHERE fact_id = ?")
@@ -994,7 +1111,7 @@ const SELECT_COLS: &str = "SELECT capture_id, body, subject_id, allow_ids, \
      sender_id, fact_type, topics, supersede_hint, status, captured_at, processed_at, \
      resolved_fact_id, source_kind, source_ref, valid_from, valid_to, decay_reason, style, \
      salience, authored_refs, embedding, origin_message_hash, placement_attempts, \
-     last_attempt_at, subject_external, slot \
+     last_attempt_at, subject_external, slot, slot_value \
      FROM capture_buffer";
 
 #[derive(sqlx::FromRow)]
@@ -1005,6 +1122,7 @@ struct BufferRow {
     #[sqlx(default)]
     subject_external: Option<String>,
     slot: Option<String>,
+    slot_value: Option<String>,
     allow_ids: String,
     sender_id: Option<String>,
     fact_type: Option<String>,
@@ -1044,6 +1162,7 @@ fn decode(r: BufferRow) -> Result<BufferedCapture> {
         capture_id: FactId::parse(&r.capture_id)?,
         subject_external: r.subject_external,
         slot: r.slot,
+        slot_value: r.slot_value,
         body: r.body,
         subject: r.subject_id.parse::<Principal>()?,
         allow: principals_from_json(&r.allow_ids),
@@ -1095,8 +1214,8 @@ async fn insert_row(pool: &SqlitePool, cap: &BufferedCapture) -> Result<u64> {
              topics, supersede_hint, status, captured_at, processed_at, resolved_fact_id,
              source_kind, source_ref, valid_from, valid_to, decay_reason, style,
              salience, authored_refs, embedding, embedding_dim,
-             origin_message_hash, subject_external, slot)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+             origin_message_hash, subject_external, slot, slot_value)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
          ON CONFLICT(capture_id) DO NOTHING",
     )
     .bind(cap.capture_id.as_str())
@@ -1136,6 +1255,7 @@ async fn insert_row(pool: &SqlitePool, cap: &BufferedCapture) -> Result<u64> {
     .bind(cap.origin_message_hash.clone())
     .bind(cap.subject_external.clone())
     .bind(cap.slot.clone())
+    .bind(cap.slot_value.clone())
     .execute(pool)
     .await?;
     Ok(res.rows_affected())
@@ -1184,6 +1304,7 @@ mod tests {
         CaptureRequest {
             subject_external: None,
             slot: None,
+            slot_value: None,
             authored_refs: Vec::new(),
             wiki_id: WikiId::parse(wiki).unwrap(),
             page: Some(PathBuf::from("cucina.md")),

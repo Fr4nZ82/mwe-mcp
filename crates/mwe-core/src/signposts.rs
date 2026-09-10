@@ -897,6 +897,7 @@ async fn put(
         // A signpost marks a project, and the project is the wiki itself.
         subject_external: None,
         slot: None,
+        slot_value: None,
         page: Some(req.page.clone()),
         body: req.body,
         subject: req.subject.clone(),

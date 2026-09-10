@@ -284,6 +284,7 @@ async fn capture_fact(pool: &SqlitePool, tree: &WikiTree) {
     let req = CaptureRequest {
         subject_external: None,
         slot: None,
+        slot_value: None,
         authored_refs: Vec::new(),
         wiki_id: WikiId::parse("alice").expect("wiki id"),
         page: Some(std::path::PathBuf::from("cucina.md")),

@@ -1,0 +1,33 @@
+-- 0079_fact_slot_value — the BARE VALUE a card fact puts in its slot.
+--
+-- `slot` (0078) says WHICH single-value thing a fact states; this says WHAT it
+-- states, stripped of the sentence around it: `07700 900314`, `1983-05-09`,
+-- `Marco`.
+--
+-- WHY THE SENTENCE IS NOT ENOUGH. The engine decides, without a model, whether
+-- a new claim refills a slot a card already fills, and it decided it by
+-- comparing the two facts' PROSE word for word. Prose is not the value:
+-- «Zoe can be reached on 07700 900314» and «Zoe's mobile number is
+-- 07700 900314.» are the same number said twice, and word-for-word they are
+-- two answers — so the card's owner was asked to choose between a value and
+-- itself, with the question quoting a private value at them for nothing. The
+-- comparison has to run on the value, and the only reader that can lift a
+-- value out of a sentence is the one that wrote the sentence: the classifier.
+--
+-- WHAT IT IS NOT. Not a key, not a uniqueness constraint, and not a typed
+-- column: a date is stored as the classifier wrote it and no parsing is
+-- attempted here. Comparison folds case, spaces and punctuation, and compares
+-- digits when both sides are digits after that fold — which is what makes
+-- `07700 900314` and `07700-900314` one number and leaves everything else to
+-- an ordinary string equality.
+--
+-- ADDITIVE ONLY. Existing rows get NULL, and a comparison with nothing on one
+-- side falls back to the fact bodies, which is exactly what it does today.
+-- Filling them in after the fact is a separate job and is not attempted here.
+--
+-- NO INDEX. Nothing ever looks a fact up BY its value: the comparison runs in
+-- memory over the handful of rows one identity page holds, already fetched by
+-- `slot`'s own read.
+
+ALTER TABLE fact_index     ADD COLUMN slot_value TEXT;
+ALTER TABLE capture_buffer ADD COLUMN slot_value TEXT;

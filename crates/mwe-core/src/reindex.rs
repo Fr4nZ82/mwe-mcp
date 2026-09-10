@@ -2243,6 +2243,7 @@ mod tests {
         let new = NewFact {
             subject_external: None,
             slot: None,
+            slot_value: None,
             authored_refs: Vec::new(),
             fact_id: fact_id.clone(),
             wiki_id: "alice".to_owned(),
@@ -2840,6 +2841,7 @@ mod tests {
         let new = NewFact {
             subject_external: None,
             slot: None,
+            slot_value: None,
             authored_refs: Vec::new(),
             fact_id: fact_id.clone(),
             wiki_id: wiki_id.to_owned(),

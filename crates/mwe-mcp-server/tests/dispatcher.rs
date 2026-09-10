@@ -811,6 +811,7 @@ async fn pasta_fact_on_a_nested_page(state: &McpState) -> mwe_core::fact_index::
     mwe_core::fact_index::NewFact {
         subject_external: None,
         slot: None,
+        slot_value: None,
         authored_refs: Vec::new(),
         fact_id: mwe_core::types::FactId::parse("01900000-0000-7000-8000-0000000000aa")
             .expect("fact id"),
@@ -2079,6 +2080,7 @@ async fn insert_forget_fact(
         &NewFact {
             subject_external: None,
             slot: None,
+            slot_value: None,
             authored_refs: Vec::new(),
             fact_id: fact_id.clone(),
             wiki_id: "famiglia".to_owned(),

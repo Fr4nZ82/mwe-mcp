@@ -42,7 +42,10 @@ reaches**, and **the rule itself**, written as an instruction naming the person
 because it is read back later by an assistant that was never in this
 conversation. How far it reaches is either **every assistant** Bob talks to,
 which travels with him, or **one assistant**, which you name — this chat is not
-one of his assistants, so there is no *this one* for it to assume.
+one of his assistants, so there is no *this one* for it to assume. Setting a
+rule for every assistant that Bob already has on one of them **moves** it: the
+copy on that assistant is retired, so it never ends up reading the same
+instruction twice.
 
 **Taking one back.** Bob can drop a rule about himself the way he set it: by
 telling an assistant so. You cannot, because a rule you set for Bob is filed as

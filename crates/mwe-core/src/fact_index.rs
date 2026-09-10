@@ -84,8 +84,8 @@ pub struct FactIndexRow {
     /// its siblings, and it is why the fact is refused on a person's identity
     /// card: a named thing is not the person whose card it would land on.
     pub subject_external: Option<String>,
-    /// The identity-card SLOT this fact fills, in the classifier's own words —
-    /// "the mobile number", "where they live" — and `None` for the vast
+    /// The identity-card SLOT this fact fills — `mobile_number`,
+    /// `home_address`, one of `ingest::CARD_SLOTS` — and `None` for the vast
     /// majority of facts, which fill no slot.
     ///
     /// Kept so the engine can ask whether a new value refills a slot this card
@@ -95,9 +95,21 @@ pub struct FactIndexRow {
     /// A row written before this was recorded carries `None` and takes part in
     /// no comparison.
     ///
-    /// Not a key and not a vocabulary: two spellings of one slot are two slots
-    /// here, which is why it only ever decides whether to ASK the card's owner.
+    /// Not a key: it only ever decides whether to ASK the card's owner. It is
+    /// a closed vocabulary, though — the classifier copies one of
+    /// `ingest::CARD_SLOTS` verbatim and anything else records nothing, so
+    /// two spellings of one slot cannot sit here as two slots.
     pub slot: Option<String>,
+    /// The bare VALUE this fact puts in that slot — `07700 900314`,
+    /// `1983-05-09`, `Marco` — lifted out of the sentence by the classifier
+    /// that wrote the sentence, and `None` wherever [`Self::slot`] is `None`.
+    ///
+    /// The engine's slot comparison runs on this and not on the prose, because
+    /// the prose is not the value: «Zoe can be reached on 07700 900314» and
+    /// «Zoe's mobile number is 07700 900314.» are one number said twice, and
+    /// word for word they are two answers. A row that carries no value falls
+    /// back to comparing the bodies.
+    pub slot_value: Option<String>,
     /// Additional principals the region's `allow=` extension grants
     /// read access to (possibly empty).
     pub allow_ids: Vec<Principal>,
@@ -262,6 +274,8 @@ pub struct NewFact {
     /// See [`FactIndexRow::slot`]. Set on a `bio` capture whose classifier
     /// named the slot it fills; `None` everywhere else.
     pub slot: Option<String>,
+    /// See [`FactIndexRow::slot_value`]. Travels with [`Self::slot`].
+    pub slot_value: Option<String>,
 }
 
 // ---------- Embedding (de)serialization ----------
@@ -391,8 +405,9 @@ async fn insert_with(pool: &SqlitePool, fact: &NewFact, ignore_conflict: bool) -
             embedding, embedding_dim, subject_id, allow_ids, sender_id,
             fact_type, topics, created_at, updated_at,
             valid_from, valid_to, target_page, style,
-            salience, source_ref, authored_refs, subject_external, slot, recall_count_30d
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0)
+            salience, source_ref, authored_refs, subject_external, slot, slot_value,
+            recall_count_30d
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0)
         ON CONFLICT(fact_id) DO NOTHING"#
     } else {
         r#"INSERT INTO fact_index (
@@ -400,8 +415,9 @@ async fn insert_with(pool: &SqlitePool, fact: &NewFact, ignore_conflict: bool) -
             embedding, embedding_dim, subject_id, allow_ids, sender_id,
             fact_type, topics, created_at, updated_at,
             valid_from, valid_to, target_page, style,
-            salience, source_ref, authored_refs, subject_external, slot, recall_count_30d
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0)"#
+            salience, source_ref, authored_refs, subject_external, slot, slot_value,
+            recall_count_30d
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0)"#
     };
 
     let res = sqlx::query(sql)
@@ -429,6 +445,7 @@ async fn insert_with(pool: &SqlitePool, fact: &NewFact, ignore_conflict: bool) -
         .bind(&authored_refs_json)
         .bind(&fact.subject_external)
         .bind(&fact.slot)
+        .bind(&fact.slot_value)
         .execute(pool)
         .await?;
     Ok(res.rows_affected())
@@ -1874,7 +1891,7 @@ pub async fn find_recently_contradicted(
            superseded_by, successor_fact_id, deleted_at, deleted_reason, last_recall_at,
            recall_count_30d, valid_from, valid_to, decay_reason,
            target_page, style, salience, source_ref, authored_refs,
-           subject_external, slot
+           subject_external, slot, slot_value
       FROM fact_index
      WHERE wiki_id = ?
        AND deleted_at IS NULL
@@ -1923,7 +1940,7 @@ pub async fn find_due_between(
                   superseded_by, successor_fact_id, deleted_at, deleted_reason, last_recall_at,
                   recall_count_30d, valid_from, valid_to, decay_reason,
                   target_page, style, salience, source_ref, authored_refs,
-           subject_external, slot
+           subject_external, slot, slot_value
              FROM fact_index
             WHERE superseded_at IS NULL AND deleted_at IS NULL
               AND valid_to IS NOT NULL
@@ -2139,7 +2156,7 @@ pub async fn find_by_filters(
                   superseded_by, successor_fact_id, deleted_at, deleted_reason, last_recall_at,
                   recall_count_30d, valid_from, valid_to, decay_reason,
                   target_page, style, salience, source_ref, authored_refs,
-           subject_external, slot
+           subject_external, slot, slot_value
              FROM fact_index"#,
     );
 
@@ -2273,7 +2290,7 @@ pub async fn find_behaviour_rules(
                   superseded_by, successor_fact_id, deleted_at, deleted_reason, last_recall_at,
                   recall_count_30d, valid_from, valid_to, decay_reason,
                   target_page, style, salience, source_ref, authored_refs,
-           subject_external, slot
+           subject_external, slot, slot_value
              FROM fact_index
             WHERE wiki_id = ?
               AND subject_id = ?
@@ -3159,7 +3176,7 @@ const SELECT_ALL_COLUMNS_WHERE_ID: &str = r#"
            superseded_by, successor_fact_id, deleted_at, deleted_reason, last_recall_at,
            recall_count_30d, valid_from, valid_to, decay_reason,
            target_page, style, salience, source_ref, authored_refs,
-           subject_external, slot
+           subject_external, slot, slot_value
       FROM fact_index
      WHERE fact_id = ?
 "#;
@@ -3171,7 +3188,7 @@ const SELECT_ACTIVE_BY_SUBJECT: &str = r#"
            superseded_by, successor_fact_id, deleted_at, deleted_reason, last_recall_at,
            recall_count_30d, valid_from, valid_to, decay_reason,
            target_page, style, salience, source_ref, authored_refs,
-           subject_external, slot
+           subject_external, slot, slot_value
       FROM fact_index
      WHERE subject_id = ?
        AND superseded_at IS NULL
@@ -3186,7 +3203,7 @@ const SELECT_ACTIVE_BY_SENDER: &str = r#"
            superseded_by, successor_fact_id, deleted_at, deleted_reason, last_recall_at,
            recall_count_30d, valid_from, valid_to, decay_reason,
            target_page, style, salience, source_ref, authored_refs,
-           subject_external, slot
+           subject_external, slot, slot_value
       FROM fact_index
      WHERE sender_id = ?
        AND superseded_at IS NULL
@@ -3201,7 +3218,7 @@ const SELECT_ACTIVE_IN_WIKI: &str = r#"
            superseded_by, successor_fact_id, deleted_at, deleted_reason, last_recall_at,
            recall_count_30d, valid_from, valid_to, decay_reason,
            target_page, style, salience, source_ref, authored_refs,
-           subject_external, slot
+           subject_external, slot, slot_value
       FROM fact_index
      WHERE wiki_id = ?
        AND superseded_at IS NULL
@@ -3216,7 +3233,7 @@ const SELECT_ACTIVE_BY_SOURCE_PATH: &str = r#"
            superseded_by, successor_fact_id, deleted_at, deleted_reason, last_recall_at,
            recall_count_30d, valid_from, valid_to, decay_reason,
            target_page, style, salience, source_ref, authored_refs,
-           subject_external, slot
+           subject_external, slot, slot_value
       FROM fact_index
      WHERE source_path = ?
        AND superseded_at IS NULL
@@ -3257,6 +3274,7 @@ struct RawFactRow {
     authored_refs: Option<String>,
     subject_external: Option<String>,
     slot: Option<String>,
+    slot_value: Option<String>,
 }
 
 fn decode_row(raw: RawFactRow) -> Result<FactIndexRow> {
@@ -3338,6 +3356,7 @@ fn decode_row(raw: RawFactRow) -> Result<FactIndexRow> {
         authored_refs,
         subject_external: raw.subject_external,
         slot: raw.slot,
+        slot_value: raw.slot_value,
     })
 }
 
@@ -3440,6 +3459,7 @@ mod tests {
         NewFact {
             subject_external: None,
             slot: None,
+            slot_value: None,
             authored_refs: Vec::new(),
             fact_id: FactId::parse(fact_id_str).unwrap(),
             wiki_id: wiki.to_owned(),
@@ -3678,6 +3698,7 @@ mod tests {
             &NewFact {
                 subject_external: None,
                 slot: None,
+                slot_value: None,
                 fact_id: FactId::parse(SAMPLE_UUID_V7_1).unwrap(),
                 wiki_id: "famiglia".into(),
                 source_path: "wikis/famiglia/spesa.md".into(),

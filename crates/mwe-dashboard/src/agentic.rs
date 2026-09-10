@@ -402,7 +402,7 @@ fn proposal_tool_descriptors() -> Vec<Tool> {
                     },
                     "answers": {
                         "type": "object",
-                        "description": "Per-kind answers object (e.g. {\"target_page\": \"salute.md\"} for wiki_promote, {} for dedup_merge, {\"verdict\": \"keep\"} or {\"verdict\": \"retire\"} for slot_conflict; keep leaves the stored value alone, retire stops the memory asserting it)."
+                        "description": "Per-kind answers object (e.g. {\"target_page\": \"salute.md\"} for wiki_promote, {} for dedup_merge, {\"verdict\": \"keep\"} or {\"verdict\": \"retire\"} for slot_conflict; keep leaves the stored value alone and drops the value that argued with it, retire stops the memory asserting the stored value and lets the other one take its place)."
                     }
                 },
                 "required": ["proposal_id", "answers"]
@@ -1612,6 +1612,7 @@ fn build_supersede_request(
         // correcting a reading keeps it a reading of the same patient.
         subject_external: old_row.subject_external.clone(),
         slot: None,
+        slot_value: None,
         wiki_id,
         page: Some(std::path::PathBuf::from(page_str)),
         body: new_body,
@@ -1837,7 +1838,10 @@ async fn resolve_behaviour_rule_target(
 ///
 /// Both scopes file the rule under the SAME subject — the person it is about —
 /// and differ only in which wiki it lives in, which is exactly what the rules
-/// channel reads them back by (`mwe_core::ingest::file_behaviour_rule`).
+/// channel reads them back by (`mwe_core::ingest::file_behaviour_rule`). That
+/// call is also what retires the person's narrower copies of the same rule
+/// when the admin widens one to every assistant: widening moves a rule rather
+/// than adding one, and it is the same act here as it is in a conversation.
 async fn dispatch_wiki_set_behaviour_rule(
     arguments: &serde_json::Value,
     ctx: &AgenticContext<'_>,
@@ -2800,6 +2804,7 @@ mod tests {
             &mwe_core::fact_index::NewFact {
                 subject_external: None,
                 slot: None,
+                slot_value: None,
                 authored_refs: Vec::new(),
                 fact_id: fact_id.clone(),
                 wiki_id: "franz".to_owned(),
@@ -2993,6 +2998,7 @@ mod tests {
         let req = CaptureRequest {
             subject_external: None,
             slot: None,
+            slot_value: None,
             authored_refs: Vec::new(),
             wiki_id: WikiId::parse("alice").unwrap(),
             page: Some(std::path::PathBuf::from("cucina.md")),
@@ -3040,6 +3046,7 @@ mod tests {
             &mwe_core::fact_index::NewFact {
                 subject_external: None,
                 slot: None,
+                slot_value: None,
                 authored_refs: Vec::new(),
                 fact_id: fact_id.clone(),
                 wiki_id: "proj".to_owned(),

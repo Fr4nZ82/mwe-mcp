@@ -7968,6 +7968,7 @@ mod tests {
         let req = CaptureRequest {
             subject_external: None,
             slot: None,
+            slot_value: None,
             authored_refs: Vec::new(),
             wiki_id: WikiId::parse(wiki).unwrap(),
             page: Some(PathBuf::from("preferenze.md")),
@@ -8004,6 +8005,7 @@ mod tests {
         let req = CaptureRequest {
             subject_external: None,
             slot: None,
+            slot_value: None,
             authored_refs: Vec::new(),
             wiki_id: WikiId::parse(wiki).unwrap(),
             page: Some(PathBuf::from("preferenze.md")),
@@ -8040,6 +8042,7 @@ mod tests {
         let req = CaptureRequest {
             subject_external: None,
             slot: None,
+            slot_value: None,
             authored_refs: Vec::new(),
             wiki_id: WikiId::parse(wiki).unwrap(),
             page: Some(PathBuf::from("preferenze.md")),
@@ -8129,6 +8132,7 @@ mod tests {
         let req = CaptureRequest {
             subject_external: None,
             slot: None,
+            slot_value: None,
             authored_refs: Vec::new(),
             wiki_id: WikiId::parse(wiki).unwrap(),
             page: Some(PathBuf::from(page)),
@@ -8619,6 +8623,7 @@ mod tests {
         let req = CaptureRequest {
             subject_external: None,
             slot: None,
+            slot_value: None,
             authored_refs: Vec::new(),
             wiki_id: WikiId::parse(wiki).unwrap(),
             page: Some(PathBuf::from(page)),
@@ -10335,6 +10340,7 @@ mod tests {
         let req = CaptureRequest {
             subject_external: None,
             slot: None,
+            slot_value: None,
             authored_refs: Vec::new(),
             wiki_id: WikiId::parse(wiki).unwrap(),
             page: Some(PathBuf::from("bollette.md")),
@@ -10379,6 +10385,7 @@ mod tests {
             let req = CaptureRequest {
                 subject_external: None,
                 slot: None,
+                slot_value: None,
                 authored_refs: Vec::new(),
                 wiki_id: WikiId::parse(wiki).unwrap(),
                 page: Some(PathBuf::from(page)),
@@ -10499,6 +10506,7 @@ mod tests {
             crate::capture::CaptureRequest {
                 subject_external: None,
                 slot: None,
+                slot_value: None,
                 authored_refs: Vec::new(),
                 wiki_id: crate::types::WikiId::parse("alice").unwrap(),
                 page: None,
@@ -11434,6 +11442,7 @@ mod tests {
             &crate::fact_index::NewFact {
                 subject_external: None,
                 slot: None,
+                slot_value: None,
                 authored_refs: Vec::new(),
                 fact_id: fid.clone(),
                 wiki_id: "alice".to_owned(),
@@ -11927,6 +11936,7 @@ mod tests {
                     CaptureRequest {
                         subject_external: None,
                         slot: None,
+                        slot_value: None,
                         authored_refs: Vec::new(),
                         wiki_id: WikiId::parse("bot").unwrap(),
                         page: Some(PathBuf::from("@rules.md")),
@@ -13119,6 +13129,7 @@ mod tests {
             CaptureRequest {
                 subject_external: None,
                 slot: None,
+                slot_value: None,
                 authored_refs: Vec::new(),
                 wiki_id: WikiId::parse("alice").unwrap(),
                 page: Some(PathBuf::from("@rules.md")),
@@ -13359,6 +13370,7 @@ mod tests {
         let req = crate::capture::CaptureRequest {
             subject_external: None,
             slot: None,
+            slot_value: None,
             authored_refs: Vec::new(),
             wiki_id: WikiId::parse(wiki).unwrap(),
             page: Some(PathBuf::from(page)),

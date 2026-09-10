@@ -564,6 +564,7 @@ async fn write_placed(
         subject_id: cap.subject.clone(),
         subject_external: cap.subject_external.clone(),
         slot: cap.slot.clone(),
+        slot_value: cap.slot_value.clone(),
         allow_ids: cap.allow.clone(),
         sender_id: cap.sender.clone(),
         fact_type: cap.fact_type.clone(),
@@ -730,6 +731,7 @@ mod tests {
         CaptureRequest {
             subject_external: None,
             slot: None,
+            slot_value: None,
             authored_refs: Vec::new(),
             wiki_id: WikiId::parse("alice").unwrap(),
             page: Some(PathBuf::from("cucina.md")),
