@@ -7148,6 +7148,16 @@ async fn identity_core_roster(
 ///
 /// Mirrors [`push_behaviour_rules_section`], and for the same reason: a set
 /// the model is shown complete is a set it may act against. No-op when empty.
+///
+/// **Complete among what this speaker may read, which is not always all of
+/// it** ([`identity_core_roster`] filters on [`crate::acl::can_read`]). A
+/// value whose audience excludes the speaker is left out, so the model can
+/// see no conflict with it and the turn files the second value beside the
+/// first — and neither the speaker nor the value's owner is told. Showing it
+/// is not the answer either: the question the engine asks quotes the stored
+/// value back, and quoting it is the disclosure the ACL exists to prevent.
+/// The prompt therefore tells the model that an absence here proves nothing,
+/// and the case where two values end up on one card unnoticed is open.
 fn push_identity_core_section(out: &mut String, facts: &[StoredValue]) {
     if facts.is_empty() {
         return;
@@ -17926,6 +17936,30 @@ mod tests {
                 "the worked subject pair carrying {pair} is gone from the prompt"
             );
         }
+    }
+
+    /// The identity core is complete among what the speaker may READ, and the
+    /// prompt says so where the model is told it may rely on it.
+    ///
+    /// A card's slots are filtered by the speaker's own read access
+    /// ([`identity_core_roster`]), so a value with a narrower audience is not
+    /// in the block at all. Told the block was simply complete, the model
+    /// reads an absence as an empty slot: Alice stated a second mobile number
+    /// for Zoe, Zoe's own number was private to her, and both were filed on
+    /// her card with nothing asked of anybody. What a speaker who cannot see
+    /// the first value should be asked is open; what the model must not do is
+    /// conclude there is nothing there.
+    #[test]
+    fn bundled_ingest_prompt_does_not_promise_a_complete_identity_core() {
+        assert!(
+            BUNDLED_INGEST_PROMPT_MD
+                .contains("complete **among the facts you are allowed to see**"),
+            "the identity-core block is promised complete again"
+        );
+        assert!(
+            BUNDLED_INGEST_PROMPT_MD.contains("never a slot you know to be empty"),
+            "the model may read an absence in the block as an empty slot again"
+        );
     }
 
     /// A repeated measurement is a history, and the reconciler is told so

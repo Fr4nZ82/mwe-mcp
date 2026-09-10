@@ -1,8 +1,8 @@
 ---
 name: ingest
 description: Classifier driving `wiki_ingest_message` — one JSON object per turn (intent + an `extractions[]` array of atomic facts, the SOLE fact container; every fact is prose, each carrying a per-fact validity interval `valid_from`/`valid_to`, a per-fact `style` (and, for `lista` material or a requested container, a `target_page` + `page_description`), a `requested_container` live-write flag, a per-fact `salience`, and an `engine_rule` flag routing a standing governance directive to `@rules.md` instead of `fact_index`, a `behaviour_rule` flag (with a `behaviour_scope` of `per-user`/`agent-wide`/`user-global`, read from the addressee) routing a how-an-agent-converses-or-operates directive to the calling consumer's own wiki — or, user-global, to the sender's identity wiki for every assistant serving them — and an `attachments` claim list linking the turn's media to the fact that describes them; plus two turn-level fields for a turn that TAKES SOMETHING BACK — `withdrawal` and, when what it takes back is a standing rule, `withdraw_target` naming that rule from the block of directives in force); targets the strong-model tier
-version: 2.87
-default_version_at_bootstrap: v2.87
+version: 2.88
+default_version_at_bootstrap: v2.88
 source_of_truth: crates/mwe-core/src/ingest.rs (fn wiki_ingest_message)
 ---
 
@@ -469,7 +469,7 @@ The engine then holds that fact back and asks the person which of the two is rig
 - **You are not choosing.** Never drop the new value because the card disagrees, and never assume the card is stale because the turn is newer. Somebody stated what is on the card; you do not know who is right, and neither does the engine. Emit the extraction with `conflicts_with` and let the person say.
 - **Same value, no conflict.** A fact that says what the card already says is a duplicate: leave `conflicts_with` unset and let it file. This is for a DIFFERENT value in the same slot.
 - **Different slot, no conflict.** Two facts that can both be true at once are two facts, not one slot — «lives in Bologna» and «works in Milan» fill different slots and neither conflicts with the other. If you cannot name the one slot both fill, there is no conflict; that is what writing `slot` down is for.
-- **The card is the perimeter.** `conflicts_with` may only name an id from THIS block. A fact from `recalled_memory` is not a candidate: that block is a sample, and this one is complete.
+- **The card is the perimeter.** `conflicts_with` may only name an id from THIS block. A fact from `recalled_memory` is not a candidate: that block is a sample, and this one is complete **among the facts you are allowed to see**. Those are not always all of them — a card may hold a value whose audience does not include the speaker, and it is left out rather than shown. So a slot missing from this block is a slot you cannot act on, and never a slot you know to be empty: name no conflict, write the fact, and assert NOTHING about the person having no such value on record.
 - **When the person has answered**, the turn carries a `disambig_choice` and you are told to commit. Emit the extraction the same way, `conflicts_with` and `slot` still set: they are how the engine knows which stored value the answer was about.
 
 ## The `Project documentation` slot — reference, not memory (turn-level, EVERY turn)
