@@ -572,9 +572,10 @@ async fn apply_add(
     // Write-time dedup, exactly as the capture path applies at every other
     // write site: an `add` that merely rephrases an existing fact is skipped
     // rather than minting a near-duplicate row. Same discipline as
-    // `capture::wiki_capture` — same-subject scope, the channel-page boundary,
-    // jaccard 6-gram, and the embed-set guard (two distinct media with
-    // near-identical captions stay two facts). Dedup first so a hit
+    // `capture::wiki_capture` — same-subject scope, jaccard 6-gram, the
+    // embed-set guard (two distinct media with near-identical captions stay
+    // two facts), and, for a claim headed for a reserved channel page, that
+    // page itself as the scope (`capture::ChannelScope`). Dedup first so a hit
     // short-circuits before the (possibly remote) embed call.
     //
     // Candidates are every active fact **about this subject, wherever it is**
@@ -1584,6 +1585,89 @@ mod tests {
             row.text, "Alice likes tea",
             "a comment on an empty page never reaches another page's facts"
         );
+        drop(dir);
+    }
+
+    /// The comments road dedups against the very channel page the claim is
+    /// headed for, like every other write site.
+    ///
+    /// It hands the scope a workdir-relative path where the capture path hands
+    /// a wiki-relative one, and a channel page is identified by its reserved
+    /// name at a wiki's root — so a scope that compared paths would match
+    /// nothing from here and let a second copy of a standing rule onto
+    /// `@rules.md`, where the rules channel would then serve the person the
+    /// same directive twice and «drop that rule» would close one of two.
+    #[tokio::test]
+    async fn a_rule_added_twice_from_the_comments_road_stays_one_rule() {
+        const RULE: &str = "Answer concisely: the answer without the preamble.";
+        let (dir, tree, pool) = setup().await;
+        std::fs::write(
+            dir.path().join("wikis/alice/@rules.md"),
+            "# Rules\n\nbody.\n",
+        )
+        .unwrap();
+        let standing = fid_str(0x71);
+        fact_index::insert(
+            &pool,
+            &NewFact {
+                subject_external: None,
+                authored_refs: Vec::new(),
+                fact_id: FactId::parse(&standing).unwrap(),
+                wiki_id: "alice".to_owned(),
+                source_path: "wikis/alice/@rules.md".to_owned(),
+                region_start: Some(10),
+                region_end: Some(40),
+                text: RULE.to_owned(),
+                embedding: vec![0.1, 0.2],
+                subject_id: "user:alice".parse::<Principal>().unwrap(),
+                allow_ids: Vec::new(),
+                sender_id: Some("user:alice".parse::<Principal>().unwrap()),
+                fact_type: Some("rule".to_owned()),
+                topics: Vec::new(),
+                valid_from: None,
+                valid_to: None,
+                target_page: None,
+                style: None,
+                salience: None,
+                source_ref: None,
+            },
+        )
+        .await
+        .unwrap();
+
+        let bi = insert_comment(
+            &pool,
+            Some("wiki://alice/@rules.md#rules"),
+            "say it again, keep the answers short",
+        )
+        .await;
+        let llm = FakeLlmBackend::new(
+            "fake",
+            format!(
+                "{{\"ops\":[{{\"action\":\"add\",\"text\":\"{RULE}\",\
+                 \"subject_id\":\"user:alice\",\"allow_ids\":[]}}]}}"
+            ),
+        );
+        let embedder: Arc<dyn Embedder> = Arc::new(FakeEmbedder::new("fake", 2));
+        let report = apply_comments(
+            &pool,
+            &tree,
+            &embedder,
+            &llm,
+            &WikiId::parse("alice").unwrap(),
+            &[bi],
+            "2026-05-31T02:00:00Z",
+        )
+        .await
+        .expect("apply");
+
+        assert_eq!(report.facts_added, 0, "{:?}", report.errors);
+        assert_eq!(report.facts_deduped, 1, "the rule is already on that page");
+        let rows = fact_index::find_active_by_source_path(&pool, "wikis/alice/@rules.md")
+            .await
+            .unwrap();
+        assert_eq!(rows.len(), 1, "one rule, said twice");
+        assert_eq!(rows[0].fact_id.as_str(), standing);
         drop(dir);
     }
 

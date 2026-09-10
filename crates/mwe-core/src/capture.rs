@@ -380,6 +380,8 @@ impl Audience<'_> {
 #[derive(Debug, Clone, Copy)]
 pub(crate) struct ChannelScope<'a> {
     wiki_id: &'a str,
+    /// The channel's own **file name**, never a path — see [`ChannelScope::of`],
+    /// which is the only way to build one and reduces whatever it is handed.
     page: &'a str,
 }
 
@@ -387,16 +389,31 @@ impl<'a> ChannelScope<'a> {
     /// The scope of a claim headed for `page` in `wiki_id`, or `None` when
     /// that page is not a channel page — an ordinary claim, which dedups
     /// against ordinary prose and never against a channel.
+    ///
+    /// **`page` may be given in either shape** and the two reach here from
+    /// call sites that have no reason to agree: the capture path holds a
+    /// wiki-relative `@rules.md`, the comment path a workdir-relative
+    /// `wikis/alice/@rules.md`. Reducing to the file name here is what makes
+    /// both right — a channel page is identified by its reserved name at a
+    /// wiki's root, so the name plus the wiki id is the whole of its identity,
+    /// and a comparison that took the path would silently match nothing from
+    /// the caller whose path is longer.
     pub(crate) fn of(wiki_id: &'a str, page: &'a str) -> Option<Self> {
-        crate::wiki::is_channel_page(page).then_some(Self { wiki_id, page })
+        let name = std::path::Path::new(page)
+            .file_name()
+            .and_then(|n| n.to_str())?;
+        crate::wiki::is_channel_page(name).then_some(Self {
+            wiki_id,
+            page: name,
+        })
     }
 
     /// Whether `row` sits on this very channel page.
     ///
-    /// Channel pages live at a wiki's root under a reserved name, so the wiki
-    /// id plus the file name identify one exactly — and `row.source_path` is
-    /// workdir-relative while `page` is wiki-relative, which is why the file
-    /// name is compared and not the two paths.
+    /// `row.source_path` is workdir-relative and [`Self::page`] is a bare file
+    /// name, so the comparison is name against name
+    /// ([`crate::wiki::names_page`], which also admits the pre-marker
+    /// spelling a migrated row still carries).
     fn holds(&self, row: &FactIndexRow) -> bool {
         row.wiki_id == self.wiki_id && crate::wiki::names_page(&row.source_path, self.page)
     }
