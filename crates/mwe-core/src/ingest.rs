@@ -1824,9 +1824,9 @@ enum ListRefusal {
     /// prompt requires of a `lista` extraction was absent, or what it held was
     /// not a page name this engine will coin.
     ///
-    /// The commonest of the three by far, and for a while the one nobody could
-    /// see: every list item that ended up with no page was reported as the
-    /// CAP, so a memory holding one list told its owner it held the maximum.
+    /// The commonest of the three by far, and the one that must never be
+    /// reported as the cap: a memory holding one list would be telling its
+    /// owner it holds the maximum, and they have no way to check.
     NoPageNamed,
 }
 
@@ -7163,10 +7163,12 @@ fn push_identity_core_section(out: &mut String, facts: &[StoredValue]) {
         return;
     }
     out.push_str(
-        "\nidentity_core (every fact already on these people's identity cards that you may \
-         see — COMPLETE per person, not a sample. If an extraction of yours states a DIFFERENT \
-         value for a slot one of these already fills, set that extraction's conflicts_with to \
-         its fact_id and name the slot; do not write it beside):\n",
+        "\nidentity_core (every fact on these people's identity cards that you are allowed to \
+         read — complete among those, not a sample; a value whose audience excludes you is left \
+         out, so a slot missing here is one you cannot act on and never one you know to be \
+         empty. If an extraction of yours states a DIFFERENT value for a slot one of these \
+         already fills, set that extraction's conflicts_with to its fact_id and name the slot; \
+         do not write it beside):\n",
     );
     let mut current: Option<&Principal> = None;
     for fact in facts {
@@ -9554,10 +9556,11 @@ pub async fn wiki_ingest_message(
                 // to retry or free a list.
                 if is_list_shaped(&unit) && cap_req.page.is_none() {
                     // Three roads end here and the user is told which one, so
-                    // the cap is claimed only when the cap is what fired. Read
-                    // as an else-branch it swallowed the other two, and the
-                    // commonest of them — the classifier naming no page at all
-                    // — reported a memory holding one list as full.
+                    // the cap is claimed only when the cap actually fired —
+                    // never as the else-branch of the other two. The commonest
+                    // road of the three is the classifier naming no page at
+                    // all, and calling that the cap describes a person's own
+                    // memory to them wrongly, in the one sentence they get.
                     let reason = if cap_took_the_page {
                         ListRefusal::WikiAtListCap
                     } else if unit.target_page.is_some_and(|p| {
