@@ -20464,7 +20464,7 @@ mod tests {
                             l'apertura di un libretto postale, un fondo pensione o un piano \
                             di accumulo (PAC).";
     /// The birth date already on bob's card.
-    const CARD_BIRTHDATE: &str = "bob \u{e8} nato il 31 ottobre 2017 alle 08:10";
+    const CARD_BIRTHDATE: &str = "bob \u{e8} nato il 12 marzo 2014 alle 06:45";
     /// The birth date a classifier derives from the age above.
     const DERIVED_BIRTHDATE: &str = "bob \u{e8} nato l'8 luglio 2012";
     const CARD_FACT_ID: &str = "0190f3c2-7a4e-7c31-9b02-2f6a1c8e5da1";
