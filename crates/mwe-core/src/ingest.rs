@@ -1866,7 +1866,8 @@ impl ListRefusal {
             },
         };
         format!(
-            "NOTE — the user asked to put something on a list and it was NOT saved: {why}.              {what_to_do} Do NOT say it was noted or remembered."
+            "NOTE — the user asked to put something on a list and it was NOT saved: {why}. \
+             {what_to_do} Do NOT say it was noted or remembered."
         )
     }
 }
