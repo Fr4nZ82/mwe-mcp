@@ -7284,6 +7284,27 @@ fn day_said(preferred: Option<&str>, fallback: &str) -> Option<String> {
 ///
 /// Best-effort: a person whose card cannot be read contributes none, and the
 /// turn is classified without their slots.
+/// The identity core of the people a turn is about, split by whether this
+/// speaker may READ each value.
+///
+/// The two halves are used by different readers and must not be confused.
+/// [`IdentityCore::served`] goes into the classifier prompt, so it holds only
+/// what the speaker may see — the question a declared conflict raises quotes
+/// the stored value back to them, and quoting it is the disclosure the
+/// audience list exists to prevent. [`IdentityCore::hidden`] never leaves the
+/// engine: it is how a slot can be found taken without anybody being told what
+/// fills it.
+#[derive(Debug, Default)]
+struct IdentityCore {
+    /// The values this speaker may read, in the order their people were named.
+    served: Vec<StoredValue>,
+    /// The values they may not, each with the slot it fills. A stored value
+    /// that never recorded its slot is absent: there is nothing to compare it
+    /// by, and guessing from its words is the model judgement this path exists
+    /// to do without.
+    hidden: Vec<(String, StoredValue)>,
+}
+
 async fn identity_core_roster(
     pool: &SqlitePool,
     tree: &WikiTree,
@@ -7292,7 +7313,7 @@ async fn identity_core_roster(
     hits: &[RecallHit],
     roster: &[enrollment::EnrolledUserLite],
     policy: &IngestPolicy,
-) -> Vec<StoredValue> {
+) -> IdentityCore {
     // The speaker leads: their own card is the one served on every turn, so
     // their slots are the ones a turn is likeliest to refill.
     let mut subjects = vec![sender.sender_id.to_lowercase()];
@@ -7304,7 +7325,7 @@ async fn identity_core_roster(
     // One seat more than the card slot, because the speaker takes one and the
     // card slot excludes them (`WHO IS SPEAKING` serves theirs).
     subjects.truncate(policy.max_mentioned_cards.saturating_add(1));
-    let mut out = Vec::new();
+    let mut out = IdentityCore::default();
     for subject in subjects {
         let Some(handle) = WikiId::parse(&subject)
             .ok()
@@ -7324,22 +7345,29 @@ async fn identity_core_roster(
                 continue;
             },
         };
-        out.extend(
-            rows.iter()
-                .filter(|row| row.is_identity_core())
-                .filter(|row| {
-                    crate::acl::can_read(
-                        &crate::types::Acl {
-                            subject: Some(row.subject_id.clone()),
-                            allow: row.allow_ids.clone(),
-                        },
-                        &sender.sender_id,
-                        &sender.sender_groups,
-                        row.sender_id.as_ref(),
-                    )
-                })
-                .map(StoredValue::from_row),
-        );
+        for row in rows.iter().filter(|row| row.is_identity_core()) {
+            let readable = crate::acl::can_read(
+                &crate::types::Acl {
+                    subject: Some(row.subject_id.clone()),
+                    allow: row.allow_ids.clone(),
+                },
+                &sender.sender_id,
+                &sender.sender_groups,
+                row.sender_id.as_ref(),
+            );
+            if readable {
+                out.served.push(StoredValue::from_row(row));
+            } else if let Some(slot) = row.slot.as_deref().map(str::trim).filter(|s| !s.is_empty())
+            {
+                // Kept apart, never shown. The classifier sees only `served`,
+                // because the question it sets up quotes the stored value back
+                // to the speaker. `hidden` is the engine's own, and only a
+                // value that still knows its SLOT can be compared without
+                // reading it out.
+                out.hidden
+                    .push((slot.to_owned(), StoredValue::from_row(row)));
+            }
+        }
     }
     out
 }
@@ -7515,6 +7543,40 @@ fn vet_slot_conflict<'a>(
         },
         None => SlotVerdict::Ask(stored),
     }
+}
+
+/// The stored value that already fills this claim's slot and that the speaker
+/// may not read — the case no declared conflict can ever cover.
+///
+/// `conflicts_with` is set by the classifier against the block it is shown,
+/// and a value whose audience excludes the speaker is not in that block: they
+/// are told nothing about that slot, so the second value files quietly beside
+/// the first and neither the speaker nor the person it is about hears a word.
+/// The comparison is therefore the ENGINE's, and it is a string comparison and
+/// not a judgement — the claim names the slot it fills, the stored fact
+/// remembers the slot it fills, and two spellings of one slot are simply two
+/// slots here. Nothing is inferred from the values themselves.
+///
+/// `None` unless every one of these holds: the claim is a `bio` fact (nothing
+/// else fills a slot of a card), it names a slot, a hidden value fills the same
+/// slot, and it says something DIFFERENT — a card that already says what the
+/// turn says has nothing to settle, and asking its owner about it would be
+/// noise about their own record.
+fn hidden_value_filling_the_same_slot<'a>(
+    unit: &CaptureUnit<'_>,
+    hidden: &'a [(String, StoredValue)],
+) -> Option<(&'a str, &'a StoredValue)> {
+    if unit.fact_type != Some("bio") {
+        return None;
+    }
+    let slot = unit.slot.map(str::trim).filter(|s| !s.is_empty())?;
+    let body = unit.body.map(str::trim).filter(|b| !b.is_empty())?;
+    hidden
+        .iter()
+        .find(|(stored_slot, stored)| {
+            same_directive(stored_slot, slot) && !stored.is_the_same_value(body)
+        })
+        .map(|(stored_slot, stored)| (stored_slot.as_str(), stored))
 }
 
 /// The two candidates a slot question offers, and the seed that asks it.
@@ -8971,7 +9033,7 @@ pub async fn wiki_ingest_message(
         policy,
     );
     push_behaviour_rules_section(&mut prompt, &behaviour_rules);
-    push_identity_core_section(&mut prompt, &identity_core);
+    push_identity_core_section(&mut prompt, &identity_core.served);
     // Media riding the turn: stamp late-arriving caption/description on
     // the catalog rows (fill-only), then load the bytes of undescribed
     // photos so the classifier *looks at them* — the consumer-supplied
@@ -9188,6 +9250,12 @@ pub async fn wiki_ingest_message(
     // A list item never waits: an hour later there would still be no list to
     // put it on.
     let mut list_page_refused: Option<ListRefusal> = None;
+    // A value this speaker may not read already fills the slot their claim
+    // fills, so the claim was NOT written and its owner was asked instead. The
+    // notice tells the speaker that much and no more: naming the slot, the
+    // stored value or the day it was said would disclose exactly what the
+    // audience list withholds.
+    let mut slot_passed_to_its_owner: Option<Principal> = None;
     // The flat recall slot is the DETERMINISTIC hit-list ([`format_snippet`]),
     // never an LLM recap. The classifier runs BEFORE the navigator and sees
     // only the shallow flat hits, so a prose recap it wrote here could assert
@@ -9623,12 +9691,45 @@ pub async fn wiki_ingest_message(
                 let mut weld_onto: Option<StoredValue> = None;
                 match vet_slot_conflict(
                     &unit,
-                    &identity_core,
+                    &identity_core.served,
                     slot_answer.as_ref(),
                     &request.sender_id,
                     &sender_ctx.sender_groups,
                 ) {
-                    SlotVerdict::NotAConflict => {},
+                    SlotVerdict::NotAConflict => {
+                        // The classifier saw no conflict, and for a value it
+                        // was not shown it never could. The engine compares
+                        // the slots itself, tells nobody what fills the one
+                        // already taken, and puts the disagreement to the
+                        // person whose card it is — the one reader entitled to
+                        // both values.
+                        if let Some((slot, stored)) =
+                            hidden_value_filling_the_same_slot(&unit, &identity_core.hidden)
+                        {
+                            tracing::info!(
+                                target = stored.fact_id.as_str(),
+                                subject = %stored.subject,
+                                sender_id = request.sender_id.as_str(),
+                                slot,
+                                "ingest: the slot is filled by a value this speaker may not read \
+                                 — held back, asked its owner"
+                            );
+                            ask_the_owner_of_the_slot(
+                                pool,
+                                stored.disagreement(
+                                    slot,
+                                    unit.body.unwrap_or_default(),
+                                    &Principal::User(request.sender_id.clone()),
+                                    None,
+                                    "the speaker may not read the value already on the card, so \
+                                     they could not be asked which of the two is right",
+                                ),
+                            )
+                            .await;
+                            slot_passed_to_its_owner = Some(stored.subject.clone());
+                            continue;
+                        }
+                    },
                     SlotVerdict::Ask(stored) => {
                         tracing::info!(
                             target = stored.fact_id.as_str(),
@@ -10695,8 +10796,18 @@ pub async fn wiki_ingest_message(
     // was NOT filed; steer the agent to decline politely this turn. It
     // rides the dedicated `rules` field (it is behaviour guidance), not the
     // recalled memory.
-    let notice = list_page_refused
-        .map(ListRefusal::notice)
+    let notice = slot_passed_to_its_owner
+        .map(|owner| {
+            format!(
+                "NOTE — what the user said about {owner} fills a detail their record already \
+                 holds with a different value, and the user is not allowed to see the one on \
+                 record. It was NOT saved. {owner} has been asked which of the two is right and \
+                 will decide. Tell the user that much and nothing else: do NOT say what is on \
+                 record, do NOT say which detail it is, do NOT guess, and do NOT say their \
+                 version was saved or that it was rejected."
+            )
+        })
+        .or_else(|| list_page_refused.map(ListRefusal::notice))
         .or_else(|| refused_rule_retraction.map(|r| r.notice().to_owned()))
         .or_else(|| {
             rule_about_other_denied.then(|| {
@@ -20105,6 +20216,184 @@ mod tests {
             "the proposal carries both values: {context}"
         );
         drop(dir);
+    }
+
+    /// The number nobody else may read: a second value for that slot is not
+    /// written, its owner is asked, and the speaker is told only that it was
+    /// passed on.
+    ///
+    /// Zoe gives her mobile number and it stays hers to read. A fortnight later
+    /// Alice states a different one. Alice is shown nothing of that slot — the
+    /// question a declared conflict raises would quote Zoe's number back to her
+    /// — so no `conflicts_with` can be set and, until the engine compared the
+    /// slots itself, both numbers landed on Zoe's card with neither of them
+    /// told. The comparison is the code's, the values reach only the one reader
+    /// entitled to both, and what goes back to Alice names nothing.
+    #[tokio::test]
+    async fn a_value_the_speaker_may_not_read_is_settled_by_the_card_s_owner() {
+        const HERS: &str = "Zoe's mobile number is 07700 900314.";
+        const ALICE_SAYS: &str = "Zoe's mobile number is 07700 900275.";
+        let (dir, tree, pool) = setup_slot_family().await;
+        let hers = plant_private_number(&pool, HERS).await;
+
+        let plan = format!(
+            "{{\"intent\":\"capture\",\"extractions\":[\
+             {{\"target_wiki_id\":\"zoe\",\"subject_id\":\"user:zoe\",\
+             \"body\":\"{ALICE_SAYS}\",\"fact_type\":\"bio\",\"salience\":\"high\",\
+             \"slot\":\"the mobile number\",\"topics\":[\"contact\"]}}]}}"
+        );
+        let resp = wiki_ingest_message(
+            &pool,
+            &tree,
+            fake_embedder(),
+            &FakeLlmBackend::new("fake", &plan),
+            None,
+            req(
+                "Zoe's number is 07700 900275, that's the one I've got",
+                "alice",
+            ),
+            &IngestPolicy::default(),
+        )
+        .await
+        .expect("ingest");
+
+        assert!(resp.capture_id.is_none(), "Alice's value is not filed");
+        assert!(
+            capture_buffer::find_all_buffered(&pool, 100)
+                .await
+                .unwrap()
+                .is_empty(),
+            "and it is not waiting on its way to the card either"
+        );
+        let card = fact_index::find_active_by_source_path(&pool, "wikis/zoe/@profile.md")
+            .await
+            .unwrap();
+        assert_eq!(card.len(), 1, "one number on the card, not two");
+        assert_eq!(card[0].fact_id, hers);
+
+        let (recipient, context): (Option<String>, String) = sqlx::query_as(
+            "SELECT recipient_id, context FROM structure_proposals WHERE kind = ? AND status = 'pending'",
+        )
+        .bind(proposals::kind::SLOT_CONFLICT)
+        .fetch_one(&pool)
+        .await
+        .expect("the question was opened");
+        assert_eq!(
+            recipient.as_deref(),
+            Some("user:zoe"),
+            "the card's owner is the one reader entitled to both values"
+        );
+        assert!(
+            context.contains("07700 900314") && context.contains("07700 900275"),
+            "and she is shown both: {context}"
+        );
+
+        let notice = resp.rules.unwrap_or_default();
+        assert!(
+            notice.contains("NOT saved") && notice.contains("has been asked"),
+            "Alice is told it was passed on: {notice}"
+        );
+        for secret in ["07700 900314", "the mobile number"] {
+            assert!(
+                !notice.contains(secret),
+                "and told nothing else — `{secret}` leaked into the notice: {notice}"
+            );
+        }
+        drop(dir);
+    }
+
+    /// Saying what the card already says opens nothing: there is no
+    /// disagreement to put to anybody, and a question about it would be noise
+    /// about their own record.
+    #[tokio::test]
+    async fn the_same_value_said_again_from_outside_asks_nobody() {
+        const HERS: &str = "Zoe's mobile number is 07700 900314.";
+        let (dir, tree, pool) = setup_slot_family().await;
+        plant_private_number(&pool, HERS).await;
+
+        let plan = format!(
+            "{{\"intent\":\"capture\",\"extractions\":[\
+             {{\"target_wiki_id\":\"zoe\",\"subject_id\":\"user:zoe\",\
+             \"body\":\"{HERS}\",\"fact_type\":\"bio\",\"salience\":\"high\",\
+             \"slot\":\"the mobile number\",\"topics\":[\"contact\"]}}]}}"
+        );
+        wiki_ingest_message(
+            &pool,
+            &tree,
+            fake_embedder(),
+            &FakeLlmBackend::new("fake", &plan),
+            None,
+            req("Zoe's number is 07700 900314", "alice"),
+            &IngestPolicy::default(),
+        )
+        .await
+        .expect("ingest");
+
+        let opened: i64 =
+            sqlx::query_scalar("SELECT COUNT(*) FROM structure_proposals WHERE kind = ?")
+                .bind(proposals::kind::SLOT_CONFLICT)
+                .fetch_one(&pool)
+                .await
+                .unwrap();
+        assert_eq!(opened, 0, "nothing to settle, so nobody is asked");
+        drop(dir);
+    }
+
+    /// Two people, and one number that is Zoe's alone to read.
+    async fn setup_slot_family() -> (TempDir, WikiTree, SqlitePool) {
+        let dir = tempfile::tempdir().unwrap();
+        let pool = db::open_or_init(dir.path()).await.expect("db open");
+        let wikis = dir.path().join("wikis");
+        std::fs::create_dir_all(&wikis).unwrap();
+        write_wiki(&wikis, "alice", "Alice", "wiki-user", None);
+        write_wiki(&wikis, "zoe", "Zoe", "wiki-user", None);
+        let tree = WikiTree::open(dir.path()).expect("open tree");
+        for user in ["alice", "zoe"] {
+            sqlx::query(
+                "INSERT INTO enrollment_users (user_id, aliases, is_admin) VALUES (?,'[]',0)",
+            )
+            .bind(user)
+            .execute(&pool)
+            .await
+            .unwrap();
+        }
+        (dir, tree, pool)
+    }
+
+    /// Zoe's own number on her own card, readable by nobody else — the shape
+    /// `allow_ids: []` gives every fact somebody states about themselves and
+    /// does not share.
+    async fn plant_private_number(pool: &SqlitePool, text: &str) -> FactId {
+        let fact_id = FactId::parse("0190f3c2-7a4e-7c31-9b02-2f6a1c8e5db2").unwrap();
+        fact_index::insert(
+            pool,
+            &fact_index::NewFact {
+                subject_external: None,
+                slot: Some("the mobile number".to_owned()),
+                authored_refs: Vec::new(),
+                fact_id: fact_id.clone(),
+                wiki_id: "zoe".to_owned(),
+                source_path: "wikis/zoe/@profile.md".to_owned(),
+                region_start: Some(0),
+                region_end: Some(40),
+                text: text.to_owned(),
+                embedding: vec![0.1, 0.2, 0.3, 0.4],
+                subject_id: Principal::User("zoe".to_owned()),
+                allow_ids: Vec::new(),
+                sender_id: Some(Principal::User("zoe".to_owned())),
+                fact_type: Some("bio".to_owned()),
+                topics: Vec::new(),
+                valid_from: Some("2026-06-24T00:00:00Z".to_owned()),
+                valid_to: None,
+                target_page: None,
+                style: None,
+                salience: Some("high".to_owned()),
+                source_ref: None,
+            },
+        )
+        .await
+        .expect("plant zoe's number");
+        fact_id
     }
 
     /// Restating the SAME value is not a conflict: it files as the duplicate

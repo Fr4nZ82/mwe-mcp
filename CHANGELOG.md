@@ -57,6 +57,27 @@ semver-governed surface: breaking changes are called out explicitly.
 
 ### Added
 
+- **A card value nobody else may read can still be corrected, by the person it
+  belongs to.** Your identity card holds a handful of things there can only be
+  one of — when you were born, where you live, how to reach you — and when a
+  conversation states a different value for one of them the memory stops and
+  asks which is right. It could only ask somebody who was allowed to READ the
+  value already on record, because asking quotes it back to them. So a value
+  you had kept to yourself was invisible to that question, and a second one
+  filed quietly beside it: two numbers on one card, with neither you nor the
+  person who said it told anything at all.
+
+  The memory now compares the two itself, without a model and without reading
+  either value out. Nothing is written; **you** are asked, with both values,
+  because you are the one person entitled to see them both; and the person who
+  spoke is told only that what they said was not saved and that it has been
+  passed to you — not what is on record, and not which detail it was. Saying
+  what your card already says opens nothing, and where the speaker may read the
+  value the question reaches them as before.
+
+  Facts written before this release do not record which detail they fill, so
+  they take no part in the comparison until they are stated again.
+
 - **A page for the proposals, so you can read them without asking the chat.**
   The memory keeps rearranging how your facts are filed — it makes a page for a
   subject nobody named, links one page to another, merges two facts that said

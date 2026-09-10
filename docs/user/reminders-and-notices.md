@@ -30,6 +30,13 @@ nothing, and the card stays as it was. This is the one case where the memory
 stops and asks before storing, and it is deliberate: two birth dates on one
 card are worse than a question.
 
+**And when the person speaking may not read what is on your card**, they are
+not asked — asking would mean quoting your value back to them. Their assistant
+tells them only that what they said was not saved and that you have been asked
+about it: not what is on record, not which detail it is. The question comes to
+you, with both values, because you are the one person who may read them both.
+Answer it the same way, from the chat or from [Proposals](proposals.md).
+
 **Something waiting on your answer** waits here rather than reaching you: a
 request to forget a fact you can read, and a disagreement about one of those
 card values that the person who raised it was not entitled to settle. Both
