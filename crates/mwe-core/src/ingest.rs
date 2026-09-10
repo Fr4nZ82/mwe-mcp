@@ -1957,6 +1957,41 @@ async fn refuse_new_list_over_cap(
     Ok(true)
 }
 
+/// The group that answers for a fact about a NAMED NON-PRINCIPAL, read off the
+/// audience the classifier already set.
+///
+/// The prompt makes the two reads one: *«whenever you are about to add
+/// `group:<id>` to `allow_ids` because that group's scope names the kind of
+/// thing this fact is, and the fact is about a non-enrolled individual, THAT
+/// group is also the `subject_id`. Deciding the audience from the scope and
+/// then leaving the subject on the sender is the one combination that cannot
+/// be right — it says the household may read the fact but nobody in it answers
+/// for the person.»* So when the subject arrives unreadable and the audience
+/// names exactly one group, the answer is already in the turn and the sender
+/// default is the combination the prompt rules out.
+///
+/// Three fences, and each of them is what keeps this from guessing:
+/// **`subject_external`** must be set, which is the field that says the fact
+/// is about a named thing rather than about the speaker — without it a fact
+/// about the sender shared with the household would be re-owned to the
+/// household. **Exactly one** group, because two is a fact the classifier
+/// scoped to an audience and not to an owner. And never the builtin `global`,
+/// which is the public marker and answers for nothing.
+fn subject_from_the_audience(unit: &CaptureUnit<'_>) -> Option<Principal> {
+    unit.subject_external
+        .map(str::trim)
+        .filter(|n| !n.is_empty())?;
+    let mut groups = unit
+        .allow_ids
+        .iter()
+        .filter_map(|s| match Principal::from_str(s) {
+            Ok(p) if matches!(p, Principal::Group(_)) && !p.is_global() => Some(p),
+            _ => None,
+        });
+    let only = groups.next()?;
+    groups.next().is_none().then_some(only)
+}
+
 fn validate_capture_plan(
     unit: &CaptureUnit<'_>,
     request: &IngestRequest,
@@ -1969,7 +2004,12 @@ fn validate_capture_plan(
     // is an INPUT to the destination rather than a sibling decision.
     let subject = match unit.subject_id {
         Some(s) => Principal::from_str(s)?,
-        None => Principal::User(request.sender_id.clone()),
+        // No subject to read. The audience may already carry the answer for a
+        // fact about a named non-principal ([`subject_from_the_audience`]);
+        // otherwise it falls to the sender, which is the prompt's own last
+        // resort when no group's scope covers the material.
+        None => subject_from_the_audience(unit)
+            .unwrap_or_else(|| Principal::User(request.sender_id.clone())),
     };
     // A page name is honoured exactly when THE WRITE CANNOT WAIT.
     //
@@ -15717,6 +15757,111 @@ mod tests {
             "what the fact is about is still the cat"
         );
         drop(dir);
+    }
+
+    /// The cat in the kitchen: with the subject unreadable and the audience
+    /// naming one group, that group answers for the fact — not whoever spoke.
+    ///
+    /// The prompt makes the two reads one, and calls audience-from-the-scope
+    /// with subject-on-the-sender the one combination that cannot be right: it
+    /// says the household may read the fact and nobody in it answers for the
+    /// animal. So when the classifier loses the subject but has already
+    /// decided the audience, the answer is in the turn and there is nothing to
+    /// guess.
+    #[tokio::test]
+    async fn a_lost_subject_is_read_back_off_a_single_group_audience() {
+        let (dir, tree, pool) = setup_workdir().await;
+        sqlx::query("INSERT INTO enrollment_groups (group_id, members) VALUES ('famiglia','[]')")
+            .execute(&pool)
+            .await
+            .unwrap();
+        let json = "{\"intent\":\"capture\",\"extractions\":[{\"target_wiki_id\":\"alice\",\
+                    \"target_page\":\"pepper.md\",\"subject_id\":\"subject_external\",\
+                    \"subject_external\":\"Pepper\",\"allow_ids\":[\"group:famiglia\"],\
+                    \"body\":\"Pepper is asleep on the new kitchen floor.\",\
+                    \"fact_type\":\"state\",\"topics\":[\"pets\"],\
+                    \"requested_container\":true,\"suggested_seed\":\"Noted.\"}]}";
+        let resp = wiki_ingest_message(
+            &pool,
+            &tree,
+            fake_embedder(),
+            &FakeLlmBackend::new("fake", json),
+            None,
+            req("Pepper's asleep on the new floor again.", "alice"),
+            &IngestPolicy::default(),
+        )
+        .await
+        .expect("ingest");
+        let row = fact_index::find_by_id(&pool, &resp.capture_id.expect("filed"))
+            .await
+            .expect("find")
+            .expect("inserted row");
+        assert_eq!(
+            row.subject_id,
+            Principal::Group("famiglia".to_owned()),
+            "the group whose scope covers the cat is the one that answers for her"
+        );
+        assert_eq!(row.subject_external.as_deref(), Some("Pepper"));
+        drop(dir);
+    }
+
+    /// The three fences on that recovery, each one a case where the audience
+    /// is not an answer about the subject.
+    #[test]
+    fn the_audience_answers_for_a_named_thing_and_for_nothing_else() {
+        let read = |external: Option<&str>, allow: &[&str]| {
+            let allow: Vec<String> = allow.iter().map(|s| (*s).to_owned()).collect();
+            let unit = CaptureUnit {
+                target_wiki_id: None,
+                target_page: None,
+                subject_id: None,
+                subject_external: external,
+                allow_ids: &allow,
+                fact_type: None,
+                valid_from: None,
+                valid_to: None,
+                style: None,
+                page_description: None,
+                salience: None,
+                requested_container: false,
+                engine_rule: false,
+                behaviour_rule: false,
+                behaviour_scope: None,
+                behaviour_about: None,
+                topics: &[],
+                body: Some("Pepper is asleep on the new kitchen floor."),
+                supersede_target: None,
+                conflicts_with: None,
+                slot: None,
+                attachments: &[],
+            };
+            subject_from_the_audience(&unit)
+        };
+        assert_eq!(
+            read(Some("Pepper"), &["group:famiglia"]),
+            Some(Principal::Group("famiglia".to_owned())),
+            "one group, and a named thing for it to answer for"
+        );
+        assert_eq!(
+            read(None, &["group:famiglia"]),
+            None,
+            "a fact about the SPEAKER shared with the household stays theirs"
+        );
+        assert_eq!(
+            read(Some("Pepper"), &["group:famiglia", "group:lavoro"]),
+            None,
+            "two groups is an audience, not an owner"
+        );
+        assert_eq!(
+            read(Some("Pepper"), &["global"]),
+            None,
+            "the public marker answers for nothing"
+        );
+        assert_eq!(
+            read(Some("Pepper"), &["user:bob", "group:famiglia"]),
+            Some(Principal::Group("famiglia".to_owned())),
+            "a person in the audience is a reader, and leaves the one group alone"
+        );
     }
 
     /// The fence on the rule above: only a FIELD NAME is read as absent. A
