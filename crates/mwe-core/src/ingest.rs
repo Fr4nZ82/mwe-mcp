@@ -6288,7 +6288,27 @@ async fn capture_agent_self_fact(
         return Ok(Some(buffered.capture_id));
     }
     let outcome = capture::wiki_capture(tree, pool, embedder, cap_req).await?;
-    Ok(Some(outcome.fact_id))
+    // A dedup skip mints a fresh id for the audit trail and writes nothing, so
+    // the id to hand back is the fact that IS on the page. The agent has just
+    // said something it already knew, which is not a failure — but returning
+    // the fresh id makes the turn's anchor name a row nothing can read back,
+    // and it is the anchor a later `wiki_read` or receipt follows.
+    let filed = match &outcome.action {
+        CaptureAction::Skipped {
+            matched_fact_id,
+            similarity,
+        } => {
+            tracing::info!(
+                agent_id,
+                matched_fact_id = matched_fact_id.as_str(),
+                similarity,
+                "ingest: the agent restated a self-fact it already holds — nothing written"
+            );
+            matched_fact_id.clone()
+        },
+        _ => outcome.fact_id,
+    };
+    Ok(Some(filed))
 }
 
 /// Cap on how many behaviour-rule facts the read side pulls per turn — a
@@ -23582,6 +23602,69 @@ mod tests {
         assert!(
             !topics.contains(&"bob".to_owned()),
             "a mentioned enrolled user is stripped: {topics:?}"
+        );
+        drop(dir);
+    }
+
+    /// An agent that restates a self-fact it already holds is handed the id of
+    /// the fact that IS on the page.
+    ///
+    /// A dedup skip mints a fresh id for the audit trail and writes nothing,
+    /// so returning it makes the turn's anchor name a row nothing can read
+    /// back — and the anchor is what a later read or receipt follows. The same
+    /// rule the two behaviour-rule callers keep.
+    #[tokio::test]
+    async fn an_agent_restating_its_own_fact_is_given_the_one_on_the_page() {
+        let (dir, tree, pool) = setup_agent_workdir().await;
+        let policy = IngestPolicy::default();
+        let json = "{\"intent\":\"capture\",\"extractions\":[{\"subject_id\":\"self\",\
+              \"target_page\":\"diario.md\",\"body\":\"I helped Alice with the forms.\",\
+              \"fact_type\":\"episode\",\"salience\":\"normal\",\"topics\":[\"forms\"]}]}";
+        let turn = || IngestRequest {
+            author: MessageRole::Assistant,
+            ..req_consumer("I helped Alice with the forms", "alice", "botdeploy")
+        };
+        let first = wiki_ingest_message(
+            &pool,
+            &tree,
+            fake_embedder(),
+            &FakeLlmBackend::new("fake", json),
+            None,
+            turn(),
+            &policy,
+        )
+        .await
+        .expect("assistant turn")
+        .capture_id
+        .expect("the self-fact is filed");
+        let again = wiki_ingest_message(
+            &pool,
+            &tree,
+            fake_embedder(),
+            &FakeLlmBackend::new("fake", json),
+            None,
+            turn(),
+            &policy,
+        )
+        .await
+        .expect("assistant turn")
+        .capture_id
+        .expect("the turn still has an anchor");
+
+        assert_eq!(
+            fact_index::count_active_in_wiki(&pool, "samvisebot")
+                .await
+                .unwrap(),
+            1,
+            "one self-fact, said twice"
+        );
+        assert_eq!(again, first, "the anchor is the fact that stands");
+        assert!(
+            fact_index::find_by_id(&pool, &again)
+                .await
+                .expect("find")
+                .is_some(),
+            "and it names a row that exists"
         );
         drop(dir);
     }
