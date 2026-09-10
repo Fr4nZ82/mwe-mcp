@@ -1197,6 +1197,50 @@ struct LlmExtraction {
     attachments: Vec<String>,
 }
 
+/// The names of the fields of one `extractions` element, as the classifier is
+/// shown them (prompt Part 2's JSON shape) — the list [`names_a_field`] reads.
+///
+/// It must name every field of [`LlmExtraction`] above; `field_names_cover_the_extraction_shape`
+/// pins it against the struct. One added there and forgotten here costs
+/// nothing worse than the behaviour that predates this list.
+const EXTRACTION_FIELDS: &[&str] = &[
+    "target_wiki_id",
+    "subject_external",
+    "target_page",
+    "subject_id",
+    "allow_ids",
+    "fact_type",
+    "valid_from",
+    "valid_to",
+    "style",
+    "page_description",
+    "salience",
+    "requested_container",
+    "engine_rule",
+    "behaviour_rule",
+    "behaviour_scope",
+    "behaviour_about",
+    "topics",
+    "body",
+    "supersede_target",
+    "conflicts_with",
+    "slot",
+    "attachments",
+];
+
+/// Whether `value` is the name of one of the extraction's own fields.
+///
+/// A model that writes one of these where a VALUE belongs has named the box
+/// instead of filling it — `"subject_id": "subject_external"` is the sentence
+/// *"what this is about is in the other field"*, which answers a different
+/// question from the one `subject_id` asks and is no kind of subject at all.
+/// A field name can never be a principal (those carry a `user:` / `group:`
+/// prefix or are the literal `global`), so reading one as "the model said
+/// nothing here" takes nothing away from a value that meant something.
+fn names_a_field(value: &str) -> bool {
+    EXTRACTION_FIELDS.contains(&value.trim())
+}
+
 /// A single fact to file this turn — a borrowed, source-agnostic view over
 /// either one [`LlmExtraction`] or the legacy top-level single-fact fields.
 /// Both [`validate_capture_plan`] and [`validate_supersede_target`] operate on
@@ -9225,6 +9269,28 @@ pub async fn wiki_ingest_message(
                 // fallback. Fail-open on a DB error: the guard protects
                 // against a coined principal, not against an outage.
                 let mut unit = *unit;
+                // The model named the box instead of filling it: `"subject_id":
+                // "subject_external"` is the sentence "what this is about is in
+                // the other field", which answers a different question from the
+                // one this field asks. That is not a wrong subject, it is no
+                // subject — so it is read as the absent one, and the sender
+                // default below is exactly what the prompt prescribes for a
+                // `subject_external` fact no group's scope claims.
+                //
+                // Cleared here rather than tolerated in the validators, so the
+                // supersede guard and the navigation seeds read the same
+                // absence. A malformed principal that is a real NAME is a
+                // different case and still costs the extraction: defaulting
+                // `"alice"` to the sender would write Alice's life under
+                // whoever happened to be speaking.
+                if let Some(raw) = unit.subject_id.filter(|s| names_a_field(s)) {
+                    tracing::warn!(
+                        subject = raw,
+                        sender_id = request.sender_id.as_str(),
+                        "ingest: subject_id names one of the extraction's own fields — read as absent"
+                    );
+                    unit.subject_id = None;
+                }
                 if let Some(raw) = unit.subject_id
                     && let Ok(principal) = Principal::from_str(raw)
                     && !enrollment::principal_exists(pool, &principal)
@@ -15372,6 +15438,113 @@ mod tests {
         drop(dir);
     }
 
+    /// A `subject_id` holding the NAME of another field is the model naming
+    /// the box instead of filling it, and the fact still files.
+    ///
+    /// The cat on the new kitchen floor: `subject_external` is by design a
+    /// name and not a principal, and a model that has just decided the subject
+    /// is an external thing writes `"subject_id": "subject_external"` often
+    /// enough to matter — the prompt forbids it in as many words and the
+    /// sentence still arrives. Read as absent, the sender answers for the
+    /// fact, which is what the prompt prescribes for an external subject no
+    /// group's scope claims. Dropped instead, the whole claim is gone and the
+    /// turn reports itself as a capture.
+    #[tokio::test]
+    async fn ingest_subject_naming_another_field_files_under_the_sender() {
+        let (dir, tree, pool) = setup_workdir().await;
+        let json = "{\"intent\":\"capture\",\"target_wiki_id\":\"alice\",\"target_page\":\"pepper.md\",\
+                    \"subject_id\":\"subject_external\",\"subject_external\":\"Pepper\",\
+                    \"body\":\"Pepper is asleep on the new kitchen floor.\",\"fact_type\":\"state\",\
+                    \"topics\":[\"pets\"],\"requested_container\":true,\"suggested_seed\":\"Noted.\"}";
+        let llm = FakeLlmBackend::new("fake", json);
+        let policy = IngestPolicy::default();
+        let resp = wiki_ingest_message(
+            &pool,
+            &tree,
+            fake_embedder(),
+            &llm,
+            None,
+            req("Pepper's asleep on the new floor again.", "alice"),
+            &policy,
+        )
+        .await
+        .expect("ingest");
+        let cap_id = resp
+            .capture_id
+            .expect("the claim files rather than being dropped");
+        let row = fact_index::find_by_id(&pool, &cap_id)
+            .await
+            .expect("find")
+            .expect("inserted row");
+        assert_eq!(
+            row.subject_id,
+            Principal::User("alice".to_owned()),
+            "a field name says nothing about who answers for the fact, so the sender does"
+        );
+        assert_eq!(
+            row.subject_external.as_deref(),
+            Some("Pepper"),
+            "what the fact is about is still the cat"
+        );
+        drop(dir);
+    }
+
+    /// The fence on the rule above: only a FIELD NAME is read as absent. A
+    /// bare person's name in `subject_id` is a malformed principal and still
+    /// costs the extraction — defaulting it to the sender would write a
+    /// stranger's life under whoever happened to be speaking, which is the
+    /// larger harm of the two.
+    #[test]
+    fn only_a_field_name_is_read_as_an_absent_subject() {
+        assert!(names_a_field("subject_external"));
+        assert!(names_a_field("behaviour_about"));
+        assert!(!names_a_field("Pepper"));
+        assert!(!names_a_field("alice"));
+        assert!(!names_a_field("user:alice"));
+    }
+
+    /// The list [`names_a_field`] reads must be the extraction's own shape:
+    /// every name in it is a field the classifier's JSON actually carries.
+    #[test]
+    fn field_names_cover_the_extraction_shape() {
+        for name in EXTRACTION_FIELDS {
+            let json = format!("{{\"{name}\":null}}");
+            let parsed: serde_json::Value = serde_json::from_str(&json).unwrap();
+            assert!(
+                parsed.get(*name).is_some(),
+                "{name} is not a usable JSON key"
+            );
+        }
+        let shape = serde_json::json!({
+            "target_wiki_id": null, "subject_external": null, "target_page": null,
+            "subject_id": null, "allow_ids": [], "fact_type": null, "valid_from": null,
+            "valid_to": null, "style": null, "page_description": null, "salience": null,
+            "requested_container": false, "engine_rule": false, "behaviour_rule": false,
+            "behaviour_scope": null, "behaviour_about": null, "topics": [],
+            "body": null, "supersede_target": null, "conflicts_with": null,
+            "slot": null, "attachments": [],
+        });
+        let keys: Vec<&str> = shape
+            .as_object()
+            .unwrap()
+            .keys()
+            .map(String::as_str)
+            .collect();
+        for key in &keys {
+            assert!(
+                EXTRACTION_FIELDS.contains(key),
+                "{key} is a field of the extraction and must be in EXTRACTION_FIELDS"
+            );
+        }
+        assert_eq!(
+            EXTRACTION_FIELDS.len(),
+            keys.len(),
+            "EXTRACTION_FIELDS names something the extraction does not carry"
+        );
+        serde_json::from_value::<LlmExtraction>(shape)
+            .expect("the shape above is one the classifier may send");
+    }
+
     /// The positive twin of [`ingest_look_alike_of_an_enrolled_name_reowns_to_sender`],
     /// and the remedy: declare the name as an alias and it reaches its
     /// person, from the same turn and the same plan.
@@ -17658,10 +17831,13 @@ mod tests {
     /// is forbidden as one.
     ///
     /// On two turns of a public-demo corpus the classifier wrote the literal
-    /// string `subject_external` into `subject_id`, and both extractions were
-    /// dropped. The section explained both fields well and never showed one
-    /// worked pair with the values side by side, which is the only form that
-    /// makes "a principal here, a name there" unmistakable.
+    /// string `subject_external` into `subject_id`. The section explained both
+    /// fields well and never showed one worked pair with the values side by
+    /// side, which is the only form that makes "a principal here, a name
+    /// there" unmistakable. The engine reads that answer as an absent subject
+    /// rather than losing the claim ([`names_a_field`]); the fence stays,
+    /// because a fact filed under the sender by default is a worse answer than
+    /// one filed under the group whose scope covers it.
     #[test]
     fn bundled_ingest_prompt_shows_both_subject_fields_with_their_values() {
         assert!(
@@ -17689,10 +17865,12 @@ mod tests {
     #[tokio::test]
     async fn one_unreadable_subject_does_not_take_the_turn_s_other_captures_with_it() {
         let (dir, tree, pool) = setup_workdir().await;
-        // The first extraction carries the FIELD NAME where a principal goes,
-        // which is what the classifier really emitted; the second is sound.
+        // The first extraction carries a bare NAME where a principal goes —
+        // the shape that is still dropped, because reading it as the sender
+        // would file somebody else's life under whoever spoke. The second is
+        // sound.
         let plan = "{\"intent\":\"capture\",\"extractions\":[\
-            {\"subject_id\":\"subject_external\",\"fact_type\":\"episode\",\"style\":\"prosa\",\
+            {\"subject_id\":\"Pepper\",\"fact_type\":\"episode\",\"style\":\"prosa\",\
              \"body\":\"Pepper has been fed.\",\"topics\":[\"pets\",\"feeding\"]},\
             {\"subject_id\":\"user:alice\",\"subject_external\":\"Marco\",\
              \"fact_type\":\"plan\",\"style\":\"prosa-tecnica\",\
