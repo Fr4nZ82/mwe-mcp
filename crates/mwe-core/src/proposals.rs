@@ -640,9 +640,16 @@ pub fn recipient_of_the_card(subject: &crate::types::Principal) -> Option<String
 ///
 /// Three turns restating the same value are one disagreement: without this the
 /// card's owner gets the same question three times, each carrying the value
-/// they were the only one entitled to read. The pair *(fact already stored,
-/// slot)* is the identity of the question — the asserted value may be worded
-/// differently each time and it is still the same box being argued over.
+/// they were the only one entitled to read.
+///
+/// **The claimed value is part of the identity of the question**, alongside
+/// the fact and the box. Keyed on the pair alone, a SECOND person asserting a
+/// DIFFERENT value found a question already open and was swallowed by it —
+/// their value was not parked, was not in the question, and the owner was
+/// choosing between two values one of which nobody had said. Two people
+/// disagreeing about one box are two disagreements, and the owner gets both.
+/// The key is folded (`ingest::folded_slot_value`), so restating one value in
+/// other words is still the one question.
 ///
 /// The scan is over PENDING rows — `idx_struct_status` — and not over the
 /// table, which is the whole history of everything the memory rearranged and
@@ -655,17 +662,20 @@ pub async fn pending_slot_conflict(
     pool: &SqlitePool,
     kept: &crate::types::FactId,
     slot: &str,
+    asserted_key: &str,
 ) -> Result<Option<String>> {
     let found: Option<(String,)> = sqlx::query_as(
         "SELECT proposal_id FROM structure_proposals
           WHERE kind = ? AND status = 'pending'
             AND json_extract(context, '$.kept_fact_id') = ?
             AND json_extract(context, '$.slot') = ?
+            AND json_extract(context, '$.asserted_key') = ?
           LIMIT 1",
     )
     .bind(kind::SLOT_CONFLICT)
     .bind(kept.as_str())
     .bind(slot)
+    .bind(asserted_key)
     .fetch_optional(pool)
     .await?;
     Ok(found.map(|(id,)| id))
@@ -901,6 +911,9 @@ async fn apply_fact_forget(
 const SLOT_VERDICT_KEEP: &str = "keep";
 /// The answer that retires the stored value.
 const SLOT_VERDICT_RETIRE: &str = "retire";
+/// The answer that lets BOTH values stand — offered only where the box may
+/// honestly hold more than one ([`SlotConflict::many_values`]).
+const SLOT_VERDICT_BOTH: &str = "both";
 /// The question id both answers are given under.
 const SLOT_QUESTION_ID: &str = "verdict";
 
@@ -917,9 +930,25 @@ pub struct SlotConflict {
     /// (`ingest::CARD_SLOTS`) where the question comes from a card, and the
     /// reconciler's own free wording — "the wifi password" — where it comes
     /// from a supersede somebody could not apply. Together with
-    /// [`Self::kept_fact_id`] it is what makes two questions the same question
-    /// ([`pending_slot_conflict`]).
+    /// [`Self::kept_fact_id`] and [`Self::asserted_key`] it is what makes two
+    /// questions the same question ([`pending_slot_conflict`]).
     pub slot: String,
+    /// Whether the box may honestly hold MORE THAN ONE value — a second
+    /// number, a work address beside a personal one.
+    ///
+    /// It adds a third answer: *both stand*, which releases the value that was
+    /// said without closing the one on record. On a box that holds one value
+    /// there is nothing for that answer to mean, and it is not offered.
+    pub many_values: bool,
+    /// The value being claimed, folded (`ingest::folded_slot_value`) — the
+    /// third part of what makes two questions the same question.
+    ///
+    /// Without it, "asked once per box" swallowed a SECOND person's different
+    /// value: their claim was neither parked nor put in the question, and the
+    /// owner was told the choice was between two values one of which nobody
+    /// had said. With it, restating one value in other words reopens nothing
+    /// and a different value opens its own question.
+    pub asserted_key: String,
     /// Who the stored fact is about.
     pub subject: crate::types::Principal,
     /// The fact already stored.
@@ -971,10 +1000,19 @@ impl SlotConflict {
             "" => String::new(),
             named => format!(", which gives {named}"),
         };
+        // A box that may hold two values is not asking which is right: it is
+        // asking whether this card carries one of them, the other, or both.
+        // Putting «does the stored value still hold?» there answers a question
+        // nobody has, and the recipient reads it as being asked to drop one.
+        let ask = if self.many_values {
+            "This is a detail a card may carry more than one of. Which of the two does it carry?"
+        } else {
+            "Does the stored value still hold?"
+        };
         format!(
             "About {subject}, the memory holds \u{ab}{kept}\u{bb} (said by \
              {said_by}{said_on}){slot}. {by} said \u{ab}{asserted}\u{bb} instead, and \
-             {refusal}, so the memory was left as it is. Does the stored value still hold?",
+             {refusal}, so the memory was left as it is. {ask}",
             subject = self.subject,
             kept = self.kept_text,
             by = self.asserted_by,
@@ -988,6 +1026,8 @@ impl SlotConflict {
         serde_json::json!({
             "variant": kind::SLOT_CONFLICT,
             "slot": self.slot,
+            "many_values": self.many_values,
+            "asserted_key": self.asserted_key,
             "subject_id": self.subject.to_string(),
             "kept_fact_id": self.kept_fact_id.as_str(),
             "kept_text": self.kept_text,
@@ -1040,23 +1080,35 @@ pub async fn emit_slot_conflict(pool: &SqlitePool, c: &SlotConflict) -> Result<S
     } else {
         "Yes — it still holds; keep it and write nothing."
     };
+    let mut options = vec![
+        serde_json::json!({
+            "id": SLOT_VERDICT_KEEP,
+            "value": SLOT_VERDICT_KEEP,
+            "text": keep_text,
+            "recommended": true,
+        }),
+        serde_json::json!({
+            "id": SLOT_VERDICT_RETIRE,
+            "value": SLOT_VERDICT_RETIRE,
+            "text": retire_text,
+            "recommended": false,
+        }),
+    ];
+    // The third answer exists only where two values can both be right: a
+    // second number, a work address beside a personal one. It writes the value
+    // that was said and leaves the one on record where it is.
+    if c.many_values && has_a_replacement {
+        options.push(serde_json::json!({
+            "id": SLOT_VERDICT_BOTH,
+            "value": SLOT_VERDICT_BOTH,
+            "text": "Both — keep it and record what was said as well.",
+            "recommended": false,
+        }));
+    }
     let questions = serde_json::json!([{
         "id": SLOT_QUESTION_ID,
         "text": c.question(),
-        "options": [
-            {
-                "id": SLOT_VERDICT_KEEP,
-                "value": SLOT_VERDICT_KEEP,
-                "text": keep_text,
-                "recommended": true,
-            },
-            {
-                "id": SLOT_VERDICT_RETIRE,
-                "value": SLOT_VERDICT_RETIRE,
-                "text": retire_text,
-                "recommended": false,
-            },
-        ],
+        "options": options,
     }]);
     emit_proposal(
         pool,
@@ -1119,6 +1171,27 @@ async fn apply_slot_conflict(
         .map(crate::types::FactId::parse)
         .transpose()
         .map_err(|e| ApplyError::InvalidPayload(format!("slot_conflict parked: {e}")))?;
+    // *Both stand* is offered only where the box may hold more than one
+    // value, so it is honoured only where the row says so: answered on a box
+    // that holds one, it would leave two live values on a card that can have
+    // one, which is the defect the whole path exists to stop. It falls back to
+    // the recommended answer.
+    let many_values = context
+        .get("many_values")
+        .and_then(Value::as_bool)
+        .unwrap_or(false);
+    if verdict == SLOT_VERDICT_BOTH && many_values {
+        let released = release_parked_claim(pool, parked.as_ref()).await;
+        return Ok(serde_json::json!({
+            "variant": kind::SLOT_CONFLICT,
+            "verdict": SLOT_VERDICT_BOTH,
+            "kept_fact_id": kept_raw,
+            "parked_capture_id": parked.as_ref().map(|f| f.as_str().to_owned()),
+            "retired": 0,
+            "released": i32::from(released),
+            "dropped": 0,
+        }));
+    }
     if verdict != SLOT_VERDICT_RETIRE {
         // The card stands, so the words that argued with it are not memory and
         // never were.
@@ -1154,21 +1227,7 @@ async fn apply_slot_conflict(
         .map_err(|e| ApplyError::HandlerData(format!("slot_conflict closure: {e}")))?
         .map_or(0, |_| 1),
     };
-    let released = match parked.as_ref() {
-        Some(id) => match crate::capture_buffer::release_held(pool, id).await {
-            Ok(moved) => moved,
-            Err(e) => {
-                tracing::warn!(
-                    error = %e,
-                    parked_capture_id = id.as_str(),
-                    "proposals: the parked claim stayed parked — the stored value is retired \
-                     and the box is empty until somebody states it again"
-                );
-                false
-            },
-        },
-        None => false,
-    };
+    let released = release_parked_claim(pool, parked.as_ref()).await;
     Ok(serde_json::json!({
         "variant": kind::SLOT_CONFLICT,
         "verdict": SLOT_VERDICT_RETIRE,
@@ -1179,6 +1238,25 @@ async fn apply_slot_conflict(
         "released": i32::from(released),
         "dropped": 0,
     }))
+}
+
+/// Move the claim parked behind a slot question into the queue, and say
+/// whether one was there. Best-effort: the verdict on the stored value is the
+/// load-bearing half and it has already landed.
+async fn release_parked_claim(pool: &SqlitePool, parked: Option<&crate::types::FactId>) -> bool {
+    let Some(id) = parked else { return false };
+    match crate::capture_buffer::release_held(pool, id).await {
+        Ok(moved) => moved,
+        Err(e) => {
+            tracing::warn!(
+                error = %e,
+                parked_capture_id = id.as_str(),
+                "proposals: the parked claim stayed parked — the box is as it was until \
+                 somebody states the value again"
+            );
+            false
+        },
+    }
 }
 
 /// Drop the claim parked behind a slot question, and say whether one was
@@ -1861,8 +1939,12 @@ pub fn build_recommended_answers(questions_raw: &str) -> std::result::Result<Val
 /// hands both the same `now`, so a row the auto-apply sweep keeps
 /// failing stops being retried once the grace window closes.
 ///
-/// Single-statement sweep with no per-row handler: the row lands on
-/// `expired` and nothing is emitted.
+/// The row lands on `expired` and nothing is emitted — with ONE thing the
+/// handler would have done and this must do too: a slot conflict holds a
+/// claim parked in the capture buffer, and giving up on the question is
+/// giving up on the claim. Left behind it is a row nothing reads, nothing
+/// counts and nothing will ever release. So the parked ids are read before
+/// the flip and dropped after it.
 ///
 /// # Errors
 ///
@@ -1872,6 +1954,16 @@ pub async fn expire_overdue_proposals(
     now: chrono::DateTime<chrono::Utc>,
 ) -> std::result::Result<ExpireReport, ApplyError> {
     let cutoff = (now - EXPIRE_GRACE_PERIOD).to_rfc3339();
+    let doomed: Vec<(String,)> = sqlx::query_as(
+        "SELECT json_extract(context, '$.parked_capture_id')
+           FROM structure_proposals
+          WHERE status = 'pending' AND timeout_at < ? AND kind = ?
+            AND json_extract(context, '$.parked_capture_id') IS NOT NULL",
+    )
+    .bind(&cutoff)
+    .bind(kind::SLOT_CONFLICT)
+    .fetch_all(pool)
+    .await?;
     let rows_affected = sqlx::query(
         "UPDATE structure_proposals
             SET status = 'expired'
@@ -1881,9 +1973,14 @@ pub async fn expire_overdue_proposals(
     .execute(pool)
     .await?
     .rows_affected();
+    for (raw,) in &doomed {
+        let parked = crate::types::FactId::parse(raw).ok();
+        drop_parked_claim(pool, parked.as_ref()).await;
+    }
     if rows_affected > 0 {
         tracing::info!(
             expired = rows_affected,
+            parked_dropped = doomed.len(),
             cutoff = %cutoff,
             "proposals: expired sweep (past grace period)",
         );
@@ -1891,6 +1988,36 @@ pub async fn expire_overdue_proposals(
     Ok(ExpireReport {
         expired: rows_affected,
     })
+}
+
+/// Close every pending slot conflict that is waiting on one of these parked
+/// claims, and say how many.
+///
+/// The claims themselves are gone — a person exercised their right to be
+/// forgotten and the buffer rows about them went with it — so the questions
+/// are unanswerable: *keep* and *retire* both name words that are gone. `expired` is the terminal "never applied" state, and the stored
+/// value stays exactly as it is, which is what the recommended answer would
+/// have done anyway.
+///
+/// # Errors
+///
+/// - [`ProposalsError::Db`] for any SQL failure.
+pub async fn close_conflicts_parking(pool: &SqlitePool, parked: &[String]) -> Result<u64> {
+    let mut closed = 0;
+    for id in parked {
+        closed += sqlx::query(
+            "UPDATE structure_proposals
+                SET status = 'expired'
+              WHERE kind = ? AND status = 'pending'
+                AND json_extract(context, '$.parked_capture_id') = ?",
+        )
+        .bind(kind::SLOT_CONFLICT)
+        .bind(id)
+        .execute(pool)
+        .await?
+        .rows_affected();
+    }
+    Ok(closed)
 }
 
 #[cfg(test)]
@@ -1986,6 +2113,8 @@ mod tests {
     fn conflict(kept: &FactId, successor: Option<&FactId>) -> SlotConflict {
         SlotConflict {
             slot: "the date of birth".to_owned(),
+            many_values: false,
+            asserted_key: "bornon8july2012".to_owned(),
             subject: "user:bob".parse().unwrap(),
             kept_fact_id: kept.clone(),
             kept_text: "born on 12 March 2014 at 06:45".to_owned(),
@@ -2069,6 +2198,117 @@ mod tests {
             "the retired value points at the one that replaced it"
         );
         drop(dir);
+    }
+
+    /// Giving up on a question gives up on the claim parked behind it.
+    ///
+    /// The expiry sweep is a bare `UPDATE` and never reaches the handler, so
+    /// the parked row would sit for ever: nothing reads it, nothing counts it,
+    /// and no answer is coming to release or drop it.
+    #[tokio::test]
+    async fn the_expiry_sweep_drops_the_claim_parked_behind_the_question() {
+        let (dir, pool, _tree) = fresh_pool_and_tree().await;
+        let kept = seed_fact(&pool, KEPT_ID, "user:bob", Some("user:bob")).await;
+        let parked = park_a_claim(&pool).await;
+        let mut c = conflict(&kept, None);
+        c.parked = Some(parked.clone());
+        let id = emit_slot_conflict(&pool, &c).await.expect("emit");
+        sqlx::query("UPDATE structure_proposals SET timeout_at = ? WHERE proposal_id = ?")
+            .bind("2000-01-01T00:00:00Z")
+            .bind(&id)
+            .execute(&pool)
+            .await
+            .unwrap();
+
+        let report = expire_overdue_proposals(&pool, chrono::Utc::now())
+            .await
+            .expect("sweep");
+        assert_eq!(report.expired, 1);
+        assert_eq!(
+            held_rows(&pool, &parked).await,
+            0,
+            "the words go with the question nobody answered"
+        );
+        drop(dir);
+    }
+
+    /// The net under that: a parked claim whose question is closed, on an
+    /// instance that was down when it closed.
+    ///
+    /// It is deliberately blind to a row younger than the grace window,
+    /// because parking happens a statement before the question that names it
+    /// and a sweep landing in that gap would delete a live claim.
+    #[tokio::test]
+    async fn the_sweep_collects_a_parked_claim_whose_question_is_closed() {
+        let (dir, pool, _tree) = fresh_pool_and_tree().await;
+        let orphan = park_a_claim(&pool).await;
+        let now = chrono::Utc::now();
+        let grace = chrono::Duration::hours(1);
+
+        assert_eq!(
+            crate::capture_buffer::sweep_orphan_held(&pool, now, grace)
+                .await
+                .unwrap(),
+            0,
+            "a claim parked a moment ago is a claim whose question is still being written"
+        );
+        assert_eq!(held_rows(&pool, &orphan).await, 1);
+
+        sqlx::query("UPDATE capture_buffer SET captured_at = ? WHERE capture_id = ?")
+            .bind("2000-01-01T00:00:00Z")
+            .bind(orphan.as_str())
+            .execute(&pool)
+            .await
+            .unwrap();
+        assert_eq!(
+            crate::capture_buffer::sweep_orphan_held(&pool, now, grace)
+                .await
+                .unwrap(),
+            1,
+            "and one nothing is waiting on is collected"
+        );
+        assert_eq!(held_rows(&pool, &orphan).await, 0);
+        drop(dir);
+    }
+
+    /// A claim parked out of every queue, for the two sweeps to find.
+    async fn park_a_claim(pool: &SqlitePool) -> FactId {
+        crate::capture_buffer::park_capture(
+            pool,
+            crate::capture::CaptureRequest {
+                wiki_id: crate::types::WikiId::parse("bob").unwrap(),
+                page: None,
+                body: "bob was born on 8 July 2012".to_owned(),
+                subject: "user:bob".parse().unwrap(),
+                subject_external: None,
+                slot: Some("date_of_birth".to_owned()),
+                slot_value: Some("2012-07-08".to_owned()),
+                allow: Vec::new(),
+                sender: Some("user:carol".parse().unwrap()),
+                fact_type: Some("bio".to_owned()),
+                topics: Vec::new(),
+                dedup_threshold: None,
+                valid_from: None,
+                valid_to: None,
+                style: None,
+                page_description: None,
+                salience: Some("high".to_owned()),
+                authored_refs: Vec::new(),
+            },
+            crate::capture_buffer::BufferStaging::default(),
+        )
+        .await
+        .expect("park")
+        .capture_id
+    }
+
+    /// How many buffer rows still exist for a parked claim.
+    async fn held_rows(pool: &SqlitePool, parked: &FactId) -> i64 {
+        sqlx::query_scalar("SELECT count(*) FROM capture_buffer WHERE capture_id = ?")
+            .bind(parked.as_str())
+            .fetch_one(pool)
+            .await
+            .unwrap()
     }
 
     /// Answering `retire` with neither a filed replacement nor a parked claim

@@ -82,9 +82,26 @@ semver-governed surface: breaking changes are called out explicitly.
   three. A card fact whose detail is not on that list records none and behaves
   as every fact behaved before the list existed.
 
+  **Some of those details can honestly have more than one value** — a work
+  email beside a personal one, a mobile beside a landline, a second job, a
+  second nationality — and a second value in one of them is not a
+  disagreement. Where the person speaking can see what is on the card, nothing
+  stops them and the assistant decides in the conversation. Where they cannot,
+  the question still goes to you, with a **third answer**: keep yours, take
+  theirs, or keep **both**. On the details there can only be one of — when you
+  were born, where you live, who your mother is — nothing changes.
+
   Where the speaker may read the value the question reaches them as before —
   and now it reaches them even when the classifier read the card and failed to
-  say the two disagreed, because the same comparison runs there too.
+  say the two disagreed, on those details there can only be one of and where
+  both values were written out plainly. Elsewhere the assistant decides, as it
+  did, because it has both values in front of it and the memory does not.
+
+  **Two people who disagree with the same card value are two questions**, each
+  carrying its own value; one person repeating themselves is still one. And
+  when a conversation is already asking you something else, a detail the
+  memory notices by itself does not displace that question: it goes to the
+  person whose card it is.
 
   Facts written before this release do not record which detail they fill, or
   what they put in it, so they take no part in the comparison until they are

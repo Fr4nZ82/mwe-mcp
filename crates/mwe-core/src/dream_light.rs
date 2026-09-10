@@ -173,6 +173,17 @@ pub async fn screen_queue(
     policy: &LightPolicy,
 ) -> Result<WaitingQueue> {
     let mut report = LightCycleReport::default();
+    // Before the queue itself, the rows that are NOT in it: a claim parked
+    // behind a card question that has since closed. Every road
+    // that answers one of those questions drops or releases the claim; this
+    // catches the instance that was down while the question timed out, and it
+    // runs here — ahead of the empty-queue return — because an orphan is
+    // likeliest on the pass that has nothing else to do.
+    if let Err(e) =
+        capture_buffer::sweep_orphan_held(pool, chrono::Utc::now(), PARKED_CLAIM_GRACE).await
+    {
+        tracing::warn!(error = %e, "light dream: parked-claim sweep failed (nothing else stops)");
+    }
     let captures = capture_buffer::find_all_buffered(pool, policy.max_promotions_per_cycle).await?;
     report.scanned = captures.len();
     if captures.is_empty() {
@@ -352,6 +363,15 @@ async fn miss_check(
     .await?;
     Ok(())
 }
+
+/// How old a parked claim must be before the sweep will consider it an
+/// orphan.
+///
+/// Parking happens before the question is written, so the row can be named in
+/// it, and there is a moment in between when a live claim has no pending
+/// proposal to point at. An hour is far longer than that gap and far shorter
+/// than the day a question waits.
+const PARKED_CLAIM_GRACE: chrono::Duration = chrono::Duration::hours(1);
 
 /// Drain the queue with **no model at all**: screen, place deterministically,
 /// write the rows.

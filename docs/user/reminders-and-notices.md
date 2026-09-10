@@ -38,18 +38,31 @@ raises this about more than one person, each of them is named. The question
 comes to you, with both values, because you are the one person who may read
 them both.
 
-**Answering it, wherever it reached you.** Say **the stored value still
-holds** and nothing changes: what the other person said is dropped, and
-it never becomes part of the memory. Say **it is wrong** and both halves
-happen — the value on your card stops being asserted, and what they said takes
-its place, recorded as theirs and about you. Say nothing and, after the
+**Answering it, wherever it reached you.** Say **the stored value still holds**
+and nothing changes: what the other person said is dropped, and it never
+becomes part of the memory. Say **it is wrong** and the value on your card
+stops being asserted, and what they said takes its place — recorded as theirs
+and about you, when their words were still being held for you; the question
+says which of the two answers it is offering. Say nothing and, after the
 deadline shown on it, the card is left exactly as it was: silence keeps what
 you have. It is the same question whether it reaches you through your
-assistant, through the chat, or from [Proposals](proposals.md), and the same
-three answers.
+assistant, through the chat, or from [Proposals](proposals.md).
 
-The question is asked once per detail. Somebody repeating the same thing on
-three different days does not put it to you three times.
+**Some of those details can honestly have more than one value** — a work email
+beside a personal one, a mobile beside a landline, a second job, a second
+nationality. For those there is a third answer, **both**: the value on your
+card stays and what was said is recorded beside it. And nothing is put to you
+about them unless the person speaking could not see what your card already
+said; where they could, your assistant decides in the conversation, because it
+has both values in front of it.
+
+The same disagreement is asked once. Somebody repeating themselves on three
+different days does not put it to you three times — but two different people
+saying two different things are two disagreements, and you are shown both.
+
+**When a conversation is already asking you something else**, a detail the
+memory notices on its own is not squeezed into that question: it goes to the
+person whose card it is, exactly as it would if they could not read the value.
 
 **Something waiting on your answer** waits here rather than reaching you: a
 request to forget a fact you can read, and a disagreement about one of those

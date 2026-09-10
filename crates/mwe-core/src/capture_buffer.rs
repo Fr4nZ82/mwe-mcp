@@ -619,6 +619,57 @@ pub async fn discard_held(pool: &SqlitePool, capture_id: &FactId) -> Result<bool
     Ok(rows > 0)
 }
 
+/// Drop every parked claim whose question has closed — the net under
+/// [`discard_held`].
+///
+/// A parked row is released or dropped by the answer to its proposal, and
+/// every road that answers one does it. What no road covers is an instance
+/// that was DOWN while the question timed out and came back to a proposal
+/// already closed by somebody else, or a proposal deleted underneath it: the
+/// row then waits for an answer that has already happened, invisible to every
+/// reader and to `count_buffered`, for ever. This is the pass that finds it.
+///
+/// `grace` keeps it off the row that has just been parked and whose proposal
+/// is a statement away from existing: parking happens first so the question
+/// can name the row, and a sweep landing inside that gap would delete a live
+/// claim. Anything younger than the window is left alone.
+///
+/// Returns how many were dropped.
+///
+/// # Errors
+///
+/// DB errors.
+pub async fn sweep_orphan_held(
+    pool: &SqlitePool,
+    now: chrono::DateTime<chrono::Utc>,
+    grace: chrono::Duration,
+) -> Result<u64> {
+    let cutoff = (now - grace).to_rfc3339();
+    let dropped = sqlx::query(
+        "DELETE FROM capture_buffer
+          WHERE status = 'held'
+            AND captured_at < ?
+            AND capture_id NOT IN (
+                SELECT json_extract(context, '$.parked_capture_id')
+                  FROM structure_proposals
+                 WHERE kind = 'slot_conflict' AND status = 'pending'
+                   AND json_extract(context, '$.parked_capture_id') IS NOT NULL
+            )",
+    )
+    .bind(&cutoff)
+    .execute(pool)
+    .await?
+    .rows_affected();
+    if dropped > 0 {
+        tracing::info!(
+            dropped,
+            cutoff = %cutoff,
+            "capture_buffer: parked claims whose question is closed were dropped"
+        );
+    }
+    Ok(dropped)
+}
+
 fn validate_buffer_body(body: &str) -> Result<()> {
     if body.trim().is_empty() {
         return Err(CaptureBufferError::EmptyBody);

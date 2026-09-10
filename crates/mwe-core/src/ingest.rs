@@ -1252,12 +1252,58 @@ const EXTRACTION_FIELDS: &[&str] = &[
     "owner_id",
 ];
 
-/// The single-value boxes an identity card holds, and the whole of them.
+/// The boxes of an identity card that can only ever hold ONE value.
 ///
-/// A card carries a handful of always-on facts and each fills one of these:
-/// there is one date of birth, one address somebody lives at, one number you
-/// call. The name is the box, and the classifier copies one of these strings
-/// verbatim, in English, whatever language the memory itself is written in.
+/// A person has one date of birth, one address they live at, one mother. A
+/// second, different value in one of these is a disagreement whoever says it,
+/// and the engine may raise it without a model having judged anything.
+const ONE_VALUE_SLOTS: &[&str] = &[
+    "full_name",
+    "date_of_birth",
+    "place_of_birth",
+    "home_address",
+    "native_language",
+    "marital_status",
+    "partner",
+    "mother",
+    "father",
+];
+
+/// The boxes of an identity card that can honestly hold MORE THAN ONE value.
+///
+/// A work address beside a personal one, a mobile beside a landline, two
+/// nationalities, a second job. They are boxes all the same — the name is what
+/// makes a later turn measurable against an earlier one — but two values in
+/// one of them is not by itself a disagreement, so the engine never decides it
+/// alone: on the values the speaker can READ the model judges, because it has
+/// both in front of it; on the values they cannot, the person the card belongs
+/// to is asked, and *both stand* is one of the answers they are offered.
+const MANY_VALUE_SLOTS: &[&str] = &[
+    "email_address",
+    "mobile_number",
+    "landline_number",
+    "occupation",
+    "employer",
+    "nationality",
+];
+
+/// Every box a card has, in the order the prompt lists them: the one-value
+/// family first, then the many-value one.
+fn card_slots() -> impl Iterator<Item = &'static str> {
+    ONE_VALUE_SLOTS.iter().chain(MANY_VALUE_SLOTS).copied()
+}
+
+/// Whether this box is one of those that can only hold a single value.
+///
+/// The gate on everything the engine concludes by itself: `false` here means
+/// two values may both be right and only somebody who can see them both may
+/// say otherwise.
+fn slot_holds_one_value(name: &str) -> bool {
+    ONE_VALUE_SLOTS.contains(&name)
+}
+
+/// Read a classifier-written slot name as one of the card's boxes, or refuse
+/// it.
 ///
 /// **Why a closed list and not the model's own words.** The name is written
 /// down with the fact and read back months later, by a different turn, to ask
@@ -1272,31 +1318,12 @@ const EXTRACTION_FIELDS: &[&str] = &[
 /// any comparison. So a card fact this list has no name for is no worse off
 /// than every fact was before boxes existed, while a list that admitted
 /// anything would make the comparison unable to answer at all.
-const CARD_SLOTS: &[&str] = &[
-    "full_name",
-    "date_of_birth",
-    "place_of_birth",
-    "home_address",
-    "mobile_number",
-    "landline_number",
-    "email_address",
-    "nationality",
-    "native_language",
-    "occupation",
-    "employer",
-    "marital_status",
-    "partner",
-    "mother",
-    "father",
-];
-
-/// Read a classifier-written slot name as one of [`CARD_SLOTS`], or refuse it.
 ///
 /// Case, surrounding space, and the choice between a space, a hyphen and an
 /// underscore inside the name are all spellings of one name and are folded —
-/// `"Date of birth"` is `date_of_birth`. Everything else is refused, and the
-/// canonical spelling is what comes back, so what gets stored and what gets
-/// compared are the same string for the same box.
+/// `"Date of birth"` is `date_of_birth`. The canonical spelling is what comes
+/// back, so what gets stored and what gets compared are the same string for
+/// the same box.
 fn card_slot(raw: &str) -> Option<&'static str> {
     let folded: String = raw
         .trim()
@@ -1307,7 +1334,37 @@ fn card_slot(raw: &str) -> Option<&'static str> {
             _ => None,
         })
         .collect();
-    CARD_SLOTS.iter().copied().find(|name| *name == folded)
+    card_slots().find(|name| *name == folded)
+}
+
+/// Whether this box holds a DATE, and so has a written form the engine can
+/// recognise.
+///
+/// The one place a value is read as more than an opaque string, and only to
+/// REFUSE to act: a date has notations — `1983-05-09`, `9 May 1983`,
+/// `09/05/1983` — and two notations of one day compare as two values. Where
+/// the engine would otherwise raise a disagreement by itself, it stays out of
+/// it unless both sides are written the one way the prompt asks for.
+fn slot_takes_a_date(name: &str) -> bool {
+    name == "date_of_birth"
+}
+
+/// Whether a value is written in the date form the prompt asks for:
+/// `YYYY-MM-DD`, `YYYY-MM` when the day is not known, `--MM-DD` when the year
+/// is not.
+///
+/// A shape test and not a calendar: `1983-19-45` passes it. What it decides is
+/// whether two values are comparable as written, and a month of 19 compares
+/// against another value exactly as any other string does.
+fn is_canonical_date(value: &str) -> bool {
+    let digits = |s: &str, n: usize| s.len() == n && s.bytes().all(|b| b.is_ascii_digit());
+    let parts: Vec<&str> = value.trim().split('-').collect();
+    match parts.as_slice() {
+        [year, month] => digits(year, 4) && digits(month, 2),
+        [year, month, day] => digits(year, 4) && digits(month, 2) && digits(day, 2),
+        ["", "", month, day] => digits(month, 2) && digits(day, 2),
+        _ => false,
+    }
 }
 
 /// Whether `value` is the name of one of the extraction's own fields.
@@ -1412,6 +1469,25 @@ fn named_or_absent(s: Option<&str>) -> Option<&str> {
 }
 
 impl LlmIngestPlan {
+    /// Fold every principal the classifier wrote to its one spelling
+    /// ([`folded_principal`]), across the turn-level fallback fields, every
+    /// extraction and every ACL change.
+    fn fold_principals(&mut self) {
+        fold_principals_of(&mut self.subject_id, &mut self.allow_ids);
+        if let Some(about) = self.behaviour_about.as_mut() {
+            *about = folded_principal(about);
+        }
+        for e in &mut self.extractions {
+            fold_principals_of(&mut e.subject_id, &mut e.allow_ids);
+            if let Some(about) = e.behaviour_about.as_mut() {
+                *about = folded_principal(about);
+            }
+        }
+        for c in &mut self.acl_changes {
+            fold_principals_of(&mut c.subject_id, &mut c.allow_ids);
+        }
+    }
+
     /// The facts to file for a `capture` intent. Prefers the multi-fact
     /// `extractions` array; otherwise synthesises a single unit from the
     /// legacy top-level fields when the model emitted a `body` or a target.
@@ -1976,6 +2052,16 @@ impl ListRefusal {
 /// record or saying when it was said would each disclose exactly what the
 /// audience list withholds — and the speaker was excluded from that value on
 /// purpose.
+/// Add an owner to the turn's one-shot notice, once.
+///
+/// First appearance keeps its place, and a second claim about the same
+/// person's card is the same sentence to whoever spoke.
+fn note_the_owner(owners: &mut Vec<Principal>, owner: &Principal) {
+    if !owners.contains(owner) {
+        owners.push(owner.clone());
+    }
+}
+
 fn slot_notice(owners: &[Principal]) -> Option<String> {
     let (first, rest) = owners.split_first()?;
     let who = rest.iter().fold(first.to_string(), |mut acc, owner| {
@@ -1983,12 +2069,25 @@ fn slot_notice(owners: &[Principal]) -> Option<String> {
         acc.push_str(&owner.to_string());
         acc
     });
+    // A GROUP's record has no one person to write to, so its question lands
+    // unaddressed and the administrator is who works that list
+    // (`proposals::recipient_of_the_card`). Saying "they have been asked" of a
+    // household would name somebody who was never asked.
+    let decided_by = if owners
+        .iter()
+        .all(|owner| proposals::recipient_of_the_card(owner).is_some())
+    {
+        "They have been asked which of the two is right and will decide."
+    } else {
+        "It has been passed on for a decision: to each person it is about, and to the \
+         administrator where the record belongs to a group."
+    };
     Some(format!(
         "NOTE — what the user said about {who} fills a detail their record already holds with a \
-         different value, and the user is not allowed to see the one on record. It was NOT \
-         saved. They have been asked which of the two is right and will decide. Tell the \
-         user that much and nothing else: do NOT say what is on record, do NOT say which detail \
-         it is, do NOT guess, and do NOT say their version was saved or that it was rejected."
+         different value, and it was not the user's to settle. It was NOT saved. {decided_by} \
+         Tell the user that much and nothing else: do NOT say what is on record, do NOT say \
+         which detail it is, do NOT guess, and do NOT say their version was saved or that it \
+         was rejected."
     ))
 }
 
@@ -3377,12 +3476,19 @@ fn vet_supersede<'a>(
 /// Put a slot disagreement to the person who can settle it: a pending
 /// dashboard proposal ([`proposals::emit_slot_conflict`]).
 ///
-/// **Asked once.** A question already waiting on that fact and that box is the
-/// same question, and repeating it puts the same private value in front of its
-/// owner again for every turn somebody restates their version. So a pending
-/// conflict on the pair closes this road, and the speaker is told what they
-/// are always told — that it was passed on — because from where they stand
-/// nothing is different.
+/// **The same disagreement is asked once.** A question already waiting on that
+/// fact, that box and that VALUE is the same question, and repeating it puts
+/// the same private value in front of its owner again for every turn somebody
+/// restates their version. So it closes this road, and the speaker is told
+/// what they are always told — that it was passed on — because from where they
+/// stand nothing is different.
+///
+/// **A different value is a different disagreement** and opens its own
+/// question, with its own parked claim. Two people who disagree with one card
+/// value disagree with it separately, and the owner is shown both: keyed on
+/// the box alone, the second person's value was neither parked nor named in
+/// the question, and the owner was choosing between two values one of which
+/// nobody had said.
 ///
 /// `park` is the claim the engine refused to write, on its way to the buffer's
 /// holding state ([`capture_buffer::park_capture`]). It is parked only when a
@@ -3402,7 +3508,14 @@ async fn ask_the_owner_of_the_slot(
     mut conflict: proposals::SlotConflict,
     park: Option<CaptureRequest>,
 ) {
-    match proposals::pending_slot_conflict(pool, &conflict.kept_fact_id, &conflict.slot).await {
+    match proposals::pending_slot_conflict(
+        pool,
+        &conflict.kept_fact_id,
+        &conflict.slot,
+        &conflict.asserted_key,
+    )
+    .await
+    {
         Ok(Some(proposal_id)) => {
             tracing::info!(
                 proposal_id,
@@ -3580,6 +3693,10 @@ async fn apply_reconciled_supersedes(
                         // supersede that names none never reaches here.
                         s.slot.as_deref().unwrap_or_default(),
                         asserted,
+                        // The reconciler names no bare value: its slot is its
+                        // own free wording and covers any fact, not a card
+                        // box. The claim's own text is the key.
+                        None,
                         &sender,
                         Some(&successor),
                         "they are neither its subject nor the person who said it",
@@ -4081,10 +4198,15 @@ async fn reconcile_after_reading(
             return Reconciliation::default();
         },
     };
-    let decision = parse_first_json::<ReconcileDecision>(&resp.text).unwrap_or_else(|| {
+    let mut decision = parse_first_json::<ReconcileDecision>(&resp.text).unwrap_or_else(|| {
         tracing::warn!("ingest: reconciler answer unparseable — nothing reconciled");
         ReconcileDecision::default()
     });
+    // The reconciler is a second model reading the same wire shape, so its
+    // principals are folded on the same terms as the classifier's.
+    for c in &mut decision.acl_changes {
+        fold_principals_of(&mut c.subject_id, &mut c.allow_ids);
+    }
     tracing::info!(
         candidates = candidates.len(),
         closures = decision.closures.len(),
@@ -5229,7 +5351,43 @@ fn parse_intent(s: &str) -> IntentKind {
 /// LLMs reliably wrap JSON in markdown fences or prose; this scanner
 /// matches the outermost balanced braces and ignores everything else.
 fn parse_plan(raw: &str) -> Option<LlmIngestPlan> {
-    parse_first_json(raw)
+    let mut plan: LlmIngestPlan = parse_first_json(raw)?;
+    plan.fold_principals();
+    Some(plan)
+}
+
+/// The one spelling a principal has, applied to whatever the classifier wrote.
+///
+/// **Ids are lowercase by construction and there is no second form of them.**
+/// [`crate::enrollment::is_valid_user_id`] and `is_valid_group_id` admit
+/// lowercase ASCII only, and an identity wiki's id IS its user's
+/// (`WikiId::parse` refuses anything else) — so `user:Zoe` names nobody, and
+/// folding it is recovering the id rather than guessing at one.
+///
+/// **It has to happen before the first guard, not at each comparison.** The
+/// enrolment guard is a string lookup: `user:Zoe` matched no enrolled
+/// principal, the field was cleared as a coined subject, and the claim was
+/// re-read as the SPEAKER's — so somebody else's mobile number landed on the
+/// speaker's own identity card, with the box name on it, and the box then
+/// defended the wrong value against its real owner. Every reader downstream
+/// compares these strings; there is one place to fix that, and it is here.
+fn folded_principal(raw: &str) -> String {
+    raw.trim().to_ascii_lowercase()
+}
+
+/// Apply [`folded_principal`] to every field of a classifier plan that holds
+/// one, in place, before anything reads it.
+///
+/// `subject_external` is deliberately absent: it is a display name — "Bilbo
+/// Baggins", "Pepper" — read by people and by a model, and folding it would
+/// rewrite what somebody is called.
+fn fold_principals_of(subject: &mut Option<String>, allow: &mut [String]) {
+    if let Some(s) = subject.as_mut() {
+        *s = folded_principal(s);
+    }
+    for a in allow.iter_mut() {
+        *a = folded_principal(a);
+    }
 }
 
 /// The generic half of [`parse_plan`]: locate the outermost balanced
@@ -7495,12 +7653,24 @@ impl StoredValue {
         &self,
         slot: &str,
         asserted_text: &str,
+        asserted_value: Option<&str>,
         asserted_by: &Principal,
         successor: Option<&FactId>,
         refusal: &str,
     ) -> proposals::SlotConflict {
+        let slot = slot.trim();
         proposals::SlotConflict {
-            slot: slot.trim().to_owned(),
+            // A box the card may honestly carry two of — a second number, a
+            // work address — makes *both stand* one of the answers. Read from
+            // the box's own name, so a free-worded slot off the reconciler
+            // (which names no card box) never offers it.
+            many_values: card_slot(slot).is_some_and(|name| !slot_holds_one_value(name)),
+            // What makes two questions the same question, beside the fact and
+            // the box: the VALUE being claimed, folded. Restating one value in
+            // other words reopens nothing; a different value is a different
+            // disagreement and gets its own question.
+            asserted_key: folded_slot_value(asserted_value.unwrap_or(asserted_text)),
+            slot: slot.to_owned(),
             subject: self.subject.clone(),
             kept_fact_id: self.fact_id.clone(),
             kept_text: self.text.clone(),
@@ -7567,14 +7737,22 @@ impl StoredValue {
 /// The engine can afford to ask a question it did not have to ask; it cannot
 /// afford to stay silent about two live values in one box.
 fn same_slot_value(a: &str, b: &str) -> bool {
-    fn folded(s: &str) -> String {
-        s.chars()
-            .filter(|c| c.is_alphanumeric())
-            .flat_map(char::to_lowercase)
-            .collect()
-    }
-    let a = folded(a);
-    !a.is_empty() && a == folded(b)
+    let a = folded_slot_value(a);
+    !a.is_empty() && a == folded_slot_value(b)
+}
+
+/// One value, folded to the form two of them are compared in — and the form
+/// that decides whether two questions are the same question
+/// (`proposals::SlotConflict::asserted_key`).
+///
+/// Letters and digits only, lowercased: case, spaces and punctuation are ways
+/// of writing a value down rather than parts of it.
+pub(crate) fn folded_slot_value(value: &str) -> String {
+    value
+        .chars()
+        .filter(|c| c.is_alphanumeric())
+        .flat_map(char::to_lowercase)
+        .collect()
 }
 
 /// The DAY of the first of the two instants that is present.
@@ -7826,6 +8004,12 @@ enum SlotVerdict<'a> {
     /// The person chose the turn's value and the speaker may not set it. The
     /// fact is NOT filed and the owner of the slot is asked.
     NotTheirsToReplace(&'a StoredValue),
+    /// The ENGINE found the pair on a turn that already carries the
+    /// classifier's own question. Asking here would mean replacing that
+    /// question with this one, so the fact is NOT filed and the card's owner
+    /// is asked instead — the same road a value the speaker may not read
+    /// takes.
+    PassToTheOwner(&'a StoredValue),
 }
 
 /// Decide what to do with one extraction against the identity core.
@@ -7843,10 +8027,18 @@ enum SlotVerdict<'a> {
 /// box it fills, so the engine can run the comparison itself
 /// ([`value_filling_the_same_slot`]) over the very values the classifier was
 /// shown — and it does, whenever `conflicts_with` is missing or names a fact
-/// nobody offered. Nothing is inferred from the words: same box, different
-/// value, and the pair goes to the same question the declaration would have
-/// raised. A model that reads the card and forgets to say so no longer costs
-/// the card a second birth date.
+/// nobody offered. It is [`SlotSide::Served`], which is the careful half of
+/// that comparison: a box that holds one value, both sides saying what that
+/// value is, dates written the one way. A model that reads the card and
+/// forgets to say so does not cost the card a second birth date; a pair the
+/// engine cannot be sure about is left to the model, which sees both values.
+///
+/// **A turn that already carries a question keeps it.** When the classifier
+/// raised its own disambiguation, a synthesised slot question would have to
+/// displace it — two unrelated questions are a choice nobody can make — so
+/// the extraction goes to the card's owner as a proposal instead
+/// ([`SlotVerdict::PassToTheOwner`]). Nothing is lost and nothing is asked
+/// twice.
 ///
 /// Same value, no question: a restatement is a duplicate, and the promotion's
 /// own duplicate scan settles it without costing anybody a turn.
@@ -7857,6 +8049,7 @@ fn vet_slot_conflict<'a>(
     answer: Option<&SlotAnswer>,
     sender_id: &str,
     sender_groups: &[String],
+    turn_already_asks: bool,
 ) -> SlotVerdict<'a> {
     let Some(body) = unit.body.map(str::trim).filter(|b| !b.is_empty()) else {
         return SlotVerdict::NotAConflict;
@@ -7878,6 +8071,7 @@ fn vet_slot_conflict<'a>(
             }
             found
         });
+    let synthesised = !matches!(declared, Some(Some(_)));
     let stored = match declared {
         // Declared and recognised: the model named the pair, and a value that
         // says what the card already says is a duplicate rather than a
@@ -7887,17 +8081,19 @@ fn vet_slot_conflict<'a>(
         // Nothing usable was declared, so the engine looks for the pair
         // itself, on the same values and by the same rule the hidden half
         // uses.
-        Some(None) | None => match value_filling_the_same_slot(unit, subject, identity_core) {
-            Some(stored) => {
-                tracing::info!(
-                    target = stored.fact_id.as_str(),
-                    slot = unit.slot.unwrap_or("<unnamed>"),
-                    "ingest: the claim refills a filled slot the classifier declared no \
+        Some(None) | None => {
+            match value_filling_the_same_slot(unit, subject, SlotSide::Served, identity_core) {
+                Some(stored) => {
+                    tracing::info!(
+                        target = stored.fact_id.as_str(),
+                        slot = unit.slot.unwrap_or("<unnamed>"),
+                        "ingest: the claim refills a filled slot the classifier declared no \
                      conflict with — the engine raises it"
-                );
-                stored
-            },
-            None => return SlotVerdict::NotAConflict,
+                    );
+                    stored
+                },
+                None => return SlotVerdict::NotAConflict,
+            }
         },
     };
     match answer.filter(|a| *a.about() == stored.fact_id) {
@@ -7914,6 +8110,11 @@ fn vet_slot_conflict<'a>(
                 SlotVerdict::NotTheirsToReplace(stored)
             }
         },
+        // Synthesised by the engine on a turn the classifier is already
+        // asking about something else: the question it would raise cannot
+        // join that one and must not replace it, so the claim is held back
+        // and put to the card's owner instead.
+        None if synthesised && turn_already_asks => SlotVerdict::PassToTheOwner(stored),
         None => SlotVerdict::Ask(stored),
     }
 }
@@ -7949,6 +8150,7 @@ fn vet_slot_conflict<'a>(
 fn value_filling_the_same_slot<'a>(
     unit: &CaptureUnit<'_>,
     subject: &Principal,
+    side: SlotSide,
     values: &'a [StoredValue],
 ) -> Option<&'a StoredValue> {
     if unit.fact_type != Some("bio") {
@@ -7962,8 +8164,62 @@ fn value_filling_the_same_slot<'a>(
                 .slot
                 .as_deref()
                 .is_some_and(|stored_slot| same_words(stored_slot, slot))
-            && !stored.is_the_same_value(body, unit.slot_value)
+            && side.two_values_disagree(slot, stored, body, unit.slot_value)
     })
+}
+
+/// Which half of the identity core a comparison is running over — and how sure
+/// the engine has to be before it acts on what it finds.
+///
+/// The difference is not the data, it is **who could have judged instead**.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum SlotSide {
+    /// Values the speaker may not read. Nobody else can judge these: the
+    /// classifier is shown nothing of them and the speaker cannot be asked,
+    /// because asking quotes the value back. So the engine acts on whatever it
+    /// has, down to comparing the two sentences when a value was not written
+    /// out — the question goes to the person the card belongs to, who reads
+    /// both values anyway, and a question they did not need costs them one
+    /// click where silence costs them a second value on their own card.
+    Hidden,
+    /// Values the speaker may read, and the classifier was shown. It had both
+    /// in front of it and could have declared the conflict; this is the net
+    /// under a declaration it did not make, so it only fires where there is
+    /// nothing left to judge — a box that holds one value, both sides saying
+    /// what that value is, and, for a box that holds a date, both saying it
+    /// the one way the prompt asks for. Anything short of that is left to the
+    /// model, which can see what the engine would be guessing at.
+    Served,
+}
+
+impl SlotSide {
+    /// Whether the stored value and the claim disagree **firmly enough for
+    /// this side to act on**.
+    fn two_values_disagree(
+        self,
+        slot: &str,
+        stored: &StoredValue,
+        body: &str,
+        claimed: Option<&str>,
+    ) -> bool {
+        match self {
+            Self::Hidden => !stored.is_the_same_value(body, claimed),
+            Self::Served => {
+                if !slot_holds_one_value(slot) {
+                    return false;
+                }
+                let (Some(mine), Some(theirs)) = (stored.slot_value.as_deref(), claimed) else {
+                    return false;
+                };
+                if slot_takes_a_date(slot)
+                    && !(is_canonical_date(mine) && is_canonical_date(theirs))
+                {
+                    return false;
+                }
+                !same_slot_value(mine, theirs)
+            },
+        }
+    }
 }
 
 /// The two candidates a slot question offers, and the seed that asks it.
@@ -9690,6 +9946,14 @@ pub async fn wiki_ingest_message(
     // stored and the value the turn wanted to put in its place. They become
     // the response's `disambig_candidates`.
     let mut slot_questions: Vec<(StoredValue, String)> = Vec::new();
+    // The classifier raised a question of its own this turn. A slot question
+    // synthesised by the engine would have to REPLACE it — two unrelated
+    // questions in one list is a choice nobody can make — so on such a turn
+    // that pair goes to the card's owner instead and the model's question
+    // stands (`SlotVerdict::PassToTheOwner`). A conflict the classifier
+    // DECLARED still asks here: it is the one holding up a write it made
+    // itself.
+    let turn_already_asks = plan.needs_disambig && !plan.disambig_candidates.is_empty();
 
     match intent {
         IntentKind::Capture | IntentKind::Structural => {
@@ -10122,6 +10386,7 @@ pub async fn wiki_ingest_message(
                     slot_answer.as_ref(),
                     &request.sender_id,
                     &sender_ctx.sender_groups,
+                    turn_already_asks,
                 ) {
                     SlotVerdict::NotAConflict => {
                         // Nothing among the values this speaker may read. The
@@ -10133,6 +10398,7 @@ pub async fn wiki_ingest_message(
                         if let Some(stored) = value_filling_the_same_slot(
                             &unit,
                             &claim_subject,
+                            SlotSide::Hidden,
                             &identity_core.hidden,
                         ) {
                             tracing::info!(
@@ -10148,6 +10414,7 @@ pub async fn wiki_ingest_message(
                                 stored.disagreement(
                                     slot_named_by(stored, &unit),
                                     unit.body.unwrap_or_default(),
+                                    unit.slot_value,
                                     &Principal::User(request.sender_id.clone()),
                                     None,
                                     "the speaker may not read the value already on the card, so \
@@ -10156,13 +10423,7 @@ pub async fn wiki_ingest_message(
                                 parked_claim(&unit, &request, policy, &available, &list_pages),
                             )
                             .await;
-                            // Named on the one-shot notice, with everybody
-                            // else this turn passed to their owner. First
-                            // appearance wins its place; a second claim about
-                            // the same person is the same sentence.
-                            if !slots_passed_to_their_owners.contains(&stored.subject) {
-                                slots_passed_to_their_owners.push(stored.subject.clone());
-                            }
+                            note_the_owner(&mut slots_passed_to_their_owners, &stored.subject);
                             continue;
                         }
                     },
@@ -10198,6 +10459,7 @@ pub async fn wiki_ingest_message(
                             stored.disagreement(
                                 slot_named_by(stored, &unit),
                                 unit.body.unwrap_or_default(),
+                                unit.slot_value,
                                 &Principal::User(request.sender_id.clone()),
                                 None,
                                 "they are neither its subject nor the person who said it",
@@ -10205,6 +10467,31 @@ pub async fn wiki_ingest_message(
                             parked_claim(&unit, &request, policy, &available, &list_pages),
                         )
                         .await;
+                        continue;
+                    },
+                    SlotVerdict::PassToTheOwner(stored) => {
+                        tracing::info!(
+                            target = stored.fact_id.as_str(),
+                            subject = %stored.subject,
+                            slot = unit.slot.unwrap_or("<unnamed>"),
+                            "ingest: the turn already carries a question — the slot goes to its \
+                             owner instead of displacing it"
+                        );
+                        ask_the_owner_of_the_slot(
+                            pool,
+                            stored.disagreement(
+                                slot_named_by(stored, &unit),
+                                unit.body.unwrap_or_default(),
+                                unit.slot_value,
+                                &Principal::User(request.sender_id.clone()),
+                                None,
+                                "the turn was already asking the speaker something else, and one \
+                                 turn cannot put two unrelated questions",
+                            ),
+                            parked_claim(&unit, &request, policy, &available, &list_pages),
+                        )
+                        .await;
+                        note_the_owner(&mut slots_passed_to_their_owners, &stored.subject);
                         continue;
                     },
                     SlotVerdict::Replace(stored) => weld_onto = Some(stored.clone()),
@@ -11236,9 +11523,8 @@ pub async fn wiki_ingest_message(
     //
     // They ACCUMULATE. One message can lose an item off a list and pass a card
     // value to its owner, and these are different things that happened to
-    // different halves of it — telling the user only the first leaves them
-    // believing the rest went through. They used to exclude one another, and
-    // the list refusal was the one that lost.
+    // different halves of it — a turn that said only the first would leave the
+    // user believing the rest went through.
     let notice = assemble_notices(&[
         slot_notice(&slots_passed_to_their_owners),
         list_page_refused.map(ListRefusal::notice),
@@ -21073,18 +21359,22 @@ mod tests {
     /// value on the card is one carol MAY read, so before this the extraction
     /// simply filed beside it.
     ///
-    /// The card fact predates the value column and carries only its box, which
-    /// is the commonest shape there will be for a while: with nothing to
-    /// compare value to value, the two bodies decide, and they differ.
+    /// Both sides carry the bare value, and the box holds one value, and the
+    /// dates are written the one way the prompt asks for — which is the whole
+    /// of what this side of the comparison needs before the engine will act
+    /// without a model.
     #[tokio::test]
     async fn a_conflict_the_classifier_forgot_to_declare_is_still_asked() {
         let (dir, tree, pool) = setup_family().await;
         let card = plant_the_card_birthdate(&pool).await;
-        sqlx::query("UPDATE fact_index SET slot = 'date_of_birth' WHERE fact_id = ?")
-            .bind(card.as_str())
-            .execute(&pool)
-            .await
-            .unwrap();
+        sqlx::query(
+            "UPDATE fact_index SET slot = 'date_of_birth', slot_value = '2014-03-12' \
+             WHERE fact_id = ?",
+        )
+        .bind(card.as_str())
+        .execute(&pool)
+        .await
+        .unwrap();
         let undeclared = format!(
             "{{\"intent\":\"capture\",\"suggested_seed\":\"Noted.\",\"extractions\":[\
              {{\"target_wiki_id\":\"bob\",\"subject_id\":\"user:bob\",\
@@ -21379,7 +21669,407 @@ mod tests {
         drop(dir);
     }
 
-    /// A card slot is named from the closed list or it is not recorded at all.
+    /// `user:Zoe` is `user:zoe`, and a capital does not put her number on the
+    /// speaker's own card.
+    ///
+    /// Ids are lowercase by construction, so the enrolment guard is a string
+    /// lookup: `user:Zoe` matched nobody, the subject was cleared as a coined
+    /// principal, and the claim was re-read as the SPEAKER's — Zoe's mobile
+    /// number filed on Alice's identity card, box name and all, with no
+    /// question asked. From there the box defended the wrong value: Alice
+    /// stating her own number was stopped and asked to choose against Zoe's.
+    #[tokio::test]
+    async fn a_capital_in_a_principal_is_the_same_principal() {
+        const HERS: &str = "Zoe's mobile number is 07700 900314.";
+        let (dir, tree, pool) = setup_slot_family().await;
+        plant_private_number(&pool, HERS, "07700900314").await;
+        let plan = "{\"intent\":\"capture\",\"extractions\":[\
+             {\"target_wiki_id\":\"zoe\",\"subject_id\":\"user:Zoe\",\
+             \"body\":\"Zoe's mobile number is 07700 900275.\",\"fact_type\":\"bio\",\
+             \"salience\":\"high\",\"slot\":\"mobile_number\",\
+             \"slot_value\":\"07700900275\",\"topics\":[\"contact\"]}]}";
+        wiki_ingest_message(
+            &pool,
+            &tree,
+            fake_embedder(),
+            &FakeLlmBackend::new("fake", plan),
+            None,
+            req("Zoe's number is 07700 900275", "alice"),
+            &IngestPolicy::default(),
+        )
+        .await
+        .expect("ingest");
+
+        assert_eq!(
+            fact_index::find_active_by_source_path(&pool, "wikis/alice/@profile.md")
+                .await
+                .unwrap()
+                .len(),
+            0,
+            "Zoe's number does not land on Alice's card"
+        );
+        assert!(
+            capture_buffer::find_all_buffered(&pool, 100)
+                .await
+                .unwrap()
+                .is_empty(),
+            "and it is not queued on its way there"
+        );
+        let recipient: Option<String> = sqlx::query_scalar(
+            "SELECT recipient_id FROM structure_proposals WHERE kind = ? AND status = 'pending'",
+        )
+        .bind(proposals::kind::SLOT_CONFLICT)
+        .fetch_one(&pool)
+        .await
+        .expect("Zoe was asked, exactly as a lowercase id would have asked her");
+        assert_eq!(recipient.as_deref(), Some("user:zoe"));
+        drop(dir);
+    }
+
+    /// A second person with a DIFFERENT value is a second disagreement, not a
+    /// repetition of the first.
+    ///
+    /// Keyed on the box alone, Bob's value found Alice's question already open
+    /// and was swallowed: not parked, not in the question, and Zoe was shown a
+    /// choice between two values one of which nobody had said.
+    #[tokio::test]
+    async fn a_different_value_opens_its_own_question() {
+        const HERS: &str = "Zoe's mobile number is 07700 900314.";
+        let (dir, tree, pool) = setup_slot_family().await;
+        plant_private_number(&pool, HERS, "07700900314").await;
+        let claim = |number: &str| {
+            format!(
+                "{{\"intent\":\"capture\",\"extractions\":[\
+                 {{\"target_wiki_id\":\"zoe\",\"subject_id\":\"user:zoe\",\
+                 \"body\":\"Zoe's mobile number is {number}.\",\"fact_type\":\"bio\",\
+                 \"salience\":\"high\",\"slot\":\"mobile_number\",\
+                 \"slot_value\":\"{number}\",\"topics\":[\"contact\"]}}]}}"
+            )
+        };
+        for (who, number) in [("alice", "07700900275"), ("bob", "07700900601")] {
+            wiki_ingest_message(
+                &pool,
+                &tree,
+                fake_embedder(),
+                &FakeLlmBackend::new("fake", claim(number)),
+                None,
+                req("Zoe's number is that one", who),
+                &IngestPolicy::default(),
+            )
+            .await
+            .expect("ingest");
+        }
+
+        let contexts: Vec<(String,)> = sqlx::query_as(
+            "SELECT context FROM structure_proposals WHERE kind = ? AND status = 'pending'",
+        )
+        .bind(proposals::kind::SLOT_CONFLICT)
+        .fetch_all(&pool)
+        .await
+        .unwrap();
+        assert_eq!(contexts.len(), 2, "two people, two disagreements");
+        for number in ["07700900275", "07700900601"] {
+            assert!(
+                contexts.iter().any(|(c,)| c.contains(number)),
+                "the value {number} is in a question of its own: {contexts:?}"
+            );
+        }
+        let parked: i64 =
+            sqlx::query_scalar("SELECT count(*) FROM capture_buffer WHERE status = 'held'")
+                .fetch_one(&pool)
+                .await
+                .unwrap();
+        assert_eq!(parked, 2, "and each has its own claim waiting behind it");
+        drop(dir);
+    }
+
+    /// A box a card may carry two of is not a disagreement the engine settles
+    /// on its own, and its owner is offered *both stand*.
+    ///
+    /// A work email beside a personal one, a mobile beside a landline: the
+    /// engine treats a second value in one of those as a second value. Where
+    /// the speaker may READ the one on record it says nothing at all and the
+    /// model judges; where they may not, it asks the owner — with three
+    /// answers, because *keep* and *replace* are both wrong for a card that
+    /// can carry the two.
+    #[tokio::test]
+    async fn a_box_that_holds_several_values_is_asked_with_three_answers() {
+        const HERS: &str = "Zoe's mobile number is 07700 900314.";
+        let (dir, tree, pool) = setup_slot_family().await;
+        let hers = plant_private_number(&pool, HERS, "07700900314").await;
+        let plan = "{\"intent\":\"capture\",\"extractions\":[\
+             {\"target_wiki_id\":\"zoe\",\"subject_id\":\"user:zoe\",\
+             \"body\":\"Zoe also has a work mobile, 07700 900601.\",\"fact_type\":\"bio\",\
+             \"salience\":\"high\",\"slot\":\"mobile_number\",\
+             \"slot_value\":\"07700900601\",\"topics\":[\"contact\"]}]}";
+        wiki_ingest_message(
+            &pool,
+            &tree,
+            fake_embedder(),
+            &FakeLlmBackend::new("fake", plan),
+            None,
+            req("Zoe's work mobile is 07700 900601", "alice"),
+            &IngestPolicy::default(),
+        )
+        .await
+        .expect("ingest");
+
+        let (proposal, questions): (String, String) = sqlx::query_as(
+            "SELECT proposal_id, questions FROM structure_proposals \
+             WHERE kind = ? AND status = 'pending'",
+        )
+        .bind(proposals::kind::SLOT_CONFLICT)
+        .fetch_one(&pool)
+        .await
+        .expect("Zoe was asked");
+        assert!(
+            questions.contains("\"both\""),
+            "a card that may carry two numbers is offered both: {questions}"
+        );
+        assert!(
+            questions.contains("may carry more than one of"),
+            "and the question says so rather than asking which is right: {questions}"
+        );
+
+        proposals::apply_proposal(
+            &pool,
+            &tree,
+            &proposal,
+            &serde_json::json!({ "verdict": "both" }),
+            Some("zoe"),
+            false,
+        )
+        .await
+        .expect("Zoe answers");
+        assert!(
+            fact_index::find_by_id(&pool, &hers)
+                .await
+                .unwrap()
+                .unwrap()
+                .valid_to
+                .is_none(),
+            "her first number still stands"
+        );
+        promote_buffer(&pool, &tree).await;
+        let card = fact_index::find_active_by_source_path(&pool, "wikis/zoe/@profile.md")
+            .await
+            .unwrap();
+        assert_eq!(card.len(), 2, "and the second one is on the card beside it");
+        drop(dir);
+    }
+
+    /// On the values the speaker may READ, the engine keeps out of what it
+    /// cannot be sure of: a box that holds several values, a value nobody
+    /// wrote out, a date in some other notation.
+    #[test]
+    fn the_served_side_acts_only_where_there_is_nothing_left_to_judge() {
+        let stored = |slot: &str, value: Option<&str>| StoredValue {
+            fact_id: FactId::parse(CARD_FACT_ID).unwrap(),
+            subject: Principal::User("bob".to_owned()),
+            text: "bob was born on 12 March 2014".to_owned(),
+            sender: None,
+            said_on: None,
+            slot: Some(slot.to_owned()),
+            slot_value: value.map(str::to_owned),
+            allow: Vec::new(),
+        };
+        let claim =
+            |slot: &'static str, value: Option<&'static str>, body: &'static str| CaptureUnit {
+                fact_type: Some("bio"),
+                body: Some(body),
+                slot: Some(slot),
+                slot_value: value,
+                ..bare_unit()
+            };
+        let raises = |side: SlotSide, s: &StoredValue, u: &CaptureUnit<'_>| {
+            value_filling_the_same_slot(
+                u,
+                &Principal::User("bob".to_owned()),
+                side,
+                std::slice::from_ref(s),
+            )
+            .is_some()
+        };
+
+        let one_value = stored("date_of_birth", Some("2014-03-12"));
+        let plain = claim("date_of_birth", Some("2012-07-08"), "bob was born in 2012");
+        assert!(
+            raises(SlotSide::Served, &one_value, &plain),
+            "one value each, one box, dates written the one way: nothing left to judge"
+        );
+        assert!(
+            !raises(
+                SlotSide::Served,
+                &one_value,
+                &claim("date_of_birth", Some("8 July 2012"), "bob was born in 2012")
+            ),
+            "a date in another notation is not two values, it is two notations"
+        );
+        assert!(
+            !raises(
+                SlotSide::Served,
+                &one_value,
+                &claim("date_of_birth", None, "bob was born in 2012")
+            ),
+            "with no value written out there is only prose, and the model reads prose"
+        );
+        assert!(
+            !raises(
+                SlotSide::Served,
+                &stored("mobile_number", Some("07700900314")),
+                &claim("mobile_number", Some("07700900601"), "a second number")
+            ),
+            "two numbers in a box that holds numbers is not a disagreement"
+        );
+        assert!(
+            raises(
+                SlotSide::Hidden,
+                &stored("mobile_number", Some("07700900314")),
+                &claim("mobile_number", Some("07700900601"), "a second number")
+            ),
+            "the half nobody else can judge asks anyway — its owner reads both"
+        );
+        assert!(
+            raises(
+                SlotSide::Hidden,
+                &stored("mobile_number", None),
+                &claim("mobile_number", None, "a second number")
+            ),
+            "and asks on the sentences alone when neither side wrote the value out"
+        );
+    }
+
+    /// A turn the classifier is already asking about keeps its question, and
+    /// the slot the engine found goes to the card's owner instead.
+    ///
+    /// A synthesised slot question can only reach the person by REPLACING the
+    /// one the model raised — two unrelated questions in one list is a choice
+    /// nobody can make — so it took the model's question away and answered a
+    /// different one. Now the model's question stands and nothing is lost.
+    #[tokio::test]
+    async fn a_turn_that_already_asks_keeps_its_own_question() {
+        let (dir, tree, pool) = setup_family().await;
+        let card = plant_the_card_birthdate(&pool).await;
+        sqlx::query(
+            "UPDATE fact_index SET slot = 'date_of_birth', slot_value = '2014-03-12' \
+             WHERE fact_id = ?",
+        )
+        .bind(card.as_str())
+        .execute(&pool)
+        .await
+        .unwrap();
+        let asking = format!(
+            "{{\"intent\":\"capture\",\"suggested_seed\":\"Which one?\",\
+             \"needs_disambig\":true,\"disambig_candidates\":[\
+             {{\"candidate_id\":\"the-dentist\",\"description\":\"the dentist\"}},\
+             {{\"candidate_id\":\"the-doctor\",\"description\":\"the doctor\"}}],\
+             \"extractions\":[\
+             {{\"target_wiki_id\":\"bob\",\"subject_id\":\"user:bob\",\
+             \"body\":\"{DERIVED_BIRTHDATE}\",\"fact_type\":\"bio\",\"salience\":\"high\",\
+             \"slot\":\"date_of_birth\",\"slot_value\":\"2012-07-08\"}}]}}"
+        );
+        let resp = wiki_ingest_message(
+            &pool,
+            &tree,
+            fake_embedder(),
+            &FakeLlmBackend::new("fake", &asking),
+            None,
+            the_age_turn("carol", None),
+            &IngestPolicy::default(),
+        )
+        .await
+        .expect("ingest");
+
+        let ids: Vec<&str> = resp
+            .disambig_candidates
+            .iter()
+            .map(|c| c.candidate_id.as_str())
+            .collect();
+        assert_eq!(
+            ids,
+            vec!["the-dentist", "the-doctor"],
+            "the model's own question is what the person is asked"
+        );
+        let recipient: Option<String> = sqlx::query_scalar(
+            "SELECT recipient_id FROM structure_proposals WHERE kind = ? AND status = 'pending'",
+        )
+        .bind(proposals::kind::SLOT_CONFLICT)
+        .fetch_one(&pool)
+        .await
+        .expect("and the slot went to the card's owner instead of being dropped");
+        assert_eq!(recipient.as_deref(), Some("user:bob"));
+        assert!(
+            resp.rules.unwrap_or_default().contains("NOT saved"),
+            "carol is told her value was not saved"
+        );
+        drop(dir);
+    }
+
+    /// A shared record has no one person to write to, so the notice says where
+    /// it really went.
+    #[test]
+    fn a_shared_record_is_passed_to_the_administrator() {
+        let mine = slot_notice(&[Principal::User("zoe".to_owned())]).unwrap_or_default();
+        assert!(
+            mine.contains("They have been asked"),
+            "a person's own card is put to them: {mine}"
+        );
+        let shared = slot_notice(&[Principal::Group("famiglia".to_owned())]).unwrap_or_default();
+        assert!(
+            shared.contains("administrator"),
+            "a group's record has no inbox, and the notice says so: {shared}"
+        );
+        assert!(
+            !shared.contains("They have been asked"),
+            "and does not name a person who was never asked: {shared}"
+        );
+    }
+
+    /// The slot list the prompt publishes and the one the engine enforces are
+    /// the same list, family by family.
+    ///
+    /// They are two copies by necessity — one is read by a model, the other by
+    /// the code — and nothing but this ties them together. A name in the
+    /// prompt and not in the engine is refused on arrival; a name in the
+    /// engine and not in the prompt is one the model never writes; and a box
+    /// filed under the wrong family is the difference between a question and a
+    /// second value filed quietly.
+    #[test]
+    fn the_prompt_publishes_exactly_the_slots_the_engine_knows() {
+        let after = |marker: &str| -> Vec<String> {
+            let at = BUNDLED_INGEST_PROMPT_MD
+                .find(marker)
+                .unwrap_or_else(|| panic!("the prompt no longer marks `{marker}`"));
+            let line = BUNDLED_INGEST_PROMPT_MD[at..]
+                .lines()
+                .nth(1)
+                .expect("a list on the line after the marker");
+            line.split('`')
+                .skip(1)
+                .step_by(2)
+                .map(str::to_owned)
+                .collect()
+        };
+        assert_eq!(
+            after("**ONE VALUE —"),
+            ONE_VALUE_SLOTS
+                .iter()
+                .map(|s| (*s).to_owned())
+                .collect::<Vec<_>>(),
+            "the boxes the prompt calls single-valued are the ones the engine acts on alone"
+        );
+        assert_eq!(
+            after("**MORE THAN ONE —"),
+            MANY_VALUE_SLOTS
+                .iter()
+                .map(|s| (*s).to_owned())
+                .collect::<Vec<_>>(),
+            "and the ones it calls many-valued are the ones it leaves to the model"
+        );
+    }
+
+    /// A slot name outside the list is refused; a listed one comes back in its
+    /// one spelling.
     #[test]
     fn only_a_name_from_the_card_s_own_list_is_a_slot() {
         for (written, canonical) in [
@@ -21406,6 +22096,22 @@ mod tests {
                 None,
                 "{outside:?} is not one of the card's boxes, and admitting it would make a \
                  second name for a box that already has one"
+            );
+        }
+        assert!(slot_holds_one_value("date_of_birth"));
+        assert!(!slot_holds_one_value("mobile_number"));
+    }
+
+    /// The date shape the prompt asks for, and what falls outside it.
+    #[test]
+    fn a_canonical_date_is_the_one_notation_the_engine_compares() {
+        for good in ["1983-05-09", "1983-05", "--05-09"] {
+            assert!(is_canonical_date(good), "{good} is the form asked for");
+        }
+        for other in ["9 May 1983", "09/05/1983", "1983", "83-05-09", "", "Marco"] {
+            assert!(
+                !is_canonical_date(other),
+                "{other:?} is a value the engine will not read as a day"
             );
         }
     }

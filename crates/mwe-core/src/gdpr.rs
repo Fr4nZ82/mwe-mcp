@@ -767,7 +767,51 @@ async fn forget_captures(
 ) -> Result<()> {
     let wire = gone.to_string();
     let dead = tombstone.to_string();
-    report.captures_dropped = sqlx::query(
+    // The parked claims go FIRST, and they go whichever axis names this
+    // person. A parked claim is a value somebody stated for a box of somebody
+    // else's identity card, held out of every queue while its owner decides —
+    // so it is a claim ABOUT one person made BY another, and both of them can
+    // ask to be forgotten. Handed over like an ordinary buffered claim it
+    // would become the SPEAKER's own card value: the number the memory was
+    // holding out of sight, on the card of the person who quoted it. And the
+    // question waiting on it is unanswerable once the words are gone, so it is
+    // closed.
+    let orphaned: Vec<(String,)> = sqlx::query_as(
+        "SELECT capture_id FROM capture_buffer
+          WHERE status = 'held' AND (subject_id = ?1 OR sender_id = ?1)",
+    )
+    .bind(&wire)
+    .fetch_all(pool)
+    .await?;
+    if !orphaned.is_empty() {
+        let ids: Vec<String> = orphaned.into_iter().map(|(id,)| id).collect();
+        // Best-effort on the question: the words are what the person asked to
+        // be rid of, and they go whether or not the row that asks about them
+        // can be closed. A question left pending on words that are gone is
+        // answered by its own deadline, which changes nothing.
+        let closed = match crate::proposals::close_conflicts_parking(pool, &ids).await {
+            Ok(n) => n,
+            Err(e) => {
+                tracing::warn!(error = %e, "gdpr: card questions about the forgotten claims not closed");
+                0
+            },
+        };
+        let dropped = sqlx::query(
+            "DELETE FROM capture_buffer
+              WHERE status = 'held' AND (subject_id = ?1 OR sender_id = ?1)",
+        )
+        .bind(&wire)
+        .execute(pool)
+        .await?
+        .rows_affected();
+        report.captures_dropped += dropped;
+        tracing::info!(
+            dropped,
+            questions_closed = closed,
+            "gdpr: parked card claims naming this person dropped, their questions closed"
+        );
+    }
+    report.captures_dropped += sqlx::query(
         "DELETE FROM capture_buffer
           WHERE subject_id = ?1
             AND (sender_id IS NULL OR sender_id = ?1 OR sender_id = ?2)",
@@ -1542,6 +1586,91 @@ mod tests {
             .await
             .unwrap()
             .expect("the row is never dropped, only retired")
+    }
+
+    /// A card value held out of sight, waiting on somebody's answer, is not
+    /// handed to whoever quoted it.
+    ///
+    /// A parked claim is a value one person stated for a box of ANOTHER
+    /// person's card, kept out of every queue while the card's owner decides.
+    /// Read as an ordinary buffered claim it was handed over on erasure the
+    /// way any claim about a departing person is — so the number the memory
+    /// was deliberately holding out of sight would have landed on the card of
+    /// the person who had quoted it, and the question about it would have gone
+    /// on waiting for words nobody could produce.
+    #[tokio::test]
+    async fn a_parked_card_claim_is_destroyed_rather_than_handed_over() {
+        let (dir, pool, tree) = workdir().await;
+        for who in ["alice", "bob"] {
+            seed_wiki(&tree, who);
+            enrol(&pool, who).await;
+        }
+
+        // Bob said something about a box of alice's card, and it waits on her.
+        let parked = crate::capture_buffer::park_capture(
+            &pool,
+            CaptureRequest {
+                wiki_id: WikiId::parse("alice").unwrap(),
+                page: None,
+                body: "alice's mobile number is 07700 900275.".to_owned(),
+                subject: "user:alice".parse().unwrap(),
+                subject_external: None,
+                slot: Some("mobile_number".to_owned()),
+                slot_value: Some("07700900275".to_owned()),
+                allow: Vec::new(),
+                sender: Some("user:bob".parse().unwrap()),
+                fact_type: Some("bio".to_owned()),
+                topics: Vec::new(),
+                dedup_threshold: None,
+                valid_from: None,
+                valid_to: None,
+                style: None,
+                page_description: None,
+                salience: Some("high".to_owned()),
+                authored_refs: Vec::new(),
+            },
+            crate::capture_buffer::BufferStaging::default(),
+        )
+        .await
+        .expect("park")
+        .capture_id;
+        sqlx::query(
+            "INSERT INTO structure_proposals \
+             (proposal_id, kind, context, questions, proposed_at, timeout_at, status) \
+             VALUES ('p-parked', 'slot_conflict', ?, '[]', '2026-09-10T00:00:00Z', \
+                     '2026-09-11T00:00:00Z', 'pending')",
+        )
+        .bind(format!("{{\"parked_capture_id\":\"{}\"}}", parked.as_str()))
+        .execute(&pool)
+        .await
+        .unwrap();
+
+        forget_user(&pool, &tree, embedder(), "alice")
+            .await
+            .expect("forget")
+            .expect("a report");
+
+        let left: i64 =
+            sqlx::query_scalar("SELECT count(*) FROM capture_buffer WHERE capture_id = ?")
+                .bind(parked.as_str())
+                .fetch_one(&pool)
+                .await
+                .unwrap();
+        assert_eq!(
+            left, 0,
+            "the parked claim goes with her, it is not re-owned"
+        );
+        let status: String =
+            sqlx::query_scalar("SELECT status FROM structure_proposals WHERE proposal_id = ?")
+                .bind("p-parked")
+                .fetch_one(&pool)
+                .await
+                .unwrap();
+        assert_eq!(
+            status, "expired",
+            "and the question about it stops waiting for an answer nobody can give"
+        );
+        drop(dir);
     }
 
     /// The founder's own example. Bob's memory of his colleague's work
