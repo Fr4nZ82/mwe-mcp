@@ -17934,6 +17934,11 @@ mod tests {
                 .contains("NEVER write the word `subject_external` — or any other field name"),
             "the fence against writing a field name as a value is gone"
         );
+        assert!(
+            BUNDLED_INGEST_PROMPT_MD.contains("the engine reads it as an empty box"),
+            "the prompt threatens a loss the engine does not inflict: a field name in \
+             `subject_id` files under the sender, it does not drop the fact"
+        );
         for pair in ["\"Pepper\"", "\"Marco\""] {
             assert!(
                 BUNDLED_INGEST_PROMPT_MD.contains(pair),
