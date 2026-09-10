@@ -1481,6 +1481,7 @@ async fn page_view_redacts_a_retired_region_but_reveal_still_shows_it() {
         &pool,
         &NewFact {
             subject_external: None,
+            slot: None,
             authored_refs: Vec::new(),
             fact_id: fact_id.clone(),
             wiki_id: "alice".to_owned(),
@@ -1829,6 +1830,7 @@ async fn seed_fact_about(pool: &SqlitePool, wiki_id: &str, page: &str, subject: 
         pool,
         &NewFact {
             subject_external: None,
+            slot: None,
             authored_refs: Vec::new(),
             fact_id: FactId::parse(&format!("018f1234-5678-7abc-9def-0000000005{tail}")).unwrap(),
             wiki_id: wiki_id.to_owned(),

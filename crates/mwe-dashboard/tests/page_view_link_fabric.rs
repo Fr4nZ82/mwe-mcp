@@ -87,6 +87,7 @@ async fn capture_fact(
     let embedder: Arc<dyn Embedder> = Arc::new(FakeEmbedder::new("fake-bge-m3", 8));
     let req = CaptureRequest {
         subject_external: None,
+        slot: None,
         authored_refs: Vec::new(),
         wiki_id: WikiId::parse("alice").unwrap(),
         page: Some(PathBuf::from(page)),

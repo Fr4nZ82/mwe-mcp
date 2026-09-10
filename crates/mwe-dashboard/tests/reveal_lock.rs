@@ -283,6 +283,7 @@ async fn capture_fact(pool: &SqlitePool, tree: &WikiTree) {
     let embedder: Arc<dyn Embedder> = Arc::new(FakeEmbedder::new("fake-bge-m3", 8));
     let req = CaptureRequest {
         subject_external: None,
+        slot: None,
         authored_refs: Vec::new(),
         wiki_id: WikiId::parse("alice").expect("wiki id"),
         page: Some(std::path::PathBuf::from("cucina.md")),

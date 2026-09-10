@@ -804,6 +804,36 @@ async fn wiki_read_strips_frontmatter_so_card_topics_never_leak() {
 /// (`wikis/alice/notes/pasta.md`) and `wiki_read` wants it **wiki**-relative
 /// (`notes/pasta.md`), so the two spellings are one wiki directory apart. Every
 /// skill tells the agent to open the page behind a thin snippet; that
+/// The one fact the search-hit round trip needs: alice's, on a page inside a
+/// sub-directory, which is the part of the path a naive strip gets wrong.
+async fn pasta_fact_on_a_nested_page(state: &McpState) -> mwe_core::fact_index::NewFact {
+    const TEXT: &str = "Carbonara needs guanciale, never pancetta.";
+    mwe_core::fact_index::NewFact {
+        subject_external: None,
+        slot: None,
+        authored_refs: Vec::new(),
+        fact_id: mwe_core::types::FactId::parse("01900000-0000-7000-8000-0000000000aa")
+            .expect("fact id"),
+        wiki_id: "alice".to_owned(),
+        source_path: "wikis/alice/notes/pasta.md".to_owned(),
+        region_start: Some(0),
+        region_end: Some(40),
+        text: TEXT.to_owned(),
+        embedding: state.embedder.embed(TEXT).await.expect("embed"),
+        subject_id: "user:alice".parse().unwrap(),
+        allow_ids: Vec::new(),
+        sender_id: Some("user:alice".parse().unwrap()),
+        fact_type: None,
+        topics: Vec::new(),
+        valid_from: None,
+        valid_to: None,
+        target_page: None,
+        style: None,
+        salience: None,
+        source_ref: None,
+    }
+}
+
 /// instruction is only followable if the round trip below works, and the
 /// sub-directory in the path is the part a naive strip gets wrong.
 #[tokio::test]
@@ -841,39 +871,9 @@ async fn a_search_hit_carries_the_page_path_wiki_read_takes() {
     )
     .expect("write pasta.md");
 
-    let fact_id =
-        mwe_core::types::FactId::parse("01900000-0000-7000-8000-0000000000aa").expect("fact id");
-    mwe_core::fact_index::insert(
-        &state.pool,
-        &mwe_core::fact_index::NewFact {
-            subject_external: None,
-            authored_refs: Vec::new(),
-            fact_id,
-            wiki_id: "alice".to_owned(),
-            source_path: "wikis/alice/notes/pasta.md".to_owned(),
-            region_start: Some(0),
-            region_end: Some(40),
-            text: "Carbonara needs guanciale, never pancetta.".to_owned(),
-            embedding: state
-                .embedder
-                .embed("Carbonara needs guanciale, never pancetta.")
-                .await
-                .expect("embed"),
-            subject_id: "user:alice".parse().unwrap(),
-            allow_ids: Vec::new(),
-            sender_id: Some("user:alice".parse().unwrap()),
-            fact_type: None,
-            topics: Vec::new(),
-            valid_from: None,
-            valid_to: None,
-            target_page: None,
-            style: None,
-            salience: None,
-            source_ref: None,
-        },
-    )
-    .await
-    .expect("insert fact");
+    mwe_core::fact_index::insert(&state.pool, &pasta_fact_on_a_nested_page(&state).await)
+        .await
+        .expect("insert fact");
 
     let tree = WikiTree::open(dir.path()).expect("reopen");
     let state = McpState { tree, ..state };
@@ -2078,6 +2078,7 @@ async fn insert_forget_fact(
         pool,
         &NewFact {
             subject_external: None,
+            slot: None,
             authored_refs: Vec::new(),
             fact_id: fact_id.clone(),
             wiki_id: "famiglia".to_owned(),

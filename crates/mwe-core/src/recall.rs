@@ -2847,6 +2847,7 @@ mod tests {
     fn sample_row(id_str: &str, subject: &str, sender: Option<&str>, text: &str) -> FactIndexRow {
         FactIndexRow {
             subject_external: None,
+            slot: None,
             authored_refs: Vec::new(),
             fact_id: FactId::parse(id_str).unwrap(),
             wiki_id: "alice".to_owned(),
@@ -2964,6 +2965,7 @@ mod tests {
 
         let mk = |body: String| CaptureRequest {
             subject_external: None,
+            slot: None,
             authored_refs: Vec::new(),
             wiki_id: WikiId::parse("alice").unwrap(),
             page: Some(PathBuf::from("cucina.md")),
@@ -3043,6 +3045,7 @@ mod tests {
 
         let mk = |body: &str| CaptureRequest {
             subject_external: None,
+            slot: None,
             authored_refs: Vec::new(),
             wiki_id: WikiId::parse("alice").unwrap(),
             page: Some(PathBuf::from("cucina.md")),
@@ -3144,6 +3147,7 @@ mod tests {
 
         let mk = |wiki: &str, body: &str, subject: &str| CaptureRequest {
             subject_external: None,
+            slot: None,
             authored_refs: Vec::new(),
             wiki_id: WikiId::parse(wiki).unwrap(),
             page: Some(PathBuf::from("cucina.md")),
@@ -3232,6 +3236,7 @@ mod tests {
 
         let mk = |wiki: &str, body: &str, subject: &str, fact_type: Option<&str>| CaptureRequest {
             subject_external: None,
+            slot: None,
             authored_refs: Vec::new(),
             wiki_id: WikiId::parse(wiki).unwrap(),
             page: Some(PathBuf::from("cucina.md")),
@@ -4050,6 +4055,7 @@ mod tests {
     ) {
         pool_setup.push(NewFact {
             subject_external: None,
+            slot: None,
             authored_refs: Vec::new(),
             fact_id: FactId::parse(id_str).unwrap(),
             wiki_id: wiki.to_owned(),
@@ -4501,6 +4507,7 @@ mod tests {
     ) {
         pool_setup.push(NewFact {
             subject_external: None,
+            slot: None,
             authored_refs: Vec::new(),
             fact_id: FactId::parse(id_str).unwrap(),
             wiki_id: owner_wiki.to_owned(),
@@ -5145,6 +5152,7 @@ mod tests {
         let fact_id = crate::capture::new_fact_id().unwrap();
         let row = NewFact {
             subject_external: None,
+            slot: None,
             authored_refs: Vec::new(),
             fact_id: fact_id.clone(),
             wiki_id: owner_wiki.to_owned(),
@@ -5547,6 +5555,7 @@ mod tests {
         let mut rows = Vec::new();
         let r1 = NewFact {
             subject_external: None,
+            slot: None,
             authored_refs: Vec::new(),
             fact_id: FactId::parse("018f1234-5678-7abc-9def-0123456789ab").unwrap(),
             wiki_id: "alice".into(),
@@ -5596,6 +5605,7 @@ mod tests {
         let pool = make_pool().await;
         let r1 = NewFact {
             subject_external: None,
+            slot: None,
             authored_refs: Vec::new(),
             fact_id: FactId::parse("018f1234-5678-7abc-9def-0123456789ab").unwrap(),
             wiki_id: "alice".into(),

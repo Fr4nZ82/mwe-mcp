@@ -1135,6 +1135,7 @@ mod tests {
             pool,
             crate::capture::CaptureRequest {
                 subject_external: None,
+                slot: None,
                 authored_refs: Vec::new(),
                 wiki_id: crate::types::WikiId::parse("alice").unwrap(),
                 page: None,

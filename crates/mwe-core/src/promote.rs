@@ -3444,6 +3444,7 @@ mod tests {
     ) -> FactId {
         let req = CaptureRequest {
             subject_external: None,
+            slot: None,
             authored_refs: Vec::new(),
             wiki_id: WikiId::parse(wiki).unwrap(),
             page: Some(PathBuf::from(page)),
@@ -3552,6 +3553,7 @@ mod tests {
     ) -> FactId {
         let req = CaptureRequest {
             subject_external: None,
+            slot: None,
             authored_refs: Vec::new(),
             wiki_id: WikiId::parse("alice").unwrap(),
             page: Some(PathBuf::from(page)),

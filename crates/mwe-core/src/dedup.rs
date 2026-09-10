@@ -359,6 +359,7 @@ mod tests {
     async fn capture_one(tree: &WikiTree, pool: &SqlitePool, body: &str) -> FactId {
         let req = CaptureRequest {
             subject_external: None,
+            slot: None,
             authored_refs: Vec::new(),
             wiki_id: WikiId::parse("alice").unwrap(),
             page: Some(PathBuf::from("cucina.md")),
@@ -392,6 +393,7 @@ mod tests {
     ) -> FactId {
         let req = CaptureRequest {
             subject_external: None,
+            slot: None,
             authored_refs: refs.to_vec(),
             wiki_id: WikiId::parse("alice").unwrap(),
             page: Some(PathBuf::from("cucina.md")),

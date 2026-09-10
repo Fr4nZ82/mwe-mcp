@@ -4431,6 +4431,7 @@ mod tests {
             pool,
             &crate::fact_index::NewFact {
                 subject_external: None,
+                slot: None,
                 authored_refs: Vec::new(),
                 fact_id: fid.clone(),
                 wiki_id: "alice".to_owned(),
@@ -5131,6 +5132,7 @@ mod tests {
             &pool,
             &NewFact {
                 subject_external: None,
+                slot: None,
                 authored_refs: Vec::new(),
                 fact_id: fid.clone(),
                 wiki_id: "alice".to_owned(),
@@ -5257,6 +5259,7 @@ mod tests {
             &pool,
             &NewFact {
                 subject_external: None,
+                slot: None,
                 authored_refs: Vec::new(),
                 fact_id: fid.clone(),
                 wiki_id: "alice".to_owned(),
@@ -5566,6 +5569,7 @@ mod tests {
                 &pool,
                 &NewFact {
                     subject_external: None,
+                    slot: None,
                     authored_refs: Vec::new(),
                     fact_id: FactId::parse(&format!("0190f3c2-7a4e-7c31-9b02-2f6a1c8e5d9{i}"))
                         .unwrap(),
@@ -5687,6 +5691,7 @@ mod tests {
 
         let mk = |id_tail: &str, source_path: &str, fact_type: &str| NewFact {
             subject_external: None,
+            slot: None,
             authored_refs: Vec::new(),
             fact_id: FactId::parse(&format!("0190f3c2-7a4e-7c31-9b02-2f6a1c8e5d{id_tail}"))
                 .unwrap(),
@@ -6288,6 +6293,7 @@ mod tests {
             &pool,
             &NewFact {
                 subject_external: None,
+                slot: None,
                 authored_refs: Vec::new(),
                 fact_id: fid.clone(),
                 wiki_id: "alice".to_owned(),
@@ -6570,6 +6576,7 @@ mod tests {
                 pool,
                 &crate::fact_index::NewFact {
                     subject_external: None,
+                    slot: None,
                     authored_refs: Vec::new(),
                     fact_id: fid.clone(),
                     wiki_id: "alice".to_owned(),

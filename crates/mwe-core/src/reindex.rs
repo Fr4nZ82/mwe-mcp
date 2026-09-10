@@ -2242,6 +2242,7 @@ mod tests {
     ) {
         let new = NewFact {
             subject_external: None,
+            slot: None,
             authored_refs: Vec::new(),
             fact_id: fact_id.clone(),
             wiki_id: "alice".to_owned(),
@@ -2838,6 +2839,7 @@ mod tests {
     async fn seed_fact_in(pool: &SqlitePool, fact_id: &FactId, wiki_id: &str, source_path: &str) {
         let new = NewFact {
             subject_external: None,
+            slot: None,
             authored_refs: Vec::new(),
             fact_id: fact_id.clone(),
             wiki_id: wiki_id.to_owned(),

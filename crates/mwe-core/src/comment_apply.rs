@@ -638,6 +638,8 @@ async fn apply_add(
         embedding,
         subject_id,
         subject_external,
+        // A comment adds prose to a page; it never fills an identity slot.
+        slot: None,
         allow_ids,
         sender_id: commenter.cloned(),
         fact_type: None,
@@ -1314,6 +1316,7 @@ mod tests {
             pool,
             &NewFact {
                 subject_external: None,
+                slot: None,
                 authored_refs: Vec::new(),
                 fact_id: FactId::parse(id).unwrap(),
                 wiki_id: "alice".to_owned(),
@@ -1611,6 +1614,7 @@ mod tests {
             &pool,
             &NewFact {
                 subject_external: None,
+                slot: None,
                 authored_refs: Vec::new(),
                 fact_id: FactId::parse(&standing).unwrap(),
                 wiki_id: "alice".to_owned(),
@@ -2076,6 +2080,7 @@ mod tests {
         use crate::capture::{CaptureAction, CaptureRequest, wiki_capture};
         let req = CaptureRequest {
             subject_external: None,
+            slot: None,
             authored_refs: Vec::new(),
             wiki_id: WikiId::parse("alice").unwrap(),
             page: Some(std::path::PathBuf::from(page)),

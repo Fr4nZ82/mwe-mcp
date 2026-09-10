@@ -2216,6 +2216,8 @@ async fn process_job(
                 body,
                 subject: subject.clone(),
                 subject_external: None,
+                // A document's own page is not an identity card.
+                slot: None,
                 allow: allow.clone(),
                 sender: sender.clone(),
                 // The anchor is a pointer to a document this memory holds, not
@@ -2534,6 +2536,9 @@ async fn process_job(
                     body,
                     subject: fact_subject,
                     subject_external: cand.subject_external.clone(),
+                    // The document road asks no slot question: nobody is in a
+                    // conversation to be asked, so nothing names a slot.
+                    slot: None,
                     allow: fact_allow,
                     sender: sender.clone(),
                     fact_type: cand.fact_type.clone(),
@@ -3651,6 +3656,7 @@ mod tests {
             &pool,
             &crate::fact_index::NewFact {
                 subject_external: Some("la serra".to_owned()),
+                slot: None,
                 fact_id: crate::types::FactId::parse("018f1234-5678-7abc-9def-0123456789ab")
                     .unwrap(),
                 wiki_id: "alice".to_owned(),

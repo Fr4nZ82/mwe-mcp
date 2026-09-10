@@ -655,6 +655,7 @@ mod tests {
         let raw = uuid::Uuid::new_v7(uuid::Timestamp::now(uuid::ContextV7::new()));
         let fact = crate::fact_index::NewFact {
             subject_external: None,
+            slot: None,
             authored_refs: Vec::new(),
             fact_id: crate::types::FactId::parse(&raw.to_string()).unwrap(),
             wiki_id: "alice".to_owned(),

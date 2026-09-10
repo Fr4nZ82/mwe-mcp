@@ -695,6 +695,7 @@ mod tests {
             pool,
             &NewFact {
                 subject_external: None,
+                slot: None,
                 authored_refs: Vec::new(),
                 fact_id: fact_id.clone(),
                 wiki_id: "famiglia".to_owned(),

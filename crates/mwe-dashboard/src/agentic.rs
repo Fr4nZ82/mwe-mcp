@@ -1611,6 +1611,7 @@ fn build_supersede_request(
         // A replacement is about whatever the fact it replaces was about:
         // correcting a reading keeps it a reading of the same patient.
         subject_external: old_row.subject_external.clone(),
+        slot: None,
         wiki_id,
         page: Some(std::path::PathBuf::from(page_str)),
         body: new_body,
@@ -2798,6 +2799,7 @@ mod tests {
             &pool,
             &mwe_core::fact_index::NewFact {
                 subject_external: None,
+                slot: None,
                 authored_refs: Vec::new(),
                 fact_id: fact_id.clone(),
                 wiki_id: "franz".to_owned(),
@@ -2990,6 +2992,7 @@ mod tests {
         use mwe_core::capture::{CaptureAction, CaptureRequest, wiki_capture};
         let req = CaptureRequest {
             subject_external: None,
+            slot: None,
             authored_refs: Vec::new(),
             wiki_id: WikiId::parse("alice").unwrap(),
             page: Some(std::path::PathBuf::from("cucina.md")),
@@ -3036,6 +3039,7 @@ mod tests {
             pool,
             &mwe_core::fact_index::NewFact {
                 subject_external: None,
+                slot: None,
                 authored_refs: Vec::new(),
                 fact_id: fact_id.clone(),
                 wiki_id: "proj".to_owned(),

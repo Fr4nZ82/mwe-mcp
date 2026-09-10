@@ -2082,6 +2082,7 @@ mod tests {
     fn make_row(fact_id: &str) -> FactIndexRow {
         FactIndexRow {
             subject_external: None,
+            slot: None,
             authored_refs: Vec::new(),
             fact_id: FactId::parse(fact_id).expect("parse"),
             wiki_id: "alice".to_owned(),

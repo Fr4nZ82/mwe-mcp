@@ -1804,6 +1804,7 @@ mod tests {
             pool,
             &crate::fact_index::NewFact {
                 subject_external: None,
+                slot: None,
                 authored_refs: Vec::new(),
                 fact_id: fact_id.clone(),
                 wiki_id: "bob".to_owned(),

@@ -2152,6 +2152,14 @@ fn validate_capture_plan(
         body,
         subject,
         subject_external: unit.subject_external.map(str::to_owned),
+        // The slot the classifier named for this claim, kept so a later turn
+        // by somebody who may not READ the value can still be told the slot is
+        // taken (`fact_index::FactIndexRow::slot`). Only a `bio` fact fills a
+        // slot of an identity card, so only a `bio` fact records one.
+        slot: (unit.fact_type == Some("bio"))
+            .then(|| unit.slot.map(str::trim).filter(|s| !s.is_empty()))
+            .flatten()
+            .map(str::to_owned),
         allow,
         sender: Some(Principal::User(request.sender_id.clone())),
         fact_type: unit.fact_type.map(str::to_owned),
@@ -2521,6 +2529,7 @@ async fn file_unclaimed_attachments(
         let cap_req = CaptureRequest {
             wiki_id: wiki_id.clone(),
             subject_external: None,
+            slot: None,
             // Nobody placed this: it waits in the queue like any other claim.
             page: None,
             body,
@@ -6185,6 +6194,9 @@ pub async fn file_behaviour_rule(
     let cap_req = CaptureRequest {
         wiki_id: home,
         subject_external: None,
+        // A standing directive is not a fact about the person, so it fills no
+        // slot of their card.
+        slot: None,
         page: Some(PathBuf::from(BEHAVIOUR_RULES_PAGE)),
         body: rule.to_owned(),
         subject,
@@ -6310,6 +6322,8 @@ async fn capture_agent_self_fact(
     let cap_req = CaptureRequest {
         wiki_id,
         subject_external: None,
+        // The agent's own card is not a person's identity card.
+        slot: None,
         page,
         body: body.to_owned(),
         // OWNED BY THE AGENT — this is its own self-knowledge, not about the
@@ -13612,6 +13626,7 @@ mod tests {
         let (dir, tree, pool) = setup_workdir().await;
         let existing = fact_index::NewFact {
             subject_external: None,
+            slot: None,
             authored_refs: Vec::new(),
             fact_id: FactId::parse("018f1234-5678-7abc-9def-00000000f101").unwrap(),
             wiki_id: "alice".to_owned(),
@@ -13683,6 +13698,7 @@ mod tests {
         let (dir, tree, pool) = setup_workdir().await;
         let existing = fact_index::NewFact {
             subject_external: None,
+            slot: None,
             authored_refs: Vec::new(),
             fact_id: FactId::parse("018f1234-5678-7abc-9def-00000000f102").unwrap(),
             wiki_id: "alice".to_owned(),
@@ -14207,6 +14223,7 @@ mod tests {
     ) {
         let fact = fact_index::NewFact {
             subject_external: None,
+            slot: None,
             authored_refs: Vec::new(),
             fact_id: FactId::parse(fact_id).unwrap(),
             wiki_id: wiki_id.to_owned(),
@@ -15770,6 +15787,114 @@ mod tests {
         drop(dir);
     }
 
+    /// The slot a `bio` claim fills is recorded on the fact and survives the
+    /// wait, so a later turn can ask whether the slot is taken without a model.
+    ///
+    /// A card fact is `bio` + `high`, which routes through the buffer, so the
+    /// slot has to be carried by the buffered claim and copied onto the fact at
+    /// promotion — recorded only at the live write it would be lost on exactly
+    /// the facts it exists for.
+    #[tokio::test]
+    async fn the_slot_a_card_fact_fills_is_recorded_and_survives_the_wait() {
+        let (dir, tree, pool) = setup_workdir().await;
+        let json = "{\"intent\":\"capture\",\"extractions\":[{\"subject_id\":\"user:alice\",\
+                    \"body\":\"Alice's mobile number is 07700 900275.\",\"fact_type\":\"bio\",\
+                    \"salience\":\"high\",\"slot\":\"the mobile number\",\"topics\":[\"contact\"]}]}";
+        let resp = wiki_ingest_message(
+            &pool,
+            &tree,
+            fake_embedder(),
+            &FakeLlmBackend::new("fake", json),
+            None,
+            req("my mobile is 07700 900275", "alice"),
+            &IngestPolicy::default(),
+        )
+        .await
+        .expect("ingest");
+        let id = resp.capture_id.expect("staged");
+        let waiting = capture_buffer::find_all_buffered(&pool, 10).await.unwrap();
+        assert_eq!(
+            waiting.first().and_then(|c| c.slot.as_deref()),
+            Some("the mobile number"),
+            "the buffered claim carries the slot through the wait"
+        );
+
+        promote_buffer(&pool, &tree).await;
+        let row = fact_index::find_by_id(&pool, &id)
+            .await
+            .expect("find")
+            .expect("promoted");
+        assert_eq!(
+            row.slot.as_deref(),
+            Some("the mobile number"),
+            "and the promoted fact still knows which slot it fills"
+        );
+        drop(dir);
+    }
+
+    /// Only a `bio` fact records a slot, and only a slot with words in it.
+    ///
+    /// A slot belongs to an identity card and nothing else fills one, so a
+    /// preference or an episode that arrives carrying the field records
+    /// nothing: a slot recorded on a fact no card holds would have the engine
+    /// refuse a value over a claim nobody's card ever showed.
+    #[test]
+    fn a_slot_is_recorded_only_for_a_card_fact() {
+        let read = |fact_type: Option<&'static str>, slot: Option<&'static str>| {
+            let allow: Vec<String> = Vec::new();
+            let unit = CaptureUnit {
+                target_wiki_id: Some("alice"),
+                target_page: None,
+                subject_id: Some("user:alice"),
+                subject_external: None,
+                allow_ids: &allow,
+                fact_type,
+                valid_from: None,
+                valid_to: None,
+                style: None,
+                page_description: None,
+                salience: Some("high"),
+                requested_container: false,
+                engine_rule: false,
+                behaviour_rule: false,
+                behaviour_scope: None,
+                behaviour_about: None,
+                topics: &[],
+                body: Some("Alice's mobile number is 07700 900275."),
+                supersede_target: None,
+                conflicts_with: None,
+                slot,
+                attachments: &[],
+            };
+            let request = req("hello", "alice");
+            validate_capture_plan(
+                &unit,
+                &request,
+                &IngestPolicy::default(),
+                &[sample_available("alice")],
+                &[],
+                true,
+            )
+            .expect("plan")
+            .slot
+        };
+        assert_eq!(
+            read(Some("bio"), Some("the mobile number")),
+            Some("the mobile number".to_owned())
+        );
+        assert_eq!(
+            read(Some("preference"), Some("the mobile number")),
+            None,
+            "a preference fills no slot of a card"
+        );
+        assert_eq!(
+            read(Some("bio"), Some("   ")),
+            None,
+            "an empty slot is no slot"
+        );
+        assert_eq!(read(Some("bio"), None), None);
+    }
+
     /// The cat in the kitchen: with the subject unreadable and the audience
     /// naming one group, that group answers for the fact — not whoever spoke.
     ///
@@ -17327,6 +17452,7 @@ mod tests {
         // Plant a behaviour-rule fact on the LEGACY page name.
         let cap_req = CaptureRequest {
             subject_external: None,
+            slot: None,
             authored_refs: Vec::new(),
             wiki_id: WikiId::parse("samvisebot").unwrap(),
             page: Some(PathBuf::from("behaviour_rules.md")),
@@ -17397,6 +17523,7 @@ mod tests {
     fn agent_fact_req(page: &str, body: &str, dedup_threshold: Option<f32>) -> CaptureRequest {
         CaptureRequest {
             subject_external: None,
+            slot: None,
             authored_refs: Vec::new(),
             wiki_id: WikiId::parse("samvisebot").unwrap(),
             page: Some(PathBuf::from(page)),
@@ -18055,6 +18182,7 @@ mod tests {
             fake_embedder(),
             CaptureRequest {
                 subject_external: None,
+                slot: None,
                 authored_refs: Vec::new(),
                 wiki_id: WikiId::parse("carol").unwrap(),
                 page: Some(PathBuf::from("cucina.md")),
@@ -18151,6 +18279,7 @@ mod tests {
                 fake_embedder(),
                 CaptureRequest {
                     subject_external: None,
+                    slot: None,
                     authored_refs: Vec::new(),
                     wiki_id: WikiId::parse("alice").unwrap(),
                     page: Some(PathBuf::from("cucina.md")),
@@ -18632,6 +18761,7 @@ mod tests {
             fake_embedder(),
             CaptureRequest {
                 subject_external: None,
+                slot: None,
                 authored_refs: Vec::new(),
                 wiki_id: WikiId::parse("alice").unwrap(),
                 page: Some(PathBuf::from("cucina.md")),
@@ -19717,6 +19847,7 @@ mod tests {
             pool,
             &fact_index::NewFact {
                 subject_external: None,
+                slot: None,
                 authored_refs: Vec::new(),
                 fact_id: fact_id.clone(),
                 wiki_id: "bob".to_owned(),
@@ -20075,6 +20206,7 @@ mod tests {
         // Plant the row that we want the next turn to supersede.
         let cap_req = CaptureRequest {
             subject_external: None,
+            slot: None,
             authored_refs: Vec::new(),
             wiki_id: WikiId::parse("alice").unwrap(),
             page: Some(PathBuf::from("cucina.md")),
@@ -20171,6 +20303,7 @@ mod tests {
         // Plant a fact SHARED with group:famiglia.
         let cap_req = CaptureRequest {
             subject_external: None,
+            slot: None,
             authored_refs: Vec::new(),
             wiki_id: WikiId::parse("alice").unwrap(),
             page: Some(PathBuf::from("cucina.md")),
@@ -20244,6 +20377,7 @@ mod tests {
         // Plant the open watchlist item the next turn completes.
         let cap_req = CaptureRequest {
             subject_external: None,
+            slot: None,
             authored_refs: Vec::new(),
             wiki_id: WikiId::parse("alice").unwrap(),
             page: Some(PathBuf::from("cucina.md")),
@@ -20446,6 +20580,7 @@ mod tests {
             fake_embedder(),
             CaptureRequest {
                 subject_external: None,
+                slot: None,
                 authored_refs: Vec::new(),
                 wiki_id: WikiId::parse(subject).unwrap(),
                 page: Some(PathBuf::from("cucina.md")),
@@ -20477,6 +20612,7 @@ mod tests {
         let (dir, tree, pool) = setup_workdir().await;
         let cap_req = CaptureRequest {
             subject_external: None,
+            slot: None,
             authored_refs: Vec::new(),
             wiki_id: WikiId::parse("alice").unwrap(),
             page: Some(PathBuf::from("cucina.md")),
@@ -20594,6 +20730,7 @@ mod tests {
         let (dir, tree, pool) = setup_workdir().await;
         let cap_req = CaptureRequest {
             subject_external: None,
+            slot: None,
             authored_refs: Vec::new(),
             wiki_id: WikiId::parse("alice").unwrap(),
             page: Some(PathBuf::from("lista_spesa.md")),
@@ -20658,6 +20795,7 @@ mod tests {
         // One public capture (allow=global) and one private to alice.
         let public = CaptureRequest {
             subject_external: None,
+            slot: None,
             authored_refs: Vec::new(),
             wiki_id: WikiId::parse("alice").unwrap(),
             page: Some(PathBuf::from("bacheca.md")),
@@ -20851,6 +20989,7 @@ mod tests {
         let (dir, tree, pool) = setup_workdir().await;
         let cap_req = CaptureRequest {
             subject_external: None,
+            slot: None,
             authored_refs: Vec::new(),
             wiki_id: WikiId::parse("alice").unwrap(),
             page: Some(PathBuf::from("cucina.md")),
@@ -20932,6 +21071,7 @@ mod tests {
             fake_embedder(),
             CaptureRequest {
                 subject_external: None,
+                slot: None,
                 authored_refs: Vec::new(),
                 wiki_id: WikiId::parse("alice").unwrap(),
                 page: Some(PathBuf::from("cucina.md")),
@@ -21019,6 +21159,7 @@ mod tests {
                     fake_embedder(),
                     CaptureRequest {
                         subject_external: None,
+                        slot: None,
                         authored_refs: Vec::new(),
                         wiki_id: WikiId::parse("alice").unwrap(),
                         page: Some(PathBuf::from("cucina.md")),
@@ -21106,6 +21247,7 @@ mod tests {
                     fake_embedder(),
                     CaptureRequest {
                         subject_external: None,
+                        slot: None,
                         authored_refs: Vec::new(),
                         wiki_id: WikiId::parse("alice").unwrap(),
                         page: Some(PathBuf::from("cucina.md")),
@@ -21207,6 +21349,7 @@ mod tests {
                     fake_embedder(),
                     CaptureRequest {
                         subject_external: None,
+                        slot: None,
                         authored_refs: Vec::new(),
                         wiki_id: WikiId::parse("alice").unwrap(),
                         page: Some(PathBuf::from("appunti.md")),
@@ -21293,6 +21436,7 @@ mod tests {
             &pool,
             CaptureRequest {
                 subject_external: None,
+                slot: None,
                 authored_refs: Vec::new(),
                 wiki_id: WikiId::parse("alice").unwrap(),
                 page: Some(PathBuf::from("appunti.md")),
@@ -21360,6 +21504,7 @@ mod tests {
             pool,
             CaptureRequest {
                 subject_external: None,
+                slot: None,
                 authored_refs: Vec::new(),
                 wiki_id: WikiId::parse("alice").unwrap(),
                 page: Some(PathBuf::from("appunti.md")),
@@ -21563,6 +21708,7 @@ mod tests {
             &pool,
             CaptureRequest {
                 subject_external: None,
+                slot: None,
                 authored_refs: Vec::new(),
                 wiki_id: WikiId::parse("alice").unwrap(),
                 page: Some(PathBuf::from("appunti.md")),
@@ -21638,6 +21784,7 @@ mod tests {
                     fake_embedder(),
                     CaptureRequest {
                         subject_external: None,
+                        slot: None,
                         authored_refs: Vec::new(),
                         wiki_id: WikiId::parse("alice").unwrap(),
                         page: Some(PathBuf::from("appunti.md")),
@@ -21729,6 +21876,7 @@ mod tests {
                     fake_embedder(),
                     CaptureRequest {
                         subject_external: None,
+                        slot: None,
                         authored_refs: Vec::new(),
                         wiki_id: WikiId::parse("alice").unwrap(),
                         page: Some(PathBuf::from("appunti.md")),
@@ -21833,6 +21981,7 @@ mod tests {
             fake_embedder(),
             CaptureRequest {
                 subject_external: None,
+                slot: None,
                 authored_refs: Vec::new(),
                 wiki_id: WikiId::parse("alice").unwrap(),
                 page: Some(PathBuf::from("cucina.md")),
@@ -21991,6 +22140,7 @@ mod tests {
         let (dir, tree, pool) = setup_workdir().await;
         let cap_req = CaptureRequest {
             subject_external: None,
+            slot: None,
             authored_refs: Vec::new(),
             wiki_id: WikiId::parse("alice").unwrap(),
             page: Some(PathBuf::from("cucina.md")),
@@ -22058,6 +22208,7 @@ mod tests {
         let (dir, tree, pool) = setup_workdir().await;
         let cap_req = CaptureRequest {
             subject_external: None,
+            slot: None,
             authored_refs: Vec::new(),
             wiki_id: WikiId::parse("alice").unwrap(),
             page: Some(PathBuf::from("dispensa.md")),
@@ -22135,6 +22286,7 @@ mod tests {
         let (dir, tree, pool) = setup_workdir().await;
         let cap_req = CaptureRequest {
             subject_external: None,
+            slot: None,
             authored_refs: Vec::new(),
             wiki_id: WikiId::parse("alice").unwrap(),
             page: Some(PathBuf::from("public.md")),
@@ -22204,6 +22356,7 @@ mod tests {
         let (_dir, tree, pool) = setup_workdir().await;
         let cap_req = CaptureRequest {
             subject_external: None,
+            slot: None,
             authored_refs: Vec::new(),
             wiki_id: WikiId::parse("alice").unwrap(),
             page: Some(PathBuf::from("cucina.md")),
@@ -22278,6 +22431,7 @@ mod tests {
         let (dir, tree, pool) = setup_workdir().await;
         let cap_req = CaptureRequest {
             subject_external: None,
+            slot: None,
             authored_refs: Vec::new(),
             wiki_id: WikiId::parse("alice").unwrap(),
             page: Some(PathBuf::from("cucina.md")),
@@ -22362,6 +22516,7 @@ mod tests {
             &pool,
             &fact_index::NewFact {
                 subject_external: None,
+                slot: None,
                 fact_id: fid.clone(),
                 wiki_id: "proj".into(),
                 source_path: "wikis/proj/note.md".into(),
@@ -22610,6 +22765,7 @@ mod tests {
                 fake_embedder(),
                 CaptureRequest {
                     subject_external: None,
+                    slot: None,
                     wiki_id: WikiId::parse("alice").unwrap(),
                     page: Some(PathBuf::from(format!("lista_{i}.md"))),
                     body: format!("voce {i}"),
@@ -22860,6 +23016,7 @@ mod tests {
                 &pool,
                 crate::capture::CaptureRequest {
                     subject_external: None,
+                    slot: None,
                     authored_refs: Vec::new(),
                     wiki_id: crate::types::WikiId::parse("alice").unwrap(),
                     page: Some(PathBuf::from("spesa.md")),
@@ -23584,6 +23741,7 @@ mod tests {
             fake_embedder(),
             CaptureRequest {
                 subject_external: None,
+                slot: None,
                 wiki_id: WikiId::parse("samvisebot").unwrap(),
                 page: Some(PathBuf::from("preferenze.md")),
                 body: "L'agente parla italiano e inglese.".to_owned(),
@@ -24020,6 +24178,7 @@ mod tests {
         // LLM's supersede_target will name a *different*, unseen id.
         let cap_req = CaptureRequest {
             subject_external: None,
+            slot: None,
             authored_refs: Vec::new(),
             wiki_id: WikiId::parse("alice").unwrap(),
             page: Some(PathBuf::from("cucina.md")),
@@ -24096,6 +24255,7 @@ mod tests {
         let _wiki = WikiSlug::parse("alice").unwrap();
         let cap_req = CaptureRequest {
             subject_external: None,
+            slot: None,
             authored_refs: Vec::new(),
             wiki_id: WikiId::parse("alice").unwrap(),
             page: Some(PathBuf::from("cucina.md")),
@@ -24849,6 +25009,7 @@ mod tests {
         // carry the in-band freshness annotation (`· updated <date>`).
         let fact = fact_index::NewFact {
             subject_external: None,
+            slot: None,
             authored_refs: Vec::new(),
             fact_id: FactId::parse("018f1234-5678-7abc-9def-00000000f001").unwrap(),
             wiki_id: "alice".to_owned(),
@@ -24932,6 +25093,7 @@ mod tests {
         .unwrap();
         let fact = fact_index::NewFact {
             subject_external: None,
+            slot: None,
             authored_refs: Vec::new(),
             fact_id: FactId::parse("018f1234-5678-7abc-9def-00000000f002").unwrap(),
             wiki_id: "alice".to_owned(),
@@ -25023,6 +25185,7 @@ mod tests {
             .to_rfc3339_opts(chrono::SecondsFormat::Secs, true);
         let fact = fact_index::NewFact {
             subject_external: None,
+            slot: None,
             authored_refs: Vec::new(),
             fact_id: FactId::parse("018f1234-5678-7abc-9def-00000000d001").unwrap(),
             wiki_id: "alice".to_owned(),
@@ -25107,6 +25270,7 @@ mod tests {
             .to_rfc3339_opts(chrono::SecondsFormat::Secs, true);
         let fact = fact_index::NewFact {
             subject_external: None,
+            slot: None,
             authored_refs: Vec::new(),
             fact_id: FactId::parse("018f1234-5678-7abc-9def-00000000d002").unwrap(),
             wiki_id: "alice".to_owned(),
