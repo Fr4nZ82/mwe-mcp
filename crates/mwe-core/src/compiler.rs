@@ -2576,7 +2576,7 @@ fn resolve_tone(tree: &WikiTree, wiki_id: &str) -> String {
     };
     // An agent's own wiki is a `wiki-user` like a human's — the agent IS an
     // enrolled user — so the type alone would give it a human's voice, and its
-    // self-facts ("l'agente ha aiutato l'utente…") would compile into a service
+    // self-facts ("the agent helped the user with…") would compile into a service
     // log written about it in the third person. It is an autobiography: the
     // subject writes it, so the voice is first person. Checked before the type
     // because it is the more specific claim about the same wiki.
@@ -2730,7 +2730,7 @@ mod tests {
     /// An agent's own wiki gets the autobiography voice, and it wins over the
     /// type: the wiki IS a `wiki-user` (the agent is an enrolled user), so
     /// reading the type alone would compile its self-facts into a third-person
-    /// dossier about it — "l'agente ha aiutato l'utente…" — instead of its own
+    /// dossier about it — "the agent helped the user with…" — instead of its own
     /// memory of the episode.
     #[tokio::test]
     async fn resolve_tone_gives_an_agent_wiki_the_first_person_voice() {
@@ -3479,6 +3479,117 @@ mod tests {
             "the write instruction closes the user turn: {user}"
         );
         drop(dir);
+    }
+
+    /// The page's language is the one its owner declared, it reaches the
+    /// writer, and it is the last instruction the writer reads before the
+    /// page.
+    ///
+    /// One compiled page out of forty-six came back written end to end in
+    /// Italian on an all-English corpus whose three people were all declared
+    /// `en-GB` — its own title, description and facts stayed English, so only
+    /// the prose drifted. The directive was served correctly and the writer
+    /// went with the language of the worked examples it had just read; those
+    /// are English now, and the directive closes the brief instead of sitting
+    /// in the middle of ~5.8k cached tokens. Nothing here was covered at all:
+    /// the whole compiler had no test that the language reached the model.
+    #[tokio::test]
+    async fn the_page_is_written_in_the_language_its_owner_declared() {
+        for (locale, expected) in [
+            ("it-IT", "Respond in Italian"),
+            ("en-GB", "Respond in English"),
+        ] {
+            let (dir, tree, pool) = setup().await;
+            sqlx::query(
+                "INSERT INTO enrollment_users (user_id, locale, is_admin) VALUES ('alice', ?1, 0)",
+            )
+            .bind(locale)
+            .execute(&pool)
+            .await
+            .unwrap();
+            let fid = FactId::parse("0190f3c2-7a4e-7c31-9b02-2f6a1c8e5d99").unwrap();
+            fact_index::insert(
+                &pool,
+                &crate::fact_index::NewFact {
+                    subject_external: None,
+                    authored_refs: Vec::new(),
+                    fact_id: fid.clone(),
+                    wiki_id: "alice".to_owned(),
+                    source_path: "wikis/alice/appunti_vari.md".to_owned(),
+                    region_start: None,
+                    region_end: None,
+                    text: "Alice loves pasta".to_owned(),
+                    embedding: vec![0.1, 0.2],
+                    subject_id: "user:alice".parse::<Principal>().unwrap(),
+                    allow_ids: Vec::new(),
+                    sender_id: None,
+                    fact_type: Some("preference".to_owned()),
+                    topics: Vec::new(),
+                    valid_from: None,
+                    valid_to: None,
+                    target_page: None,
+                    style: None,
+                    salience: None,
+                    source_ref: None,
+                },
+            )
+            .await
+            .unwrap();
+            let cronista = FakeLlmBackend::new(
+                "fake",
+                "{\"mergedBody\":\"P. <f1>Alice loves pasta.</f1>\",\"description\":\"d\"}",
+            );
+            compile_dirty_pages(
+                &pool,
+                &tree,
+                &leaf_plan(&fid),
+                &cronista,
+                Cadence::Light,
+                "2026-05-31T00:00:00Z",
+            )
+            .await
+            .expect("compile");
+
+            let system = cronista.last_system_prompt().expect("system prompt sent");
+            assert!(
+                system.contains(expected),
+                "the writer was not told to write in the language {locale} declares: {system}"
+            );
+            // Last instruction before the page, not buried in the brief: the
+            // brief is the cached half and runs thousands of tokens, and the
+            // page the model is about to write follows immediately.
+            let language_line = system
+                .lines()
+                .position(|l| l.starts_with("LANGUAGE:"))
+                .expect("the brief carries the LANGUAGE directive");
+            let rest: Vec<&str> = system.lines().skip(language_line + 1).collect();
+            assert!(
+                rest.iter().all(|l| l.trim().is_empty()),
+                "the LANGUAGE directive must close the brief, but these follow it: {rest:?}"
+            );
+            drop(dir);
+        }
+    }
+
+    /// Every worked example the writer is shown is in the language the
+    /// directive names by default.
+    ///
+    /// The brief's samples are the only prose in it that has a language, and
+    /// a model writing prose reaches for the prose it has just read. They are
+    /// English, like the rest of the repository's surface, and the directive
+    /// is what moves a memory into another one — not the examples.
+    #[test]
+    fn the_brief_shows_its_worked_examples_in_english() {
+        for sample in [
+            "**Creatinine** — 2.53 mg/dL on 12 May 2026",
+            "The colour I like best is teal.",
+            "\"I helped…\", \"I tend to…\"",
+        ] {
+            assert!(
+                BUNDLED_CRONISTA_MD.contains(sample),
+                "a worked example the writer copies its voice from is gone: {sample}"
+            );
+        }
     }
 
     /// A prompt with no marker — an operator override written against an

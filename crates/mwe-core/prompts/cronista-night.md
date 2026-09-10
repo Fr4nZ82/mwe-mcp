@@ -1,6 +1,6 @@
 ---
 name: cronista-night
-version: 1.2
+version: 1.3
 description: The Cronista's nightly half — the links a page already carries are what it said last time, offered for re-judgement rather than imposed. Spliced into the turn by `compiler::compile_leaf_page` ahead of the page itself, and ONLY on the full compile.
 default_version_at_bootstrap: v1.0
 part_of: cronista
@@ -27,8 +27,9 @@ instruction about how to write a page comes before the page. Loaded via
   already carries, rendered by `compiler::plan_page_wikilink` like every other
   link feed. It **excludes** the rails the REM parked earlier tonight: those
   ride `RECOMMENDED LINKS` in the whole, where they are mandatory.
-- **No `{locale}`**: the whole it rides opens with the language directive, and
-  a second copy in one request is the operator paying twice for one instruction.
+- **No `{locale}`**: the whole it rides closes its brief with the language
+  directive, immediately before this part, and a second copy in one request is
+  the operator paying twice for one instruction.
 
 ## Why the split exists
 
