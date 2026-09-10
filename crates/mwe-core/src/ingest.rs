@@ -17853,6 +17853,42 @@ mod tests {
         }
     }
 
+    /// A conversational gag is a family of directive, not a scope, and a room
+    /// in the sentence is not evidence that it is a rule of the world.
+    ///
+    /// The admin's «a rule for you, and it goes for whoever is in the room,
+    /// not only for me. Never read an address or a phone number out loud in
+    /// here» filed as an ordinary household `rule` fact owned by the parents'
+    /// group, and the body it stored had turned "in here" into "in the house".
+    /// Two sentences in the prompt sent it there: the NET ROUTING RULE gave
+    /// the don't-say family a scope of its own (`per-user`), so a gag for
+    /// everyone matched no row of it; and the addressee triage offered «no
+    /// smoking in the house» as the shape of a world rule with nothing beside
+    /// it to say that the mover, not the room, is the discriminator.
+    #[test]
+    fn bundled_ingest_prompt_reads_a_gag_for_everyone_as_the_agents_rule() {
+        assert!(
+            BUNDLED_INGEST_PROMPT_MD.contains("A PLACE IN THE SENTENCE DOES NOT MAKE IT A RULE"),
+            "the fence between a house rule and a gag with a room in it is gone"
+        );
+        assert!(
+            BUNDLED_INGEST_PROMPT_MD.contains("A gag is a family of directive, not a scope."),
+            "the don't-say row has taken a scope of its own again"
+        );
+        let row = BUNDLED_INGEST_PROMPT_MD
+            .lines()
+            .find(|l| l.contains("don't **SAY**"))
+            .expect("the net routing rule still has a don't-say row");
+        assert!(
+            !row.contains("`behaviour_scope: \"per-user\"` — it governs"),
+            "the don't-say row pins one scope again: {row}"
+        );
+        assert!(
+            BUNDLED_INGEST_PROMPT_MD.contains("whoever is in the room, not only for me"),
+            "the worked agent-wide gag is gone from the examples"
+        );
+    }
+
     /// One extraction the engine cannot read is dropped alone; the rest of the
     /// turn files.
     ///
