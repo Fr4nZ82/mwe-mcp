@@ -18013,14 +18013,18 @@ mod tests {
         );
     }
 
-    /// A bare day of the month has one right answer, and a person named only
-    /// by relationship is not resolved by reaching for the roster.
+    /// A bare day of the month is an anchor only where there is one day to
+    /// find, and a person named only by relationship is not resolved by
+    /// reaching for the roster.
     ///
     /// Both sentences come from one scene of a public-demo replay. On 3 April
     /// «Nora's birthday is on the 14th» was stored as «14 May» — a month
     /// nothing in the turn pointed at — while a related turn two days later
-    /// resolved the same bare ordinal to April, because the prompt called "the
-    /// 5th" an anchor to resolve and never said which month it lands in. Then
+    /// resolved the same bare ordinal to April: the prompt listed "the 5th"
+    /// among the anchors that MUST be resolved and never said where the month
+    /// comes from. It comes from the clock for a thing that happens once, and
+    /// from nowhere at all for a date that comes round every year, where "the
+    /// next 14th" is a fact about today rather than about the person. Then
     /// «Mum's birthday is the 15th, not the 14th», said by Bob, was stored as
     /// «Alice's birthday is on 15 April»: the roster holds one enrolled
     /// mother, so the model reached for her. The subject guard caught the
@@ -18029,14 +18033,18 @@ mod tests {
     #[test]
     fn bundled_ingest_prompt_pins_a_bare_ordinal_and_an_unnamed_relative() {
         assert!(
-            BUNDLED_INGEST_PROMPT_MD.contains("A BARE DAY OF THE MONTH TAKES THE NEAREST ONE"),
+            BUNDLED_INGEST_PROMPT_MD
+                .contains("A COMMITMENT TAKES THE NEAREST ONE, AN ANNIVERSARY TAKES NONE"),
             "the bare day-of-month rule is gone: a month becomes a guess again"
         );
         assert!(
-            BUNDLED_INGEST_PROMPT_MD.contains(
-                "Said on 3 April, \"the 14th\" is 14 April, not 14 May and not 14 March."
-            ),
-            "the worked bare-ordinal example, which is the whole of the rule, is gone"
+            BUNDLED_INGEST_PROMPT_MD
+                .contains("«L'appuntamento è il 14», said on 3 April, is 14 April."),
+            "the worked commitment example, the one case where a month may be found, is gone"
+        );
+        assert!(
+            BUNDLED_INGEST_PROMPT_MD.contains("\"Nora's birthday is on the 14th\""),
+            "an anniversary must keep the bare day the turn gave it"
         );
         assert!(
             BUNDLED_INGEST_PROMPT_MD.contains(
