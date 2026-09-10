@@ -2011,6 +2011,20 @@ async fn move_pages(
             target_wiki_id.as_str(),
         )
         .await;
+        // The plan node alone does not hold a move: the next full rebuild
+        // reads the CONCEPT REGISTRY to decide which wiki each slug belongs
+        // to, and the compile stage that closes this same nightly cycle is
+        // such a rebuild. Without this line the registry keeps naming the wiki
+        // the page just left, the compile re-points the rows and re-renders
+        // the page there, the orphan sweep deletes the copy in the
+        // destination, and the structural review proposes the identical move
+        // again the following night — 42 receipts, five pages, not one of them
+        // moved.
+        follow_page_in_registry(
+            tree,
+            &page.rel_in_wiki.to_string_lossy(),
+            target_wiki_id.as_str(),
+        );
         spec_pages.push(GroupedPage {
             page: page.rel_in_wiki.to_string_lossy().into_owned(),
             page_bytes: page.bytes.clone(),
@@ -4212,5 +4226,69 @@ Un'altra pagina: [[bruno/orto]].
                 "{page}'s registry entry still names the wiki it left",
             );
         }
+    }
+
+    /// A re-home is a move, and a move that the next compile undoes is not
+    /// one. The registry has to follow the page, exactly as it does when a
+    /// group of pages becomes a wiki of its own.
+    ///
+    /// The concept registry outlives any one plan and the next FULL rebuild
+    /// reads it to decide which wiki a slug belongs to — and the compile stage
+    /// that closes the same nightly cycle IS such a rebuild. Left naming the
+    /// wiki the page came from, it re-points the rows, renders the page at the
+    /// old address again and lets the orphan sweep delete the copy at the new
+    /// one; the structural review then finds the page still misplaced and
+    /// proposes the identical move the following night. Over one replay that
+    /// was 42 applied receipts across five pages, one of them proposed
+    /// sixteen times, and not a single page anywhere but where it started.
+    #[tokio::test]
+    async fn a_rehomed_page_takes_its_registry_entry_with_it() {
+        let (_dir, tree, pool) = setup().await;
+        seed_wiki(&tree, "bob");
+        capture_one(&tree, &pool, embedder(), "orto.md", "note sull'orto").await;
+
+        // The registry entry every real page has: an earlier build wrote it,
+        // naming the wiki the page was in at the time.
+        let now = "2026-06-08T00:00:00Z";
+        {
+            let mut reg = crate::planner::load_concept_registry(&tree, now).expect("registry");
+            reg.entries.insert(
+                "orto".to_owned(),
+                crate::planner::ConceptRegistryEntry {
+                    slug: "orto".to_owned(),
+                    title: "Orto".to_owned(),
+                    description: String::new(),
+                    style: None,
+                    wiki_id: "alice".to_owned(),
+                    created_at: now.to_owned(),
+                },
+            );
+            crate::planner::save_concept_registry(&tree, &reg).expect("seed registry");
+        }
+
+        let ctx = json!({
+            "variant": VARIANT_PAGES_REHOME,
+            "source_wiki_id": "alice",
+            "target_wiki_id": "bob",
+            "pages": ["orto.md"],
+        });
+        apply_pages_rehome(
+            &pool,
+            &tree,
+            &ctx,
+            &json!({"variant": VARIANT_PAGES_REHOME}),
+        )
+        .await
+        .expect("apply");
+
+        let reg = crate::planner::load_concept_registry(&tree, now).expect("registry loads");
+        assert_eq!(
+            reg.entries
+                .get("orto")
+                .expect("orto kept its registry entry")
+                .wiki_id,
+            "bob",
+            "the registry still names the wiki the page left, so the next compile puts it back",
+        );
     }
 }
