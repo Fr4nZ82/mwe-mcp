@@ -9037,9 +9037,17 @@ pub async fn wiki_ingest_message(
                     // (`wiki_set_behaviour_rule`). Naming the case is the
                     // classifier's job and refusing it is this one's, exactly
                     // as with the admin gate below.
+                    // Both spellings arrive and both mean the same person.
+                    // Every other id in the same JSON object is written
+                    // `user:<id>` (`subject_id`, `allow_ids`), so the model
+                    // writes this one that way about as often as bare — and
+                    // read literally, `"user:alice"` from alice is somebody
+                    // ELSE, which told her she may not set rules about others
+                    // while she was setting one about herself.
                     if let Some(about) = unit
                         .behaviour_about
                         .map(str::trim)
+                        .map(|a| a.strip_prefix("user:").unwrap_or(a))
                         .filter(|a| !a.is_empty() && *a != request.sender_id.as_str())
                     {
                         rule_about_other_denied = true;
@@ -16850,6 +16858,26 @@ mod tests {
         assert!(
             rules.contains(RULE),
             "and it comes back as a rule in force: {rules}"
+        );
+
+        // BOTH SPELLINGS OF THE SAME PERSON MEAN THE SAME PERSON. Every other
+        // id in the classifier's JSON is written `user:<id>`, so this one
+        // arrives that way too — and compared literally, `"user:bob"` from bob
+        // was somebody else: the refusal fired and told bob he may not set
+        // rules about other people while he was setting one about himself.
+        let (rules, filed) = attempt("bob", Some("user:bob"), false).await;
+        assert_eq!(filed, 1, "`user:bob` from bob is bob — the rule files");
+        assert!(
+            rules.contains(RULE) && !rules.contains("SOMEBODY ELSE"),
+            "and he is not told he may not set rules about others: {rules}"
+        );
+        // …and the prefixed form of a DIFFERENT person still refuses, so the
+        // normalisation did not open the door it exists to keep shut.
+        let (rules, filed) = attempt("alice", Some("user:bob"), false).await;
+        assert_eq!(filed, 0, "`user:bob` from alice is still somebody else");
+        assert!(
+            rules.contains("SOMEBODY ELSE"),
+            "and is refused exactly as the bare spelling is: {rules}"
         );
     }
 

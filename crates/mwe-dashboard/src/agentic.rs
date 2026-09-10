@@ -3218,16 +3218,11 @@ mod tests {
     }
 
     // ---------- the operator chat's road to a behaviour rule ----------
-    /// Setting a rule for a person: where each scope puts it.
-    ///
-    /// This chat is the ONLY place a rule about somebody else can be set: the
-    /// conversational road is refused for everyone, the admin included, so if
-    /// this tool is wrong there is no other. What decides where the rule lands
-    /// is the scope alone — `every-assistant` files it in the person's own
-    /// wiki, `this-assistant` in the named agent's — while the SUBJECT is the
-    /// person either way, which is what the rules channel reads them back by.
-    #[tokio::test]
-    async fn dispatch_wiki_set_behaviour_rule_files_where_the_scope_says() {
+    /// One person (`alice`) and one agent (`salute`) on the standard-wiki tree
+    /// the move tests already build — the smallest world in which a rule has
+    /// somebody to be about and an assistant to be bound to.
+    async fn behaviour_rule_fixture() -> (tempfile::TempDir, SqlitePool, WikiTree, Arc<dyn Embedder>)
+    {
         let (dir, pool, tree) = move_fact_tree().await;
         let embedder: Arc<dyn Embedder> =
             Arc::new(mwe_core::embedder::FakeEmbedder::new("fake", 4));
@@ -3241,6 +3236,20 @@ mod tests {
         .execute(&pool)
         .await
         .unwrap();
+        (dir, pool, tree, embedder)
+    }
+
+    /// Setting a rule for a person: where each scope puts it.
+    ///
+    /// This chat is the ONLY place a rule about somebody else can be set: the
+    /// conversational road is refused for everyone, the admin included, so if
+    /// this tool is wrong there is no other. What decides where the rule lands
+    /// is the scope alone — `every-assistant` files it in the person's own
+    /// wiki, `this-assistant` in the named agent's — while the SUBJECT is the
+    /// person either way, which is what the rules channel reads them back by.
+    #[tokio::test]
+    async fn dispatch_wiki_set_behaviour_rule_files_where_the_scope_says() {
+        let (dir, pool, tree, embedder) = behaviour_rule_fixture().await;
         let admin = AgenticContext {
             pool: &pool,
             tree: &tree,
@@ -3329,19 +3338,7 @@ mod tests {
     /// person with nothing downstream to catch it.
     #[tokio::test]
     async fn dispatch_wiki_set_behaviour_rule_refuses_what_it_must() {
-        let (dir, pool, tree) = move_fact_tree().await;
-        let embedder: Arc<dyn Embedder> =
-            Arc::new(mwe_core::embedder::FakeEmbedder::new("fake", 4));
-        sqlx::query("INSERT INTO enrollment_users (user_id, is_admin) VALUES ('alice', 0)")
-            .execute(&pool)
-            .await
-            .unwrap();
-        sqlx::query(
-            "INSERT INTO enrollment_users (user_id, is_admin, is_agent) VALUES ('salute', 0, 1)",
-        )
-        .execute(&pool)
-        .await
-        .unwrap();
+        let (dir, pool, tree, embedder) = behaviour_rule_fixture().await;
         let admin = AgenticContext {
             pool: &pool,
             tree: &tree,
@@ -3398,6 +3395,54 @@ mod tests {
         assert!(
             matches!(&err, AgenticToolError::InvalidArguments { detail, .. } if detail.contains("is an agent")),
             "{err:?}"
+        );
+
+        // The mirror of it: `agent_id` naming somebody who is not an agent.
+        // Unchecked, the rule would land in that PERSON's wiki with another
+        // person as its subject — a rule filed where nothing will read it.
+        let err = dispatch(
+            "wiki_set_behaviour_rule",
+            &json!({
+                "user_id": "alice",
+                "scope": "this-assistant",
+                "agent_id": "alice",
+                "rule": "Be brief."
+            }),
+            &admin,
+        )
+        .await
+        .expect_err("a person is not an assistant to bind a rule to");
+        assert!(
+            matches!(&err, AgenticToolError::InvalidArguments { detail, .. } if detail.contains("is not an agent")),
+            "{err:?}"
+        );
+
+        // And a person nobody has enrolled. The wiki would be created on the
+        // spot by the capture path, so the rule would be filed for somebody
+        // who does not exist and never read.
+        let err = dispatch(
+            "wiki_set_behaviour_rule",
+            &json!({ "user_id": "nessuno", "scope": "every-assistant", "rule": "Be brief." }),
+            &admin,
+        )
+        .await
+        .expect_err("a rule needs a person who exists");
+        assert!(
+            matches!(&err, AgenticToolError::InvalidArguments { detail, .. } if detail.contains("not an enrolled user")),
+            "{err:?}"
+        );
+
+        // Nothing was written by any of the refusals.
+        assert_eq!(
+            mwe_core::fact_index::find_by_filters(
+                &pool,
+                &mwe_core::fact_index::FactFilters::default(),
+            )
+            .await
+            .unwrap()
+            .len(),
+            0,
+            "a refused call files nothing anywhere"
         );
         drop(dir);
     }

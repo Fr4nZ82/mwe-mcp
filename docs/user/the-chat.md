@@ -44,6 +44,13 @@ conversation. How far it reaches is either **every assistant** Bob talks to,
 which travels with him, or **one assistant**, which you name — this chat is not
 one of his assistants, so there is no *this one* for it to assume.
 
+**Taking one back.** Bob can drop a rule about himself the way he set it: by
+telling an assistant so. You cannot, because a rule you set for Bob is filed as
+his and is never shown to your own assistant — ask it in an ordinary
+conversation and it answers that no rule in force matches. Remove it from this
+chat instead: ask for Bob's rules, then forget the one you mean. There is no
+edit — to change a rule, set the new one and forget the old.
+
 ## Things waiting on you
 
 When something needs your answer, a badge lights up in the top bar. Clicking it
