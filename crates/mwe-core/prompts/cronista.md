@@ -101,7 +101,12 @@ The body is one document but ships as **two halves**, cut on the
 | Half | Content | Where it rides |
 |---|---|---|
 | Before the line | the standing brief + `{page_index}` | the **system** prompt, marked cacheable |
-| From the line on | any appended **part**, then `{title}` / `{slug}` / `{tone}`, `{primary_facts}`, `{links}`, `{page_index_task}` | the **user** turn, followed by the write instruction |
+| From the line on | any appended **part**, then `LANGUAGE: {locale}`, then `{title}` / `{slug}` / `{tone}`, `{primary_facts}`, `{links}`, `{page_index_task}` | the **user** turn, followed by the write instruction |
+
+The language directive sits after the part and before the page on purpose:
+`compiler::splice_task_part` opens the task half with the part, so anywhere
+earlier and the part's own worked examples would be the last prose the model
+reads before writing.
 
 Why: the brief plus the index is ~5.8k tokens and is **byte-identical for
 every page of one compile run**, while a page's own facts are ~170 tokens on

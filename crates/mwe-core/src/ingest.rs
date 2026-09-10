@@ -6043,6 +6043,10 @@ async fn retire_narrower_twins(
     retired
 }
 
+/// A USER-GLOBAL rule also RETIRES the person's own narrower copies of the same
+/// directive ([`retire_narrower_twins`]): widening moves a rule rather than
+/// adding one, and the classifier cannot always name what it moves.
+///
 /// Returns the capture outcome — which says whether the rule was written or
 /// was already standing on that page, word for word — or `None` when no target
 /// wiki could be located (the rule is dropped, mirroring the best-effort
@@ -7560,6 +7564,10 @@ fn push_behaviour_rules_section(out: &mut String, rules: &[(FactId, String, Beha
 /// facts). Returns the target WITH its scope, so the dispatch can admin-gate
 /// the revision of an agent-wide rule. `None` when unset, or when the model
 /// named an id it was not shown (logged, then treated as additive).
+///
+/// Additive is not the end of the question for a WIDENING: the model is shown
+/// only the rules in force on this consumer, so a rule set on another
+/// assistant has no id here to name, and [`retire_narrower_twins`] finds it.
 fn behaviour_supersede_target(
     unit: &CaptureUnit<'_>,
     behaviour_rules: &[(FactId, String, BehaviourScope)],
@@ -18368,11 +18376,12 @@ mod tests {
     /// same scales as Wednesday», became one: the reconciler superseded the
     /// first, and the reading of 15 July is gone from the record along with
     /// the trend the speaker had just described. The rule against it was
-    /// already in the prompt, word for word — and it was the last clause of
-    /// the same long paragraph whose earlier clause says a number-and-a-date
-    /// pair IS a supersede. It is its own rule now, before the pair is named,
-    /// with the cue the turn itself carried: a message that COMPARES the new
-    /// value with the old one is asserting that both are true.
+    /// already in the prompt, word for word: what it lacked was a place to be
+    /// read from. A closing clause of the paragraph that decides a supersede
+    /// arrives after the case it contradicts, which is why the position is
+    /// asserted and not just the words. It carries the cue the turn itself
+    /// gives, too: a message that COMPARES the new value with the old one is
+    /// asserting that both are true.
     #[test]
     fn bundled_reconcile_prompt_keeps_a_repeated_measurement_as_a_history() {
         assert!(
@@ -18514,7 +18523,7 @@ mod tests {
         assert!(
             BUNDLED_INGEST_PROMPT_MD
                 .contains("Widening MOVES a rule; it never leaves the narrow copy standing"),
-            "the prompt no longer says that the narrow copy goes"
+            "the prompt has stopped saying that the narrow copy goes with the widening"
         );
     }
 
