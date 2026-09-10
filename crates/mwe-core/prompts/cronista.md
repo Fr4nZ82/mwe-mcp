@@ -1,8 +1,8 @@
 ---
 name: cronista
 description: Compiler stage 3 — writes a narrative LEAF page from its own facts as cohesive prose, tagging each fact's span with a lightweight `<fN>` tag (the code renders the bare runtime region markers; one-fact-one-page, starvation index, identity-card reference distance)
-version: 1.46
-default_version_at_bootstrap: v1.46
+version: 1.47
+default_version_at_bootstrap: v1.47
 ---
 
 # Prompt: cronista
@@ -178,16 +178,20 @@ answering a live turn, so an undeclared locale resolves to **English**
 — not to the "mirror the user's message" clause the conversational
 slots fall back to.
 
-It is the **last line of the brief**, immediately before the split, and every
-worked example above it is written in English. Both are the same precaution
-and it is paid for in one page out of forty-six: on an all-English corpus with
-every person declared `en-GB`, one compiled page came back written end to end
-in Italian while its own title, description and facts stayed English — the
-directive was served correctly and the writer drifted to the language of the
-examples it had just read. The brief runs ~5.8k tokens and rides the cached
-system half, so a directive buried in the middle of it is a long way from the
-words the model is about to write; at the end it is the last instruction
-before the page.
+It rides the **task half**, on the line after the split, which makes it the
+last instruction before the page whatever else is in the request — including
+the `cronista-night` part, which `compiler::splice_task_part` inserts directly
+after the marker and which carries worked examples of its own. That costs it
+the cached prefix, forty-odd tokens per page, and buys the one position that
+does not move.
+
+Why the position is worth paying for, and why every worked example in the brief
+is English: on an all-English corpus with every person declared `en-GB`, one
+compiled page in forty-six came back written end to end in Italian, while its
+own title, description and facts stayed English. Nothing was mis-derived and
+the directive was served exactly as it should have been; the writer drifted to
+the language of the examples it had just read. A brief of ~5.8k tokens is a
+long way from the words the model is about to write.
 
 ```text
 You are Il Cronista (the Chronicler) of a personal, multi-user wiki memory. You write ONE leaf page at a time, as cohesive narrative prose. The page you are writing — its title, its facts and its recommended links — is given at the very end, after the `=== PAGE TO WRITE ===` line. Everything before that line is the standing brief; read it first, then write the page named there.
@@ -292,9 +296,10 @@ OUTPUT — one strict JSON object, no prose around it, newlines inside strings e
 OTHER PAGES — for [[wikilinks]] ONLY, copy each link exactly as written (you do NOT see their facts). The page you are writing may appear in the list: NEVER link a page to itself. The list is not a promise of completeness — it is either every page of the memory or a selection of it, and either way it is what you may link, never what exists. Every line here — including your own page's — is a FILING LABEL, not evidence: it says where facts of that kind go, and it may have been written before the page had any content. Never assert what a label implies. If your page's line calls it a project, a collaboration or an area of work and YOUR FACTS do not say so, write what the facts say and let the label be wrong.
 {page_index}
 
-LANGUAGE: {locale}
-
 === PAGE TO WRITE ===
+LANGUAGE: {locale}
+This is the last instruction before the page and it decides the whole of it. Every worked example above is written in English because the brief has to be written in SOME language and English is this repository's; none of them says anything about the language of THIS page. Write the page in the language named on the line above, and if that language is not English then not one word of your prose is in English — not the opening line, not a heading, not a validity cue.
+
 PAGE: "{title}" (slug: {slug}). Tone: {tone}. Kind: {page_kind}.
 
 YOUR FACTS (numbered — wrap each in its <fN>…</fN> tag; each line: N. [TYPE] text, optionally a trailing (audience: …) hint naming who may read a restricted fact, a (validity: …) hint, a (current: [[…]]) succession hint and/or a (detail at: [[…]]) provenance hint):

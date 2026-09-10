@@ -3481,93 +3481,126 @@ mod tests {
         drop(dir);
     }
 
-    /// The page's language is the one its owner declared, it reaches the
-    /// writer, and it is the last instruction the writer reads before the
-    /// page.
+    /// The page's language is the one its owner declared, and the directive is
+    /// the last instruction the writer reads before the page — on the nightly
+    /// pass too, which is the one that puts something between them.
     ///
     /// One compiled page out of forty-six came back written end to end in
     /// Italian on an all-English corpus whose three people were all declared
-    /// `en-GB` — its own title, description and facts stayed English, so only
-    /// the prose drifted. The directive was served correctly and the writer
-    /// went with the language of the worked examples it had just read; those
-    /// are English now, and the directive closes the brief instead of sitting
-    /// in the middle of ~5.8k cached tokens. Nothing here was covered at all:
-    /// the whole compiler had no test that the language reached the model.
+    /// `en-GB` — its own title, description and facts stayed English, so
+    /// nothing was mis-derived and the directive was served correctly. The
+    /// writer went with the language of the worked examples it had just read.
+    /// Which is why the position matters and why it is asserted per cadence:
+    /// on a full compile `splice_task_part` opens the task half with the
+    /// `cronista-night` part, whose own examples would otherwise be the last
+    /// prose before the page. Nothing here was covered at all — the compiler
+    /// had no test that the language reached the model.
     #[tokio::test]
     async fn the_page_is_written_in_the_language_its_owner_declared() {
         for (locale, expected) in [
             ("it-IT", "Respond in Italian"),
             ("en-GB", "Respond in English"),
         ] {
-            let (dir, tree, pool) = setup().await;
-            sqlx::query(
-                "INSERT INTO enrollment_users (user_id, locale, is_admin) VALUES ('alice', ?1, 0)",
-            )
-            .bind(locale)
-            .execute(&pool)
-            .await
-            .unwrap();
-            let fid = FactId::parse("0190f3c2-7a4e-7c31-9b02-2f6a1c8e5d99").unwrap();
-            fact_index::insert(
-                &pool,
-                &crate::fact_index::NewFact {
-                    subject_external: None,
-                    authored_refs: Vec::new(),
-                    fact_id: fid.clone(),
-                    wiki_id: "alice".to_owned(),
-                    source_path: "wikis/alice/appunti_vari.md".to_owned(),
-                    region_start: None,
-                    region_end: None,
-                    text: "Alice loves pasta".to_owned(),
-                    embedding: vec![0.1, 0.2],
-                    subject_id: "user:alice".parse::<Principal>().unwrap(),
-                    allow_ids: Vec::new(),
-                    sender_id: None,
-                    fact_type: Some("preference".to_owned()),
-                    topics: Vec::new(),
-                    valid_from: None,
-                    valid_to: None,
-                    target_page: None,
+            for cadence in [Cadence::Light, Cadence::Full] {
+                let (dir, tree, pool) = setup().await;
+                sqlx::query(
+                    "INSERT INTO enrollment_users (user_id, locale, is_admin) VALUES ('alice', ?1, 0)",
+                )
+                .bind(locale)
+                .execute(&pool)
+                .await
+                .unwrap();
+                let fid = FactId::parse("0190f3c2-7a4e-7c31-9b02-2f6a1c8e5d99").unwrap();
+                fact_index::insert(
+                    &pool,
+                    &crate::fact_index::NewFact {
+                        subject_external: None,
+                        authored_refs: Vec::new(),
+                        fact_id: fid.clone(),
+                        wiki_id: "alice".to_owned(),
+                        source_path: "wikis/alice/appunti_vari.md".to_owned(),
+                        region_start: None,
+                        region_end: None,
+                        text: "Alice loves pasta".to_owned(),
+                        embedding: vec![0.1, 0.2],
+                        subject_id: "user:alice".parse::<Principal>().unwrap(),
+                        allow_ids: Vec::new(),
+                        sender_id: None,
+                        fact_type: Some("preference".to_owned()),
+                        topics: Vec::new(),
+                        valid_from: None,
+                        valid_to: None,
+                        target_page: None,
+                        style: None,
+                        salience: None,
+                        source_ref: None,
+                    },
+                )
+                .await
+                .unwrap();
+                // A neighbour the page already links to: on the full cadence
+                // that is a `prior` link, which is what makes `night_part`
+                // render and splice ahead of the page.
+                let mut plan = leaf_plan(&fid);
+                let neighbour = PagePlan {
+                    slug: "spesa".to_owned(),
+                    title: "Spesa".to_owned(),
+                    description: "the list".to_owned(),
                     style: None,
-                    salience: None,
-                    source_ref: None,
-                },
-            )
-            .await
-            .unwrap();
-            let cronista = FakeLlmBackend::new(
-                "fake",
-                "{\"mergedBody\":\"P. <f1>Alice loves pasta.</f1>\",\"description\":\"d\"}",
-            );
-            compile_dirty_pages(
-                &pool,
-                &tree,
-                &leaf_plan(&fid),
-                &cronista,
-                Cadence::Light,
-                "2026-05-31T00:00:00Z",
-            )
-            .await
-            .expect("compile");
+                    primary_facts: Vec::new(),
+                    outgoing_links: Vec::new(),
+                    pending_links: Vec::new(),
+                    wiki_id: "alice".to_owned(),
+                    page_path: "spesa.md".to_owned(),
+                };
+                plan.pages.insert("spesa".to_owned(), neighbour);
+                plan.link_graph
+                    .insert("alice".to_owned(), vec!["spesa".to_owned()]);
 
-            let system = cronista.last_system_prompt().expect("system prompt sent");
-            assert!(
-                system.contains(expected),
-                "the writer was not told to write in the language {locale} declares: {system}"
-            );
-            // Last instruction before the page, not buried in the brief: the
-            // brief is the cached half and runs thousands of tokens, and the
-            // page the model is about to write follows immediately.
-            let language_line = system
-                .lines()
-                .position(|l| l.starts_with("LANGUAGE:"))
-                .expect("the brief carries the LANGUAGE directive");
-            let rest: Vec<&str> = system.lines().skip(language_line + 1).collect();
-            assert!(
-                rest.iter().all(|l| l.trim().is_empty()),
-                "the LANGUAGE directive must close the brief, but these follow it: {rest:?}"
-            );
-            drop(dir);
+                let cronista = FakeLlmBackend::new(
+                    "fake",
+                    "{\"mergedBody\":\"P. <f1>Alice loves pasta.</f1>\",\"description\":\"d\"}",
+                );
+                compile_dirty_pages(
+                    &pool,
+                    &tree,
+                    &plan,
+                    &cronista,
+                    cadence,
+                    "2026-05-31T00:00:00Z",
+                )
+                .await
+                .expect("compile");
+
+                let user = cronista.last_prompt().expect("user prompt sent");
+                assert!(
+                    user.contains(expected),
+                    "{cadence:?}: the writer was not told to write in the language {locale} \
+                     declares: {user}"
+                );
+                let language_at = user.find("LANGUAGE:").expect("the LANGUAGE directive");
+                let page_at = user.find("\nPAGE: ").expect("the page it governs");
+                assert!(
+                    language_at < page_at,
+                    "{cadence:?}: the directive must come before the page"
+                );
+                // Nothing instructional between the two. On the full cadence
+                // the night part is present and must sit BEFORE the directive,
+                // which is the whole point of asserting per cadence.
+                let between = &user[language_at..page_at];
+                assert!(
+                    !between.contains("LINKS THIS PAGE CARRIED LAST TIME"),
+                    "{cadence:?}: the night part sits between the directive and the page: {between}"
+                );
+                if matches!(cadence, Cadence::Full) {
+                    assert!(
+                        user.contains("LINKS THIS PAGE CARRIED LAST TIME"),
+                        "the full cadence must actually splice the night part, else this \
+                         case proves nothing: {user}"
+                    );
+                }
+                drop(dir);
+            }
         }
     }
 
