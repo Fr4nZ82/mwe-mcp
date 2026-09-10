@@ -5938,36 +5938,16 @@ impl BehaviourScope {
     }
 }
 
-/// File a behaviour-rule fact on the `@rules.md` page its scope calls home,
-/// written LIVE (direct path) so it is in effect on the
-/// next turn.
+/// Two engine-written phrases that say the same thing, ignoring the ways a
+/// restatement may differ on the page: leading and trailing space, inner runs
+/// of space, case.
 ///
-/// `scope` decides BOTH the home wiki and the subject, which together decide
-/// reach (see [`recall_behaviour_rules`]):
-/// - [`BehaviourScope::PerUser`] → the CALLING AGENT's own wiki — resolved
-///   from [`IngestRequest::consumer_id`] via
-///   [`crate::consumers::system_user_for`], falling back to the sender's own
-///   wiki when no binding resolves (a smart consumer IS its user) — with
-///   `subject = the sender`, so different users' per-user rules stay distinct
-///   facts and recall pulls only the served user's own — "how the agent
-///   behaves WITH ME".
-/// - [`BehaviourScope::AgentWide`] → the agent's wiki, `subject = the agent`, so
-///   the rule is the agent's standing operation, recalled for **every** user.
-///   The dispatch in [`run`] only reaches here for an agent-wide rule after
-///   confirming the sender is the admin ([`crate::enrollment::is_admin`]).
-/// - [`BehaviourScope::UserGlobal`] → the SENDER's identity wiki, `subject = the
-///   sender` — the user's own rule for every assistant serving them, recalled
-///   by every consumer regardless of which one heard it. On a smart consumer
-///   the per-user fallback and this home coincide (its wiki IS the user's), so
-///   the two scopes deliberately collapse there.
-///
-/// The same standing directive, ignoring the ways a restatement of it may
-/// differ on the page: leading and trailing space, inner runs of space, case.
-///
-/// The two sides are both engine-written restatements of what a person said,
-/// so nothing subtler than this is worth reading as sameness — and anything
-/// looser would retire a rule that says something else.
-fn same_directive(a: &str, b: &str) -> bool {
+/// Both sides are always the engine's own words — a standing directive
+/// restated by the classifier, or the name of an identity-card slot it wrote —
+/// so nothing subtler than this is worth reading as sameness, and anything
+/// looser would retire a rule that says something else or refuse a value over
+/// a slot nobody meant.
+fn same_words(a: &str, b: &str) -> bool {
     let words = |s: &str| {
         s.split_whitespace()
             .map(str::to_lowercase)
@@ -6018,7 +5998,7 @@ async fn retire_narrower_twins(
         r.wiki_id != home
             && r.valid_to.is_none()
             && crate::wiki::is_rules_page(&r.source_path)
-            && same_directive(&r.text, rule)
+            && same_words(&r.text, rule)
     }) {
         // The two halves of the supersede chokepoint, applied to a
         // predecessor the widened rule did not write over: stamp the link and
@@ -6052,6 +6032,29 @@ async fn retire_narrower_twins(
     retired
 }
 
+/// File a behaviour-rule fact on the `@rules.md` page its scope calls home,
+/// written LIVE (direct path) so it is in effect on the
+/// next turn.
+///
+/// `scope` decides BOTH the home wiki and the subject, which together decide
+/// reach (see [`recall_behaviour_rules`]):
+/// - [`BehaviourScope::PerUser`] → the CALLING AGENT's own wiki — resolved
+///   from [`IngestRequest::consumer_id`] via
+///   [`crate::consumers::system_user_for`], falling back to the sender's own
+///   wiki when no binding resolves (a smart consumer IS its user) — with
+///   `subject = the sender`, so different users' per-user rules stay distinct
+///   facts and recall pulls only the served user's own — "how the agent
+///   behaves WITH ME".
+/// - [`BehaviourScope::AgentWide`] → the agent's wiki, `subject = the agent`, so
+///   the rule is the agent's standing operation, recalled for **every** user.
+///   The dispatch in [`run`] only reaches here for an agent-wide rule after
+///   confirming the sender is the admin ([`crate::enrollment::is_admin`]).
+/// - [`BehaviourScope::UserGlobal`] → the SENDER's identity wiki, `subject = the
+///   sender` — the user's own rule for every assistant serving them, recalled
+///   by every consumer regardless of which one heard it. On a smart consumer
+///   the per-user fallback and this home coincide (its wiki IS the user's), so
+///   the two scopes deliberately collapse there.
+///
 /// A USER-GLOBAL rule also RETIRES the person's own narrower copies of the same
 /// directive ([`retire_narrower_twins`]): widening moves a rule rather than
 /// adding one, and the classifier cannot always name what it moves.
@@ -7574,7 +7577,7 @@ fn hidden_value_filling_the_same_slot<'a>(
     hidden
         .iter()
         .find(|(stored_slot, stored)| {
-            same_directive(stored_slot, slot) && !stored.is_the_same_value(body)
+            same_words(stored_slot, slot) && !stored.is_the_same_value(body)
         })
         .map(|(stored_slot, stored)| (stored_slot.as_str(), stored))
 }
