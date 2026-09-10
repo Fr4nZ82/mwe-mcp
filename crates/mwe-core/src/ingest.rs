@@ -5902,6 +5902,97 @@ impl BehaviourScope {
 ///   the per-user fallback and this home coincide (its wiki IS the user's), so
 ///   the two scopes deliberately collapse there.
 ///
+/// The same standing directive, ignoring the ways a restatement of it may
+/// differ on the page: leading and trailing space, inner runs of space, case.
+///
+/// The two sides are both engine-written restatements of what a person said,
+/// so nothing subtler than this is worth reading as sameness — and anything
+/// looser would retire a rule that says something else.
+fn same_directive(a: &str, b: &str) -> bool {
+    let words = |s: &str| {
+        s.split_whitespace()
+            .map(str::to_lowercase)
+            .collect::<Vec<_>>()
+    };
+    words(a) == words(b)
+}
+
+/// Retire the person's own NARROWER copies of a directive they have just
+/// stated for every assistant, and return how many were retired.
+///
+/// Widening is not adding a rule, it is moving one: «and I mean with every
+/// assistant, not just this one» says the narrow copy has stopped being the
+/// whole of it. Left alive it is served alongside the wide one on the very
+/// assistant it was set on, so that agent reads the same directive twice, the
+/// person's rules page and the agent's disagree about how many rules there
+/// are, and «drop that rule» closes one of two and leaves the other binding.
+///
+/// The engine finds them rather than waiting to be told: the classifier is
+/// only ever shown the rules in force on the consumer it is talking to, so a
+/// widening said to a SECOND assistant has no id to name for the copy sitting
+/// on the first — which is exactly how the demo replay ended with two.
+/// Same subject, same words, on a rules page of another wiki, window still
+/// open; the subject is what makes it the person's own to move.
+///
+/// Best-effort throughout: the widened rule is already written and in force,
+/// so a failure here leaves a stale copy to be dropped by hand rather than
+/// undoing a widening that stands.
+async fn retire_narrower_twins(
+    pool: &SqlitePool,
+    tree: &WikiTree,
+    embedder: &Arc<dyn Embedder>,
+    subject: &Principal,
+    rule: &str,
+    home: &str,
+    successor: &FactId,
+    when: chrono::DateTime<chrono::Utc>,
+) -> usize {
+    let rows = match fact_index::find_active_by_subject(pool, subject).await {
+        Ok(rows) => rows,
+        Err(e) => {
+            tracing::warn!(error = %e, "ingest: narrower copies of a widened rule not read");
+            return 0;
+        },
+    };
+    let mut retired = 0;
+    for row in rows.iter().filter(|r| {
+        r.wiki_id != home
+            && r.valid_to.is_none()
+            && crate::wiki::is_rules_page(&r.source_path)
+            && same_directive(&r.text, rule)
+    }) {
+        // The two halves of the supersede chokepoint, applied to a
+        // predecessor the widened rule did not write over: stamp the link and
+        // take the retired words off the page. `@rules.md` is the one page the
+        // narrative compiler never rewrites, so nothing else would.
+        if let Err(e) = fact_index::mark_superseded(pool, &row.fact_id, successor, when).await {
+            tracing::warn!(
+                error = %e,
+                previous_fact_id = row.fact_id.as_str(),
+                "ingest: a narrower copy of a widened rule still stands"
+            );
+            continue;
+        }
+        if let Err(e) =
+            crate::reindex::strip_fact_region(pool, tree, Arc::clone(embedder), &row.fact_id).await
+        {
+            tracing::warn!(
+                error = %e,
+                previous_fact_id = row.fact_id.as_str(),
+                "ingest: a retired rule's words are still on its page (recall already excludes it)"
+            );
+        }
+        tracing::info!(
+            previous_fact_id = row.fact_id.as_str(),
+            wiki_id = row.wiki_id.as_str(),
+            successor = successor.as_str(),
+            "ingest: the narrower copy of a widened rule is retired"
+        );
+        retired += 1;
+    }
+    retired
+}
+
 /// Returns the capture outcome — which says whether the rule was written or
 /// was already standing on that page, word for word — or `None` when no target
 /// wiki could be located (the rule is dropped, mirroring the best-effort
@@ -5953,14 +6044,37 @@ async fn capture_behaviour_rule(
     let outcome = file_behaviour_rule(
         tree,
         pool,
-        embedder,
+        Arc::clone(&embedder),
         wiki_id,
-        subject,
+        subject.clone(),
         scope,
         rule,
         supersede.map(|old| (old, request.turn_now())),
     )
     .await?;
+    // Widening moves a rule, it does not add one: the copy the person set on
+    // one assistant has stopped being the whole of what they meant. The
+    // classifier can only name a rule in force on the consumer it is talking
+    // to, so the engine looks for the rest itself.
+    if scope == BehaviourScope::UserGlobal {
+        let anchor = match &outcome.action {
+            crate::capture::CaptureAction::Skipped {
+                matched_fact_id, ..
+            } => matched_fact_id.clone(),
+            _ => outcome.fact_id.clone(),
+        };
+        retire_narrower_twins(
+            pool,
+            tree,
+            &embedder,
+            &subject,
+            rule,
+            target.as_str(),
+            &anchor,
+            request.turn_now(),
+        )
+        .await;
+    }
     Ok(Some(outcome))
 }
 
@@ -16267,7 +16381,7 @@ mod tests {
              \"behaviour_rule\":true,\"behaviour_scope\":\"per-user\",\
              \"body\":\"{RULE}\"}}],\"suggested_seed\":\"Ok.\"}}"
         );
-        wiki_ingest_message(
+        let narrow = wiki_ingest_message(
             &pool,
             &tree,
             fake_embedder(),
@@ -16277,7 +16391,9 @@ mod tests {
             &policy,
         )
         .await
-        .expect("ingest");
+        .expect("ingest")
+        .capture_id
+        .expect("the per-user rule is filed");
 
         let widened = per_user.replace("per-user", "user-global");
         let resp = wiki_ingest_message(
@@ -16313,13 +16429,125 @@ mod tests {
             Some(&own[0].fact_id),
             "the turn's anchor id is the rule that was written"
         );
-        // The agent's own copy is untouched: promotion adds a scope, it does
-        // not retire the rule the assistant was already following.
+        // And the narrow copy is retired onto it: widening MOVES a rule. Left
+        // alive it is served beside the wide one on the very assistant it was
+        // set on, and «drop that rule» would close one of the two.
+        let retired = fact_index::find_by_id(&pool, &narrow)
+            .await
+            .expect("find")
+            .expect("the row stays: retiring a rule is never deleting it");
+        assert_eq!(
+            retired.superseded_by.as_ref(),
+            Some(&own[0].fact_id),
+            "the narrower copy is retired onto the widened rule"
+        );
+        assert!(
+            retired.valid_to.is_some(),
+            "so the rules channel stops serving it"
+        );
         assert_eq!(
             fact_index::count_active_in_wiki(&pool, "samvisebot")
                 .await
                 .unwrap(),
-            1
+            0,
+            "nothing of the rule is left in force on the one assistant it was set on"
+        );
+        drop(dir);
+    }
+
+    /// Widening said to a SECOND assistant still retires the copy sitting on
+    /// the first, which is the case the classifier cannot help with.
+    ///
+    /// It is only ever shown the rules in force on the consumer it is talking
+    /// to, so a rule set on the kitchen assistant and widened on the phone one
+    /// has no id it could name. That is the shape the demo replay produced,
+    /// and it is why the engine looks for the narrower copies itself instead
+    /// of waiting to be told about them.
+    #[tokio::test]
+    async fn widening_on_a_second_assistant_retires_the_copy_on_the_first() {
+        const RULE: &str = "Answer concisely: the answer without the preamble.";
+        let (dir, _first_tree, pool) = setup_agent_workdir().await;
+        let policy = IngestPolicy::default();
+        // A second assistant, with its own wiki and its own consumer binding.
+        // The tree is reopened after it lands, so both agents are locatable.
+        write_wiki(
+            &dir.path().join("wikis"),
+            "phonebot",
+            "Phone Bot",
+            "wiki-user",
+            None,
+        );
+        let tree = WikiTree::open(dir.path()).expect("reopen with the second agent");
+        sqlx::query("INSERT INTO enrollment_users (user_id, is_admin) VALUES ('phonebot', 0)")
+            .execute(&pool)
+            .await
+            .unwrap();
+        crate::consumers::register(
+            &pool,
+            &crate::consumers::RegisterRequest {
+                consumer_id: "phonedeploy",
+                display_name: None,
+                callback_url: None,
+                kinds_subscribed: None,
+                metadata: None,
+                system_user_id: Some("phonebot"),
+            },
+        )
+        .await
+        .expect("register the second consumer");
+
+        let per_user = format!(
+            "{{\"intent\":\"capture\",\"extractions\":[{{\
+             \"behaviour_rule\":true,\"behaviour_scope\":\"per-user\",\
+             \"body\":\"{RULE}\"}}],\"suggested_seed\":\"Ok.\"}}"
+        );
+        let narrow = wiki_ingest_message(
+            &pool,
+            &tree,
+            fake_embedder(),
+            &FakeLlmBackend::new("fake", &per_user),
+            None,
+            req_consumer("keep it short with me", "alice", "botdeploy"),
+            &policy,
+        )
+        .await
+        .expect("ingest")
+        .capture_id
+        .expect("the per-user rule is filed on the first assistant");
+
+        // Said to the OTHER assistant, and carrying no supersede target —
+        // there is none it could have been shown.
+        let widened = per_user.replace("per-user", "user-global");
+        wiki_ingest_message(
+            &pool,
+            &tree,
+            fake_embedder(),
+            &FakeLlmBackend::new("fake", &widened),
+            None,
+            req_consumer(
+                "and I mean with every assistant, not just this one",
+                "alice",
+                "phonedeploy",
+            ),
+            &policy,
+        )
+        .await
+        .expect("ingest");
+
+        let retired = fact_index::find_by_id(&pool, &narrow)
+            .await
+            .expect("find")
+            .expect("the row stays");
+        assert!(
+            retired.valid_to.is_some() && retired.superseded_by.is_some(),
+            "the copy on the first assistant is retired onto the widened rule"
+        );
+        assert_eq!(
+            fact_index::count_active_in_wiki(&pool, "alice")
+                .await
+                .unwrap(),
+            1,
+            "and the widened rule is the one left standing, on the person's own page"
         );
         drop(dir);
     }
@@ -18106,6 +18334,29 @@ mod tests {
         );
     }
 
+    /// The prompt says what widening is and who finishes it.
+    ///
+    /// It is neither of the two cases the paragraph above it covers: it
+    /// repeats the words and changes the scope. Read as a repeat it is
+    /// deduped away, read as a revision it asks the classifier for an id that
+    /// is not in the block — the block holds only the rules in force on the
+    /// consumer being spoken to, and a rule set on another assistant is not
+    /// among them. The engine finds those, so the prompt says so rather than
+    /// leaving the model to invent an answer.
+    #[test]
+    fn bundled_ingest_prompt_says_who_finishes_a_widening() {
+        assert!(
+            BUNDLED_INGEST_PROMPT_MD
+                .contains("WIDENING IS NEITHER OF THOSE, AND IT IS THE ENGINE'S TO FINISH"),
+            "widening reads as a repeat or a revision again"
+        );
+        assert!(
+            BUNDLED_INGEST_PROMPT_MD
+                .contains("Widening MOVES a rule; it never leaves the narrow copy standing"),
+            "the prompt no longer says that the narrow copy goes"
+        );
+    }
+
     /// A conversational gag is a family of directive, not a scope, and a room
     /// in the sentence is not evidence that it is a rule of the world.
     ///
@@ -18128,6 +18379,7 @@ mod tests {
             BUNDLED_INGEST_PROMPT_MD.contains("A gag is a family of directive, not a scope."),
             "the don't-say row has taken a scope of its own again"
         );
+
         let row = BUNDLED_INGEST_PROMPT_MD
             .lines()
             .find(|l| l.contains("don't **SAY**"))
