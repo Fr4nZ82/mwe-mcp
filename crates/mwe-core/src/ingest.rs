@@ -1197,12 +1197,17 @@ struct LlmExtraction {
     attachments: Vec<String>,
 }
 
-/// The names of the fields of one `extractions` element, as the classifier is
-/// shown them (prompt Part 2's JSON shape) — the list [`names_a_field`] reads.
+/// The names of the fields of one `extractions` element — the list
+/// [`names_a_field`] reads. Every name the wire shape accepts belongs here,
+/// including an ALIAS the model may know even though the prompt does not
+/// publish it: what makes a token a box name is that the parser answers to it.
 ///
-/// It must name every field of [`LlmExtraction`] above; `field_names_cover_the_extraction_shape`
-/// pins it against the struct. One added there and forgotten here costs
-/// nothing worse than the behaviour that predates this list.
+/// `every_listed_name_is_a_field_of_the_extraction` proves each entry really
+/// is one, by feeding the parser a value no field of [`LlmExtraction`] can
+/// take and requiring a refusal — an unknown key would simply be ignored. It
+/// cannot prove the reverse: a field ADDED to the struct and forgotten here
+/// keeps the behaviour that predates the list, and costs the extraction that
+/// names it rather than the placement.
 const EXTRACTION_FIELDS: &[&str] = &[
     "target_wiki_id",
     "subject_external",
@@ -1226,6 +1231,8 @@ const EXTRACTION_FIELDS: &[&str] = &[
     "conflicts_with",
     "slot",
     "attachments",
+    // The alias the parser answers to for `subject_id`.
+    "owner_id",
 ];
 
 /// Whether `value` is the name of one of the extraction's own fields.
@@ -15721,51 +15728,37 @@ mod tests {
     fn only_a_field_name_is_read_as_an_absent_subject() {
         assert!(names_a_field("subject_external"));
         assert!(names_a_field("behaviour_about"));
+        assert!(names_a_field("owner_id"), "an alias is a box name too");
         assert!(!names_a_field("Pepper"));
         assert!(!names_a_field("alice"));
         assert!(!names_a_field("user:alice"));
     }
 
-    /// The list [`names_a_field`] reads must be the extraction's own shape:
-    /// every name in it is a field the classifier's JSON actually carries.
+    /// Every name in [`EXTRACTION_FIELDS`] really is a box of the wire shape,
+    /// proved against the parser rather than against a second hand-written
+    /// list.
+    ///
+    /// The probe is a value no field of [`LlmExtraction`] can take — an object,
+    /// where every field is a string, a list or a boolean. A real field rejects
+    /// it; an unknown key is ignored and the parse succeeds. So a name that
+    /// stops being a field, or was never one, turns this red, and the list
+    /// cannot drift into naming something the classifier is not offered.
     #[test]
-    fn field_names_cover_the_extraction_shape() {
+    fn every_listed_name_is_a_field_of_the_extraction() {
         for name in EXTRACTION_FIELDS {
-            let json = format!("{{\"{name}\":null}}");
-            let parsed: serde_json::Value = serde_json::from_str(&json).unwrap();
+            let probe = format!("{{\"{name}\":{{\"no\":\"field takes an object\"}}}}");
             assert!(
-                parsed.get(*name).is_some(),
-                "{name} is not a usable JSON key"
+                serde_json::from_str::<LlmExtraction>(&probe).is_err(),
+                "`{name}` is not a field of the extraction — an unknown key would be ignored, \
+                 so calling it a field name lets a real value be read as an empty box"
             );
         }
-        let shape = serde_json::json!({
-            "target_wiki_id": null, "subject_external": null, "target_page": null,
-            "subject_id": null, "allow_ids": [], "fact_type": null, "valid_from": null,
-            "valid_to": null, "style": null, "page_description": null, "salience": null,
-            "requested_container": false, "engine_rule": false, "behaviour_rule": false,
-            "behaviour_scope": null, "behaviour_about": null, "topics": [],
-            "body": null, "supersede_target": null, "conflicts_with": null,
-            "slot": null, "attachments": [],
-        });
-        let keys: Vec<&str> = shape
-            .as_object()
-            .unwrap()
-            .keys()
-            .map(String::as_str)
-            .collect();
-        for key in &keys {
-            assert!(
-                EXTRACTION_FIELDS.contains(key),
-                "{key} is a field of the extraction and must be in EXTRACTION_FIELDS"
-            );
-        }
-        assert_eq!(
-            EXTRACTION_FIELDS.len(),
-            keys.len(),
-            "EXTRACTION_FIELDS names something the extraction does not carry"
+        // And the fence in the other direction, on the one that matters: a
+        // plausible VALUE must not be mistaken for a box.
+        assert!(
+            serde_json::from_str::<LlmExtraction>("{\"Pepper\":{\"no\":\"such field\"}}").is_ok(),
+            "the probe proves nothing if an unknown key is refused too"
         );
-        serde_json::from_value::<LlmExtraction>(shape)
-            .expect("the shape above is one the classifier may send");
     }
 
     /// The positive twin of [`ingest_look_alike_of_an_enrolled_name_reowns_to_sender`],
