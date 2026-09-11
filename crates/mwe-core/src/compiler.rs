@@ -1754,9 +1754,14 @@ fn list_records<'a>(
 /// is brought up to date in the turn that changed it.
 ///
 /// Adding an item already wrote it live (the capture path appends its marker).
-/// **Closing one did not**: `fact_index::close_validity` stamps the row and
-/// leaves the file alone, so *«ho comprato il latte»* showed no `✓` until the
-/// next compile, up to an hour later. This is the other half.
+/// The two gestures that change a record rather than add one do not, and both
+/// come through here: `fact_index::close_validity` stamps the row and leaves
+/// the file alone, so *«ho comprato il latte»* showed no `✓` until the next
+/// compile, up to an hour later; and REPLACING an entry
+/// ([`crate::capture::list_entry_superseded`]) cuts the old record's bytes out
+/// from under its bullet and appends the new one at the end of the file. Both
+/// leave the page a poor copy of the list until it is rebuilt, which costs
+/// nothing here — so it is rebuilt in the turn that changed it.
 ///
 /// Returns `Ok(false)` and touches nothing when the page is not `lista`-styled
 /// — the caller does not have to know what kind of page a fact sits on.
@@ -4243,6 +4248,90 @@ mod tests {
             .unwrap()
             .unwrap();
         assert_eq!(row.text, "latte", "canonical claim text preserved");
+        drop(dir);
+    }
+
+    /// A list entry is the bare item with its values, and the page shows it
+    /// as written.
+    ///
+    /// Founder, 2026-09-11: *«no frasi, una lista è una lista, ma può avere
+    /// valori … dev'essere schematico, è ciò che contraddistingue le liste»*.
+    /// So `latte 2` renders as `- latte 2` and nothing dresses it back up into
+    /// a sentence; a second value carried on ` · ` survives whole, and a
+    /// closure appends its own ` · ✓` after it without colliding with the one
+    /// already there.
+    #[tokio::test]
+    async fn a_list_entry_renders_as_the_bare_item_with_its_values() {
+        let (dir, tree, pool) = setup().await;
+        let milk = ffp(0x31, "latte 2");
+        let water = ffp(0x32, "acqua 2 casse");
+        let bread = ffp(0x33, "pane senza glutine");
+        let mut yoghurt = ffp(0x34, "yogurt · scade 20/09");
+        yoghurt.decay_reason = Some("completed".to_owned());
+        yoghurt.valid_to = Some("2026-06-07T18:30:00Z".to_owned());
+        for f in [&milk, &water, &bread, &yoghurt] {
+            plant_fact(&pool, &f.fact_id, "user:alice", &f.text).await;
+        }
+
+        let mut pages = BTreeMap::new();
+        pages.insert(
+            "spesa".to_owned(),
+            PagePlan {
+                slug: "spesa".to_owned(),
+                title: "Spesa".to_owned(),
+                description: "La lista della spesa".to_owned(),
+                style: Some(crate::wiki::PageStyle::Lista),
+                primary_facts: vec![milk.clone(), water.clone(), bread.clone(), yoghurt.clone()],
+                outgoing_links: Vec::new(),
+                pending_links: Vec::new(),
+                wiki_id: "alice".to_owned(),
+                page_path: "spesa.md".to_owned(),
+            },
+        );
+        let plan = CompilationPlan {
+            pages,
+            merged_pages: Vec::new(),
+            link_graph: BTreeMap::new(),
+            compilation_order: vec!["spesa".to_owned()],
+            generated_at: "t".to_owned(),
+            fact_count: 4,
+            dirty_pages: vec!["spesa".to_owned()],
+            force_dirty: Vec::new(),
+            refile_candidates: Vec::new(),
+            reopen_pages: Vec::new(),
+            authored_rails: Vec::new(),
+        };
+
+        let cronista = FakeLlmBackend::new("fake", "unused — lista path has no LLM");
+        compile_dirty_pages(
+            &pool,
+            &tree,
+            &plan,
+            &cronista,
+            Cadence::Light,
+            "2026-06-11T00:00:00Z",
+        )
+        .await
+        .expect("compile");
+
+        let page = std::fs::read_to_string(dir.path().join("wikis/alice/spesa.md")).unwrap();
+        for (fact, rendered) in [
+            (&milk, "latte 2"),
+            (&water, "acqua 2 casse"),
+            (&bread, "pane senza glutine"),
+            // The closure appends its own ` · ✓` after the value the entry
+            // already carries — two middle dots, one row, nothing merged.
+            (&yoghurt, "yogurt · scade 20/09 · ✓ 2026-06-07"),
+        ] {
+            let line = format!(
+                "- {}",
+                crate::capture::render_marker(&fact.fact_id, rendered)
+            );
+            assert!(
+                page.contains(&line),
+                "the list reads as written: expected `{line}` in:\n{page}"
+            );
+        }
         drop(dir);
     }
 

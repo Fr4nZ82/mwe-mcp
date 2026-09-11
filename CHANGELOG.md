@@ -153,6 +153,27 @@ semver-governed surface: breaking changes are called out explicitly.
 
 ### Changed
 
+- **A list is a list again: its lines are items, not sentences.** Asking an
+  assistant to put milk on the shopping list wrote *"Milk is needed."* on the
+  page, and a list of a dozen things read as a dozen little sentences. From now
+  on a line is the thing itself with whatever the person said about it —
+  `latte 2`, `acqua 2 casse`, `pane senza glutine`, `yogurt · scade 20 settembre`.
+  How many rides straight after the name; anything else — a use-by date, a
+  note — is set off by a middle dot. Nothing is added to make a line easier to
+  find: what finds a list is the list, not words smuggled into its rows.
+
+  **And saying an item again with a different amount updates the line instead
+  of adding one.** Say *"two litres of milk"* and later *"make that four"* and
+  the list holds one milk, with four; the earlier line is kept as history on
+  the **Facts** page, the way every replaced fact is. The same name is the same
+  item, whoever put it there — but an item you have already ticked off is the
+  record that you bought it, and buying it again opens a new line rather than
+  erasing that. A qualifier is part of the item: *gluten-free bread* is not
+  *bread* with a value, so both can sit on the list.
+
+  Lines already written as sentences stay as they are until somebody says them
+  again; nothing rewrites what is on your lists today.
+
 - **A second birth date is a question now, not a second line on the card.**
   An identity card holds a handful of things there can only be one of: when
   somebody was born, where they live, how to reach them. When a conversation

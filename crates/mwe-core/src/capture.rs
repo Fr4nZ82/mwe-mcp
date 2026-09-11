@@ -197,12 +197,14 @@ pub struct CaptureRequest {
     /// Per-page placement hints the classifier deduced,
     /// forwarded from the ingest extraction so the write/compile
     /// path can place the fact on the right subject page. `style` =
-    /// `prosa` | `prosa-tecnica` | `lista`; the dominant writing register of the
-    /// target page. Inert pass-through for now — no consumer until later
-    /// stages wire it through buffer→promote→compile.
+    /// `prosa` | `prosa-tecnica` | `lista`; the dominant writing register of
+    /// the target page. Read twice on the way in: [`seed_page_card`] writes it
+    /// into the testata of a page born here, and `lista` is what tells
+    /// [`list_entry_superseded`] this body is an ENTRY and not a sentence.
     pub style: Option<crate::wiki::PageStyle>,
-    /// The page description that aids future placement. See
-    /// [`Self::style`]. Inert pass-through for now.
+    /// The page description that aids future placement — the one-line
+    /// `description:` of the testata [`seed_page_card`] writes for a page born
+    /// on this call. See [`Self::style`].
     pub page_description: Option<String>,
     /// Per-fact salience the ingest classifier deduced,
     /// threaded into [`fact_index::NewFact`] (direct path) and onto the
@@ -360,13 +362,23 @@ impl Audience<'_> {
     /// Resolving it to the subject here would re-introduce the shortcut on the
     /// read side and quietly bless a row that breaks the invariant.
     fn same_as_row(&self, row: &FactIndexRow) -> bool {
+        self.same_read_set_as(row) && row.sender_id.as_ref() == self.sender
+    }
+
+    /// Whether `row` is readable by exactly the same people — subject plus
+    /// `allow` set, order-insensitive — with the reporter left out of it.
+    ///
+    /// The ACL half of [`Self::same_as_row`], separate because one caller
+    /// needs exactly this and no more: [`list_entry_superseded`], where the
+    /// two rows being weighed are one item on one list and WHO wrote the
+    /// quantity down is not what makes them one item. Merging on the read set
+    /// alone is safe in the way the whole-audience test is safe — the
+    /// replacement reaches the same people the entry already reached — and it
+    /// is the only part of the audience that safety depends on.
+    fn same_read_set_as(&self, row: &FactIndexRow) -> bool {
         if &row.subject_id != self.subject {
             return false;
         }
-        if row.sender_id.as_ref() != self.sender {
-            return false;
-        }
-
         // `allow` is a small hand-written list — a linear contains beats
         // building two sorted copies, and it is order-insensitive by
         // construction.
@@ -462,6 +474,139 @@ pub(crate) fn best_dedup_candidate<'a>(
         }
     }
     best
+}
+
+// ---------- a list entry is named, and the name is its identity ----------
+
+/// The NAME half of a list entry — what the row is OF, with the values the
+/// speaker gave it taken off.
+///
+/// A `lista` body is schematic by contract (`prompts/ingest.md`, Part 2): the
+/// entry, then its values — `latte 2`, `acqua 2 casse`, `yogurt · scade
+/// 20/09`. Two marks separate a value from the name and both are read here: a
+/// ` · ` opens a SECOND value, so everything from the first middle dot on is
+/// values; before it, the run of words starting at the first digit is the
+/// first value.
+///
+/// What is left is the name, lowercased with its whitespace collapsed and its
+/// sentence punctuation trimmed — so `Latte 2` and `latte 4` answer the same
+/// thing, while `pane senza glutine`, which carries no number at all, stays
+/// whole and is a different entry from `pane`. That is the intended reading:
+/// a qualifier is part of what you are buying, a quantity is not.
+///
+/// A body that OPENS with a number keeps all of it — «2 litri di latte» names
+/// no separate value, and cutting at the first digit would leave nothing. The
+/// result is empty only for a body with no words at all; an empty name matches
+/// nothing, which is what every caller wants.
+#[must_use]
+pub(crate) fn list_entry_name(body: &str) -> String {
+    let head = body.split('·').next().unwrap_or(body).to_lowercase();
+    let words: Vec<&str> = head.split_whitespace().collect();
+    let cut = words
+        .iter()
+        .position(|w| w.starts_with(|c: char| c.is_ascii_digit()))
+        .filter(|first_value| *first_value > 0)
+        .unwrap_or(words.len());
+    words[..cut]
+        .join(" ")
+        .trim_matches(|c: char| ".,;:!?".contains(c))
+        .to_owned()
+}
+
+/// The active list entry a new one REPLACES: same list, same name, new values.
+///
+/// Founder, 2026-09-11: a list may carry values — «latte 2», «acqua 2 casse»,
+/// a use-by date — and saying one again with a different value is the same
+/// entry brought up to date, not a second entry. The similarity dedup cannot
+/// reach this: two short entries differing in one character score far below
+/// [`recall::DEFAULT_DEDUP_THRESHOLD`], so it files a second row and the list
+/// grows a line the reader has to reconcile. Nor can the reconciliation stage
+/// be the answer — it judges from a model against the candidates it was
+/// shown, and a list is the one shape whose upkeep is arithmetic.
+///
+/// Four fences, and each is a case this must NOT take:
+///
+/// - **the same page**, so an entry on the shopping list never displaces one
+///   that names the same thing on another list;
+/// - **not already closed** (`decay_reason`), because a ticked-off `latte · ✓`
+///   is the record that it was bought, and the list is expected to cycle
+///   open → done → open: replacing it would delete the purchase;
+/// - **the same read set**, so the replacement reaches exactly the people the
+///   entry reached. The reporter is deliberately not compared — a shared list
+///   is a set of items, not a set of claims, and two people writing down the
+///   quantity of one item are writing one row;
+/// - **a different body**, because a verbatim restatement is a duplicate: it
+///   belongs to the dedup skip, which keeps the row that exists instead of
+///   minting a fresh id for the same words.
+pub(crate) fn list_entry_superseded<'a>(
+    candidates: &'a [FactIndexRow],
+    req: &CaptureRequest,
+) -> Option<&'a FactIndexRow> {
+    if req.style != Some(crate::wiki::PageStyle::Lista) {
+        return None;
+    }
+    let page = req.page.as_ref()?.file_name()?.to_str()?;
+    // Markers are a key, not words — the same reason [`best_dedup_candidate`]
+    // strips them: an entry's name is what the person wrote, and a media link
+    // riding the row is neither part of the name nor part of its values.
+    let body = crate::parser::strip_embed_markers(&req.body);
+    let name = list_entry_name(&body);
+    if name.is_empty() {
+        return None;
+    }
+    let embeds = crate::parser::collect_embeds(&req.body);
+    let audience = Audience {
+        subject: &req.subject,
+        allow: &req.allow,
+        sender: req.sender.as_ref(),
+    };
+    // `candidates` arrives oldest first, so the last match is the entry as it
+    // stands now — the one a reader would see on the page.
+    candidates.iter().rfind(|row| {
+        if row.wiki_id != req.wiki_id.as_str()
+            || !crate::wiki::names_page(&row.source_path, page)
+            || row.decay_reason.is_some()
+            || !audience.same_read_set_as(row)
+        {
+            return false;
+        }
+        // Different media, two entries — the same call [`wiki_capture`]'s
+        // dedup makes: the words may match while the photos differ, and a
+        // replacement would drop one of them.
+        if crate::parser::collect_embeds(&row.text) != embeds {
+            return false;
+        }
+        let stored = crate::parser::strip_embed_markers(&row.text);
+        stored.trim() != body.trim() && list_entry_name(&stored) == name
+    })
+}
+
+/// [`list_entry_superseded`] against the index: the entry this request
+/// replaces, or `None` when it adds a new one.
+///
+/// Soft on error — a lookup that cannot run lets the capture through as an
+/// ordinary add. The cost is a second line on the list, which is exactly what
+/// the list did before this rule existed; failing the turn over it would cost
+/// the item.
+pub(crate) async fn list_entry_to_replace(
+    pool: &SqlitePool,
+    req: &CaptureRequest,
+) -> Option<FactId> {
+    if req.style != Some(crate::wiki::PageStyle::Lista) || req.page.is_none() {
+        return None;
+    }
+    let candidates = match fact_index::find_active_by_subject(pool, &req.subject).await {
+        Ok(rows) => rows,
+        Err(e) => {
+            tracing::warn!(
+                error = %e,
+                subject = %req.subject,
+                "capture: list-entry lookup failed — the entry is added rather than replaced"
+            );
+            return None;
+        },
+    };
+    list_entry_superseded(&candidates, req).map(|row| row.fact_id.clone())
 }
 
 // ---------- wiki_capture ----------
@@ -1142,6 +1287,153 @@ mod tests {
             page_description: None,
             salience: None,
         }
+    }
+
+    fn list_request(page: &str, body: &str) -> CaptureRequest {
+        CaptureRequest {
+            page: Some(PathBuf::from(page)),
+            style: Some(crate::wiki::PageStyle::Lista),
+            fact_type: Some("plan".to_owned()),
+            ..sample_request(body)
+        }
+    }
+
+    // ---------- list entries ----------
+
+    /// An entry is named by WHAT IT IS OF; its values are not part of the
+    /// name, and a qualifier is.
+    ///
+    /// This is the whole of the rule that decides whether a second `latte`
+    /// updates the first or sits beside it, so it is written out shape by
+    /// shape: a bare quantity, a quantity with a unit, a second value behind
+    /// ` · `, and the case the rule must NOT swallow — `pane senza glutine` is
+    /// a different thing to buy from `pane`, not the same thing with a value.
+    #[test]
+    fn a_list_entry_is_named_by_its_item_and_never_by_its_values() {
+        assert_eq!(list_entry_name("latte 2"), "latte");
+        assert_eq!(list_entry_name("Latte 4"), "latte");
+        assert_eq!(list_entry_name("acqua 2 casse"), "acqua");
+        assert_eq!(list_entry_name("yogurt · scade 20/09"), "yogurt");
+        assert_eq!(list_entry_name("yogurt"), "yogurt");
+        assert_eq!(list_entry_name("pane senza glutine"), "pane senza glutine");
+        assert_ne!(
+            list_entry_name("pane senza glutine"),
+            list_entry_name("pane"),
+            "a qualifier is part of the item, so these are two entries"
+        );
+        // A body that opens with a number keeps all of it.
+        assert_eq!(list_entry_name("2 litri di latte"), "2 litri di latte");
+        assert_eq!(list_entry_name("   "), "");
+    }
+
+    /// The same entry said again with different values is the one to replace;
+    /// four shapes that look like it are not.
+    ///
+    /// Founder, 2026-09-11: *«stesso nome di voce = stessa voce; i valori sono
+    /// l'aggiornamento»*. The negatives are the point of the test — each of
+    /// them would cost something real if the rule took it: a purchase already
+    /// ticked off, an entry on somebody else's list, a different item, and the
+    /// verbatim restatement that belongs to the dedup skip.
+    #[tokio::test]
+    async fn a_list_entry_with_new_values_replaces_the_one_of_the_same_name() {
+        let dir = tempdir().unwrap();
+        let tree = WikiTree::open(dir.path()).unwrap();
+        seed_alice(&tree);
+        let pool = make_pool().await;
+
+        let milk = wiki_capture(
+            &tree,
+            &pool,
+            embedder(),
+            list_request("spesa.md", "latte 2"),
+        )
+        .await
+        .expect("capture");
+        wiki_capture(
+            &tree,
+            &pool,
+            embedder(),
+            list_request("spesa.md", "pane senza glutine"),
+        )
+        .await
+        .expect("capture");
+        let elsewhere = wiki_capture(
+            &tree,
+            &pool,
+            embedder(),
+            list_request("ferramenta.md", "viti 20"),
+        )
+        .await
+        .expect("capture");
+
+        // The same item, a new quantity → the milk row is the one replaced.
+        assert_eq!(
+            list_entry_to_replace(&pool, &list_request("spesa.md", "latte 4")).await,
+            Some(milk.fact_id.clone()),
+        );
+        // And the other way round: an entry that gains a value for the first
+        // time is the same entry, not a second one.
+        let yoghurt = wiki_capture(&tree, &pool, embedder(), list_request("spesa.md", "yogurt"))
+            .await
+            .expect("capture");
+        assert_eq!(
+            list_entry_to_replace(&pool, &list_request("spesa.md", "yogurt · scade 20/09")).await,
+            Some(yoghurt.fact_id),
+        );
+
+        // A different item, on the same list.
+        assert!(
+            list_entry_to_replace(&pool, &list_request("spesa.md", "pane 2"))
+                .await
+                .is_none(),
+            "`pane 2` names a different item from `pane senza glutine`"
+        );
+        // The same words, on another list.
+        assert!(
+            list_entry_to_replace(&pool, &list_request("spesa.md", "viti 40"))
+                .await
+                .is_none(),
+            "an entry never replaces one on a different page"
+        );
+        assert_eq!(
+            list_entry_to_replace(&pool, &list_request("ferramenta.md", "viti 40")).await,
+            Some(elsewhere.fact_id),
+            "on its own list it does",
+        );
+        // The very same words: a duplicate, which the dedup skip settles by
+        // keeping the row that exists.
+        assert!(
+            list_entry_to_replace(&pool, &list_request("spesa.md", "latte 2"))
+                .await
+                .is_none(),
+            "a verbatim restatement is a duplicate, not a replacement"
+        );
+        // Prose is not an entry, whatever it says.
+        let mut prose = list_request("spesa.md", "latte 6");
+        prose.style = Some(crate::wiki::PageStyle::Prosa);
+        assert!(
+            list_entry_to_replace(&pool, &prose).await.is_none(),
+            "only a `lista` body is read as an entry"
+        );
+
+        // A bought item is history: the list cycles open → done → open, and
+        // buying milk again must not delete the record that it was bought.
+        crate::fact_index::close_validity(
+            &pool,
+            &milk.fact_id,
+            "2026-09-12T00:00:00Z",
+            crate::fact_index::decay::COMPLETED,
+            None,
+        )
+        .await
+        .expect("close");
+        assert!(
+            list_entry_to_replace(&pool, &list_request("spesa.md", "latte 4"))
+                .await
+                .is_none(),
+            "a ticked-off entry is the record of a purchase, never a row to overwrite"
+        );
+        drop(dir);
     }
 
     // ---------- validate_body ----------

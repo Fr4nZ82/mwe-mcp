@@ -1786,7 +1786,8 @@ fn people_the_turn_names(
 /// guard leaves open: when the guard takes a fact off a person the turn never
 /// named, does the sentence still say they are the one it is about?
 ///
-/// No sender is passed — a `body` is written in the third person, and a
+/// No sender is passed — a `body` names its subject rather than speaking as
+/// them (prose in the third person, a list entry in no person at all), so a
 /// first-person word in one says nothing about this subject.
 pub(crate) fn body_names_user(
     body: Option<&str>,
@@ -11144,6 +11145,21 @@ pub async fn wiki_ingest_message(
                     cap_req.sender.clone(),
                 );
 
+                // A LIST ENTRY SAID AGAIN WITH DIFFERENT VALUES IS THE SAME
+                // ENTRY. «latte 2» then «latte 4» is one line with a new
+                // quantity, and the engine settles it here rather than leaving
+                // it to a model: the write-time dedup scores two short entries
+                // far apart and files a second row, and the reconciliation
+                // stage judges from candidates it may not have been shown. See
+                // [`capture::list_entry_superseded`] for the four cases it
+                // refuses. The classifier's own `supersede_target` wins when it
+                // set one — that road is narrowed to standing directives and
+                // never reaches a list.
+                let supersede_target = match supersede_target {
+                    Some(target) => Some(target),
+                    None => capture::list_entry_to_replace(pool, &cap_req).await,
+                };
+
                 // Standard wikis buffer the capture for the hourly round;
                 // a smart-wiki target would keep the direct-write path,
                 // but smart wikis are filtered out of `available` above so in
@@ -11320,6 +11336,30 @@ pub async fn wiki_ingest_message(
                             *similarity,
                             restated_body,
                         ));
+                    }
+                    // The replaced record's bytes are cut out of the page and
+                    // the new one is appended at the end, so the list is
+                    // rebuilt from the facts as they stand. Same in-turn
+                    // refresh a closure gets, for the same reason: a `lista`
+                    // costs no model call, so it is never left half-rendered
+                    // until the next compile. A page that is not a list
+                    // refreshes nothing ([`crate::compiler::refresh_list_page`]
+                    // answers for that), and a refresh that fails is a stale
+                    // render the compile reconciles, never a lost write.
+                    if let CaptureAction::Superseded { source_path, .. } = &outcome.action
+                        && let Err(e) = crate::compiler::refresh_list_page(
+                            pool,
+                            tree,
+                            notice_wiki.as_str(),
+                            source_path,
+                        )
+                        .await
+                    {
+                        tracing::warn!(
+                            error = %e,
+                            source_path = %source_path,
+                            "ingest: list page not refreshed after a replacement (the compile will)"
+                        );
                     }
                     outcome.fact_id
                 };
@@ -19385,6 +19425,35 @@ mod tests {
         );
     }
 
+    /// The bundled ingest prompt teaches that a list entry is not a sentence.
+    ///
+    /// The engine renders a `lista` body exactly as it arrives, so the shape
+    /// of a list is decided in this prompt and nowhere else. Three things have
+    /// to keep standing: the exception itself, stated where the third-person
+    /// rule is stated; the ONE separator, so two spellings of a second value
+    /// cannot both be right; and the worked example, which is where a model
+    /// reads the shape rather than the rule. The old example is asserted gone
+    /// — it taught the sentence the exception exists to stop.
+    #[test]
+    fn bundled_ingest_prompt_teaches_that_a_list_entry_is_not_a_sentence() {
+        for needle in [
+            "THE ONE EXCEPTION — A LIST ENTRY IS NOT A SENTENCE",
+            "EVERY OTHER VALUE takes ` · `",
+            "WHAT LOOKS LIKE AN ENTRY AND IS NOT ONE",
+            "`body`: `\"detergent 2 bottles\"`",
+            "`body`: `\"yoghurt · expires 20 September\"`",
+        ] {
+            assert!(
+                BUNDLED_INGEST_PROMPT_MD.contains(needle),
+                "the bundled prompt no longer says: {needle}"
+            );
+        }
+        assert!(
+            !BUNDLED_INGEST_PROMPT_MD.contains("Detergent is needed."),
+            "the worked list example still writes an entry as a sentence"
+        );
+    }
+
     /// The turns a public-demo corpus lost, and the one gate that lost them.
     ///
     /// A standing directive, a stated position, a withdrawal of one's own
@@ -26389,6 +26458,315 @@ mod tests {
             "the requested container's fact is written to its page marker now: {page}"
         );
 
+        drop(dir);
+    }
+
+    /// A dictated list lands as BARE ENTRIES with their values, in whatever
+    /// language it was dictated in.
+    ///
+    /// The classifier answers to a script here, so what is under test is the
+    /// ENGINE: that a body which is an entry rather than a sentence — with a
+    /// quantity, with a unit, with a second value behind ` · ` — survives the
+    /// capture path word for word, into `fact_index` and onto the page. The
+    /// rule the model is taught is asserted separately, on the prompt itself
+    /// ([`bundled_ingest_prompt_teaches_that_a_list_entry_is_not_a_sentence`]).
+    #[tokio::test]
+    async fn a_dictated_list_lands_as_bare_entries_with_their_values() {
+        for (message, page_name, entries) in [
+            (
+                "aggiungi alla spesa: due litri di latte, due casse d'acqua, \
+                 pane senza glutine e lo yogurt, che scade il 20",
+                "spesa.md",
+                [
+                    "latte 2",
+                    "acqua 2 casse",
+                    "pane senza glutine",
+                    "yogurt · scade 20/09",
+                ],
+            ),
+            (
+                "add to the shopping list: two litres of milk, two crates of water, \
+                 gluten-free bread and the yoghurt, it expires on the 20th",
+                "shopping.md",
+                [
+                    "milk 2",
+                    "water 2 crates",
+                    "gluten-free bread",
+                    "yoghurt · expires 20/09",
+                ],
+            ),
+        ] {
+            let (dir, tree, pool) = setup_workdir().await;
+            let extractions = entries
+                .iter()
+                .map(|body| {
+                    format!(
+                        "{{\"target_wiki_id\":\"alice\",\"target_page\":\"{page_name}\",\
+                          \"page_description\":\"what still has to be bought\",\
+                          \"subject_id\":\"user:alice\",\"body\":\"{body}\",\
+                          \"fact_type\":\"plan\",\"style\":\"lista\",\
+                          \"requested_container\":true,\"topics\":[\"shopping\"]}}"
+                    )
+                })
+                .collect::<Vec<_>>()
+                .join(",");
+            let llm = FakeLlmBackend::new(
+                "fake",
+                format!("{{\"intent\":\"capture\",\"extractions\":[{extractions}]}}"),
+            );
+            wiki_ingest_message(
+                &pool,
+                &tree,
+                fake_embedder(),
+                &llm,
+                None,
+                req(message, "alice"),
+                &IngestPolicy::default(),
+            )
+            .await
+            .expect("ingest");
+
+            let stored: Vec<String> = fact_index::find_active_in_wiki(&pool, "alice")
+                .await
+                .unwrap()
+                .into_iter()
+                .map(|row| row.text)
+                .collect();
+            let page =
+                std::fs::read_to_string(dir.path().join("wikis/alice").join(page_name)).unwrap();
+            for entry in entries {
+                assert!(
+                    stored.iter().any(|t| t == entry),
+                    "the entry is stored as said: `{entry}` missing from {stored:?}"
+                );
+                assert!(
+                    page.contains(&format!("}}{entry}{{{{/}}}}")),
+                    "the entry reaches the page as said: `{entry}` missing from\n{page}"
+                );
+            }
+            assert!(
+                page.contains("\nstyle: lista\n"),
+                "the page the entries opened is a list: {page}"
+            );
+            drop(dir);
+        }
+    }
+
+    /// An entry said again with a different value REPLACES the one on the
+    /// list; the list does not grow a second line.
+    ///
+    /// Founder, 2026-09-11: a list may carry values, and «latte 2» said again
+    /// as «latte 4» is that entry brought up to date. Neither of the two
+    /// mechanisms that already exist settles it — the write-time dedup scores
+    /// two four-letter entries far below its threshold, and the
+    /// reconciliation stage is a model reading candidates. So the engine
+    /// decides it, and the page is rebuilt inside the turn: the item the
+    /// person did not mention stays put, and the quantity they gave is the
+    /// only one left.
+    #[tokio::test]
+    async fn a_list_entry_said_again_with_a_new_value_replaces_it_on_the_page() {
+        let (dir, tree, pool) = setup_workdir().await;
+        let entry = |body: &str| {
+            format!(
+                "{{\"target_wiki_id\":\"alice\",\"target_page\":\"spesa.md\",\
+                  \"page_description\":\"what still has to be bought\",\
+                  \"subject_id\":\"user:alice\",\"body\":\"{body}\",\
+                  \"fact_type\":\"plan\",\"style\":\"lista\",\
+                  \"requested_container\":true,\"topics\":[\"shopping\"]}}"
+            )
+        };
+        let first = FakeLlmBackend::new(
+            "fake",
+            format!(
+                "{{\"intent\":\"capture\",\"extractions\":[{},{}]}}",
+                entry("latte 2"),
+                entry("pane senza glutine")
+            ),
+        );
+        wiki_ingest_message(
+            &pool,
+            &tree,
+            fake_embedder(),
+            &first,
+            None,
+            req("due litri di latte e il pane senza glutine", "alice"),
+            &IngestPolicy::default(),
+        )
+        .await
+        .expect("first turn");
+        let milk = fact_index::find_active_in_wiki(&pool, "alice")
+            .await
+            .unwrap()
+            .into_iter()
+            .find(|r| r.text == "latte 2")
+            .expect("the first quantity is on the list")
+            .fact_id;
+
+        // Second turn: the same item, a new quantity. The reconciliation
+        // stage runs because the first turn's entries are candidates now, and
+        // it is scripted to change nothing — the replacement is not its call.
+        let second = ScriptedLlm::new(&[
+            &format!(
+                "{{\"intent\":\"capture\",\"extractions\":[{}]}}",
+                entry("latte 4")
+            ),
+            "{\"closures\":[],\"supersedes\":[],\"validity_edits\":[],\"acl_changes\":[]}",
+        ]);
+        wiki_ingest_message(
+            &pool,
+            &tree,
+            fake_embedder(),
+            &second,
+            None,
+            req("anzi, quattro litri di latte", "alice"),
+            &IngestPolicy::default(),
+        )
+        .await
+        .expect("second turn");
+
+        let live: Vec<String> = fact_index::find_active_in_wiki(&pool, "alice")
+            .await
+            .unwrap()
+            .into_iter()
+            .map(|r| r.text)
+            .collect();
+        assert_eq!(
+            live.len(),
+            2,
+            "one line per item — the list did not grow a second milk: {live:?}"
+        );
+        assert!(live.iter().any(|t| t == "latte 4"), "{live:?}");
+        assert!(live.iter().any(|t| t == "pane senza glutine"), "{live:?}");
+
+        let replaced = fact_index::find_by_id(&pool, &milk)
+            .await
+            .unwrap()
+            .expect("the old quantity is history, not a tombstone");
+        assert!(
+            replaced.superseded_at.is_some(),
+            "the old quantity is retired, and readable as history"
+        );
+        assert!(
+            replaced.deleted_at.is_none(),
+            "a replacement forgets nothing"
+        );
+
+        let page = std::fs::read_to_string(dir.path().join("wikis/alice/spesa.md")).unwrap();
+        assert!(page.contains("latte 4{{/}}"), "{page}");
+        assert!(
+            !page.contains("latte 2"),
+            "the replaced record's bytes are gone from the page: {page}"
+        );
+        assert!(
+            !page.lines().any(|l| l.trim() == "-"),
+            "the page is rebuilt inside the turn, so no bullet is left standing alone: {page}"
+        );
+        drop(dir);
+    }
+
+    /// The done-cue still lands on the right rows when the rows are bare
+    /// entries.
+    ///
+    /// «ho preso tutto tranne i sacchi» closes what was bought and leaves the
+    /// rest open, and the page shows it in the same turn. Nothing about the
+    /// cue changes with the schematic bodies — which is the point of asserting
+    /// it: the entries carry quantities and a second value now, and the cue
+    /// still appends its own ` · ✓ <date>` after them without touching the
+    /// values that were already there.
+    #[tokio::test]
+    async fn closing_bare_list_entries_ticks_the_right_rows() {
+        let (dir, tree, pool) = setup_workdir().await;
+        let entry = |body: &str| {
+            format!(
+                "{{\"target_wiki_id\":\"alice\",\"target_page\":\"spesa.md\",\
+                  \"page_description\":\"what still has to be bought\",\
+                  \"subject_id\":\"user:alice\",\"body\":\"{body}\",\
+                  \"fact_type\":\"plan\",\"style\":\"lista\",\
+                  \"requested_container\":true,\"topics\":[\"shopping\"]}}"
+            )
+        };
+        let first = FakeLlmBackend::new(
+            "fake",
+            format!(
+                "{{\"intent\":\"capture\",\"extractions\":[{},{},{}]}}",
+                entry("latte 2"),
+                entry("yogurt · scade 20/09"),
+                entry("sacchi 10")
+            ),
+        );
+        wiki_ingest_message(
+            &pool,
+            &tree,
+            fake_embedder(),
+            &first,
+            None,
+            req("latte, yogurt e i sacchi dell'umido", "alice"),
+            &IngestPolicy::default(),
+        )
+        .await
+        .expect("first turn");
+        let by_text = |rows: Vec<fact_index::FactIndexRow>, wanted: &str| {
+            rows.into_iter()
+                .find(|r| r.text == wanted)
+                .unwrap_or_else(|| panic!("`{wanted}` is on the list"))
+                .fact_id
+        };
+        let rows = fact_index::find_active_in_wiki(&pool, "alice")
+            .await
+            .unwrap();
+        let milk = by_text(rows.clone(), "latte 2");
+        let yoghurt = by_text(rows.clone(), "yogurt · scade 20/09");
+        let bags = by_text(rows, "sacchi 10");
+
+        let closures = ScriptedLlm::new(&[
+            &format!(
+                "{{\"intent\":\"capture\",\"extractions\":[],\
+                  \"closures\":[{{\"target\":\"{m}\",\"reason\":\"completed\",\
+                  \"valid_to\":\"2026-09-12T10:00:00Z\"}},\
+                  {{\"target\":\"{y}\",\"reason\":\"completed\",\
+                  \"valid_to\":\"2026-09-12T10:00:00Z\"}}],\
+                  \"suggested_seed\":\"Segnato.\"}}",
+                m = milk.as_str(),
+                y = yoghurt.as_str(),
+            ),
+            // The reconciliation stage runs on a turn that has candidates,
+            // and the closures above already settled them.
+            "{\"closures\":[],\"supersedes\":[],\"validity_edits\":[],\"acl_changes\":[]}",
+        ]);
+        wiki_ingest_message(
+            &pool,
+            &tree,
+            fake_embedder(),
+            &closures,
+            None,
+            req("ho preso tutto tranne i sacchi", "alice"),
+            &IngestPolicy::default(),
+        )
+        .await
+        .expect("closing turn");
+
+        let page = std::fs::read_to_string(dir.path().join("wikis/alice/spesa.md")).unwrap();
+        assert!(
+            page.contains("latte 2 · ✓ 2026-09-12{{/}}"),
+            "the bought entry keeps its quantity and gains the cue: {page}"
+        );
+        assert!(
+            page.contains("yogurt · scade 20/09 · ✓ 2026-09-12{{/}}"),
+            "the cue follows a value the entry already carried: {page}"
+        );
+        assert!(
+            page.contains("sacchi 10{{/}}"),
+            "what was not bought stays open, with no cue: {page}"
+        );
+        assert!(
+            fact_index::find_by_id(&pool, &bags)
+                .await
+                .unwrap()
+                .expect("row")
+                .decay_reason
+                .is_none(),
+            "the bags were not closed"
+        );
         drop(dir);
     }
 
