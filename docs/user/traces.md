@@ -47,6 +47,11 @@ the same recall as text:
   replace, re-date or re-share any of them? The panel lists the facts that
   were put to it and shows the answer it gave, word for word. It is the only
   step that can retire something you had stored, so it is shown raw.
+- **Replacements it asked for and did not get** — replacing retires a stored
+  fact and points it at the one that took its place, so every pair is checked
+  before it is carried out. This panel lists the pairs that did not pass and
+  why, and it appears only on a turn that had one. The fact that would have
+  been retired is exactly as it was.
 - **Handed to the consumer** — the text that actually reached your assistant
   (a deep search shows **Answered to the caller** instead).
 - **Standing rules handed over** — your standing rules as they went with it,

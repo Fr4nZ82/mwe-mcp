@@ -794,11 +794,12 @@ fn render_hop(i: usize, hop: &HopTrace) -> Markup {
     }
 }
 
-/// The reconciliation stage: what it was shown and what it answered.
+/// The reconciliation stage: what it was shown, what it answered, and which
+/// of the replacements it asked for the engine did not carry out.
 ///
 /// The only call in a turn that can retire a stored fact, and the only one
-/// whose answer is worth reading raw — an entry the guards refused is gone
-/// from the parsed verdict and leaves no other mark.
+/// whose answer is worth reading raw — beside it, the refusals, because a pair
+/// the engine threw out reads in the verdict exactly like one it applied.
 fn render_reconcile(trace: &RecallTrace) -> Markup {
     if trace.reconcile_candidates.is_empty() && trace.reconcile_verdict.is_none() {
         return html! {};
@@ -830,6 +831,36 @@ fn render_reconcile(trace: &RecallTrace) -> Markup {
                 pre class="whitespace-pre-wrap text-xs mt-2" { (verdict) }
             } @else {
                 p.muted { "It gave no answer: the model was unreachable, or no call was made." }
+            }
+        }
+        @if !trace.supersede_refusals.is_empty() {
+            section class="term-panel mt-4 p-4" {
+                h2 class="mt-0" { "Replacements it asked for and did not get" }
+                p.muted {
+                    "Replacing retires a stored fact and points it at the one that took "
+                    "its place, so every pair is checked before it is carried out. These "
+                    "did not pass, and the stored fact is exactly as it was."
+                }
+                table class="config-table" {
+                    thead {
+                        tr {
+                            th { "Retired" }
+                            th { "Replaced by" }
+                            th { "Over" }
+                            th { "Why not" }
+                        }
+                    }
+                    tbody {
+                        @for r in &trace.supersede_refusals {
+                            tr {
+                                td { code { (r.target) } }
+                                td { code { (r.successor) } }
+                                td { (r.slot) }
+                                td { code { (r.reason) } }
+                            }
+                        }
+                    }
+                }
             }
         }
     }

@@ -22,6 +22,7 @@ use mwe_core::jwt::{BlacklistCache, TokenSecret};
 use mwe_core::recall_nav::{CandidateCard, HopTrace, OpenedPage, RequestedOpen};
 use mwe_core::recall_trace::{
     self, RecallTrace, TraceEntryPoint, TraceHit, TraceReconcileCandidate, TraceSource,
+    TraceSupersedeRefusal,
 };
 use mwe_core::wiki::WikiTree;
 use mwe_dashboard::{DashboardState, MemoryHandles, router};
@@ -212,6 +213,15 @@ fn sample_trace() -> RecallTrace {
             "{\"closures\":[],\"supersedes\":[],\"validity_edits\":[],\"acl_changes\":[]}"
                 .to_owned(),
         ),
+        // One pair the engine refused: the panel beside the verdict is the
+        // only place a reader sees that a replacement was asked for and did
+        // not happen.
+        supersede_refusals: vec![TraceSupersedeRefusal {
+            slot: "what the shopping list needs".to_owned(),
+            target: "0197fa00-0000-7000-8000-000000000001".to_owned(),
+            successor: "0197fa00-0000-7000-8000-000000000002".to_owned(),
+            reason: "successor_is_the_target_restated".to_owned(),
+        }],
         took_ms: 2150,
         ..RecallTrace::default()
     }
@@ -336,6 +346,9 @@ async fn journal_lists_and_viewer_replays_a_recorded_trace() {
         "not opened: not among the pages it was shown",
         "Weighed against what was already there",
         "&quot;supersedes&quot;:[]",
+        "Replacements it asked for and did not get",
+        "successor_is_the_target_restated",
+        "what the shopping list needs",
         "Handed to the consumer",
         "celiaca",
         "hermes1",

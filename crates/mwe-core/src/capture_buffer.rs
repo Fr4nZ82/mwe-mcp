@@ -940,6 +940,28 @@ pub async fn recall_log_id(pool: &SqlitePool, capture_id: &FactId) -> Result<Opt
     Ok(row.and_then(|(id,)| id))
 }
 
+/// Whether a capture with this id is **still queued** for the light dream.
+///
+/// The read twin of [`inherit_allow`], down to the `status = 'buffered'` test,
+/// and for the same reason: a caller asking whether an id has something behind
+/// it must get the same answer whether it then writes or not. `promoted` says
+/// yes to the fact store instead ([`crate::fact_index::find_by_id`] — the id is
+/// the same one), and `skipped_dup` / `held` say no: the first resolved onto
+/// another fact and will never carry this id, the second is parked and may yet
+/// be discarded.
+///
+/// # Errors
+///
+/// DB errors.
+pub async fn is_buffered(pool: &SqlitePool, capture_id: &FactId) -> Result<bool> {
+    let row: Option<(i64,)> =
+        sqlx::query_as("SELECT 1 FROM capture_buffer WHERE capture_id = ? AND status = 'buffered'")
+            .bind(capture_id.as_str())
+            .fetch_optional(pool)
+            .await?;
+    Ok(row.is_some())
+}
+
 /// Mark a buffered capture as **skipped (duplicate)**.
 ///
 /// The light dream found an existing active fact carrying the same claim, so no

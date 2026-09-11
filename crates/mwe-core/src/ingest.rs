@@ -3266,10 +3266,11 @@ impl ReconcileDecision {
 /// What the reconciliation stage decided, and what it actually said.
 ///
 /// The raw answer travels with the parsed one because the two disagree in
-/// ways nothing else records: an entry the parse dropped, an id the guards
-/// refused, a verb the model spelled wrong. Only the recall trace reads it,
-/// and only so a person can see what the one call that retires facts was
-/// asked and what it replied.
+/// ways the parsed one cannot show: an entry the parse dropped, a verb the
+/// model spelled wrong. Only the recall trace reads it, and only so a person
+/// can see what the one call that retires facts was asked and what it
+/// replied — beside the supersedes the verb then refused
+/// ([`AppliedSupersedes::refused`]).
 #[derive(Debug, Default)]
 struct Reconciliation {
     /// The parsed verdict the apply side acts on.
@@ -3277,6 +3278,111 @@ struct Reconciliation {
     /// The model's answer verbatim, `None` when no call was made or the model
     /// could not be reached.
     verdict: Option<String>,
+}
+
+/// One extraction of this turn, and whether anything was written under its id.
+///
+/// The id is minted before the write and stays minted when nothing is written:
+/// write-time dedup resolves a body onto a fact already stored and files
+/// nothing ([`capture::CaptureAction::Skipped`]), so the id it hands back
+/// names no row anywhere. Carrying that outcome beside the id is what lets the
+/// supersede verb tell a successor it can weld onto from one that was never
+/// written — the pair a reconciler is likeliest to name, because a message
+/// sent twice restates every one of its claims word for word.
+#[derive(Debug, Clone)]
+struct TurnFact {
+    /// The id this extraction was minted with.
+    id: FactId,
+    /// Its body, capped for the line the reconciler is shown.
+    body: String,
+    /// `Some(stored)` when write-time dedup found the claim already in the
+    /// memory as `stored` and wrote nothing under [`id`]; `None` when a row
+    /// exists under it — in `fact_index` (written this turn) or in
+    /// `capture_buffer` (staged for the dream, where the id survives
+    /// promotion).
+    ///
+    /// [`id`]: Self::id
+    already_stored_as: Option<FactId>,
+}
+
+impl TurnFact {
+    /// An extraction with a row behind it: the successor verb may weld to it.
+    const fn filed(id: FactId, body: String) -> Self {
+        Self {
+            id,
+            body,
+            already_stored_as: None,
+        }
+    }
+
+    /// An extraction whose claim the memory already held, as `stored`: the id
+    /// exists, the row does not.
+    const fn already_stored(id: FactId, body: String, stored: FactId) -> Self {
+        Self {
+            id,
+            body,
+            already_stored_as: Some(stored),
+        }
+    }
+
+    /// Whether a row exists under this id.
+    const fn is_filed(&self) -> bool {
+        self.already_stored_as.is_none()
+    }
+}
+
+/// Why a supersede the reconciler asked for did not happen.
+///
+/// One stable token each, written to the recall trace beside the raw verdict
+/// so the pair the engine refused can be read back next to the pair the model
+/// asked for.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum SupersedeRefusal {
+    /// The entry named no target, or no successor.
+    Incomplete,
+    /// It named no slot the two facts share.
+    NoSlot,
+    /// One of the two ids is not a fact id at all.
+    UnparseableId,
+    /// Target and successor are the same fact.
+    SelfSupersede,
+    /// The target is not one of the candidates the stage was shown.
+    TargetNotACandidate,
+    /// The target is a standing directive, which no ordinary claim replaces.
+    TargetIsARule,
+    /// The successor's body was already in the memory **as the target**: the
+    /// message restated what the target already says, and nothing was written.
+    SuccessorIsTheTargetRestated,
+    /// The successor's body was already in the memory as some other fact, so
+    /// nothing was written under the id the verdict named.
+    SuccessorAlreadyStored,
+    /// The successor is not a fact this turn filed.
+    SuccessorNotThisTurn,
+    /// The pair is sound, and the sender is not entitled to rewrite the
+    /// target: the question went to whoever is.
+    NotTheSendersToRewrite,
+    /// Vetted and attempted, and the write did not land — the successor had
+    /// no row after all, or the store refused.
+    WeldFailed,
+}
+
+impl SupersedeRefusal {
+    /// The token the recall trace stores.
+    const fn as_str(self) -> &'static str {
+        match self {
+            Self::Incomplete => "incomplete",
+            Self::NoSlot => "no_slot",
+            Self::UnparseableId => "unparseable_id",
+            Self::SelfSupersede => "self_supersede",
+            Self::TargetNotACandidate => "target_not_a_candidate",
+            Self::TargetIsARule => "target_is_a_rule",
+            Self::SuccessorIsTheTargetRestated => "successor_is_the_target_restated",
+            Self::SuccessorAlreadyStored => "successor_already_stored",
+            Self::SuccessorNotThisTurn => "successor_not_this_turn",
+            Self::NotTheSendersToRewrite => "not_the_senders_to_rewrite",
+            Self::WeldFailed => "weld_failed",
+        }
+    }
 }
 
 /// One requested supersede: an existing fact is replaced by one this turn
@@ -3334,7 +3440,7 @@ enum VettedSupersede<'a> {
         prev: &'a RecallHit,
     },
     /// Nothing to act on, and nothing to ask anybody.
-    Unsound,
+    Unsound(SupersedeRefusal),
 }
 
 /// Vet one requested supersede, refusing rather than guessing.
@@ -3351,8 +3457,16 @@ enum VettedSupersede<'a> {
 ///   through are the ones that look right;
 /// - the **target** must be one of the candidates the stage was shown, so a
 ///   hallucinated id retires nothing;
-/// - the **successor** must be one of the facts this turn actually filed, so a
-///   fact can never be welded to something that does not exist, or to itself;
+/// - the **successor** must be one of the facts this turn actually FILED, so a
+///   fact can never be welded to something that does not exist, or to itself.
+///   An extraction carries an id from the moment it is planned, and write-time
+///   dedup files nothing under it when the claim is already in the memory
+///   ([`TurnFact::already_stored_as`]) — so "this turn produced that id" and
+///   "a row exists under it" are two different questions, and a message a
+///   consumer sends twice is the case where the answers differ for every one
+///   of its claims at once. Welding to an id with no row behind it retires the
+///   stored fact and points it at nothing, which is the whole message deleted
+///   from the memory by its own repetition;
 /// - the **target must not be a standing directive**. A behaviour rule is
 ///   never in `turn_facts` — it is written straight to its scope's rules page
 ///   — so no successor this verb may name could be one, and every supersede
@@ -3375,14 +3489,14 @@ enum VettedSupersede<'a> {
 fn vet_supersede<'a>(
     s: &LlmSupersede,
     candidates: &'a [RecallHit],
-    turn_facts: &[(FactId, String)],
+    turn_facts: &[TurnFact],
     sender_id: &str,
     sender_groups: &[String],
 ) -> VettedSupersede<'a> {
     let (Some(target_raw), Some(successor_raw)) = (s.target.as_deref(), s.successor.as_deref())
     else {
         tracing::warn!("ingest: reconcile supersede missing target or successor — skipped");
-        return VettedSupersede::Unsound;
+        return VettedSupersede::Unsound(SupersedeRefusal::Incomplete);
     };
     if s.slot.as_deref().is_none_or(|w| w.trim().is_empty()) {
         tracing::warn!(
@@ -3390,7 +3504,7 @@ fn vet_supersede<'a>(
             successor = successor_raw,
             "ingest: reconcile supersede names no slot the two facts share — refused"
         );
-        return VettedSupersede::Unsound;
+        return VettedSupersede::Unsound(SupersedeRefusal::NoSlot);
     }
     let (Ok(target_id), Ok(successor_id)) =
         (FactId::parse(target_raw), FactId::parse(successor_raw))
@@ -3400,7 +3514,7 @@ fn vet_supersede<'a>(
             successor = successor_raw,
             "ingest: reconcile supersede carries an unparseable id"
         );
-        return VettedSupersede::Unsound;
+        return VettedSupersede::Unsound(SupersedeRefusal::UnparseableId);
     };
     // Nothing replaces itself. The two lists the judge picks from are disjoint
     // by construction — [`reconcile_candidates`] keeps the turn's own facts out
@@ -3416,14 +3530,14 @@ fn vet_supersede<'a>(
             target = target_raw,
             "ingest: reconcile supersede names one fact as both the replaced and the replacement — refused"
         );
-        return VettedSupersede::Unsound;
+        return VettedSupersede::Unsound(SupersedeRefusal::SelfSupersede);
     }
     let Some(prev) = candidates.iter().find(|h| h.fact_id == target_id) else {
         tracing::warn!(
             target = target_raw,
             "ingest: reconcile supersede target is not a candidate — refused"
         );
-        return VettedSupersede::Unsound;
+        return VettedSupersede::Unsound(SupersedeRefusal::TargetNotACandidate);
     };
     // A standing directive is replaced only by another standing directive, and
     // this stage cannot offer one: a behaviour rule is written straight to its
@@ -3440,14 +3554,37 @@ fn vet_supersede<'a>(
             "ingest: reconcile supersede names a standing directive as the replaced fact — \
              refused (a rule is revised only by another rule)"
         );
-        return VettedSupersede::Unsound;
+        return VettedSupersede::Unsound(SupersedeRefusal::TargetIsARule);
     }
-    if !turn_facts.iter().any(|(id, _)| *id == successor_id) {
+    let Some(successor) = turn_facts.iter().find(|f| f.id == successor_id) else {
         tracing::warn!(
             successor = successor_raw,
             "ingest: reconcile supersede successor is not a fact this turn filed — refused"
         );
-        return VettedSupersede::Unsound;
+        return VettedSupersede::Unsound(SupersedeRefusal::SuccessorNotThisTurn);
+    };
+    // The claim was already in the memory, so the write path filed nothing
+    // under this id and there is no fact to weld the target onto. When what it
+    // matched IS the target, the pair says it in full: the message restated
+    // the very fact it is being read as replacing, and the memory is already
+    // exactly what it says. That is a consumer sending the same message twice
+    // — a repetition, a network retry, one voice note transcribed twice — and
+    // the right amount of work for it is none.
+    if let Some(stored) = &successor.already_stored_as {
+        let refusal = if *stored == target_id {
+            SupersedeRefusal::SuccessorIsTheTargetRestated
+        } else {
+            SupersedeRefusal::SuccessorAlreadyStored
+        };
+        tracing::info!(
+            target = target_raw,
+            successor = successor_raw,
+            already_stored_as = stored.as_str(),
+            refusal = refusal.as_str(),
+            "ingest: reconcile supersede successor was never written — the memory already held \
+             that claim, so nothing replaces anything"
+        );
+        return VettedSupersede::Unsound(refusal);
     }
     if !crate::acl::sender_may_rewrite(
         &prev.subject_id,
@@ -3630,6 +3767,49 @@ async fn inherit_audience(pool: &SqlitePool, successor: &FactId, allow: &[Princi
     }
 }
 
+/// Whether a row bearing this id exists to be welded onto.
+///
+/// The same two stores [`inherit_audience`] writes to, asked in the same
+/// order and with the same meaning of "exists": a promoted capture answers
+/// from the fact store under the id it kept, and a capture still queued
+/// answers from the buffer. A DB error answers no — the recoverable
+/// direction, since the cost of believing a successor is there is a stored
+/// fact retired onto nothing.
+async fn successor_exists(pool: &SqlitePool, successor: &FactId) -> bool {
+    match fact_index::find_by_id(pool, successor).await {
+        Ok(Some(_)) => return true,
+        Ok(None) => {},
+        Err(err) => {
+            tracing::warn!(error = %err, "ingest: supersede successor lookup failed");
+            return false;
+        },
+    }
+    matches!(capture_buffer::is_buffered(pool, successor).await, Ok(true))
+}
+
+/// What the supersede verb did with what the reconciler asked for.
+#[derive(Debug, Default)]
+struct AppliedSupersedes {
+    /// How many pairs welded.
+    applied: usize,
+    /// One record per pair that did not, for the recall trace.
+    refused: Vec<crate::recall_trace::TraceSupersedeRefusal>,
+}
+
+/// Journal one refused pair **as the model wrote it** — unparsed ids included,
+/// since one of the reasons is that an id was invented.
+fn refused_pair(
+    s: &LlmSupersede,
+    reason: SupersedeRefusal,
+) -> crate::recall_trace::TraceSupersedeRefusal {
+    crate::recall_trace::TraceSupersedeRefusal {
+        slot: s.slot.clone().unwrap_or_default(),
+        target: s.target.clone().unwrap_or_default(),
+        successor: s.successor.clone().unwrap_or_default(),
+        reason: reason.as_str().to_owned(),
+    }
+}
+
 /// Apply the reconciler's supersedes: vet each pair, then weld the new fact
 /// onto the one it replaces ([`weld_with_audience`]).
 ///
@@ -3646,21 +3826,23 @@ async fn inherit_audience(pool: &SqlitePool, successor: &FactId, allow: &[Princi
 /// A pair the sender may not apply is not dropped: it is put to the person who
 /// can ([`ask_the_owner_of_the_slot`]).
 ///
-/// Returns how many were applied.
+/// Returns how many welded, and one record per pair that did not — the trace's
+/// half of the answer. The raw verdict alone cannot give it: a refusal happens
+/// after the parse and leaves the entry looking exactly like one that applied.
 async fn apply_reconciled_supersedes(
     pool: &SqlitePool,
     supersedes: &[LlmSupersede],
     candidates: &[RecallHit],
-    turn_facts: &[(FactId, String)],
+    turn_facts: &[TurnFact],
     request: &IngestRequest,
-) -> usize {
+) -> AppliedSupersedes {
     let sender = Principal::User(request.sender_id.clone());
     // Resolve the sender's groups once so the subject gate can admit a
     // member of an owning group, not just the owning user.
     let sender_groups = enrollment::groups_for(pool, &request.sender_id)
         .await
         .unwrap_or_default();
-    let mut applied = 0usize;
+    let mut out = AppliedSupersedes::default();
     for s in supersedes {
         let (target_id, successor_id, prev) = match vet_supersede(
             s,
@@ -3682,10 +3864,12 @@ async fn apply_reconciled_supersedes(
             // Its recommended answer keeps the stored value, so silence
             // changes nothing.
             VettedSupersede::NotTheirs { successor, prev } => {
+                out.refused
+                    .push(refused_pair(s, SupersedeRefusal::NotTheSendersToRewrite));
                 let asserted = turn_facts
                     .iter()
-                    .find(|(id, _)| *id == successor)
-                    .map_or("", |(_, text)| text.as_str());
+                    .find(|f| f.id == successor)
+                    .map_or("", |f| f.body.as_str());
                 ask_the_owner_of_the_slot(
                     pool,
                     StoredValue::from_hit(prev).disagreement(
@@ -3709,7 +3893,10 @@ async fn apply_reconciled_supersedes(
                 .await;
                 continue;
             },
-            VettedSupersede::Unsound => continue,
+            VettedSupersede::Unsound(reason) => {
+                out.refused.push(refused_pair(s, reason));
+                continue;
+            },
         };
         if weld_with_audience(
             pool,
@@ -3721,10 +3908,13 @@ async fn apply_reconciled_supersedes(
         )
         .await
         {
-            applied += 1;
+            out.applied += 1;
+        } else {
+            out.refused
+                .push(refused_pair(s, SupersedeRefusal::WeldFailed));
         }
     }
-    applied
+    out
 }
 
 /// Weld a successor onto the fact it replaces, **audience first**, and say
@@ -3754,6 +3944,14 @@ async fn apply_reconciled_supersedes(
 /// `subject ∪ allow ∪ sender`, so carrying Alice over as the subject would take
 /// the fact about Bob away from Bob while Alice was trying to tell him.
 ///
+/// **The successor has to exist before the target's window closes on it.** The
+/// weld writes a `superseded_by` pointer and nothing ever reads it back to
+/// check, so an id with no row behind it retires the old fact and leaves the
+/// slot holding nothing — the memory loses a claim nobody withdrew and says
+/// nothing about where it went. Carrying an audience proves existence by
+/// writing it; a public predecessor has nothing to carry, so that branch asks
+/// ([`successor_exists`]) rather than assuming.
+///
 /// Every step is soft: a failed inheritance or weld is logged and the supersede
 /// is skipped, never fatal to the turn.
 async fn weld_with_audience(
@@ -3770,6 +3968,13 @@ async fn weld_with_audience(
         .cloned()
         .collect();
     if inherited.is_empty() {
+        if !successor_exists(pool, successor).await {
+            tracing::warn!(
+                successor = successor.as_str(),
+                "ingest: supersede successor not found in either store — not superseding"
+            );
+            return false;
+        }
         if weld_supersede(pool, target, successor, turn_now).await {
             tracing::info!(
                 target = target.as_str(),
@@ -4001,12 +4206,12 @@ async fn reconcile_candidates(
     injected_pages: &[String],
     sender_ctx: &SenderContext,
     fresh_top_k: usize,
-    turn_facts: &[(FactId, String)],
+    turn_facts: &[TurnFact],
 ) -> Vec<RecallHit> {
     let mut out: Vec<RecallHit> = Vec::new();
     let mut seen: std::collections::HashSet<String> = turn_facts
         .iter()
-        .map(|(id, _)| id.as_str().to_owned())
+        .map(|f| f.id.as_str().to_owned())
         .collect();
     // A standing directive is never judged against an ordinary sentence: a
     // passing remark about dinner arrived as a candidate beside "answer me
@@ -4149,7 +4354,7 @@ async fn reconcile_after_reading(
     request: &IngestRequest,
     turn_now: chrono::DateTime<chrono::Utc>,
     candidates: &[RecallHit],
-    turn_facts: &[(FactId, String)],
+    turn_facts: &[TurnFact],
     completed_message: Option<&str>,
 ) -> Reconciliation {
     if candidates.is_empty() {
@@ -4161,17 +4366,25 @@ async fn reconcile_after_reading(
         .collect::<Vec<_>>()
         .join("\n");
     let turn_time = format!("{} ({})", turn_now.to_rfc3339(), turn_now.format("%A"));
-    // The only legal `successor` values. `(none)` rather than an empty block:
-    // a gesture turn files nothing, and the model has to see that there is
-    // nothing to weld to rather than infer it from a blank.
-    let new_facts = if turn_facts.is_empty() {
+    // The only legal `successor` values, and every one of them has a row
+    // behind it. An extraction the write path found already stored is left
+    // out: nothing was written under its id, so a supersede naming it would
+    // retire a stored fact in favour of nothing — and a message a consumer
+    // sends twice is nothing BUT such extractions, each one word for word the
+    // candidate it deduped onto. Offering them is inviting the pair.
+    //
+    // `(none)` rather than an empty block: a gesture turn files nothing, and
+    // the model has to see that there is nothing to weld to rather than infer
+    // it from a blank.
+    let weldable = turn_facts
+        .iter()
+        .filter(|f| f.is_filed())
+        .map(|f| format!("{} · {}", f.id, f.body))
+        .collect::<Vec<_>>();
+    let new_facts = if weldable.is_empty() {
         "(none)".to_owned()
     } else {
-        turn_facts
-            .iter()
-            .map(|(id, text)| format!("{id} · {text}"))
-            .collect::<Vec<_>>()
-            .join("\n")
+        weldable.join("\n")
     };
     let prompt = match prompts::render(
         "ingest-reconcile",
@@ -4245,7 +4458,7 @@ async fn recall_topic_candidates(
     topics: &[String],
     sender_ctx: &SenderContext,
     policy: &IngestPolicy,
-    turn_facts: &[(FactId, String)],
+    turn_facts: &[TurnFact],
 ) -> Vec<RecallHit> {
     let mut candidates: Vec<RecallHit> = Vec::new();
     for topic in topics
@@ -4287,7 +4500,7 @@ async fn recall_topic_candidates(
             Vec::new()
         });
         for hit in promoted.into_iter().chain(fresh) {
-            if turn_facts.iter().any(|(id, _)| *id == hit.fact_id) {
+            if turn_facts.iter().any(|f| f.id == hit.fact_id) {
                 continue;
             }
             if !candidates.iter().any(|c| c.fact_id == hit.fact_id) {
@@ -4336,7 +4549,7 @@ async fn confirm_topic_closures(
     topics: &[String],
     sender_ctx: &SenderContext,
     policy: &IngestPolicy,
-    turn_facts: &[(FactId, String)],
+    turn_facts: &[TurnFact],
     completed_message: Option<&str>,
 ) -> (Vec<LlmClosure>, Vec<RecallHit>) {
     let candidates =
@@ -8987,6 +9200,8 @@ struct IngestTraceParts<'a> {
     /// verbatim. Empty and `None` on a turn where the stage never ran.
     reconcile_candidates: &'a [crate::recall_trace::TraceReconcileCandidate],
     reconcile_verdict: Option<&'a str>,
+    /// The supersedes that answer asked for and the verb did not apply.
+    supersede_refusals: &'a [crate::recall_trace::TraceSupersedeRefusal],
     recall_clock: RecallClock,
     took: std::time::Duration,
 }
@@ -9091,6 +9306,7 @@ async fn record_ingest_trace(
         rules_block: parts.rules_block.map(str::to_owned),
         reconcile_candidates: parts.reconcile_candidates.to_vec(),
         reconcile_verdict: parts.reconcile_verdict.map(recall_trace::cap_turn_text),
+        supersede_refusals: parts.supersede_refusals.to_vec(),
         recall_ms: parts.recall_clock.ms(),
         took_ms: u64::try_from(parts.took.as_millis()).unwrap_or(u64::MAX),
     };
@@ -9459,6 +9675,7 @@ pub async fn wiki_ingest_message(
                     // answer.
                     reconcile_candidates: &[],
                     reconcile_verdict: None,
+                    supersede_refusals: &[],
                     recall_clock,
                     took: start.elapsed(),
                 },
@@ -9929,11 +10146,13 @@ pub async fn wiki_ingest_message(
     // that did not happen — the canned seed applies if the reading is empty
     // too.
     let mut nothing_filed = false;
-    // EVERY fact this turn filed, on both the buffered and the live path.
-    // `capture_id` keeps only the first, as the turn's anchor for the wire;
-    // the supersede verb needs them all, because a fact that replaces another
-    // has to be NAMEABLE before it can inherit that fact's audience.
-    let mut turn_facts: Vec<(FactId, String)> = Vec::new();
+    // EVERY extraction this turn put through the capture path, on both the
+    // buffered and the live path, and what became of it. `capture_id` keeps
+    // only the first, as the turn's anchor for the wire; the supersede verb
+    // needs them all, because a fact that replaces another has to be NAMEABLE
+    // before it can inherit that fact's audience — and it needs to know which
+    // of them a row was actually written for ([`TurnFact`]).
+    let mut turn_facts: Vec<TurnFact> = Vec::new();
     // The person's answer to a slot question asked on an earlier turn, when
     // this `disambig_choice` is one of ours. Any other choice — the
     // classifier's own disambiguation — parses as `None` here and leaves the
@@ -10758,6 +10977,12 @@ pub async fn wiki_ingest_message(
                 // beneficiary. Buffer-time dedup resolves later in the
                 // light dream, so a buffered capture always counts.
                 let mut filed_fresh = true;
+                // The fact that dedup resolved this body onto, when it did:
+                // the claim is in the memory, and not under the id this
+                // extraction carries. It rides to `turn_facts` so the
+                // supersede verb can refuse to weld anything onto an id
+                // nothing was written under.
+                let mut already_stored_as: Option<FactId> = None;
                 // Snapshotted before `cap_req` is consumed by either write
                 // path: the reconciler is shown what this turn wrote, so it
                 // can name a successor without being handed an id alone.
@@ -10862,6 +11087,7 @@ pub async fn wiki_ingest_message(
                     } = &outcome.action
                     {
                         filed_fresh = false;
+                        already_stored_as = Some(matched_fact_id.clone());
                         direct_dedup_hits.push((
                             matched_fact_id.clone(),
                             *similarity,
@@ -10922,9 +11148,13 @@ pub async fn wiki_ingest_message(
                     .await;
                 }
 
-                // Surface the first filed fact as the turn's anchor id, and
-                // keep every one of them for the supersede verb.
-                turn_facts.push((this_id.clone(), this_body));
+                // Keep every extraction with what became of it — the
+                // supersede verb has to know which ids a row was written
+                // under — and surface the first as the turn's anchor id.
+                turn_facts.push(match already_stored_as {
+                    Some(stored) => TurnFact::already_stored(this_id.clone(), this_body, stored),
+                    None => TurnFact::filed(this_id.clone(), this_body),
+                });
                 if capture_id.is_none() {
                     capture_id = Some(this_id);
                 }
@@ -11269,6 +11499,8 @@ pub async fn wiki_ingest_message(
     // back.
     let mut reconcile_journal: Vec<crate::recall_trace::TraceReconcileCandidate> = Vec::new();
     let mut reconcile_verdict: Option<String> = None;
+    // The pairs the verb refused, beside the raw answer that asked for them.
+    let mut supersede_refusals: Vec<crate::recall_trace::TraceSupersedeRefusal> = Vec::new();
     if matches!(intent, IntentKind::Capture) {
         let candidates = reconcile_candidates(
             pool,
@@ -11307,7 +11539,7 @@ pub async fn wiki_ingest_message(
                 turn_now,
             )
             .await;
-            reconciled += apply_reconciled_supersedes(
+            let supersedes = apply_reconciled_supersedes(
                 pool,
                 &decision.supersedes,
                 &candidates,
@@ -11315,6 +11547,8 @@ pub async fn wiki_ingest_message(
                 &request,
             )
             .await;
+            reconciled += supersedes.applied;
+            supersede_refusals = supersedes.refused;
             reconciled += apply_plan_validity_edits(
                 pool,
                 tree,
@@ -11620,6 +11854,7 @@ pub async fn wiki_ingest_message(
                 rules_block: rules.as_deref(),
                 reconcile_candidates: &reconcile_journal,
                 reconcile_verdict: reconcile_verdict.as_deref(),
+                supersede_refusals: &supersede_refusals,
                 recall_clock,
                 took: start.elapsed(),
             },
@@ -13221,11 +13456,11 @@ mod tests {
                 vet_supersede(
                     &same,
                     std::slice::from_ref(&hit),
-                    &[(FactId::parse(id).unwrap(), String::new())],
+                    &[TurnFact::filed(FactId::parse(id).unwrap(), String::new())],
                     "alice",
                     &[],
                 ),
-                VettedSupersede::Unsound
+                VettedSupersede::Unsound(SupersedeRefusal::SelfSupersede)
             ),
             "one fact named for both roles is refused, and asks nobody about it"
         );
@@ -13242,7 +13477,10 @@ mod tests {
                 vet_supersede(
                     &pair,
                     std::slice::from_ref(&hit),
-                    &[(FactId::parse(other).unwrap(), String::new())],
+                    &[TurnFact::filed(
+                        FactId::parse(other).unwrap(),
+                        String::new()
+                    )],
                     "alice",
                     &[],
                 ),
@@ -13275,7 +13513,7 @@ mod tests {
         let verdict = vet_supersede(
             &pair,
             std::slice::from_ref(&hit),
-            &[(
+            &[TurnFact::filed(
                 FactId::parse(successor).unwrap(),
                 "alice takes it with milk".to_owned(),
             )],
@@ -13287,7 +13525,7 @@ mod tests {
             "a sound pair the sender may not rewrite is asked about, not dropped"
         );
         assert!(
-            !matches!(verdict, VettedSupersede::Unsound),
+            !matches!(verdict, VettedSupersede::Unsound(_)),
             "refusing it as noise is what left the two values silently side by side"
         );
         // Alice restating her own claim is applied, with nobody asked.
@@ -13296,13 +13534,95 @@ mod tests {
                 vet_supersede(
                     &pair,
                     std::slice::from_ref(&hit),
-                    &[(FactId::parse(successor).unwrap(), String::new())],
+                    &[TurnFact::filed(
+                        FactId::parse(successor).unwrap(),
+                        String::new()
+                    )],
                     "alice",
                     &[],
                 ),
                 VettedSupersede::Sound { .. }
             ),
             "the subject rewriting her own fact needs no proposal"
+        );
+    }
+
+    /// A message the memory already held replaces nothing — **the same message
+    /// sent twice is a no-op**.
+    ///
+    /// An extraction is minted with an id before anything is written, and
+    /// write-time dedup then files nothing under it: the claim is already
+    /// there. The reconciler, shown that claim beside the fact it deduped onto,
+    /// reads them as the same slot twice and asks for the old one to be
+    /// replaced by the new one — which for an identical message it will do for
+    /// EVERY claim the message carries. Applying it retires each stored fact in
+    /// favour of an id no row has ever borne, so a consumer that re-sends a
+    /// message (a repetition, a network retry, one voice note transcribed
+    /// twice) erases exactly what its first send wrote.
+    ///
+    /// The similarity that triggered the skip does not come into it: an exact
+    /// re-send and a lightly edited one both mean no row was written, and the
+    /// guard is about the row, not the wording.
+    #[test]
+    fn a_successor_the_memory_already_held_replaces_nothing() {
+        let target = "0190f3c2-7a4e-7c31-9b02-2f6a1c8e5d91";
+        let elsewhere = "0190f3c2-7a4e-7c31-9b02-2f6a1c8e5d92";
+        let minted = "0190f3c2-7a4e-7c31-9b02-2f6a1c8e5d93";
+        let hit = sample_recall_hit(target);
+        let pair = LlmSupersede {
+            slot: Some("how alice takes her coffee".to_owned()),
+            target: Some(target.to_owned()),
+            successor: Some(minted.to_owned()),
+        };
+
+        // The message restated the target itself: the memory is already what
+        // it says, so there is nothing to replace and nobody to ask.
+        let restated = [TurnFact::already_stored(
+            FactId::parse(minted).unwrap(),
+            "alice prefers coffee black".to_owned(),
+            FactId::parse(target).unwrap(),
+        )];
+        assert!(
+            matches!(
+                vet_supersede(&pair, std::slice::from_ref(&hit), &restated, "alice", &[]),
+                VettedSupersede::Unsound(SupersedeRefusal::SuccessorIsTheTargetRestated)
+            ),
+            "a claim already stored AS THE TARGET cannot replace it"
+        );
+
+        // Same shape, different fact underneath: still nothing was written
+        // under the id the verdict names, so there is still nothing to weld.
+        let stored_elsewhere = [TurnFact::already_stored(
+            FactId::parse(minted).unwrap(),
+            "alice prefers coffee black".to_owned(),
+            FactId::parse(elsewhere).unwrap(),
+        )];
+        assert!(
+            matches!(
+                vet_supersede(
+                    &pair,
+                    std::slice::from_ref(&hit),
+                    &stored_elsewhere,
+                    "alice",
+                    &[],
+                ),
+                VettedSupersede::Unsound(SupersedeRefusal::SuccessorAlreadyStored)
+            ),
+            "an id nothing was written under is not a successor, whatever it matched"
+        );
+
+        // And the same pair with a fact actually filed behind the id applies,
+        // so what is being refused is the missing row and not the pairing.
+        let filed = [TurnFact::filed(
+            FactId::parse(minted).unwrap(),
+            "alice takes it with milk".to_owned(),
+        )];
+        assert!(
+            matches!(
+                vet_supersede(&pair, std::slice::from_ref(&hit), &filed, "alice", &[]),
+                VettedSupersede::Sound { .. }
+            ),
+            "a real replacement is untouched"
         );
     }
 
@@ -14578,6 +14898,156 @@ mod tests {
         assert!(
             misses.is_empty(),
             "a surfaced fact is a plain dedup, not a miss: {misses:?}"
+        );
+        drop(dir);
+    }
+
+    /// A backend that plays the classifier, then reconciles the way the
+    /// production model does: whatever this turn wrote replaces the first fact
+    /// it was shown.
+    ///
+    /// It answers from the prompt it is handed rather than from a script,
+    /// because the ids it would have to name are minted inside the turn. That
+    /// is also the honest reproduction: the model can only pair what the two
+    /// blocks offer it, so what the engine puts in them decides what it can
+    /// ask for.
+    struct RestatingReconciler {
+        plan: &'static str,
+        /// The `FACTS THIS TURN WROTE` block of each reconcile call, in order.
+        offered: parking_lot::Mutex<Vec<String>>,
+        /// The `CANDIDATES` block of each, likewise.
+        weighed: parking_lot::Mutex<Vec<String>>,
+    }
+
+    impl RestatingReconciler {
+        fn new(plan: &'static str) -> Self {
+            Self {
+                plan,
+                offered: parking_lot::Mutex::new(Vec::new()),
+                weighed: parking_lot::Mutex::new(Vec::new()),
+            }
+        }
+    }
+
+    /// The first id on a prompt block, or `None` when it reads `(none)`.
+    fn first_id_in(block: &str) -> Option<String> {
+        let line = block.lines().find(|l| !l.trim().is_empty())?;
+        let id = line.split(' ').next()?;
+        (id != "(none)").then(|| id.to_owned())
+    }
+
+    #[async_trait]
+    impl LlmBackend for RestatingReconciler {
+        fn model_id(&self) -> &'static str {
+            "restating-reconciler"
+        }
+        async fn complete(
+            &self,
+            req: CompletionRequest,
+        ) -> std::result::Result<crate::llm::CompletionResponse, LlmError> {
+            let text = match req.prompt.split_once(
+                "FACTS THIS TURN WROTE (fact_id · text) — the only legal `successor` values:\n",
+            ) {
+                None => self.plan.to_owned(),
+                Some((_, tail)) => {
+                    let (offered, rest) = tail
+                        .split_once("\n\nCANDIDATES — ")
+                        .expect("the reconcile prompt names both blocks");
+                    let weighed = rest
+                        .split_once(":\n")
+                        .expect("the candidates block has a header")
+                        .1;
+                    self.offered.lock().push(offered.to_owned());
+                    self.weighed.lock().push(weighed.to_owned());
+                    match (first_id_in(offered), first_id_in(weighed)) {
+                        (Some(successor), Some(target)) => format!(
+                            "{{\"supersedes\":[{{\"slot\":\"the colour she prefers\",\
+                             \"target\":\"{target}\",\"successor\":\"{successor}\"}}]}}"
+                        ),
+                        // Nothing to weld to: the honest answer is silence.
+                        _ => "{\"supersedes\":[]}".to_owned(),
+                    }
+                },
+            };
+            Ok(crate::llm::CompletionResponse {
+                text,
+                finish_reason: FinishReason::EndOfTurn,
+                usage: crate::llm::CompletionUsage::default(),
+            })
+        }
+    }
+
+    /// **The same turn delivered twice changes nothing.** A consumer that is
+    /// interrupted mid-turn re-queues the message and hands it to a fresh
+    /// session, so the engine sees one message twice as a matter of course —
+    /// and every claim in it arrives at a write path that has already stored
+    /// it. Each such claim carries an id nothing was written under, and the
+    /// reconciler, shown it beside the fact it deduped onto, reads one slot
+    /// stated twice and asks for the stored fact to be replaced by it. Carried
+    /// out, that retires the fact and points it at nothing: the second delivery
+    /// deletes what the first one wrote, for the whole message at once.
+    ///
+    /// Two things keep it harmless, and the test names both: the stage is not
+    /// OFFERED a claim that was never written, and the verb refuses to weld one
+    /// if it is named anyway.
+    #[tokio::test]
+    async fn a_turn_delivered_twice_leaves_the_memory_as_it_was() {
+        let (dir, tree, pool) = setup_workdir().await;
+        let body = "Il colore preferito di Alice è l'indaco.";
+        let plan = "{\"intent\":\"capture\",\"extractions\":[{\
+            \"target_wiki_id\":\"alice\",\"target_page\":\"colore.md\",\
+            \"subject_id\":\"user:alice\",\
+            \"body\":\"Il colore preferito di Alice è l'indaco.\",\
+            \"fact_type\":\"preference\",\"requested_container\":true}]}";
+        let llm = RestatingReconciler::new(plan);
+        let policy = IngestPolicy::default();
+        let deliver = || async {
+            wiki_ingest_message(
+                &pool,
+                &tree,
+                fake_embedder(),
+                &llm,
+                None,
+                req("il mio colore preferito è l'indaco", "alice"),
+                &policy,
+            )
+            .await
+            .expect("ingest")
+        };
+
+        deliver().await;
+        let filed = facts_in_wiki(&pool, "alice").await;
+        assert_eq!(filed.len(), 1, "the first delivery writes the fact");
+        let fact_id = filed[0].fact_id.clone();
+        assert_eq!(filed[0].text, body);
+
+        // The re-delivery: same sender, same words, nothing left to write.
+        deliver().await;
+
+        // One reconciliation call, the re-delivery's: the first turn read an
+        // empty memory and the stage makes no call without candidates.
+        assert_eq!(llm.offered.lock().len(), 1, "the re-delivery reconciled");
+        assert!(
+            llm.weighed.lock()[0].contains(fact_id.as_str()),
+            "and it was weighed against the fact the first delivery wrote — without \
+             that this test would pass by reconciling nothing"
+        );
+        assert_eq!(
+            llm.offered.lock()[0].trim(),
+            "(none)",
+            "a claim the memory already held is not offered as something to weld to"
+        );
+
+        let after = facts_in_wiki(&pool, "alice").await;
+        assert_eq!(after.len(), 1, "and no second row was written");
+        assert!(
+            after[0].superseded_at.is_none()
+                && after[0].superseded_by.is_none()
+                && after[0].valid_to.is_none()
+                && after[0].decay_reason.is_none(),
+            "the fact the first delivery wrote is still open, chain and validity \
+             alike: a re-delivered turn retires nothing, and leaves no half of a \
+             retirement behind either"
         );
         drop(dir);
     }
@@ -23179,7 +23649,6 @@ mod tests {
         drop(dir);
     }
 
-    /// The supersede verb, and the half that must never be lost: a fact that
     /// A public predecessor does **not** publish its successor.
     ///
     /// Inheritance exists so a restatement cannot quietly hide a fact from
@@ -23247,7 +23716,10 @@ mod tests {
                 .unwrap(),
             1.0,
         )];
-        let turn_facts = vec![(new.fact_id.clone(), "alice is 29 weeks pregnant".to_owned())];
+        let turn_facts = vec![TurnFact::filed(
+            new.fact_id.clone(),
+            "alice is 29 weeks pregnant".to_owned(),
+        )];
 
         let applied = apply_reconciled_supersedes(
             &pool,
@@ -23261,7 +23733,7 @@ mod tests {
             &req("alice is 29 weeks pregnant", "alice"),
         )
         .await;
-        assert_eq!(applied, 1, "the supersede still applied");
+        assert_eq!(applied.applied, 1, "the supersede still applied");
 
         let successor = fact_index::find_by_id(&pool, &new.fact_id)
             .await
@@ -23276,6 +23748,7 @@ mod tests {
         drop(dir);
     }
 
+    /// The supersede verb, and the half that must never be lost: a fact that
     /// replaces another **inherits its audience**.
     ///
     /// A restatement is a content update, not a sharing change. The reconciler
@@ -23336,7 +23809,10 @@ mod tests {
                 .unwrap(),
             1.0,
         )];
-        let turn_facts = vec![(new.fact_id.clone(), "alice lavora alla Initech".to_owned())];
+        let turn_facts = vec![TurnFact::filed(
+            new.fact_id.clone(),
+            "alice lavora alla Initech".to_owned(),
+        )];
 
         let applied = apply_reconciled_supersedes(
             &pool,
@@ -23350,7 +23826,7 @@ mod tests {
             &req("alice adesso lavora alla Initech", "alice"),
         )
         .await;
-        assert_eq!(applied, 1, "the supersede applied");
+        assert_eq!(applied.applied, 1, "the supersede applied");
 
         let successor = fact_index::find_by_id(&pool, &new.fact_id)
             .await
@@ -23608,7 +24084,10 @@ mod tests {
             &[],
             &SenderContext::user("alice"),
             1,
-            &[(this_turn.clone(), "alice ha comprato il latte".to_owned())],
+            &[TurnFact::filed(
+                this_turn.clone(),
+                "alice ha comprato il latte".to_owned(),
+            )],
         )
         .await;
 
@@ -23888,7 +24367,7 @@ mod tests {
                 successor: Some(new.fact_id.as_str().to_owned()),
             }],
             &candidates,
-            &[(
+            &[TurnFact::filed(
                 new.fact_id.clone(),
                 "la casa al mare si apre a luglio".to_owned(),
             )],
@@ -23896,7 +24375,7 @@ mod tests {
         )
         .await;
         assert_eq!(
-            applied, 1,
+            applied.applied, 1,
             "a member of the owning group may correct the group's fact"
         );
         assert_eq!(
@@ -23984,11 +24463,14 @@ mod tests {
                 successor: Some(new.fact_id.as_str().to_owned()),
             }],
             &candidates,
-            &[(new.fact_id.clone(), "bob ha il dentista giovedì".to_owned())],
+            &[TurnFact::filed(
+                new.fact_id.clone(),
+                "bob ha il dentista giovedì".to_owned(),
+            )],
             &req("veramente dal dentista giovedì ci va bob", "alice"),
         )
         .await;
-        assert_eq!(applied, 1, "the supersede applied");
+        assert_eq!(applied.applied, 1, "the supersede applied");
 
         let successor = fact_index::find_by_id(&pool, &new.fact_id)
             .await
@@ -24023,7 +24505,7 @@ mod tests {
 
     /// One way of asking for a supersede wrongly: why it is refused, what was
     /// asked, and what the turn actually wrote.
-    type Refusal<'a> = (&'a str, LlmSupersede, &'a [(FactId, String)]);
+    type Refusal<'a> = (&'a str, LlmSupersede, &'a [TurnFact]);
 
     /// Four refusals, each preferring to change nothing over guessing: a
     /// target nobody showed the stage, a successor this turn did not write, a
@@ -24068,7 +24550,10 @@ mod tests {
         let request = req("bob adesso lavora alla Initech", "alice");
 
         let named = || Some("the slot both name".to_owned());
-        let mine_wrote = [(mine.clone(), "bob lavora alla Initech".to_owned())];
+        let mine_wrote = [TurnFact::filed(
+            mine.clone(),
+            "bob lavora alla Initech".to_owned(),
+        )];
         let refusals: [Refusal<'_>; 4] = [
             (
                 // Alice can READ bob's fact — it is a candidate — but does
@@ -24111,7 +24596,9 @@ mod tests {
         ];
         for (why, s, turn_facts) in refusals {
             assert_eq!(
-                apply_reconciled_supersedes(&pool, &[s], &candidates, turn_facts, &request).await,
+                apply_reconciled_supersedes(&pool, &[s], &candidates, turn_facts, &request)
+                    .await
+                    .applied,
                 0,
                 "{why}"
             );
@@ -24124,6 +24611,99 @@ mod tests {
                 .superseded_at
                 .is_none(),
             "and after all four refusals the fact is untouched"
+        );
+        drop(dir);
+    }
+
+    /// The last gate before the weld: **a successor with no row behind it
+    /// retires nothing**, whoever the fact is shared with.
+    ///
+    /// A supersede closes the old fact's window and points it at its
+    /// replacement, and nothing ever reads that pointer back to check — so a
+    /// weld onto an absent id takes the claim out of the memory and leaves
+    /// nowhere to go for it. A fact with an audience to carry over proves the
+    /// successor exists by writing to it; a fact nobody else reads has nothing
+    /// to write, and that is the branch a shopping list takes.
+    #[tokio::test]
+    async fn a_successor_with_no_row_behind_it_retires_nothing() {
+        let (dir, tree, pool) = setup_workdir().await;
+        let hers = capture::wiki_capture(
+            &tree,
+            &pool,
+            fake_embedder(),
+            CaptureRequest {
+                subject_external: None,
+                slot: None,
+                slot_value: None,
+                authored_refs: Vec::new(),
+                wiki_id: WikiId::parse("alice").unwrap(),
+                page: Some(PathBuf::from("spesa.md")),
+                body: "serve l'aceto di vino bianco".into(),
+                subject: Principal::User("alice".into()),
+                // Nobody else reads it: the supersede has no audience to carry
+                // over, so nothing writes to the successor on the way.
+                allow: Vec::new(),
+                sender: None,
+                fact_type: Some("plan".into()),
+                page_description: None,
+                topics: vec!["spesa".into()],
+                dedup_threshold: Some(1.01),
+                valid_from: None,
+                valid_to: None,
+                style: None,
+                salience: None,
+            },
+        )
+        .await
+        .expect("plant");
+        let row = fact_index::find_by_id(&pool, &hers.fact_id)
+            .await
+            .unwrap()
+            .unwrap();
+        let candidates = vec![recall::RecallHit::from_row(row, 1.0)];
+        // Vetted as sound — alice's own fact, one slot, an id this turn
+        // reported filing — and yet nothing was ever written under it.
+        let ghost = FactId::parse("0190f3c2-7a4e-7c31-9b02-2f6a1c8e5d95").unwrap();
+        let out = apply_reconciled_supersedes(
+            &pool,
+            &[LlmSupersede {
+                slot: Some("what the shopping list needs".to_owned()),
+                target: Some(hers.fact_id.as_str().to_owned()),
+                successor: Some(ghost.as_str().to_owned()),
+            }],
+            &candidates,
+            &[TurnFact::filed(
+                ghost.clone(),
+                "serve l'aceto di vino bianco".to_owned(),
+            )],
+            &req("serve l'aceto di vino bianco", "alice"),
+        )
+        .await;
+
+        assert_eq!(out.applied, 0, "nothing welded");
+        assert_eq!(
+            out.refused
+                .iter()
+                .map(|r| r.reason.as_str())
+                .collect::<Vec<_>>(),
+            vec!["weld_failed"],
+            "and the trace says which pair did not happen, and why"
+        );
+        // Every column the weld writes, not just the chain: one UPDATE stamps
+        // `superseded_at`, `superseded_by`, `valid_to` and `decay_reason`
+        // together ([`fact_index::mark_superseded`]), and a target left
+        // carrying the last two reads as given up — a list renders it `· ✗`.
+        // A refusal that stopped half way would leave exactly that.
+        let after = fact_index::find_by_id(&pool, &hers.fact_id)
+            .await
+            .unwrap()
+            .unwrap();
+        assert!(
+            after.superseded_at.is_none()
+                && after.superseded_by.is_none()
+                && after.valid_to.is_none()
+                && after.decay_reason.is_none(),
+            "the target is untouched, chain and validity alike: {after:?}"
         );
         drop(dir);
     }

@@ -1,8 +1,8 @@
 ---
 name: ingest-reconcile
 description: Reconciler — after the memory has been read, decide what this turn closes, replaces, re-dates or re-shares among the facts the turn actually saw; strict JSON out; change nothing rather than the wrong thing
-version: 1.13
-default_version_at_bootstrap: v1.13
+version: 1.14
+default_version_at_bootstrap: v1.14
 ---
 
 # Prompt: ingest-reconcile
@@ -45,8 +45,13 @@ The system prompt for the **reconciliation stage**
 - **Output**: one strict JSON object, first-balanced-`{}` parsed. All four
   arrays empty is a fully valid — and common — answer.
 - **`supersedes` also carries `{new_facts}`** — the facts this turn filed
-  (`fact_id · text`, or `(none)`), the only legal `successor` values. The
-  engine refuses any other, and refuses a target the sender does not own.
+  (`fact_id · text`, or `(none)`), the only legal `successor` values. A claim
+  the write path found ALREADY STORED is not among them: write-time dedup files
+  nothing under its id, so there would be no fact to weld the old one onto. A
+  message a consumer sends twice is made of nothing else, which is why the list
+  is what was written rather than what was extracted. The engine refuses any
+  other successor, refuses one whose row does not exist, and refuses a target
+  the sender does not own.
 
 ## System prompt
 
@@ -106,6 +111,14 @@ Rules that hold for all four:
 - **Read the message together with its completion.** WHAT IT SAYS IN FULL, below, is this same message with what the speaker left out written in — "I bought it" → "I bought the milk" — worked out earlier this turn from the conversation, which you cannot see. When it is there, that is the sentence to match candidates against: "I bought it", "done!", "sorted, no need any more" name nothing on their own words, and a closure they plainly make would be missed for want of a noun. It says `(none)` when the message already said everything. It is a reading and not the user's words, so where the two disagree the message above wins.
 - This is a PRECISION instrument. Act only on a candidate whose text plainly matches what the message says. When nothing matches, return empty arrays — changing nothing is always safe, because a missed reconciliation is recoverable on a later turn while a wrong one has already forgotten or exposed the wrong thing.
 - Never act on a candidate because it is merely related, on the same page, or about the same person.
+- **A message the memory already absorbed asks nothing of you.** When a claim
+  in this message was already stored, nothing was written for it this turn, so
+  it is NOT in FACTS THIS TURN WROTE — and the fact holding it is in CANDIDATES,
+  word for word, exactly as it was. There is nothing to replace it with and
+  nothing about it to close: the memory already says what the message says.
+  Leave it alone. The same message arriving twice, a retry, one voice note
+  transcribed twice — all of them look like this, and the right answer to all of
+  them is empty arrays.
 - **Talking about a fact is not changing it.** A message that discusses a fact, advises on it, helps plan it, summarises it or says it again leaves it exactly as it was. Saying the same thing in other words — a second report of the same value, a more precise wording of the same claim — asks nothing of you: closing it deletes a live fact and, because a closure names no replacement, leaves the reader nowhere to go. A second DIFFERENT value for the same slot goes through the three-way rule under verb 1: verb 2 when this message states the new one, a "contradicted" closure when it makes the old one false without stating a new one, nothing at all when it merely says something adjacent — and nothing downstream folds two live values into one later. "contradicted" needs the message to assert something the fact cannot be true alongside; "completed" needs it to say the thing was DONE, not that it was discussed.
 - `target` must be copied EXACTLY from a candidate's fact_id. Never invent or alter an id.
 - A candidate whose validity already shows a closed window needs no second closure — skip it. Read the line as written: `open, due <date>` is an **open** fact carrying a deadline, and it is the most likely thing a message closes ("I bought the milk"). Only `closed <date>` is already settled.

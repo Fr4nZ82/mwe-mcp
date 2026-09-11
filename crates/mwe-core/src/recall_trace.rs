@@ -237,10 +237,21 @@ pub struct RecallTrace {
     /// unreachable).
     ///
     /// Raw on purpose. This is the only call in a turn that can retire a
-    /// stored fact, and a parsed summary of it cannot say why an entry was
-    /// refused — a hallucinated id, a missing slot, an owner the speaker is
-    /// not — because the refusal happens after the parse and drops the entry.
+    /// stored fact, and the verdict as the model wrote it is what a reader has
+    /// to be able to compare against what the engine then did with it:
+    /// [`supersede_refusals`] says which pairs did not happen, and the entries
+    /// that are in neither list are the ones that applied.
+    ///
+    /// [`supersede_refusals`]: Self::supersede_refusals
     pub reconcile_verdict: Option<String>,
+    /// One entry per supersede the reconciler asked for that did **not**
+    /// happen, and why (ingest only).
+    ///
+    /// The supersede alone, of the four verbs, because it is the one that
+    /// welds: it retires a stored fact and points it at a successor, so a pair
+    /// the engine refused is the difference between a fact that is still there
+    /// and a fact that is gone. The other three are refused into the log only.
+    pub supersede_refusals: Vec<TraceSupersedeRefusal>,
     /// Milliseconds of [`took_ms`] spent on the recall itself: the searches,
     /// the slots and the walk, summed as the turn ran.
     ///
@@ -283,6 +294,25 @@ impl TraceReconcileCandidate {
             text: cap_text(&h.text, RECONCILE_TEXT_CAP),
         }
     }
+}
+
+/// One supersede the reconciler asked for and the engine did not apply.
+///
+/// The ids are kept **as the model wrote them**, unparsed: a refusal whose
+/// reason is that an id was invented has to show the invented id, and a
+/// record that only holds ids it could parse cannot report that case at all.
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[serde(default)]
+pub struct TraceSupersedeRefusal {
+    /// The slot the model said both facts fill, empty when it named none.
+    pub slot: String,
+    /// The fact that would have been retired, as written in the verdict.
+    pub target: String,
+    /// The fact that would have replaced it, as written in the verdict.
+    pub successor: String,
+    /// Why it did not happen — one of the supersede verb's stable tokens, so
+    /// a reader can count the same reason across many turns.
+    pub reason: String,
 }
 
 /// One page the identity slot served whole, as journaled.
