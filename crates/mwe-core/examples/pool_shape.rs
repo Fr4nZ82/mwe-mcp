@@ -314,16 +314,9 @@ async fn main() -> anyhow::Result<()> {
         )
         .await?;
         let turn_vector = embedder.embed(&turn.text).await.unwrap_or_default();
-        let fan = recall_nav::gather_entry_points_with_descriptions(
-            &pool,
-            &tree,
-            &ctx,
-            &[],
-            &hits,
-            &[],
-            &turn_vector,
-        )
-        .await?;
+        let fan =
+            recall_nav::gather_entry_points(&pool, &tree, &ctx, &[], &hits, &[], &turn_vector)
+                .await?;
         // What the ingest turn passes: the sender's identity card, already in
         // the block, so the funnel neither offers nor opens it.
         let served = [(turn.sender.clone(), PathBuf::from("cucina.md"))];

@@ -1483,7 +1483,7 @@ async fn run_navigate_funnel(
             Vec::new()
         },
     };
-    let entries = mwe_core::recall_nav::gather_entry_points_with_descriptions(
+    let entries = mwe_core::recall_nav::gather_entry_points(
         &state.pool,
         &state.tree,
         sender,

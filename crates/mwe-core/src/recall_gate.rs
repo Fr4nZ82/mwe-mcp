@@ -328,7 +328,7 @@ async fn target_surfaced(
     // The query's own vector, for the doors a page's description opens — the
     // replay has to see the same fan the turn saw.
     let query_vector = embedder.embed(target.query).await.unwrap_or_default();
-    let entries = recall_nav::gather_entry_points_with_descriptions(
+    let entries = recall_nav::gather_entry_points(
         pool,
         tree,
         &sender,

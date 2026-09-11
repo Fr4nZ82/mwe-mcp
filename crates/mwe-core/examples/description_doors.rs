@@ -183,7 +183,7 @@ async fn main() -> anyhow::Result<()> {
             None => println!("   flat top-{}: {} hits", args.top_k, flat.len()),
         }
 
-        let fan = recall_nav::gather_entry_points_with_descriptions(
+        let fan = recall_nav::gather_entry_points(
             &pool,
             &tree,
             &sender,

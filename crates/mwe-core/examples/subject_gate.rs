@@ -260,7 +260,7 @@ async fn run_probe(
     // 2026-08-04: *«prova a seguire il primo hop, anche questo è
     // importante no?»*).
     let turn_vector = embedder.embed(&probe.phrase).await.unwrap_or_default();
-    let entries = recall_nav::gather_entry_points_with_descriptions(
+    let entries = recall_nav::gather_entry_points(
         pool,
         tree,
         sender,

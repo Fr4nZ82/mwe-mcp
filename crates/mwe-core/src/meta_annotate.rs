@@ -16,7 +16,7 @@
 //!   deterministic [`sync_wiki_keywords`] pass that [`crate::dream::run_compile`]
 //!   runs over the whole tree after the prose compile. This is exactly the shape
 //!   the recall navigator's topic seeds match against
-//!   ([`crate::recall_nav::gather_entry_points_with_descriptions`]
+//!   ([`crate::recall_nav::gather_entry_points`]
 //!   substring-scans the card keywords), so populating it gives the topic
 //!   entry-point a populated source.
 //! - **`_meta.extra["summary"]`** — the wiki's one-line **abstract**. Written by

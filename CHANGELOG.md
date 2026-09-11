@@ -57,6 +57,20 @@ semver-governed surface: breaking changes are called out explicitly.
 
 ### Added
 
+- **A page can now be found for what it says it is, not only for what is
+  written on it.** Ask an assistant *"I'm off to the supermarket, can you write
+  me the shopping list?"* and it came back with ten things about cooking and
+  nothing from the list — because the memory looked for pages holding something
+  that resembles the question, and a shopping list holds *milk* and *bread*,
+  which resemble no question about a shopping list. Every page carries a
+  one-line description of what it is for, and that sentence is now matched
+  against what you asked: *"the shopping list"* reaches a page described as
+  *"what the family still needs to buy"*, and so does *"the things to buy"*,
+  which shares no word with either. It holds when you talk to an assistant and
+  when a consumer searches the memory directly. Nothing is shown to anybody who
+  could not already open the page, and on the **Traces** page such a door is
+  listed as *the page says it is about this*.
+
 - **A card value nobody else may read can still be corrected, by the person it
   belongs to.** Your identity card holds a handful of things there can only be
   one of — when you were born, where you live, how to reach you — and when a

@@ -106,16 +106,8 @@ async fn main() -> anyhow::Result<()> {
 
     // Step 2 — the entry fan. Deterministic, no LLM.
     let turn_vector = embedder.embed(&turn).await.unwrap_or_default();
-    let fan = recall_nav::gather_entry_points_with_descriptions(
-        &pool,
-        &tree,
-        &sender,
-        &[],
-        &rag,
-        &[],
-        &turn_vector,
-    )
-    .await?;
+    let fan = recall_nav::gather_entry_points(&pool, &tree, &sender, &[], &rag, &[], &turn_vector)
+        .await?;
     println!("\n── entry fan ({} seeds) ──", fan.len());
     for e in &fan {
         println!(

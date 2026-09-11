@@ -356,17 +356,10 @@ async fn navigate_query(
     for s in &q.subjects {
         let _: Principal = s.parse().with_context(|| format!("subject `{s}`"))?;
     }
-    let entries = recall_nav::gather_entry_points_with_descriptions(
-        pool,
-        tree,
-        sender,
-        &q.topics,
-        flat,
-        &[],
-        query_vector,
-    )
-    .await
-    .context("entry-point gather")?;
+    let entries =
+        recall_nav::gather_entry_points(pool, tree, sender, &q.topics, flat, &[], query_vector)
+            .await
+            .context("entry-point gather")?;
     recall_nav::navigate(
         pool,
         tree,

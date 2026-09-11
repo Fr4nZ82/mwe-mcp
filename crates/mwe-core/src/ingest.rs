@@ -9088,6 +9088,12 @@ struct NavigatedTail {
 /// Everything here is soft: a gather or funnel failure logs a warning
 /// and returns `None` — the turn survives on the flat snippet.
 ///
+/// `turn_vector` is the turn embedded, and it is what lets a page be a door
+/// for what its card SAYS it is for rather than only for a fact on it
+/// ([`recall_nav::gather_entry_points`]) — the route onto a list, whose
+/// entries resemble no question about the list. Empty is legal and means that
+/// family does not fire this turn.
+///
 /// `served_identity` is the sender's identity page, when `WHO IS SPEAKING`
 /// served it this turn. It is handed to the funnel as
 /// **already visited**, so the walk neither offers nor opens it by any route
@@ -9106,6 +9112,7 @@ async fn navigated_tail(
     nav_llm: &dyn LlmBackend,
     sender: &SenderContext,
     turn_text: &str,
+    turn_vector: &[f32],
     seeds: &NavSeeds,
     rag_hits: &[RecallHit],
     seed_tail: &[RecallHit],
@@ -9136,6 +9143,7 @@ async fn navigated_tail(
         &seeding,
         // Situational seeds arrive with the host adapter (context model).
         &[],
+        turn_vector,
     )
     .await
     {
@@ -11826,12 +11834,26 @@ pub async fn wiki_ingest_message(
                 && (matches!(intent, IntentKind::Capture | IntentKind::Recall)
                     || plan.needs_disambig) =>
         {
+            // A page is also a door for what its card SAYS it is for, and
+            // that family of seeds is matched against the turn itself
+            // (`recall_nav::gather_description_seeds`), so the walk needs the
+            // turn as a vector. It is embedded on the same sentence the flat
+            // hits answer — the completed message where the classifier wrote
+            // one, the raw turn otherwise — because doors found for one
+            // sentence and hits ranked on another would disagree about what
+            // the turn is about. An embedder hiccup yields an empty vector,
+            // which the gather reads as "no description seeds this turn".
+            let turn_vector = embedder
+                .embed(completed_message.unwrap_or(request.text.as_str()))
+                .await
+                .unwrap_or_default();
             navigated_tail(
                 pool,
                 tree,
                 nav_llm,
                 &sender_ctx,
                 &request.text,
+                &turn_vector,
                 &seeds,
                 &recall_hits,
                 &seed_tail,
@@ -16627,6 +16649,222 @@ mod tests {
         assert!(
             !navigated.contains("alice/preferenze.md"),
             "the identity page is not a navigation destination for its own subject: {navigated}"
+        );
+        drop(dir);
+    }
+
+    /// One fact on a page of alice's wiki, with the vector the test wants it
+    /// ranked by — [`insert_page_fact`] plants a fixed one, and what this
+    /// fixture is about is the distance between the turn and each page.
+    async fn plant_with_vector(
+        pool: &SqlitePool,
+        fact_id: &str,
+        page: &str,
+        text: &str,
+        subject: Principal,
+        embedding: [f32; 4],
+    ) {
+        fact_index::insert(
+            pool,
+            &fact_index::NewFact {
+                subject_external: None,
+                slot: None,
+                slot_value: None,
+                authored_refs: Vec::new(),
+                fact_id: FactId::parse(fact_id).unwrap(),
+                wiki_id: "alice".to_owned(),
+                source_path: format!("wikis/alice/{page}"),
+                region_start: None,
+                region_end: None,
+                text: text.to_owned(),
+                embedding: embedding.to_vec(),
+                subject_id: subject,
+                allow_ids: Vec::new(),
+                sender_id: None,
+                fact_type: Some("plan".to_owned()),
+                topics: Vec::new(),
+                valid_from: None,
+                valid_to: None,
+                salience: None,
+                target_page: None,
+                style: None,
+                source_ref: None,
+            },
+        )
+        .await
+        .expect("plant");
+    }
+
+    /// A shopping list only its own description can find, plus one page the
+    /// flat search does reach — the fixture of the test below, and the shape
+    /// production was in.
+    ///
+    /// `fake_embedder` answers every text with [`FIXTURE_TURN`], so that is
+    /// the turn's vector: the list's entries and the row alice may not read
+    /// are planted orthogonal to it, the kitchen page and the list's card on
+    /// it. Returns the reopened tree.
+    async fn seed_a_list_reachable_only_by_its_card(dir: &TempDir, pool: &SqlitePool) -> WikiTree {
+        const MILK: &str = "018f1234-5678-7abc-9def-00000000d001";
+        const BREAD: &str = "018f1234-5678-7abc-9def-00000000d002";
+        const BOBS: &str = "018f1234-5678-7abc-9def-00000000d003";
+        const KITCHEN: &str = "018f1234-5678-7abc-9def-00000000d004";
+        const ELSEWHERE: [f32; 4] = [0.4, -0.3, 0.2, -0.1];
+        let alice_dir = dir.path().join("wikis").join("alice");
+        std::fs::write(
+            alice_dir.join("spesa.md"),
+            format!(
+                "---\ntitle: Spesa\nstyle: lista\n\
+                 description: Registro della spesa e degli acquisti.\n---\n\n\
+                 - {{{{f={MILK}}}}}latte 2{{{{/}}}}\n\
+                 - {{{{f={BREAD}}}}}pane senza glutine{{{{/}}}}\n\
+                 - {{{{f={BOBS}}}}}vino per la cena di bob{{{{/}}}}\n"
+            ),
+        )
+        .unwrap();
+        std::fs::write(
+            alice_dir.join("cucina.md"),
+            format!(
+                "---\ntitle: Cucina\n---\n\n{{{{f={KITCHEN}}}}}Alice cooks on Sundays.{{{{/}}}}\n"
+            ),
+        )
+        .unwrap();
+        let tree = WikiTree::open(dir.path()).expect("reopen tree");
+
+        let alice = Principal::User("alice".into());
+        // The list's own entries say nothing that resembles the question.
+        plant_with_vector(pool, MILK, "spesa.md", "latte 2", alice.clone(), ELSEWHERE).await;
+        plant_with_vector(
+            pool,
+            BREAD,
+            "spesa.md",
+            "pane senza glutine",
+            alice.clone(),
+            ELSEWHERE,
+        )
+        .await;
+        // A row on the same page that alice may not read.
+        plant_with_vector(
+            pool,
+            BOBS,
+            "spesa.md",
+            "vino per la cena di bob",
+            Principal::User("bob".into()),
+            ELSEWHERE,
+        )
+        .await;
+        // The one page the flat search does find — and the fan's only rag door.
+        plant_with_vector(
+            pool,
+            KITCHEN,
+            "cucina.md",
+            "Alice cooks on Sundays.",
+            alice,
+            FIXTURE_TURN,
+        )
+        .await;
+
+        // What the page says it is for, and the vector of that sentence.
+        crate::page_card::upsert(
+            pool,
+            &crate::page_card::NewPageCard {
+                source_path: "wikis/alice/spesa.md".to_owned(),
+                wiki_id: "alice".to_owned(),
+                description: Some("Registro della spesa e degli acquisti.".to_owned()),
+                keywords: Vec::new(),
+                style: Some(crate::wiki::PageStyle::Lista),
+                file_mtime_ms: None,
+                file_size: None,
+            },
+        )
+        .await
+        .expect("card");
+        crate::page_card::set_embedding(pool, "wikis/alice/spesa.md", &FIXTURE_TURN)
+            .await
+            .expect("card vector");
+        tree
+    }
+
+    /// The vector [`fake_embedder`] answers every text with.
+    const FIXTURE_TURN: [f32; 4] = [0.1, 0.2, 0.3, 0.4];
+
+    /// **A list is a door in a CONVERSATION too, not only through
+    /// `wiki_navigate`.**
+    ///
+    /// The production case (recall trace 1488): *«sto andando al supermercato,
+    /// mi scrivi la lista della spesa?»* found ten facts, none of them on the
+    /// shopping list, because the turn resembles no entry on it — and with no
+    /// hit on that page the fan had no door onto it either. A page is now also
+    /// a door for what its card SAYS it is for, and this is the wiring that
+    /// carries the turn's own vector into the ingest turn's gather, so the
+    /// assistant answering a person reaches the list exactly as the tool does.
+    ///
+    /// The fixture pins the fan to ONE rag door and puts it on another page,
+    /// so the only route to `spesa.md` is its description: take the vector
+    /// away and the page is not in the fan at all. The card's vector is
+    /// planted at the turn's own — what a real embedder makes of *«Registro
+    /// della spesa»* against this question is a property of the model, and the
+    /// `description_doors` example is where that is measured on a corpus.
+    #[tokio::test]
+    async fn a_conversation_turn_reaches_a_list_by_what_the_page_says_it_is() {
+        let (dir, _, pool) = setup_workdir().await;
+        let tree = seed_a_list_reachable_only_by_its_card(&dir, &pool).await;
+
+        // One hit, one door: the kitchen page. Everything else the fan holds
+        // got there some other way.
+        let policy = IngestPolicy {
+            recall_top_k: 1,
+            nav_seed_depth: 1,
+            ..IngestPolicy::default()
+        };
+        let llm = FakeLlmBackend::new("fake", "{\"intent\":\"recall\"}");
+        let nav = FakeLlmBackend::new(
+            "fake-nav",
+            "{\"open\":[{\"wiki_id\":\"alice\",\"page\":\"spesa.md\"}],\"done\":true}",
+        );
+        let resp = wiki_ingest_message(
+            &pool,
+            &tree,
+            fake_embedder(),
+            &llm,
+            Some(&nav),
+            req(
+                "sto andando al supermercato, mi scrivi la lista della spesa?",
+                "alice",
+            ),
+            &policy,
+        )
+        .await
+        .expect("ingest");
+
+        let t = only_trace(&pool).await;
+        let door = t
+            .entry_points
+            .iter()
+            .find(|e| e.page.as_deref() == Some("spesa.md"))
+            .unwrap_or_else(|| panic!("the list is in the fan: {:?}", t.entry_points));
+        assert_eq!(
+            door.origin, "description",
+            "its own sentence is what opened it, not a fact on it"
+        );
+        assert!(
+            t.entry_points
+                .iter()
+                .filter(|e| e.origin == "rag")
+                .all(|e| e.page.as_deref() == Some("cucina.md")),
+            "the only rag door is the other page: {:?}",
+            t.entry_points
+        );
+
+        let snippet = resp.context_snippet.expect("recall block present");
+        assert!(
+            snippet.contains(HDR_NAVIGATED_PAGES)
+                && snippet.contains("latte 2")
+                && snippet.contains("pane senza glutine"),
+            "the list is served: {snippet}"
+        );
+        assert!(
+            !snippet.contains("vino per la cena di bob"),
+            "and served filtered — the row alice may not read is not in it: {snippet}"
         );
         drop(dir);
     }

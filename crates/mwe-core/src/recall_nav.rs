@@ -200,26 +200,6 @@ struct WikiSeedInfo {
     wiki: DiscoveredWiki,
 }
 
-/// Gather the entry-point fan for one turn, without the description family.
-///
-/// [`gather_entry_points_with_descriptions`] with no turn vector: the fan a
-/// caller that has not embedded the turn can still build.
-///
-/// # Errors
-///
-/// See [`gather_entry_points_with_descriptions`].
-pub async fn gather_entry_points(
-    pool: &SqlitePool,
-    tree: &WikiTree,
-    sender: &SenderContext,
-    topics: &[String],
-    rag_hits: &[RecallHit],
-    situation: &[String],
-) -> Result<Vec<EntryPoint>> {
-    gather_entry_points_with_descriptions(pool, tree, sender, topics, rag_hits, situation, &[])
-        .await
-}
-
 /// Gather the entry-point fan for one turn.
 ///
 /// Inputs come from work the ingest turn has already done: `sender` carries
@@ -246,7 +226,7 @@ pub async fn gather_entry_points(
 ///
 /// Tree-walk / `_meta.md` parse failures surface; per-page card reads degrade
 /// to "matches nothing" instead of erroring.
-pub async fn gather_entry_points_with_descriptions(
+pub async fn gather_entry_points(
     pool: &SqlitePool,
     tree: &WikiTree,
     sender: &SenderContext,
@@ -2407,9 +2387,17 @@ mod tests {
             .await;
         }
 
-        let fan = gather_entry_points(&pool, &tree, &sender("alice", &["famiglia"]), &[], &[], &[])
-            .await
-            .unwrap();
+        let fan = gather_entry_points(
+            &pool,
+            &tree,
+            &sender("alice", &["famiglia"]),
+            &[],
+            &[],
+            &[],
+            &[],
+        )
+        .await
+        .unwrap();
 
         assert!(
             fan.is_empty(),
@@ -2453,6 +2441,7 @@ mod tests {
             &["SAILING".to_owned()],
             &[],
             &[],
+            &[],
         )
         .await
         .unwrap();
@@ -2493,6 +2482,7 @@ mod tests {
             &["celiachia".to_owned()],
             &[],
             &[],
+            &[],
         )
         .await
         .unwrap();
@@ -2505,6 +2495,7 @@ mod tests {
             &tree,
             &sender("alice", &[]),
             &["celiachia".to_owned()],
+            &[],
             &[],
             &[],
         )
@@ -2540,6 +2531,7 @@ mod tests {
             &[String::new(), "   ".to_owned(), "quantum".to_owned()],
             &[],
             &[],
+            &[],
         )
         .await
         .unwrap();
@@ -2568,6 +2560,7 @@ mod tests {
             &[],
             &[],
             &["sailing".to_owned()],
+            &[],
         )
         .await
         .unwrap();
@@ -2600,6 +2593,7 @@ mod tests {
                 rag_hit("alice", "wikis/alice/@rules.md", 0.9, false), // channel-only
                 rag_hit("nowhere", "wikis/nowhere/x.md", 0.9, false), // unknown wiki
             ],
+            &[],
             &[],
         )
         .await
@@ -2638,6 +2632,7 @@ mod tests {
                 rag_hit("bob", "wikis/bob/appunti.md", 0.3, false),
                 rag_hit("bob", "wikis/bob/appunti.md", 0.7, false), // duplicate, heavier
             ],
+            &[],
             &[],
         )
         .await
@@ -2736,7 +2731,7 @@ mod tests {
         .await;
 
         let alice = sender("alice", &["famiglia"]);
-        let fan = gather_entry_points_with_descriptions(&pool, &tree, &alice, &[], &[], &[], &TURN)
+        let fan = gather_entry_points(&pool, &tree, &alice, &[], &[], &[], &TURN)
             .await
             .unwrap();
         let door = find(&fan, "famiglia", "spesa.md").expect("the list is a door");
@@ -2751,10 +2746,9 @@ mod tests {
         );
 
         // «cose da comprare»: further away, still a door.
-        let fan =
-            gather_entry_points_with_descriptions(&pool, &tree, &alice, &[], &[], &[], &LOOSE)
-                .await
-                .unwrap();
+        let fan = gather_entry_points(&pool, &tree, &alice, &[], &[], &[], &LOOSE)
+            .await
+            .unwrap();
         assert_eq!(
             find(&fan, "famiglia", "spesa.md").map(|e| e.origin),
             Some(EntryOrigin::Description),
@@ -2763,7 +2757,7 @@ mod tests {
 
         // And the negation: with no vector for the turn the family cannot
         // fire, and then nothing else in the fan reaches this page.
-        let fan = gather_entry_points(&pool, &tree, &alice, &[], &[], &[])
+        let fan = gather_entry_points(&pool, &tree, &alice, &[], &[], &[], &[])
             .await
             .unwrap();
         assert!(
@@ -2798,7 +2792,7 @@ mod tests {
         )
         .await;
 
-        let fan = gather_entry_points_with_descriptions(
+        let fan = gather_entry_points(
             &pool,
             &tree,
             &sender("alice", &["famiglia"]),
@@ -2861,7 +2855,7 @@ mod tests {
         )
         .await;
 
-        let fan = gather_entry_points_with_descriptions(
+        let fan = gather_entry_points(
             &pool,
             &tree,
             &sender("alice", &["famiglia"]),
@@ -2880,7 +2874,7 @@ mod tests {
         // The same two pages, asked by the readers each gate is there to
         // admit: bob sees his own, and the family page needs a reader who can
         // read what is on it.
-        let bob_fan = gather_entry_points_with_descriptions(
+        let bob_fan = gather_entry_points(
             &pool,
             &tree,
             &sender("bob", &["famiglia"]),
@@ -2934,7 +2928,7 @@ mod tests {
             .await;
         }
 
-        let fan = gather_entry_points_with_descriptions(
+        let fan = gather_entry_points(
             &pool,
             &tree,
             &sender("alice", &["famiglia"]),
@@ -2982,7 +2976,7 @@ mod tests {
         let alice = sender("alice", &["famiglia"]);
 
         // The description (0.80) beats a weak flat hit (0.55).
-        let fan = gather_entry_points_with_descriptions(
+        let fan = gather_entry_points(
             &pool,
             &tree,
             &alice,
@@ -2997,7 +2991,7 @@ mod tests {
         assert_eq!(fan[0].origin, EntryOrigin::Description);
 
         // And a strong flat hit (0.95) beats the description.
-        let fan = gather_entry_points_with_descriptions(
+        let fan = gather_entry_points(
             &pool,
             &tree,
             &alice,
