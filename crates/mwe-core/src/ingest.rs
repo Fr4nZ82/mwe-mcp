@@ -3139,6 +3139,34 @@ enum ClosurePlanError {
          and was not shared with you"
     )]
     NotEntitledToRetract { id: String, subject: String },
+    /// An extraction of THIS turn restated the target: the message says the
+    /// fact again, and saying a thing again does not end it.
+    ///
+    /// It is the shape a **re-delivered turn** takes. A consumer interrupted
+    /// mid-turn re-queues its message and hands it to a fresh session, so the
+    /// engine sees the same turn twice; on the second pass every claim is
+    /// already stored, write-time dedup files nothing, and the facts the first
+    /// pass wrote are sitting in the candidate list saying exactly what the
+    /// message says. A model reading that pair can reach for any of the three
+    /// reasons — the item is spent, it is taken back, it is contradicted — and
+    /// each one takes a fact out of the memory that nobody ended.
+    #[error("closure target `{0}` was restated by this same turn — a repetition ends nothing")]
+    TargetRestatedThisTurn(String),
+}
+
+impl ClosurePlanError {
+    /// The stable token the recall trace stores for this refusal.
+    const fn as_token(&self) -> &'static str {
+        match self {
+            Self::MissingTarget => "no_target",
+            Self::BadFactId(_) => "unparseable_id",
+            Self::TargetNotInRecall { .. } => "target_not_a_candidate",
+            Self::UnknownReason(_) => "unknown_reason",
+            Self::TargetIsAStandingRule(_) => "target_is_a_rule",
+            Self::NotEntitledToRetract { .. } => "not_theirs_to_retract",
+            Self::TargetRestatedThisTurn(_) => "target_restated_this_turn",
+        }
+    }
 }
 
 /// Validate one requested closure against this turn's recall window.
@@ -3150,9 +3178,20 @@ enum ClosurePlanError {
 /// for: `contradiction` for `contradicted`, and `superseded`, which is not a
 /// spelling but a stage saying it had no successor to name. Both mean
 /// `contradicted` and nothing else is admitted.
+///
+/// **A target this same turn restated is refused** — see
+/// [`ClosurePlanError::TargetRestatedThisTurn`], the closure verb's half of
+/// the door a turn delivered twice walks through. Its twin lives in
+/// [`vet_supersede`]; the two other verbs deliberately have no such guard,
+/// because a claim restated closely enough to be deduped away is precisely the
+/// case where re-dating and re-sharing are the ONLY road a correction has into
+/// the memory: «serve il pane entro il 20» over a stored «entro il 18» is one
+/// body the write path folds into the other, and the date reaches the fact
+/// through `validity_edits` or not at all.
 fn validate_closure<'a>(
     closure: &LlmClosure,
     recall_hits: &'a [RecallHit],
+    turn_facts: &[TurnFact],
     sender_id: &str,
     sender_groups: &[String],
 ) -> std::result::Result<(&'a RecallHit, &'static str), ClosurePlanError> {
@@ -3232,6 +3271,19 @@ fn validate_closure<'a>(
     if crate::wiki::is_rules_page(&hit.source_path) {
         return Err(ClosurePlanError::TargetIsAStandingRule(raw.to_owned()));
     }
+    // The message said this fact again. An extraction of this turn carried the
+    // same claim to the write path, which found it already stored and filed
+    // nothing under the id it had minted ([`TurnFact::already_stored_as`]) —
+    // so the candidate being closed and the claim this turn made are one
+    // sentence, and a sentence does not end itself. The twin of the supersede
+    // verb's guard, and the same door: a turn delivered twice is a turn where
+    // every claim looks exactly like this.
+    if turn_facts
+        .iter()
+        .any(|f| f.already_stored_as.as_ref() == Some(&hit.fact_id))
+    {
+        return Err(ClosurePlanError::TargetRestatedThisTurn(raw.to_owned()));
+    }
     Ok((hit, reason))
 }
 
@@ -3277,7 +3329,7 @@ impl ReconcileDecision {
 /// model spelled wrong. Only the recall trace reads it, and only so a person
 /// can see what the one call that retires facts was asked and what it
 /// replied — beside the supersedes the verb then refused
-/// ([`AppliedSupersedes::refused`]).
+/// ([`AppliedChanges::refused`]).
 #[derive(Debug, Default)]
 struct Reconciliation {
     /// The parsed verdict the apply side acts on.
@@ -3798,13 +3850,17 @@ async fn successor_exists(pool: &SqlitePool, successor: &FactId) -> bool {
     matches!(capture_buffer::is_buffered(pool, successor).await, Ok(true))
 }
 
-/// What the supersede verb did with what the reconciler asked for.
+/// What one verb did with what it was asked for.
+///
+/// Shared by the two verbs that can take a stored fact away, because a reader
+/// of the trace asks them the same question: how many happened, and for each
+/// one that did not, why.
 #[derive(Debug, Default)]
-struct AppliedSupersedes {
-    /// How many pairs welded.
+struct AppliedChanges {
+    /// How many the engine made.
     applied: usize,
-    /// One record per pair that did not, for the recall trace.
-    refused: Vec<crate::recall_trace::TraceSupersedeRefusal>,
+    /// One record per change it did not, for the recall trace.
+    refused: Vec<crate::recall_trace::TraceRefusedChange>,
 }
 
 /// Journal one refused pair **as the model wrote it** — unparsed ids included,
@@ -3812,12 +3868,29 @@ struct AppliedSupersedes {
 fn refused_pair(
     s: &LlmSupersede,
     reason: SupersedeRefusal,
-) -> crate::recall_trace::TraceSupersedeRefusal {
-    crate::recall_trace::TraceSupersedeRefusal {
+) -> crate::recall_trace::TraceRefusedChange {
+    crate::recall_trace::TraceRefusedChange {
+        verb: "replace".to_owned(),
         slot: s.slot.clone().unwrap_or_default(),
         target: s.target.clone().unwrap_or_default(),
         successor: s.successor.clone().unwrap_or_default(),
         reason: reason.as_str().to_owned(),
+    }
+}
+
+/// Journal one refused closure, likewise as the model wrote it. A closure
+/// names no successor and no slot: the two columns stay empty, which is how
+/// the trace shows which verb asked.
+fn refused_closure(
+    c: &LlmClosure,
+    err: &ClosurePlanError,
+) -> crate::recall_trace::TraceRefusedChange {
+    crate::recall_trace::TraceRefusedChange {
+        verb: "close".to_owned(),
+        slot: String::new(),
+        target: c.target.clone().unwrap_or_default(),
+        successor: String::new(),
+        reason: err.as_token().to_owned(),
     }
 }
 
@@ -3846,14 +3919,14 @@ async fn apply_reconciled_supersedes(
     candidates: &[RecallHit],
     turn_facts: &[TurnFact],
     request: &IngestRequest,
-) -> AppliedSupersedes {
+) -> AppliedChanges {
     let sender = Principal::User(request.sender_id.clone());
     // Resolve the sender's groups once so the subject gate can admit a
     // member of an owning group, not just the owning user.
     let sender_groups = enrollment::groups_for(pool, &request.sender_id)
         .await
         .unwrap_or_default();
-    let mut out = AppliedSupersedes::default();
+    let mut out = AppliedChanges::default();
     for s in supersedes {
         let (target_id, successor_id, prev) = match vet_supersede(
             s,
@@ -4633,30 +4706,50 @@ async fn confirm_topic_closures(
 /// Every step is soft: an invalid closure, a vanished target, or a DB
 /// hiccup is logged and skipped — a closure never kills the turn.
 ///
-/// Returns the number of closures applied.
+/// Returns how many closed, and one record per closure [`validate_closure`]
+/// refused — every one of those before anything is written. A target that
+/// vanishes between the recall and the stamp is a race, not a refusal: it is
+/// logged and skipped, and appears in neither count.
+///
+/// Only the reconciliation stage's call puts the records in the recall trace;
+/// the classifier's own closures are guarded exactly the same way and refused
+/// into the log, because the panel they would land in is the record of the one
+/// call that reads the memory before it judges.
+#[allow(
+    clippy::too_many_lines,
+    reason = "validate + act-first stamp + list refresh + receipt live as one act-first orchestrator, mirroring apply_plan_acl_changes"
+)]
 async fn apply_plan_closures(
     pool: &SqlitePool,
     tree: &WikiTree,
     plan_closures: &[LlmClosure],
     recall_hits: &[RecallHit],
+    turn_facts: &[TurnFact],
     request: &IngestRequest,
     turn_now: chrono::DateTime<chrono::Utc>,
-) -> usize {
+) -> AppliedChanges {
     // Resolve the sender's groups once so the subject gate can admit a
     // member of the owning group, not only the owning user.
     let sender_groups = enrollment::groups_for(pool, &request.sender_id)
         .await
         .unwrap_or_default();
     let mut applied: Vec<promote::AppliedClosure> = Vec::new();
+    let mut refused: Vec<crate::recall_trace::TraceRefusedChange> = Vec::new();
     for closure in plan_closures {
-        let (hit, reason) =
-            match validate_closure(closure, recall_hits, &request.sender_id, &sender_groups) {
-                Ok(v) => v,
-                Err(err) => {
-                    tracing::warn!(error = %err, "ingest: closure invalid — skipped");
-                    continue;
-                },
-            };
+        let (hit, reason) = match validate_closure(
+            closure,
+            recall_hits,
+            turn_facts,
+            &request.sender_id,
+            &sender_groups,
+        ) {
+            Ok(v) => v,
+            Err(err) => {
+                tracing::warn!(error = %err, "ingest: closure invalid — skipped");
+                refused.push(refused_closure(closure, &err));
+                continue;
+            },
+        };
         if applied.iter().any(|a| a.fact_id == hit.fact_id) {
             continue; // the model repeated a target — first one wins
         }
@@ -4719,7 +4812,10 @@ async fn apply_plan_closures(
         });
     }
     if applied.is_empty() {
-        return 0;
+        return AppliedChanges {
+            applied: 0,
+            refused,
+        };
     }
     // A closed item on a LIST is shown now, not at the next dream: the page is
     // rebuilt from the facts as they stand, so «ho comprato il latte» carries
@@ -4749,7 +4845,10 @@ async fn apply_plan_closures(
         }
     }
     emit_closure_paper_trail(pool, &applied, recall_hits, request).await;
-    applied.len()
+    AppliedChanges {
+        applied: applied.len(),
+        refused,
+    }
 }
 
 /// The act-first paper trail of a closure batch: ONE born-applied
@@ -9211,8 +9310,8 @@ struct IngestTraceParts<'a> {
     /// verbatim. Empty and `None` on a turn where the stage never ran.
     reconcile_candidates: &'a [crate::recall_trace::TraceReconcileCandidate],
     reconcile_verdict: Option<&'a str>,
-    /// The supersedes that answer asked for and the verb did not apply.
-    supersede_refusals: &'a [crate::recall_trace::TraceSupersedeRefusal],
+    /// The changes that answer asked for and the engine did not make.
+    refused_changes: &'a [crate::recall_trace::TraceRefusedChange],
     recall_clock: RecallClock,
     took: std::time::Duration,
 }
@@ -9317,7 +9416,7 @@ async fn record_ingest_trace(
         rules_block: parts.rules_block.map(str::to_owned),
         reconcile_candidates: parts.reconcile_candidates.to_vec(),
         reconcile_verdict: parts.reconcile_verdict.map(recall_trace::cap_turn_text),
-        supersede_refusals: parts.supersede_refusals.to_vec(),
+        refused_changes: parts.refused_changes.to_vec(),
         recall_ms: parts.recall_clock.ms(),
         took_ms: u64::try_from(parts.took.as_millis()).unwrap_or(u64::MAX),
     };
@@ -9686,7 +9785,7 @@ pub async fn wiki_ingest_message(
                     // answer.
                     reconcile_candidates: &[],
                     reconcile_verdict: None,
-                    supersede_refusals: &[],
+                    refused_changes: &[],
                     recall_clock,
                     took: start.elapsed(),
                 },
@@ -11259,16 +11358,20 @@ pub async fn wiki_ingest_message(
                     }
                 }
             }
+            // The classifier's own closures. Its refusals stay in the log:
+            // the trace's list is the reconciliation stage's, which is the
+            // call that judges with the memory read.
             let closed = apply_plan_closures(
                 pool,
                 tree,
                 &turn_closures,
                 &closure_hits,
+                &turn_facts,
                 &request,
                 turn_now,
             )
             .await;
-            if closed > 0 {
+            if closed.applied > 0 {
                 captured_any = true;
             }
 
@@ -11529,8 +11632,9 @@ pub async fn wiki_ingest_message(
     // back.
     let mut reconcile_journal: Vec<crate::recall_trace::TraceReconcileCandidate> = Vec::new();
     let mut reconcile_verdict: Option<String> = None;
-    // The pairs the verb refused, beside the raw answer that asked for them.
-    let mut supersede_refusals: Vec<crate::recall_trace::TraceSupersedeRefusal> = Vec::new();
+    // What the stage asked for and the engine did not do, beside the raw
+    // answer that asked for it.
+    let mut refused_changes: Vec<crate::recall_trace::TraceRefusedChange> = Vec::new();
     if matches!(intent, IntentKind::Capture) {
         let candidates = reconcile_candidates(
             pool,
@@ -11560,15 +11664,18 @@ pub async fn wiki_ingest_message(
         .await;
         reconcile_verdict = verdict;
         if !decision.is_empty() {
-            reconciled += apply_plan_closures(
+            let closures = apply_plan_closures(
                 pool,
                 tree,
                 &decision.closures,
                 &candidates,
+                &turn_facts,
                 &request,
                 turn_now,
             )
             .await;
+            reconciled += closures.applied;
+            refused_changes = closures.refused;
             let supersedes = apply_reconciled_supersedes(
                 pool,
                 &decision.supersedes,
@@ -11578,7 +11685,7 @@ pub async fn wiki_ingest_message(
             )
             .await;
             reconciled += supersedes.applied;
-            supersede_refusals = supersedes.refused;
+            refused_changes.extend(supersedes.refused);
             reconciled += apply_plan_validity_edits(
                 pool,
                 tree,
@@ -11884,7 +11991,7 @@ pub async fn wiki_ingest_message(
                 rules_block: rules.as_deref(),
                 reconcile_candidates: &reconcile_journal,
                 reconcile_verdict: reconcile_verdict.as_deref(),
-                supersede_refusals: &supersede_refusals,
+                refused_changes: &refused_changes,
                 recall_clock,
                 took: start.elapsed(),
             },
@@ -13810,7 +13917,7 @@ mod tests {
             valid_to: None,
         };
         let hits = vec![sample_recall_hit(id)]; // hit subject = user:alice
-        let err = validate_closure(&closure, &hits, "morgana", &[])
+        let err = validate_closure(&closure, &hits, &[], "morgana", &[])
             .expect_err("cross-subject closure must fail");
         match err {
             ClosurePlanError::NotEntitledToRetract {
@@ -13823,7 +13930,7 @@ mod tests {
             other => panic!("expected NotEntitledToRetract, got {other:?}"),
         }
         // The subject herself can close it.
-        assert!(validate_closure(&closure, &hits, "alice", &[]).is_ok());
+        assert!(validate_closure(&closure, &hits, &[], "alice", &[]).is_ok());
 
         // And so can the person who said it, about somebody else: the same
         // hit, now carrying carol as its author, is closable by carol.
@@ -13831,11 +13938,11 @@ mod tests {
         authored.sender_id = Some(Principal::User("carol".into()));
         let hits = vec![authored];
         assert!(
-            validate_closure(&closure, &hits, "carol", &[]).is_ok(),
+            validate_closure(&closure, &hits, &[], "carol", &[]).is_ok(),
             "the author may withdraw what they said, whoever it was about"
         );
         // A third party is still none of the three.
-        assert!(validate_closure(&closure, &hits, "morgana", &[]).is_err());
+        assert!(validate_closure(&closure, &hits, &[], "morgana", &[]).is_err());
 
         // The audience opens the third door: the same hit, about alice and
         // said by carol, now carries `group:famiglia` in its allow list, and
@@ -13845,12 +13952,12 @@ mod tests {
         shared.allow_ids = vec![Principal::Group("famiglia".into())];
         let hits = vec![shared];
         assert!(
-            validate_closure(&closure, &hits, "dora", &["famiglia".to_owned()]).is_ok(),
+            validate_closure(&closure, &hits, &[], "dora", &["famiglia".to_owned()]).is_ok(),
             "a member of the audience the fact was shared with may retire it"
         );
         // Reading it some other way is not being in the audience: morgana is
         // in no group of the allow list and is still refused.
-        assert!(validate_closure(&closure, &hits, "morgana", &[]).is_err());
+        assert!(validate_closure(&closure, &hits, &[], "morgana", &[]).is_err());
     }
 
     /// A validity edit rides the same three doors as a closure, and the
@@ -14943,16 +15050,30 @@ mod tests {
     /// ask for.
     struct RestatingReconciler {
         plan: &'static str,
+        /// What it answers when it is offered nothing to weld to.
+        empty_handed: EmptyHanded,
         /// The `FACTS THIS TURN WROTE` block of each reconcile call, in order.
         offered: parking_lot::Mutex<Vec<String>>,
         /// The `CANDIDATES` block of each, likewise.
         weighed: parking_lot::Mutex<Vec<String>>,
     }
 
+    /// The two things a model does when the turn wrote nothing it could name
+    /// as a replacement, and both have to leave the memory alone.
+    #[derive(Clone, Copy)]
+    enum EmptyHanded {
+        /// Empty arrays: the correct answer, and the one the prompt asks for.
+        Silence,
+        /// It reaches for the other verb that takes a fact away and closes the
+        /// candidate instead — the shape the adversarial pass reproduced.
+        CloseTheCandidate,
+    }
+
     impl RestatingReconciler {
-        fn new(plan: &'static str) -> Self {
+        fn new(plan: &'static str, empty_handed: EmptyHanded) -> Self {
             Self {
                 plan,
+                empty_handed,
                 offered: parking_lot::Mutex::new(Vec::new()),
                 weighed: parking_lot::Mutex::new(Vec::new()),
             }
@@ -14994,7 +15115,14 @@ mod tests {
                             "{{\"supersedes\":[{{\"slot\":\"the colour she prefers\",\
                              \"target\":\"{target}\",\"successor\":\"{successor}\"}}]}}"
                         ),
-                        // Nothing to weld to: the honest answer is silence.
+                        // Nothing to weld to.
+                        (None, Some(target)) => match self.empty_handed {
+                            EmptyHanded::Silence => "{\"supersedes\":[]}".to_owned(),
+                            EmptyHanded::CloseTheCandidate => format!(
+                                "{{\"closures\":[{{\"target\":\"{target}\",\
+                                 \"reason\":\"contradicted\"}}]}}"
+                            ),
+                        },
                         _ => "{\"supersedes\":[]}".to_owned(),
                     }
                 },
@@ -15029,7 +15157,7 @@ mod tests {
             \"subject_id\":\"user:alice\",\
             \"body\":\"Il colore preferito di Alice è l'indaco.\",\
             \"fact_type\":\"preference\",\"requested_container\":true}]}";
-        let llm = RestatingReconciler::new(plan);
+        let llm = RestatingReconciler::new(plan, EmptyHanded::Silence);
         let policy = IngestPolicy::default();
         let deliver = || async {
             wiki_ingest_message(
@@ -15078,6 +15206,69 @@ mod tests {
             "the fact the first delivery wrote is still open, chain and validity \
              alike: a re-delivered turn retires nothing, and leaves no half of a \
              retirement behind either"
+        );
+        drop(dir);
+    }
+
+    /// **The other verb that takes a fact away is closed by the same door.**
+    ///
+    /// On the re-delivery the stage is offered nothing to weld to, and the
+    /// answer to that is empty arrays. A model can reach for the closure verb
+    /// instead: the candidate says exactly what the message says, which reads
+    /// as the fact being restated, ended, or contradicted depending on which
+    /// reason it picks. Any of the three takes the fact out of the memory, and
+    /// none of them is what a repetition means. So a closure whose target an
+    /// extraction of THIS turn restated is refused before anything is written,
+    /// and the trace says so.
+    #[tokio::test]
+    async fn a_re_delivered_turn_does_not_close_what_its_first_delivery_wrote() {
+        let (dir, tree, pool) = setup_workdir().await;
+        let plan = "{\"intent\":\"capture\",\"extractions\":[{\
+            \"target_wiki_id\":\"alice\",\"target_page\":\"colore.md\",\
+            \"subject_id\":\"user:alice\",\
+            \"body\":\"Il colore preferito di Alice è l'indaco.\",\
+            \"fact_type\":\"preference\",\"requested_container\":true}]}";
+        let llm = RestatingReconciler::new(plan, EmptyHanded::CloseTheCandidate);
+        let policy = IngestPolicy::default();
+        let deliver = || async {
+            wiki_ingest_message(
+                &pool,
+                &tree,
+                fake_embedder(),
+                &llm,
+                None,
+                req("il mio colore preferito è l'indaco", "alice"),
+                &policy,
+            )
+            .await
+            .expect("ingest")
+        };
+
+        deliver().await;
+        let filed = facts_in_wiki(&pool, "alice").await;
+        assert_eq!(filed.len(), 1, "the first delivery writes the fact");
+        let fact_id = filed[0].fact_id.clone();
+
+        deliver().await;
+
+        assert!(
+            llm.weighed.lock()[0].contains(fact_id.as_str()),
+            "the re-delivery was weighed against the fact the first one wrote, and the \
+             scripted model did ask for it to be closed"
+        );
+        let after = fact_index::find_by_id(&pool, &fact_id)
+            .await
+            .unwrap()
+            .unwrap();
+        assert!(
+            after.valid_to.is_none() && after.decay_reason.is_none(),
+            "the fact is open and carries no closing reason: a repetition ends nothing \
+             ({after:?})"
+        );
+        assert_eq!(
+            facts_in_wiki(&pool, "alice").await.len(),
+            1,
+            "and it is still the one fact the memory holds"
         );
         drop(dir);
     }
@@ -20868,7 +21059,8 @@ mod tests {
                 reason: Some(reason.to_owned()),
                 valid_to: None,
             };
-            let got = validate_closure(&closure, std::slice::from_ref(&rule), "alice", &groups);
+            let got =
+                validate_closure(&closure, std::slice::from_ref(&rule), &[], "alice", &groups);
             assert!(
                 matches!(got, Err(ClosurePlanError::TargetIsAStandingRule(_))),
                 "a `{reason}` closure on a standing directive: {got:?}"
@@ -20883,7 +21075,14 @@ mod tests {
                 valid_to: None,
             };
             assert!(
-                validate_closure(&closure, std::slice::from_ref(&plain), "alice", &groups).is_ok(),
+                validate_closure(
+                    &closure,
+                    std::slice::from_ref(&plain),
+                    &[],
+                    "alice",
+                    &groups
+                )
+                .is_ok(),
                 "`{reason}` is refused on an ordinary fact"
             );
         }
@@ -22680,7 +22879,7 @@ mod tests {
         let after = |marker: &str| -> Vec<String> {
             let at = BUNDLED_INGEST_PROMPT_MD
                 .find(marker)
-                .unwrap_or_else(|| panic!("the prompt no longer marks `{marker}`"));
+                .unwrap_or_else(|| panic!("the prompt does not mark `{marker}`"));
             let line = BUNDLED_INGEST_PROMPT_MD[at..]
                 .lines()
                 .nth(1)

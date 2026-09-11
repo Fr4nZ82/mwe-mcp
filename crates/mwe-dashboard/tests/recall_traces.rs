@@ -21,8 +21,8 @@ use mwe_core::embedder::FakeEmbedder;
 use mwe_core::jwt::{BlacklistCache, TokenSecret};
 use mwe_core::recall_nav::{CandidateCard, HopTrace, OpenedPage, RequestedOpen};
 use mwe_core::recall_trace::{
-    self, RecallTrace, TraceEntryPoint, TraceHit, TraceReconcileCandidate, TraceSource,
-    TraceSupersedeRefusal,
+    self, RecallTrace, TraceEntryPoint, TraceHit, TraceReconcileCandidate, TraceRefusedChange,
+    TraceSource,
 };
 use mwe_core::wiki::WikiTree;
 use mwe_dashboard::{DashboardState, MemoryHandles, router};
@@ -126,6 +126,27 @@ async fn status_of(app: &Router, uri: &str, cookie: &str) -> StatusCode {
 
 /// A representative trace: one flat hit, a two-entry fan, one hop with a
 /// vetted-away pick and one opened page, an injected block.
+/// One refusal per verb that can take a stored fact away: the panel has to
+/// show both, and say which one asked.
+fn refused_changes() -> Vec<TraceRefusedChange> {
+    vec![
+        TraceRefusedChange {
+            verb: "replace".to_owned(),
+            slot: "what the shopping list needs".to_owned(),
+            target: "0197fa00-0000-7000-8000-000000000001".to_owned(),
+            successor: "0197fa00-0000-7000-8000-000000000002".to_owned(),
+            reason: "successor_is_the_target_restated".to_owned(),
+        },
+        TraceRefusedChange {
+            verb: "close".to_owned(),
+            slot: String::new(),
+            target: "0197fa00-0000-7000-8000-000000000001".to_owned(),
+            successor: String::new(),
+            reason: "target_restated_this_turn".to_owned(),
+        },
+    ]
+}
+
 fn sample_trace() -> RecallTrace {
     RecallTrace {
         version: recall_trace::TRACE_PAYLOAD_VERSION,
@@ -216,12 +237,7 @@ fn sample_trace() -> RecallTrace {
         // One pair the engine refused: the panel beside the verdict is the
         // only place a reader sees that a replacement was asked for and did
         // not happen.
-        supersede_refusals: vec![TraceSupersedeRefusal {
-            slot: "what the shopping list needs".to_owned(),
-            target: "0197fa00-0000-7000-8000-000000000001".to_owned(),
-            successor: "0197fa00-0000-7000-8000-000000000002".to_owned(),
-            reason: "successor_is_the_target_restated".to_owned(),
-        }],
+        refused_changes: refused_changes(),
         took_ms: 2150,
         ..RecallTrace::default()
     }
@@ -346,8 +362,9 @@ async fn journal_lists_and_viewer_replays_a_recorded_trace() {
         "not opened: not among the pages it was shown",
         "Weighed against what was already there",
         "&quot;supersedes&quot;:[]",
-        "Replacements it asked for and did not get",
+        "Changes it asked for and did not get",
         "successor_is_the_target_restated",
+        "target_restated_this_turn",
         "what the shopping list needs",
         "Handed to the consumer",
         "celiaca",

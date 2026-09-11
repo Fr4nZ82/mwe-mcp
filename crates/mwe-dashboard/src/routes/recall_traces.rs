@@ -795,11 +795,11 @@ fn render_hop(i: usize, hop: &HopTrace) -> Markup {
 }
 
 /// The reconciliation stage: what it was shown, what it answered, and which
-/// of the replacements it asked for the engine did not carry out.
+/// of the changes it asked for the engine did not make.
 ///
 /// The only call in a turn that can retire a stored fact, and the only one
-/// whose answer is worth reading raw — beside it, the refusals, because a pair
-/// the engine threw out reads in the verdict exactly like one it applied.
+/// whose answer is worth reading raw — beside it, the refusals, because a
+/// change the engine threw out reads in the verdict exactly like one it made.
 fn render_reconcile(trace: &RecallTrace) -> Markup {
     if trace.reconcile_candidates.is_empty() && trace.reconcile_verdict.is_none() {
         return html! {};
@@ -833,26 +833,29 @@ fn render_reconcile(trace: &RecallTrace) -> Markup {
                 p.muted { "It gave no answer: the model was unreachable, or no call was made." }
             }
         }
-        @if !trace.supersede_refusals.is_empty() {
+        @if !trace.refused_changes.is_empty() {
             section class="term-panel mt-4 p-4" {
-                h2 class="mt-0" { "Replacements it asked for and did not get" }
+                h2 class="mt-0" { "Changes it asked for and did not get" }
                 p.muted {
-                    "Replacing retires a stored fact and points it at the one that took "
-                    "its place, so every pair is checked before it is carried out. These "
-                    "did not pass, and the stored fact is exactly as it was."
+                    "Replacing a stored fact and closing one both take it out of what "
+                    "the memory answers with, so every one is checked before it is "
+                    "carried out. These did not pass, and the stored fact is exactly "
+                    "as it was."
                 }
                 table class="config-table" {
                     thead {
                         tr {
-                            th { "Retired" }
+                            th { "Asked for" }
+                            th { "The fact" }
                             th { "Replaced by" }
                             th { "Over" }
                             th { "Why not" }
                         }
                     }
                     tbody {
-                        @for r in &trace.supersede_refusals {
+                        @for r in &trace.refused_changes {
                             tr {
+                                td { (r.verb) }
                                 td { code { (r.target) } }
                                 td { code { (r.successor) } }
                                 td { (r.slot) }

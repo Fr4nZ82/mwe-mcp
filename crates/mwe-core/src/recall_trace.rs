@@ -239,19 +239,22 @@ pub struct RecallTrace {
     /// Raw on purpose. This is the only call in a turn that can retire a
     /// stored fact, and the verdict as the model wrote it is what a reader has
     /// to be able to compare against what the engine then did with it:
-    /// [`supersede_refusals`] says which pairs did not happen, and the entries
+    /// [`refused_changes`] says which of them did not happen, and the entries
     /// that are in neither list are the ones that applied.
     ///
-    /// [`supersede_refusals`]: Self::supersede_refusals
+    /// [`refused_changes`]: Self::refused_changes
     pub reconcile_verdict: Option<String>,
-    /// One entry per supersede the reconciler asked for that did **not**
-    /// happen, and why (ingest only).
+    /// One entry per change the **reconciliation stage** asked for that was
+    /// refused before anything was written, and why (ingest only).
     ///
-    /// The supersede alone, of the four verbs, because it is the one that
-    /// welds: it retires a stored fact and points it at a successor, so a pair
-    /// the engine refused is the difference between a fact that is still there
-    /// and a fact that is gone. The other three are refused into the log only.
-    pub supersede_refusals: Vec<TraceSupersedeRefusal>,
+    /// The two verbs that can take a stored fact away — replacing it and
+    /// closing it — because for those a refusal is the difference between a
+    /// fact that is still there and a fact that is gone. Re-dating and
+    /// re-sharing write what the message says over what the fact holds, so a
+    /// refusal there changes nothing a reader is hunting for, and they are
+    /// refused into the log only. So is a closure the CLASSIFIER asked for:
+    /// this list is the one call that reads the memory before it judges.
+    pub refused_changes: Vec<TraceRefusedChange>,
     /// Milliseconds of [`took_ms`] spent on the recall itself: the searches,
     /// the slots and the walk, summed as the turn ran.
     ///
@@ -296,22 +299,25 @@ impl TraceReconcileCandidate {
     }
 }
 
-/// One supersede the reconciler asked for and the engine did not apply.
+/// One change the reconciliation stage asked for and the engine did not make.
 ///
 /// The ids are kept **as the model wrote them**, unparsed: a refusal whose
 /// reason is that an id was invented has to show the invented id, and a
 /// record that only holds ids it could parse cannot report that case at all.
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 #[serde(default)]
-pub struct TraceSupersedeRefusal {
-    /// The slot the model said both facts fill, empty when it named none.
+pub struct TraceRefusedChange {
+    /// Which verb asked: `replace` or `close`.
+    pub verb: String,
+    /// The slot the model said both facts fill. A closure names none.
     pub slot: String,
     /// The fact that would have been retired, as written in the verdict.
     pub target: String,
-    /// The fact that would have replaced it, as written in the verdict.
+    /// The fact that would have replaced it, as written in the verdict. A
+    /// closure names none — that is what makes it a closure.
     pub successor: String,
-    /// Why it did not happen — one of the supersede verb's stable tokens, so
-    /// a reader can count the same reason across many turns.
+    /// Why it did not happen — one of the verb's stable tokens, so a reader
+    /// can count the same reason across many turns.
     pub reason: String,
 }
 

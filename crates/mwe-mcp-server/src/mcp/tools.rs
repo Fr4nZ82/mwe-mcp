@@ -1584,7 +1584,7 @@ async fn record_navigate_trace(parts: NavigateTraceParts<'_>) {
         // and gave no verdict.
         reconcile_candidates: Vec::new(),
         reconcile_verdict: None,
-        supersede_refusals: Vec::new(),
+        refused_changes: Vec::new(),
         // The whole call is the recall: there is no classifier, no
         // reconciliation and no write to hold the two figures apart.
         recall_ms: took_ms,
