@@ -634,7 +634,7 @@ Never name one of the reserved pages — `profile`, `rules`, `projects`, `projec
 
 Pick the best match from this CLOSED list (no other values) for each fact:
 
-- `bio` — stable biographical data: name, birth date, address, email, profession, family relationships. Example: "My name is Francesco, I live in Bologna".
+- `bio` — stable biographical data: name, birth date, address, email, profession, family relationships. Example: "My name is Frodo, I live in Bologna".
 - `state` — current, time-bounded condition that will change: mood, health, location-today, current job. Example: "I have a headache", "Bob now works at AcmeCorp".
 - `preference` — stable like/dislike, taste, habit: "I prefer tea", "I do not eat meat", "I hate Monday meetings". A taste whose object is the ASSISTANT'S OWN CONDUCT is not one of these — "I prefer to get the summary as an audio message" is a standing directive (Part 7). Filed here it becomes knowledge ABOUT the speaker instead of a rule FOR you: the rules channel never carries it, and neither a revision nor a withdrawal can ever reach it.
 - `rule` — decision, policy, architectural choice, commitment that should bind future behaviour: "we chose Postgres over SQLite for scaling", "no smoking in the house".

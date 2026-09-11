@@ -14396,8 +14396,8 @@ mod tests {
         let (dir, mut tree, pool) = setup_workdir().await;
         write_wiki(&tree, "franz", "Franz", "wiki-user");
         tree = WikiTree::open(dir.path()).unwrap();
-        let old_text = "È nato il 23 maggio 1984";
-        let new_text = "Francesco Battaglia (Franz) è nato il 23 maggio 1984.";
+        let old_text = "È nato il 22 settembre 1968";
+        let new_text = "Frodo Baggins, hobbit della Contea (Frodo) è nato il 22 settembre 1968.";
         // Sanity: the pair really is invisible to the surface band.
         assert!(
             recall::jaccard_6gram(new_text, old_text) < RemPolicy::default().revisor_jaccard_min,

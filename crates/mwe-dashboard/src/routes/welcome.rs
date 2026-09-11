@@ -1037,14 +1037,14 @@ mod tests {
     #[test]
     fn compose_emits_only_filled_clauses_in_first_person() {
         let form = ProfileSubmission {
-            display_name: "Francesco".into(),
+            display_name: "Frodo".into(),
             favorite_color: "red".into(),
             ..ProfileSubmission::default()
         };
         let msg = compose_ingest_message(Some("franz@example.com"), &form);
         assert!(msg.starts_with(PUBLIC_PROFILE_PRIMER_PREFIX), "{msg}");
         assert!(msg.contains("my email is franz@example.com"));
-        assert!(msg.contains("my name is Francesco"));
+        assert!(msg.contains("my name is Frodo"));
         assert!(msg.contains("my favourite colour is red"));
         assert!(!msg.contains("nickname"));
         assert!(!msg.contains("birthday"));
@@ -1135,7 +1135,7 @@ mod tests {
     #[test]
     fn compose_emits_public_consent_line_first() {
         let form = ProfileSubmission {
-            display_name: "Francesco".into(),
+            display_name: "Frodo".into(),
             favorite_color: "rosso".into(),
             ..ProfileSubmission::default()
         };
