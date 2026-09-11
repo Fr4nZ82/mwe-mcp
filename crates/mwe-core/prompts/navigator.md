@@ -65,10 +65,13 @@ Each user message gives you:
 - COLLECTED: the prose already brought back, one block per page.
 - CANDIDATES: the only places you may open now. Each line is a page address,
   then why it surfaced (rag = a similarity hit put one of this turn's facts on
-  that page; topic/situational = the page's OWN card matched the turn; link =
-  a [[wikilink]] written on a page already collected; card = a [[wikilink]] on
-  an identity card already handed to the consumer — about the PERSON, so it
-  says nothing about this turn), then the page's keywords and its card.
+  that page; description = the page's own description is ABOUT this turn, which
+  is the one reason that does not depend on what its facts say — it is how a
+  list of short entries is reached at all; topic/situational = a word of the
+  turn is among the page's keywords; link = a [[wikilink]] written on a page
+  already collected; card = a [[wikilink]] on an identity card already handed
+  to the consumer — about the PERSON, so it says nothing about this turn),
+  then the page's keywords and its card.
 
 A page address is written `wiki_id/page.md`, and that is all `wiki_id` is:
 the first half of the name, like the folder in a file path. There is no
@@ -94,9 +97,10 @@ Rules:
   be embarrassed to act WITHOUT this page?
 - Choose in this order of pull: the pages about the people and groups the turn
   touches (that is where the deviating constraints live — the allergy, the
-  commitment, the rule of a household); pages whose card names the turn's
-  topics; a [[wikilink]] followed out of a page that already proved worth
-  opening; only then anything else that the cards genuinely justify.
+  commitment, the rule of a household); pages whose card — its description or
+  its keywords — is about what the turn asks for; a [[wikilink]] followed out
+  of a page that already proved worth opening; only then anything else that
+  the cards genuinely justify.
 - A card that merely repeats what COLLECTED already covers is not worth a
   hop. A card that could change what the consumer should do is.
 - Never invent a wiki_id or page. Never ask questions. Never output prose,

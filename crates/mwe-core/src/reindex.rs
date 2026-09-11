@@ -2557,6 +2557,45 @@ mod tests {
         );
     }
 
+    /// **A rebuilt index gives every described page its vector back.**
+    ///
+    /// The card vector is what makes a page findable by what it *is*
+    /// (`recall_nav::gather_description_seeds`), so `rm engine.db` + a reindex
+    /// has to restore the reach, not just the row. A page with no description
+    /// is the other half of the same rule: nothing to embed, nothing to rank.
+    #[tokio::test]
+    async fn a_rebuilt_index_re_embeds_every_card_that_has_a_description() {
+        let dir = tempdir().unwrap();
+        let wiki_dir = dir.path().join("wikis/alice");
+        write_wiki_meta(&wiki_dir, "alice");
+        write_page(
+            &wiki_dir,
+            "spesa.md",
+            "---\ntitle: \"Spesa\"\nstyle: lista\ndescription: \"the shopping and what was bought\"\n---\n\n- milk\n",
+        );
+        write_page(&wiki_dir, "muto.md", "---\ntitle: \"Muto\"\n---\n\nprose\n");
+        let tree = WikiTree::open(dir.path()).expect("open tree");
+        let pool = make_pool().await;
+        let embedder = Arc::new(FakeEmbedder::new("fake-bge-m3", 8));
+
+        reindex_full(&pool, &tree, embedder).await.expect("full");
+
+        let ranked = crate::page_card::all_embedded(&pool).await.expect("cards");
+        assert_eq!(
+            ranked
+                .iter()
+                .map(|c| c.source_path.as_str())
+                .collect::<Vec<_>>(),
+            vec!["wikis/alice/spesa.md"],
+            "the described page is rankable again; the silent one never was"
+        );
+        assert_eq!(
+            ranked[0].embedding.len(),
+            8,
+            "the vector came from the embedder, not from a placeholder"
+        );
+    }
+
     #[tokio::test]
     async fn strip_fact_region_removes_retired_region_and_resyncs_neighbour() {
         // The disk half of a supersede: after A is retired, its region is

@@ -469,18 +469,21 @@ pub struct TraceEntryPoint {
     ///
     /// [`EntryPoint`]: crate::recall_nav::EntryPoint
     pub page: Option<String>,
-    /// Seed family (`rag` | `topic` | `situational`).
+    /// Seed family (`rag` | `description` | `topic` | `situational`).
     pub origin: String,
-    /// Fan weight, `0.0..=1.0`. A `rag` door's weight is its hit's score; a
-    /// `topic` door is always [`crate::recall_nav::WEIGHT_TOPIC_PAGE`] and a
-    /// `situational` one always
+    /// Fan weight, `0.0..=1.0`. A `rag` door's weight is its hit's score and a
+    /// `description` door's is the cosine between the turn and the page's
+    /// description; a `topic` door is always
+    /// [`crate::recall_nav::WEIGHT_TOPIC_PAGE`] and a `situational` one always
     /// [`crate::recall_nav::WEIGHT_SITUATIONAL_PAGE`].
     pub weight: f32,
     /// The fact whose text opened this door, on a `rag` seed and nothing
     /// else ([`EntryPoint::matched_fact`]).
     ///
     /// It is the one thread between the hits and the doors: without it the
-    /// fan is a list of pages with no stated relation to what was found.
+    /// fan is a list of pages with no stated relation to what was found. A
+    /// `description` door has none by nature — the page's own sentence is
+    /// what opened it — and its weight is the whole story.
     pub matched_fact: Option<String>,
 }
 
@@ -503,6 +506,7 @@ const fn origin_label(origin: crate::recall_nav::EntryOrigin) -> &'static str {
     use crate::recall_nav::EntryOrigin;
     match origin {
         EntryOrigin::Rag => "rag",
+        EntryOrigin::Description => "description",
         EntryOrigin::Topic => "topic",
         EntryOrigin::Situational => "situational",
     }

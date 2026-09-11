@@ -39,7 +39,11 @@ the same recall as text:
   soon** — dated items, with their date. **Project notes** — documentation a
   coding assistant keeps, handed over as reference.
 - **Doors the walk could start from** — the pages the search offered as a
-  starting point, strongest first, and the fact that opened each door.
+  starting point, strongest first, with **Found by** saying why each one was
+  offered: *similarity* (and then the fact that opened it is shown beside it),
+  *a topic of the message*, *the situation the consumer described*, or *the
+  page says it is about this* — which is the page's own one-line description
+  matching what you asked, and the only reason that does not need a fact.
 - **Each step**, with the navigator's reason, which pages were on offer, which
   it asked for, which opened and — for each refusal — why not.
 - **Weighed against what was already there** — after the walk, the turn asks
@@ -64,11 +68,11 @@ The stage tells the recall as a scene: the sentence types itself and, when the
 engine completed it, rewrites itself with the filled-in words lit; the facts the
 search returned rise as cards, each carrying its seat; fresh captures drift
 above them because they have no page; dated items tick on a clock; the identity
-cards are handed over and barred; the doors line up on three rails
-(similarity, topic, situation); the navigator — an orb with an eye — is shown a
-pool of cards each step, asks, is refused or reads, while the prose budget
-drains on the left; and the block assembles band by band from those sources,
-the dropped facts falling away with their reason. On a light turn the
+cards are handed over and barred; the doors line up on four rails (similarity,
+the page's own description, topic, situation); the navigator — an orb with an
+eye — is shown a pool of cards each step, asks, is refused or reads, while the
+prose budget drains on the left; and the block assembles band by band from those
+sources, the dropped facts falling away with their reason. On a light turn the
 navigator sleeps. Without WebGL the stage disappears and the text is the whole
 record; with reduced motion it starts paused.
 

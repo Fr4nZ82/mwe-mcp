@@ -187,7 +187,7 @@ impl LlmBackend for OpenTheFirst {
 fn bucket(origin: &str) -> usize {
     match origin {
         "link" => 0,
-        "rag" | "topic" | "situational" => 1,
+        "rag" | "description" | "topic" | "situational" => 1,
         _ => 2,
     }
 }
@@ -313,7 +313,17 @@ async fn main() -> anyhow::Result<()> {
             &ctx,
         )
         .await?;
-        let fan = recall_nav::gather_entry_points(&pool, &tree, &ctx, &[], &hits, &[]).await?;
+        let turn_vector = embedder.embed(&turn.text).await.unwrap_or_default();
+        let fan = recall_nav::gather_entry_points_with_descriptions(
+            &pool,
+            &tree,
+            &ctx,
+            &[],
+            &hits,
+            &[],
+            &turn_vector,
+        )
+        .await?;
         // What the ingest turn passes: the sender's identity card, already in
         // the block, so the funnel neither offers nor opens it.
         let served = [(turn.sender.clone(), PathBuf::from("cucina.md"))];

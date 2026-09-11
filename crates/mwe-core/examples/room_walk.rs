@@ -88,7 +88,17 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     // 2. The entry fan: which pages those hits make reachable. A principal is
     // never a seed — whose turn it is reaches the block by being served, not
     // by the walk being pointed at them.
-    let fan = recall_nav::gather_entry_points(&pool, &tree, &ctx, &[], &hits, &[]).await?;
+    let turn_vector = embedder.embed(&query).await.unwrap_or_default();
+    let fan = recall_nav::gather_entry_points_with_descriptions(
+        &pool,
+        &tree,
+        &ctx,
+        &[],
+        &hits,
+        &[],
+        &turn_vector,
+    )
+    .await?;
     println!(
         "\n-- 2. ENTRY FAN — the addresses the walk starts from ({} )",
         fan.len()

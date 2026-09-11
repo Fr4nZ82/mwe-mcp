@@ -348,6 +348,7 @@ fn seed_mode_in_words(mode: &str) -> &str {
 fn origin_in_words(origin: &str) -> &str {
     match origin {
         "rag" => "similarity",
+        "description" => "the page says it is about this",
         "topic" => "a topic of the message",
         "situational" => "the situation the consumer described",
         "link" => "a link from a page already open",
@@ -696,8 +697,9 @@ fn render_fan(trace: &RecallTrace) -> Markup {
         section class="term-panel mt-4 p-4" {
             h2 class="mt-0" { "Doors the walk could start from" }
             p.muted {
-                "The pages the search offered the navigator as a starting point, "
-                "strongest first. A similarity door names the fact that opened it."
+                "The pages the navigator was offered as a starting point, "
+                "strongest first. A similarity door names the fact that opened it; "
+                "the others were found by the page itself."
             }
             table class="config-table" {
                 thead { tr { th { "Strength" } th { "Found by" } th { "Wiki" } th { "Page" } th { "Opened by" } } }

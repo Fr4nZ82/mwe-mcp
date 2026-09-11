@@ -133,3 +133,9 @@ required-features = ["local-embedder"]
 [[example]]
 name = "subject_gate"
 required-features = ["local-embedder"]
+
+# Is a page found by what it IS — its description — and where does the
+# description family's floor go?
+[[example]]
+name = "description_doors"
+required-features = ["local-embedder"]

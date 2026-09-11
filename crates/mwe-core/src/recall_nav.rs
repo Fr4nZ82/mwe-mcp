@@ -1,18 +1,26 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 //! Recall-navigation phase 1 — deterministic entry-point gathering.
 //!
-//! Recall-as-navigation opens with a fan of **entry-points**: the wikis (and,
-//! when a card pins one down, the pages) where a navigator should start
-//! reading for the current turn. This module computes that fan
-//! deterministically — no LLM call, no embedding — from three seed families.
-//! (There were four: a **Principal** family seeded the identity wikis of the
-//! people in the turn. It was deleted 2026-08-03 — a seed that can only name
-//! a wiki is not a door, and who the turn is about now reaches the block by
-//! being *served*.)
+//! Recall-as-navigation opens with a fan of **entry-points**: the pages where
+//! a navigator should start reading for the current turn. This module
+//! computes that fan deterministically — **no LLM call** — from four seed
+//! families. Three of them are word matches and cost nothing; the fourth
+//! ranks vectors the reindex pipeline already made, against the turn's own.
+//! Nobody is a seed: a principal names a wiki, a wiki is not a door, and who
+//! the turn is about reaches the block by being *served*.
 //!
 //! - **Rag** — the flat-recall hits of the turn, mapped back to the
 //!   `(wiki, page)` they live on. RAG opens the obvious doors; it is one of
 //!   the seeds, not the engine.
+//! - **Description** — the turn's own vector against the **page description**
+//!   of every page that has one ([`crate::page_card`]), so a page is found by
+//!   what it *is* and not only by what its facts say. It is the one family
+//!   that reaches a page whose facts are short entries saying nothing about
+//!   the page they are on: a shopping list is thirteen lines naming groceries,
+//!   and *«mi scrivi la lista della spesa?»* resembles none of them while
+//!   resembling *«Registro della spesa e degli acquisti»* closely. Costs one
+//!   local embedding — the turn's, which the flat search already needed — and
+//!   no model call.
 //! - **Topic** — the classified topics of the turn, matched (case-insensitive
 //!   substring) against the **cards**: the per-wiki `_meta.keywords` and,
 //!   inside a matched wiki, the per-page testata keywords.
@@ -29,21 +37,25 @@
 //! - **Visibility is derived, never declared.** There is no wiki-level ACL
 //!   gate. A wiki is reachable iff the reader can read ≥ 1 fact in it, and that
 //!   signal already lives in the reader-relative card: a wiki whose card is
-//!   empty seeds nothing for the card-driven and principal families, and the
+//!   empty seeds nothing for the card-driven families, and the
 //!   RAG family is already `can_read`-filtered upstream, so every seed is
-//!   reader-visible by construction.
+//!   reader-visible by construction. The description family is the one seed
+//!   whose evidence is **not** a fact, so it carries the gate explicitly and
+//!   takes it from the read path rather than inventing one — see
+//!   [`gather_description_seeds`].
 //!
-//! Page-card descent happens only inside a wiki whose own card matched: the
-//! wiki card's `topics` entry is the union of its pages' entries (both synced
-//! by [`crate::meta_annotate`]), so a page can only match where its wiki
-//! already does.
+//! Every card-driven seed walks **pages**, with no wiki-level step before it.
+//! Matching a wiki's topic union first could never hide a page — the union is
+//! built from the same per-fact topics, so any page match implies its wiki
+//! matches — and it would shape the code as though the reader navigated
+//! containers.
 //!
 //! Duplicates collapse on `(wiki, page)` keeping whichever copy would have
 //! sorted first — one comparator ([`fan_order`]) settles the collision and
 //! then sorts the survivors, so a door reached by two routes is ranked by its
-//! **best** route. A principal seed that lands on a page some content family
-//! also found therefore keeps the content ranking: the identity anchor is the
-//! weakest claim on a door, never a demotion applied to one.
+//! **best** route and the trace says which route that was. A page both a fact
+//! hit and its own description found is one door, carried by whichever of the
+//! two claimed it more strongly, never two doors competing for one slot.
 //!
 //! # 🚨 THE READ SIDE HAS NO CONCEPT OF A WIKI
 //!
@@ -93,11 +105,42 @@ pub const WEIGHT_TOPIC_PAGE: f32 = 0.8;
 /// Weight of a situational seed that pinned down a **page** card.
 pub const WEIGHT_SITUATIONAL_PAGE: f32 = 0.5;
 
+/// How many doors the description family may open on one turn.
+///
+/// Unlike the word-matched families it fires on **every** turn — a cosine is
+/// always defined — so it is the one seed that needs a ceiling of its own
+/// rather than leaving the cut to [`prune_pool`]. Three is
+/// [`NavigatorPolicy::pages_per_hop`]: the page the turn meant plus the two
+/// nearest to it is everything one hop can open anyway, and a fourth would
+/// only push a content door out of the offer. Their weight is their cosine, so a turn no description is about
+/// contributes three doors that sort below the content ones and consume
+/// nothing but slack.
+pub const DESCRIPTION_DOORS: usize = 3;
+
+/// Cosine below which a page description is not about the turn at all.
+///
+/// It is the one floor the fan needs, because this family is the one that
+/// fires whatever the turn says. Measured with the shipped embedder
+/// (`bge-m3`) over a 157-page memory, by the `description_doors` example:
+///
+/// - a turn the memory has a page for scores **0.59–0.67** against that
+///   page's description, and that page is #1 of the 157 every time;
+/// - a turn the memory has nothing to say about reaches **0.44–0.48** at
+///   best — *«raccontami una barzelletta»* peaks at 0.46.
+///
+/// `0.50` is the empty band between the two: below it the family contributes
+/// no door at all, which is the honest answer to a turn no page is about.
+/// It is a floor on *offering* a door, never on what a reader may see.
+pub const DESCRIPTION_FLOOR: f32 = 0.50;
+
 /// Which seed family produced an [`EntryPoint`].
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum EntryOrigin {
     /// A flat-recall hit of the turn, mapped back to its `(wiki, page)`.
     Rag,
+    /// The page's own **description** is about the turn
+    /// ([`gather_description_seeds`]).
+    Description,
     /// A classified topic matched a wiki / page card.
     Topic,
     /// A host-supplied situational string matched a wiki / page card.
@@ -105,13 +148,15 @@ pub enum EntryOrigin {
 }
 
 impl EntryOrigin {
-    /// Tiebreak **within one weight** — lower wins. A content hit beats a
-    /// topic-card match beats a situational one.
+    /// Tiebreak **within one weight** — lower wins. A fact the turn matched
+    /// beats a page the turn is about, which beats a topic word the page
+    /// happens to carry, which beats a situational one.
     const fn rank(self) -> u8 {
         match self {
             Self::Rag => 0,
-            Self::Topic => 1,
-            Self::Situational => 2,
+            Self::Description => 1,
+            Self::Topic => 2,
+            Self::Situational => 3,
         }
     }
 }
@@ -155,13 +200,38 @@ struct WikiSeedInfo {
     wiki: DiscoveredWiki,
 }
 
+/// Gather the entry-point fan for one turn, without the description family.
+///
+/// [`gather_entry_points_with_descriptions`] with no turn vector: the fan a
+/// caller that has not embedded the turn can still build.
+///
+/// # Errors
+///
+/// See [`gather_entry_points_with_descriptions`].
+pub async fn gather_entry_points(
+    pool: &SqlitePool,
+    tree: &WikiTree,
+    sender: &SenderContext,
+    topics: &[String],
+    rag_hits: &[RecallHit],
+    situation: &[String],
+) -> Result<Vec<EntryPoint>> {
+    gather_entry_points_with_descriptions(pool, tree, sender, topics, rag_hits, situation, &[])
+        .await
+}
+
 /// Gather the entry-point fan for one turn.
 ///
 /// Inputs come from work the ingest turn has already done: `sender` carries
 /// the resolved group membership, `topics` comes from the classification,
-/// `rag_hits` from the flat recall of the turn, `situation` from the host
-/// (empty today). The call is deterministic and read-only — safe to run on
-/// every turn, with no side effect on recall counters.
+/// `rag_hits` from the flat recall of the turn, `turn_vector` is the embedded
+/// turn the flat recall already made, `situation` comes from the host (empty
+/// today). The call is deterministic and read-only — no model call, and no
+/// side effect on recall counters — so it is safe to run on every turn.
+///
+/// `turn_vector` empty means the caller has no vector, and the description
+/// family simply does not fire — the same "nothing to match, nothing to seed"
+/// an empty `topics` gives the topic family.
 ///
 /// **A principal is never a seed.** Whose turn it is, and whom it is about,
 /// reach the block by being *served* — deterministically, as a card — not by
@@ -176,13 +246,14 @@ struct WikiSeedInfo {
 ///
 /// Tree-walk / `_meta.md` parse failures surface; per-page card reads degrade
 /// to "matches nothing" instead of erroring.
-pub async fn gather_entry_points(
+pub async fn gather_entry_points_with_descriptions(
     pool: &SqlitePool,
     tree: &WikiTree,
     sender: &SenderContext,
     topics: &[String],
     rag_hits: &[RecallHit],
     situation: &[String],
+    turn_vector: &[f32],
 ) -> Result<Vec<EntryPoint>> {
     // Reader-relative card: the topic union the sender can actually read on
     // each wiki, recomputed from `fact_index` per turn so a seed never matches
@@ -213,6 +284,9 @@ pub async fn gather_entry_points(
         WEIGHT_SITUATIONAL_PAGE,
         &mut candidates,
     );
+
+    // Description seeds: the turn against what each page says it is for.
+    gather_description_seeds(pool, &infos, &reader_card, turn_vector, &mut candidates).await;
 
     // RAG seeds: content-driven. The hits are already `can_read`-filtered
     // upstream, so a hit is by definition readable — no further visibility
@@ -327,6 +401,106 @@ fn gather_card_seeds(
                 });
             }
         }
+    }
+}
+
+/// Match the turn's own vector against every page **description**, pushing a
+/// seed for the [`DESCRIPTION_DOORS`] nearest pages above [`DESCRIPTION_FLOOR`].
+///
+/// This is the family that finds a page by what it **is**. The other card
+/// family matches topic words, which are the union of the topics of the facts
+/// on the page — so both of them ultimately ask what the page *holds*. A list
+/// page defeats that: its facts are the entries themselves — «Latte è
+/// necessario.» and twelve more like it — and not one of them says the page
+/// is a shopping list, while its description says exactly that. Here the
+/// description is the thing compared, and the comparison is semantic, so
+/// *«mi scrivi la lista della spesa?»* reaches *«Registro della spesa e degli
+/// acquisti»* and so does *«cosa devo comprare?»*.
+///
+/// # What stops it revealing a page
+///
+/// A description is the one seed whose evidence is not a fact, so it cannot
+/// inherit visibility from one the way the other three families do. It takes
+/// the **two gates the read path already applies**, and adds none of its own:
+///
+/// - [`meta_annotate::ReaderCard::summary_visible`] — the gate
+///   [`fill_summaries`] uses to decide whether this reader may be *shown* a
+///   page's description at all. A description this reader may not read must
+///   not open a door for them either, or the ranking would answer out of a
+///   sentence they are not allowed to see.
+/// - [`meta_annotate::ReaderCard::reader_can_read_page`] — the page must hold
+///   at least one fact this reader can read. Without it a page that is all
+///   somebody else's fragments would be offered, opened, redacted to nothing
+///   and refused ([`OpenRefusal::Unreadable`]) — having named itself on the
+///   way past.
+///
+/// What is then *served* is unchanged: the funnel opens the page and projects
+/// it per sender ([`crate::render::render_for_sender`]), so a list holding
+/// other people's entries comes back filtered exactly as it does today.
+///
+/// Soft throughout: an unreadable `page_card` table costs the description
+/// seeds and leaves the other three standing — a narrower fan, never a wrong
+/// one.
+async fn gather_description_seeds(
+    pool: &SqlitePool,
+    infos: &[WikiSeedInfo],
+    reader_card: &meta_annotate::ReaderCard,
+    turn_vector: &[f32],
+    out: &mut Vec<EntryPoint>,
+) {
+    if turn_vector.is_empty() {
+        return;
+    }
+    let cards = match page_card::all_embedded(pool).await {
+        Ok(cards) => cards,
+        Err(e) => {
+            tracing::warn!(error = %e, "recall_nav: page cards unread — no description doors");
+            return;
+        },
+    };
+    let mut scored: Vec<(f32, String, PathBuf)> = Vec::new();
+    for card in cards {
+        // A wiki outside the walk is a smart one (no per-fragment ACL, not
+        // funnel-navigable) or one that has left the tree.
+        let Some(info) = infos
+            .iter()
+            .find(|i| i.wiki.meta.wiki_id.as_str() == card.wiki_id)
+        else {
+            continue;
+        };
+        if !reader_card.summary_visible(&card.wiki_id)
+            || !reader_card.reader_can_read_page(&card.wiki_id, &card.source_path)
+        {
+            continue;
+        }
+        let Some(page) = page_within(&info.wiki.rel_dir, &card.source_path)
+            .filter(|p| !is_reserved_page_path(p))
+        else {
+            continue;
+        };
+        let score = crate::recall::cosine_similarity(turn_vector, &card.embedding);
+        if !score.is_finite() || score < DESCRIPTION_FLOOR {
+            continue;
+        }
+        scored.push((score, card.wiki_id, page));
+    }
+    // Nearest first, then a deterministic tiebreak so two equally near pages
+    // do not swap places between runs.
+    scored.sort_by(|a, b| {
+        b.0.total_cmp(&a.0)
+            .then_with(|| a.1.cmp(&b.1))
+            .then_with(|| a.2.cmp(&b.2))
+    });
+    for (score, wiki_id, page) in scored.into_iter().take(DESCRIPTION_DOORS) {
+        out.push(EntryPoint {
+            wiki_id,
+            page,
+            origin: EntryOrigin::Description,
+            // The evidence is the page's own sentence, not a claim on it —
+            // nothing for the funnel to treat as the reason it came.
+            matched_fact: None,
+            weight: score.clamp(0.0, 1.0),
+        });
     }
 }
 
@@ -620,8 +794,8 @@ pub struct CandidateCard {
     /// journal row — [`Self::from_candidate`] always fills it, because a
     /// candidate that named no page would offer nothing to open.
     pub page: Option<String>,
-    /// How it surfaced (`rag` | `topic` | `situational` | `link` | `card`) —
-    /// the tiers [`Candidate::prune_tier`] ranks by.
+    /// How it surfaced (`rag` | `description` | `topic` | `situational` |
+    /// `link` | `card`) — the tiers [`Candidate::prune_tier`] ranks by.
     pub origin: String,
     /// Reader-relative topic words of the card.
     pub keywords: Vec<String>,
@@ -738,9 +912,9 @@ struct Candidate {
     wiki_id: String,
     /// The page to read — always one. The funnel has no wiki-level door.
     page: PathBuf,
-    /// Display label of how it surfaced (`rag`, `topic`, `situational`,
-    /// `link`, `card`) — the tiers [`Candidate::prune_tier`] ranks by, and
-    /// the first of the two keys [`prune_pool`] sorts on.
+    /// Display label of how it surfaced (`rag`, `description`, `topic`,
+    /// `situational`, `link`, `card`) — the tiers [`Candidate::prune_tier`]
+    /// ranks by, and the first of the two keys [`prune_pool`] sorts on.
     origin: &'static str,
     /// The page's one-line card, filled by [`fill_summaries`] **after**
     /// [`prune_pool`] — never by the gatherers. It is the only part of a
@@ -791,9 +965,10 @@ impl Candidate {
     /// than silently jumping the fan.
     ///
     /// Three tiers, and they are the three ways a page can be reached at all:
-    /// a fact hit put its page in the fan, somebody wrote a `[[wikilink]]` to
-    /// it, or its own card matched. Nothing offers a page for merely sitting
-    /// in the same folder as one that was opened.
+    /// somebody wrote a `[[wikilink]]` to it; the turn itself found it, by a
+    /// fact hit or by the page's own card (its description, its topic words);
+    /// or a rail on a card the consumer was handed. Nothing offers a page for
+    /// merely sitting in the same folder as one that was opened.
     ///
     /// **Why `card` sits below the fan.** The two link tiers differ in what
     /// they are evidence *of*. A `link` rail was written on a page the
@@ -808,7 +983,7 @@ impl Candidate {
     fn prune_tier(&self) -> u8 {
         match self.origin {
             "link" => 0,
-            "rag" | "topic" | "situational" => 1,
+            "rag" | "description" | "topic" | "situational" => 1,
             "card" => 2,
             _ => UNKNOWN_TIER,
         }
@@ -820,6 +995,7 @@ impl EntryOrigin {
     const fn label(self) -> &'static str {
         match self {
             Self::Rag => "rag",
+            Self::Description => "description",
             Self::Topic => "topic",
             Self::Situational => "situational",
         }
@@ -2478,6 +2654,366 @@ mod tests {
         for pair in fan.windows(2) {
             assert!(pair[0].weight >= pair[1].weight);
         }
+    }
+
+    // ---------- the description family ----------
+
+    // The turn and three descriptions at known distances from it: each is a
+    // unit vector, so its cosine against `TURN` is its first component,
+    // exactly. **Planted, never embedded** — what a real embedder makes of
+    // these sentences is a property of the model, and the
+    // `description_doors` example is where that is measured on a real corpus.
+    // What these prove is the wiring: what the gatherer does with a distance,
+    // once it has one.
+    const TURN: [f32; 3] = [1.0, 0.0, 0.0];
+    const NEAR: [f32; 3] = [0.8, 0.6, 0.0]; // cos 0.80 — above the floor
+    const LOOSE: [f32; 3] = [0.6, 0.8, 0.0]; // cos 0.60 — above the floor
+    const FAR: [f32; 3] = [0.28, 0.96, 0.0]; // cos 0.28 — below the floor
+
+    /// Give a page a description and the vector of that description.
+    async fn seed_card(pool: &SqlitePool, wiki: &str, page: &str, desc: &str, vector: &[f32]) {
+        let source_path = format!("wikis/{wiki}/{page}");
+        page_card::upsert(
+            pool,
+            &page_card::NewPageCard {
+                source_path: source_path.clone(),
+                wiki_id: wiki.to_owned(),
+                description: Some(desc.to_owned()),
+                keywords: Vec::new(),
+                style: None,
+                file_mtime_ms: None,
+                file_size: None,
+            },
+        )
+        .await
+        .expect("card");
+        page_card::set_embedding(pool, &source_path, vector)
+            .await
+            .expect("card vector");
+    }
+
+    /// **A list is found by its description, and by nothing else it has.**
+    ///
+    /// The production case (recall trace 1488, 2026-09-11): a shopping list
+    /// whose entries are *«Latte è necessario.»* and twelve more like it. The
+    /// flat search for *«sto andando al supermercato, mi scrivi la lista della
+    /// spesa?»* came back with ten hits and not one of them from that page,
+    /// because the turn resembles none of the thirteen entries — so the fan
+    /// had no rag door onto it either. This test isolates that: it passes
+    /// **no rag hits at all**, and the description alone has to be the door.
+    ///
+    /// The second turn, *«cose da comprare»*, is the founder's own test of
+    /// the rule (2026-09-11: *«"lista della spesa" trova anche "cose da
+    /// comprare"»*): it shares no word with the description, so a match on
+    /// words could never find it and only a match on meaning can. Here it is
+    /// the looser vector; on the live corpus it scores 0.5954 against that
+    /// description and is the nearest of 157 pages (`description_doors`).
+    #[tokio::test]
+    async fn a_shopping_list_is_a_door_because_of_what_the_page_says_it_is() {
+        let (_dir, tree) = open_tree();
+        forge_group(&tree, "famiglia");
+        let pool = make_pool().await;
+        // The list: entries the reader may read, none of which says the page
+        // is a list of anything.
+        for (n, entry) in ["latte", "pane", "pasta"].iter().enumerate() {
+            seed_fact(
+                &pool,
+                &fid(u8::try_from(n).expect("small fixture") + 1),
+                "famiglia",
+                "wikis/famiglia/spesa.md",
+                Principal::Group("famiglia".to_owned()),
+                &[entry],
+            )
+            .await;
+        }
+        seed_card(
+            &pool,
+            "famiglia",
+            "spesa.md",
+            "Registro della spesa e degli acquisti.",
+            &NEAR,
+        )
+        .await;
+
+        let alice = sender("alice", &["famiglia"]);
+        let fan = gather_entry_points_with_descriptions(&pool, &tree, &alice, &[], &[], &[], &TURN)
+            .await
+            .unwrap();
+        let door = find(&fan, "famiglia", "spesa.md").expect("the list is a door");
+        assert_eq!(door.origin, EntryOrigin::Description);
+        assert!(
+            (door.weight - 0.8).abs() < 1e-5,
+            "the door's weight is the cosine"
+        );
+        assert!(
+            door.matched_fact.is_none(),
+            "no fact opened it — the page's own sentence did"
+        );
+
+        // «cose da comprare»: further away, still a door.
+        let fan =
+            gather_entry_points_with_descriptions(&pool, &tree, &alice, &[], &[], &[], &LOOSE)
+                .await
+                .unwrap();
+        assert_eq!(
+            find(&fan, "famiglia", "spesa.md").map(|e| e.origin),
+            Some(EntryOrigin::Description),
+            "a turn that shares no word with the description still reaches it"
+        );
+
+        // And the negation: with no vector for the turn the family cannot
+        // fire, and then nothing else in the fan reaches this page.
+        let fan = gather_entry_points(&pool, &tree, &alice, &[], &[], &[])
+            .await
+            .unwrap();
+        assert!(
+            fan.is_empty(),
+            "without the turn's vector the list is unreachable: {fan:?}"
+        );
+    }
+
+    /// The floor is what keeps the family quiet. It fires on every turn — a
+    /// cosine always has a value — so without it every turn would carry three
+    /// doors onto whatever happened to be least unlike it.
+    #[tokio::test]
+    async fn a_description_the_turn_is_not_about_opens_no_door() {
+        let (_dir, tree) = open_tree();
+        forge_group(&tree, "famiglia");
+        let pool = make_pool().await;
+        seed_fact(
+            &pool,
+            &fid(1),
+            "famiglia",
+            "wikis/famiglia/auto.md",
+            Principal::Group("famiglia".to_owned()),
+            &[],
+        )
+        .await;
+        seed_card(
+            &pool,
+            "famiglia",
+            "auto.md",
+            "Servicing and insurance for the family car.",
+            &FAR,
+        )
+        .await;
+
+        let fan = gather_entry_points_with_descriptions(
+            &pool,
+            &tree,
+            &sender("alice", &["famiglia"]),
+            &[],
+            &[],
+            &[],
+            &TURN,
+        )
+        .await
+        .unwrap();
+        assert!(fan.is_empty(), "0.28 is under the floor: {fan:?}");
+    }
+
+    /// **A description may not name a page its reader could not open.**
+    ///
+    /// Two gates, both taken from the read path rather than invented here,
+    /// and each one is the only thing standing in one of the two cases:
+    ///
+    /// - `bob.md` sits in bob's own wiki. alice can read a fact on it, so the
+    ///   page is readable — but she is not bob, so she is outside the wiki's
+    ///   default visibility and `fill_summaries` would never show her its
+    ///   description. A sentence she may not be shown may not rank for her
+    ///   either.
+    /// - `privato.md` sits in the family wiki, whose descriptions alice may
+    ///   see, and holds nothing she can read. Offering it would name a page
+    ///   that answers her with nothing.
+    #[tokio::test]
+    async fn a_description_seeds_nothing_for_a_reader_who_may_not_have_it() {
+        let (_dir, tree) = open_tree();
+        forge_user(&tree, "bob");
+        forge_group(&tree, "famiglia");
+        let pool = make_pool().await;
+        // Readable by alice (global), but in a wiki whose descriptions are not hers.
+        seed_fact(
+            &pool,
+            &fid(1),
+            "bob",
+            "wikis/bob/bob.md",
+            Principal::global(),
+            &[],
+        )
+        .await;
+        seed_card(&pool, "bob", "bob.md", "What bob is shopping for.", &NEAR).await;
+        // In a wiki whose descriptions ARE hers, but she can read nothing on it.
+        seed_fact(
+            &pool,
+            &fid(2),
+            "famiglia",
+            "wikis/famiglia/privato.md",
+            Principal::User("bob".to_owned()),
+            &[],
+        )
+        .await;
+        seed_card(
+            &pool,
+            "famiglia",
+            "privato.md",
+            "Registro della spesa e degli acquisti.",
+            &NEAR,
+        )
+        .await;
+
+        let fan = gather_entry_points_with_descriptions(
+            &pool,
+            &tree,
+            &sender("alice", &["famiglia"]),
+            &[],
+            &[],
+            &[],
+            &TURN,
+        )
+        .await
+        .unwrap();
+        assert!(
+            fan.is_empty(),
+            "neither page may be named to alice on the strength of its description: {fan:?}"
+        );
+
+        // The same two pages, asked by the readers each gate is there to
+        // admit: bob sees his own, and the family page needs a reader who can
+        // read what is on it.
+        let bob_fan = gather_entry_points_with_descriptions(
+            &pool,
+            &tree,
+            &sender("bob", &["famiglia"]),
+            &[],
+            &[],
+            &[],
+            &TURN,
+        )
+        .await
+        .unwrap();
+        assert_eq!(
+            bob_fan
+                .iter()
+                .map(|e| format!("{}/{}", e.wiki_id, e.page.display()))
+                .collect::<Vec<_>>(),
+            vec!["bob/bob.md".to_owned(), "famiglia/privato.md".to_owned()],
+            "the gates admit the reader they are shaped for"
+        );
+    }
+
+    /// Nearest first, and never more than [`DESCRIPTION_DOORS`]: the family
+    /// would otherwise put every described page in the memory into the fan,
+    /// leaving `prune_pool` to cut a list that has already crowded out the
+    /// content doors.
+    #[tokio::test]
+    async fn the_description_family_keeps_the_nearest_three_and_no_more() {
+        let (_dir, tree) = open_tree();
+        forge_group(&tree, "famiglia");
+        let pool = make_pool().await;
+        // Five described pages, all above the floor, deliberately seeded in
+        // the reverse of their nearness so a positional cut would keep the
+        // wrong three.
+        for (n, cos) in [0.55_f32, 0.60, 0.70, 0.80, 0.90].iter().enumerate() {
+            let page = format!("p{n}.md");
+            seed_fact(
+                &pool,
+                &fid(u8::try_from(n).expect("small fixture") + 1),
+                "famiglia",
+                &format!("wikis/famiglia/{page}"),
+                Principal::Group("famiglia".to_owned()),
+                &[],
+            )
+            .await;
+            seed_card(
+                &pool,
+                "famiglia",
+                &page,
+                "a described page",
+                &[*cos, (1.0 - cos * cos).sqrt(), 0.0],
+            )
+            .await;
+        }
+
+        let fan = gather_entry_points_with_descriptions(
+            &pool,
+            &tree,
+            &sender("alice", &["famiglia"]),
+            &[],
+            &[],
+            &[],
+            &TURN,
+        )
+        .await
+        .unwrap();
+        assert_eq!(
+            fan.iter()
+                .map(|e| e.page.display().to_string())
+                .collect::<Vec<_>>(),
+            vec!["p4.md".to_owned(), "p3.md".to_owned(), "p2.md".to_owned()],
+            "the three nearest, nearest first"
+        );
+    }
+
+    /// A page both the search and its own description found is **one** door,
+    /// ranked by whichever route is stronger — so the trace answers *why was
+    /// this page served* with the reason that actually carried it.
+    #[tokio::test]
+    async fn a_page_found_twice_keeps_the_stronger_of_the_two_reasons() {
+        let (_dir, tree) = open_tree();
+        forge_group(&tree, "famiglia");
+        let pool = make_pool().await;
+        seed_fact(
+            &pool,
+            &fid(1),
+            "famiglia",
+            "wikis/famiglia/spesa.md",
+            Principal::Group("famiglia".to_owned()),
+            &[],
+        )
+        .await;
+        seed_card(
+            &pool,
+            "famiglia",
+            "spesa.md",
+            "Registro della spesa e degli acquisti.",
+            &NEAR,
+        )
+        .await;
+        let alice = sender("alice", &["famiglia"]);
+
+        // The description (0.80) beats a weak flat hit (0.55).
+        let fan = gather_entry_points_with_descriptions(
+            &pool,
+            &tree,
+            &alice,
+            &[],
+            &[rag_hit("famiglia", "wikis/famiglia/spesa.md", 0.55, false)],
+            &[],
+            &TURN,
+        )
+        .await
+        .unwrap();
+        assert_eq!(fan.len(), 1, "one page is one door: {fan:?}");
+        assert_eq!(fan[0].origin, EntryOrigin::Description);
+
+        // And a strong flat hit (0.95) beats the description.
+        let fan = gather_entry_points_with_descriptions(
+            &pool,
+            &tree,
+            &alice,
+            &[],
+            &[rag_hit("famiglia", "wikis/famiglia/spesa.md", 0.95, false)],
+            &[],
+            &TURN,
+        )
+        .await
+        .unwrap();
+        assert_eq!(fan.len(), 1);
+        assert_eq!(fan[0].origin, EntryOrigin::Rag);
+        assert!(
+            fan[0].matched_fact.is_some(),
+            "the surviving route brings its own evidence"
+        );
     }
 
     #[test]

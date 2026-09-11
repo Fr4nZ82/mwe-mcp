@@ -17,8 +17,9 @@
  *      dated items tick on a clock; the project notes stand aside;
  *   3. handed over whole — the identity cards served to the consumer, and
  *      therefore closed to the walk;
- *   4. the doors — the pages the walk may start from, on three rails
- *      (similarity, topic, situation), each lit by the fact that opened it;
+ *   4. the doors — the pages the walk may start from, on four rails
+ *      (similarity, the page's own description, topic, situation), each lit
+ *      by the fact that opened it where a fact did;
  *   5. the walk — the navigator (an orb with an eye) is shown a pool of
  *      candidate cards each step, picks, is vetted (every refusal has its
  *      reason), reads (the prose streams in, the budget drains), and the
@@ -88,6 +89,7 @@ import * as THREE from './three.module.min.js';
   // Door families — the origins the gatherer and the walk produce today.
   const FAMILY = {
     rag: PALETTE.bright,
+    description: PALETTE.phosphor,
     topic: PALETTE.sky,
     situational: PALETTE.rose,
     link: PALETTE.dim,
@@ -95,6 +97,7 @@ import * as THREE from './three.module.min.js';
   };
   const FAMILY_WORDS = {
     rag: 'similarity',
+    description: 'the page says so',
     topic: 'topic',
     situational: 'situation',
     link: 'a link',
@@ -1017,9 +1020,10 @@ import * as THREE from './three.module.min.js';
     }
     return slots;
   }
-  // Three rails for the doors: similarity above, topic in the middle,
-  // situation below — the weight decides the place on the rail.
-  const RAIL_Y = { rag: 3.0, topic: 0, situational: -3.0 };
+  // Four rails for the doors, strongest claim on top: similarity, then the
+  // page's own description, then a topic word, then the situation — the
+  // weight decides the place along the rail.
+  const RAIL_Y = { rag: 3.0, description: 1.0, topic: -1.0, situational: -3.0 };
   function railSlot(origin, weight, index, n) {
     const y = RAIL_Y[origin] ?? -1.9;
     const x = -7.5 + (1 - clamp01(weight)) * 15 + (index - n / 2) * 0.2;

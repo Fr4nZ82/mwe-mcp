@@ -259,13 +259,15 @@ async fn run_probe(
     // measuring one without the other reads half the turn (founder,
     // 2026-08-04: *«prova a seguire il primo hop, anche questo è
     // importante no?»*).
-    let entries = recall_nav::gather_entry_points(
+    let turn_vector = embedder.embed(&probe.phrase).await.unwrap_or_default();
+    let entries = recall_nav::gather_entry_points_with_descriptions(
         pool,
         tree,
         sender,
         &[], // no classifier here: topics come from the ingest path
         &hits,
         &[],
+        &turn_vector,
     )
     .await?;
     println!("fan    {} entry doors", entries.len());

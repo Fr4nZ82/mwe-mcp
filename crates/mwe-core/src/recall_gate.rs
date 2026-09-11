@@ -325,9 +325,20 @@ async fn target_surfaced(
     let Some(row) = fact_index::find_by_id(pool, &fact_id).await? else {
         return Ok(false);
     };
-    let entries = recall_nav::gather_entry_points(pool, tree, &sender, target.topics, &hits, &[])
-        .await
-        .context("gather replay")?;
+    // The query's own vector, for the doors a page's description opens — the
+    // replay has to see the same fan the turn saw.
+    let query_vector = embedder.embed(target.query).await.unwrap_or_default();
+    let entries = recall_nav::gather_entry_points_with_descriptions(
+        pool,
+        tree,
+        &sender,
+        target.topics,
+        &hits,
+        &[],
+        &query_vector,
+    )
+    .await
+    .context("gather replay")?;
     if entries.is_empty() {
         return Ok(false);
     }

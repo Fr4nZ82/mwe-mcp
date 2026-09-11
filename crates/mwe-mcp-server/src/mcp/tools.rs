@@ -1472,7 +1472,18 @@ async fn run_navigate_funnel(
         });
     };
     let (topics, subjects, seed_mode) = navigate_seeds(state, nav_llm.as_ref(), args).await;
-    let entries = mwe_core::recall_nav::gather_entry_points(
+    // The query's own vector, for the doors a page's **description** opens.
+    // The flat search above embedded the same words and kept nothing, so this
+    // is one more local embedding and no model call; an embedder that will not
+    // answer costs the description family and leaves the rest of the fan.
+    let query_vector = match state.embedder.embed(&args.query).await {
+        Ok(v) => v,
+        Err(e) => {
+            tracing::warn!(error = %e, "wiki_navigate: query unembedded — no description doors");
+            Vec::new()
+        },
+    };
+    let entries = mwe_core::recall_nav::gather_entry_points_with_descriptions(
         &state.pool,
         &state.tree,
         sender,
@@ -1482,6 +1493,7 @@ async fn run_navigate_funnel(
         // 2026-08-03). Who the turn is about reaches the block by being served.
         flat_hits,
         &[], // situational — host-supplied only
+        &query_vector,
     )
     .await
     .map_err(|e| ToolError::new(ToolErrorClass::InternalError, e.to_string()))?;

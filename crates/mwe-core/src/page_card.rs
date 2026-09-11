@@ -3,8 +3,10 @@
 //!
 //! A page's **card** is its testata `description`: the single line saying
 //! what belongs on that page. It is what the recall navigator is shown when
-//! it decides whether to open the page, and for a page no `[[wikilink]]`
-//! points at, it is the only thing that can bring a reader there. It is
+//! it decides whether to open the page, and — through its vector — what puts
+//! the page in front of the navigator in the first place, which for a page no
+//! `[[wikilink]]` points at and whose facts say nothing about it is the only
+//! thing that can bring a reader there at all. It is
 //! authored on the write side — by the Cartografo when it proposes a page,
 //! by the compiler when it renders one, by the operator editing a testata —
 //! and until this table existed it lived in exactly one place, the `.md`
@@ -35,10 +37,11 @@
 //! mtime millisecond; the cost of that is one stale line for the seconds
 //! until the watcher rewrites the row.
 //!
-//! The **ranking** side (selecting which cards to show by similarity) does
-//! not check the stamp at all: a slightly stale description changes which
-//! pages are *offered*, never what is *shown*, and an offer is approximate by
-//! nature.
+//! The two **ranking** sides — the write side choosing where a new fact goes
+//! ([`crate::candidates`]) and the read side choosing which pages to offer a
+//! turn ([`crate::recall_nav`]) — do not check the stamp at all: a slightly
+//! stale description changes which pages are *offered*, never what is
+//! *shown*, and an offer is approximate by nature.
 
 use std::path::Path;
 
@@ -80,7 +83,10 @@ pub struct PageCardRow {
     pub file_mtime_ms: Option<i64>,
     /// Second half of the stamp.
     pub file_size: Option<i64>,
-    /// The card's vector — `None` until the card selection embeds it.
+    /// The card's vector — the description embedded by the reindex pipeline,
+    /// which is the one place holding both the page's bytes and an embedder.
+    /// `None` on a card with no description, and on one whose description
+    /// changed since it was last embedded.
     pub embedding: Option<Vec<f32>>,
 }
 
@@ -296,6 +302,55 @@ pub async fn list_all(pool: &SqlitePool) -> Result<Vec<PageCardRow>> {
     Ok(rows.iter().map(row_of).collect())
 }
 
+/// One page's card reduced to what a ranking needs: where it is, and the
+/// vector of the sentence that says what belongs on it.
+#[derive(Debug, Clone, PartialEq)]
+pub struct CardVector {
+    /// Workdir-relative page path.
+    pub source_path: String,
+    /// The wiki the page lives in — the ACL scope, not a destination.
+    pub wiki_id: String,
+    /// The card's vector.
+    pub embedding: Vec<f32>,
+}
+
+/// Every card that carries a vector, for one pass of cosines.
+///
+/// **A page with no description has no row here**, because [`upsert`] only
+/// ever stores a vector for a card that has a sentence to embed: a page that
+/// says nothing about itself cannot be found by what it says about itself.
+/// A row whose blob will not decode drops out the same way — a vector from
+/// another embedder ranks nothing, and ranking on it would be worse than not
+/// ranking at all.
+///
+/// The whole table in one read, the way [`crate::link_key::all_embedded`]
+/// takes the whole key set: the caller scores every card against one query,
+/// so a per-page query would be one round trip per page of the memory.
+///
+/// # Errors
+///
+/// `sqlx::Error`.
+pub async fn all_embedded(pool: &SqlitePool) -> Result<Vec<CardVector>> {
+    let rows = sqlx::query(
+        "SELECT source_path, wiki_id, embedding
+           FROM page_card WHERE embedding IS NOT NULL",
+    )
+    .fetch_all(pool)
+    .await?;
+    Ok(rows
+        .iter()
+        .filter_map(|r| {
+            let blob: Option<Vec<u8>> = r.get("embedding");
+            let embedding = blob.as_deref().and_then(|b| decode_embedding(b).ok())?;
+            Some(CardVector {
+                source_path: r.get("source_path"),
+                wiki_id: r.get("wiki_id"),
+                embedding,
+            })
+        })
+        .collect())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -384,6 +439,37 @@ mod tests {
                 .is_none(),
             "a rewritten card cannot keep a vector of the old sentence"
         );
+    }
+
+    /// The ranking set is the cards with a vector, and only those: a page
+    /// that says nothing about itself cannot be found by what it says about
+    /// itself, which is the *«niente riga per pagine senza descrizione»* half
+    /// of the rule (founder, 2026-09-11).
+    #[tokio::test]
+    async fn only_a_card_with_a_vector_joins_the_ranking() {
+        let (_workdir, pool) = pool().await;
+        upsert(
+            &pool,
+            &card("wikis/alice/cucina.md", Some("what gets cooked")),
+        )
+        .await
+        .expect("upsert");
+        upsert(&pool, &card("wikis/alice/muto.md", None))
+            .await
+            .expect("upsert");
+        assert!(
+            all_embedded(&pool).await.expect("all").is_empty(),
+            "a stored card is not a ranking row until it has been embedded"
+        );
+
+        set_embedding(&pool, "wikis/alice/cucina.md", &[0.1, 0.2, 0.3])
+            .await
+            .expect("embed");
+        let rows = all_embedded(&pool).await.expect("all");
+        assert_eq!(rows.len(), 1, "the describedless page contributes nothing");
+        assert_eq!(rows[0].source_path, "wikis/alice/cucina.md");
+        assert_eq!(rows[0].wiki_id, "alice");
+        assert_eq!(rows[0].embedding, vec![0.1, 0.2, 0.3]);
     }
 
     /// An unstamped row can never vouch for a file: the fallback is to open

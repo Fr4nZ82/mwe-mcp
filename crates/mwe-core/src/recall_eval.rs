@@ -62,8 +62,8 @@ pub struct GoldQuery {
     pub id: Option<String>,
     /// The turn text, exactly as a consumer would send it.
     pub query: String,
-    /// Acting sender (ACL projection + principal seeds). Groups are
-    /// looked up from enrollment like the production turn does.
+    /// Acting sender, for the ACL projection. Groups are looked up from
+    /// enrollment like the production turn does.
     pub sender_id: String,
     /// Optional classifier-style topic seeds. Production derives these
     /// from the plan's capture units; a gold entry pins them when the
@@ -260,7 +260,7 @@ async fn eval_query(
     // recall-counter bump (synthetic usage must not pollute recency).
     let flat = recall::wiki_search_unrecorded(
         pool,
-        embedder,
+        Arc::clone(&embedder),
         &q.query,
         policy.recall_top_k,
         fact_index::FactFilters::default(),
@@ -268,6 +268,8 @@ async fn eval_query(
     )
     .await
     .context("flat recall")?;
+    // The same words as a vector, for the doors a page's description opens.
+    let query_vector = embedder.embed(&q.query).await.unwrap_or_default();
 
     let expectations: Vec<String> = q.expect.iter().map(|e| e.to_lowercase()).collect();
     let flat_texts: Vec<String> = flat.iter().map(|h| h.text.to_lowercase()).collect();
@@ -285,7 +287,9 @@ async fn eval_query(
     // Navigation — same seeds the post-classification step builds:
     // gold-pinned topics/subjects + the flat hits as RAG seeds.
     let nav_outcome = match navigator {
-        Some(llm) => Some(navigate_query(pool, tree, llm, q, &sender, &flat, policy).await?),
+        Some(llm) => {
+            Some(navigate_query(pool, tree, llm, q, &query_vector, &sender, &flat, policy).await?)
+        },
         None => None,
     };
     let covered_by_nav: Vec<bool> = nav_outcome.as_ref().map_or_else(
@@ -335,11 +339,13 @@ async fn eval_query(
     })
 }
 
+#[allow(clippy::too_many_arguments, reason = "one gold query's full context")]
 async fn navigate_query(
     pool: &SqlitePool,
     tree: &WikiTree,
     llm: &dyn LlmBackend,
     q: &GoldQuery,
+    query_vector: &[f32],
     sender: &SenderContext,
     flat: &[RecallHit],
     policy: &IngestPolicy,
@@ -350,9 +356,17 @@ async fn navigate_query(
     for s in &q.subjects {
         let _: Principal = s.parse().with_context(|| format!("subject `{s}`"))?;
     }
-    let entries = recall_nav::gather_entry_points(pool, tree, sender, &q.topics, flat, &[])
-        .await
-        .context("entry-point gather")?;
+    let entries = recall_nav::gather_entry_points_with_descriptions(
+        pool,
+        tree,
+        sender,
+        &q.topics,
+        flat,
+        &[],
+        query_vector,
+    )
+    .await
+    .context("entry-point gather")?;
     recall_nav::navigate(
         pool,
         tree,

@@ -16,8 +16,9 @@
 //!   deterministic [`sync_wiki_keywords`] pass that [`crate::dream::run_compile`]
 //!   runs over the whole tree after the prose compile. This is exactly the shape
 //!   the recall navigator's topic seeds match against
-//!   ([`crate::recall_nav::gather_entry_points`] substring-scans the card
-//!   keywords), so populating it gives the topic entry-point a populated source.
+//!   ([`crate::recall_nav::gather_entry_points_with_descriptions`]
+//!   substring-scans the card keywords), so populating it gives the topic
+//!   entry-point a populated source.
 //! - **`_meta.extra["summary"]`** — the wiki's one-line **abstract**. Written by
 //!   the compiler via [`sync_wiki_summary`] when it (re)compiles a wiki's
 //!   **foundation card page**, from the card that page was written with.
@@ -257,11 +258,12 @@ async fn collect_page_topics(
 
 /// Per-reader projection of every wiki's card, recomputed from `fact_index`.
 ///
-/// Consumed by [`crate::recall_nav`] to keep the topic seeds and the candidate
-/// cards reader-relative. Built once per navigator call by
-/// [`build_reader_card`]. It projects **pages**: no reader is shown a wiki or a
-/// list of them, and the wiki-keyed maps here are addresses and ACL scope, not
-/// destinations.
+/// Consumed by [`crate::recall_nav`] to keep every seed and every candidate
+/// card reader-relative: the topic words a seed may match, the pages a
+/// description may name, and the descriptions the navigator is shown. Built
+/// once per navigator call by [`build_reader_card`]. It projects **pages**: no
+/// reader is shown a wiki or a list of them, and the wiki-keyed maps here are
+/// addresses and ACL scope, not destinations.
 pub struct ReaderCard {
     /// `wiki_id` → the reader-visible topic union (original case, sorted).
     wiki_topics: BTreeMap<String, Vec<String>>,
@@ -275,6 +277,11 @@ pub struct ReaderCard {
     /// Unlike [`Self::wiki_topics`], this counts a readable fact even when it
     /// carries no `topics`, so a fact-bearing-but-topic-less wiki still surfaces.
     readable_wikis: BTreeSet<String>,
+    /// The same signal one level down: `wiki_id` → the `source_path`s the
+    /// reader can read ≥ 1 fact on. [`Self::page_topics`] cannot answer this —
+    /// it drops a page whose readable facts carry no `topics`, and such a page
+    /// is perfectly readable.
+    readable_pages: BTreeMap<String, BTreeSet<String>>,
 }
 
 impl ReaderCard {
@@ -320,6 +327,21 @@ impl ReaderCard {
     #[must_use]
     pub const fn readable_wikis(&self) -> &BTreeSet<String> {
         &self.readable_wikis
+    }
+
+    /// Whether the reader can read ≥ 1 fact on one page, keyed by
+    /// workdir-relative `source_path`.
+    ///
+    /// The per-page derived-visibility predicate, and the reason it is not
+    /// [`Self::pages`]: that map is the *topic* union, so a page whose readable
+    /// facts carry no `topics` is absent from it while being fully readable.
+    /// Anything gating on "may this reader be offered this page" wants this
+    /// one; anything matching topic words wants the other.
+    #[must_use]
+    pub fn reader_can_read_page(&self, wiki_id: &str, source_path: &str) -> bool {
+        self.readable_pages
+            .get(wiki_id)
+            .is_some_and(|pages| pages.contains(source_path))
     }
 }
 
@@ -368,14 +390,20 @@ pub async fn build_reader_card(
     let mut wiki_sets: BTreeMap<String, BTreeSet<String>> = BTreeMap::new();
     let mut page_sets: BTreeMap<String, BTreeMap<String, BTreeSet<String>>> = BTreeMap::new();
     let mut readable_wikis: BTreeSet<String> = BTreeSet::new();
+    let mut readable_pages: BTreeMap<String, BTreeSet<String>> = BTreeMap::new();
     for row in &rows {
         if !fact_readable_by(row, reader_id, reader_groups) {
             continue;
         }
         // Derived-visibility signal: any readable fact makes its wiki reachable,
         // independent of whether the fact carries topics (the topic union below
-        // is the narrower recall-matching card).
+        // is the narrower recall-matching card). The page-level twin is the
+        // same claim about the one page the fact sits on.
         readable_wikis.insert(row.wiki_id.clone());
+        readable_pages
+            .entry(row.wiki_id.clone())
+            .or_default()
+            .insert(row.source_path.clone());
         let topics: Vec<&str> = row
             .topics
             .iter()
@@ -438,6 +466,7 @@ pub async fn build_reader_card(
         page_topics,
         summary_wikis,
         readable_wikis,
+        readable_pages,
     })
 }
 
