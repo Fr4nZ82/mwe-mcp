@@ -3301,6 +3301,10 @@ struct TurnFact {
     /// `capture_buffer` (staged for the dream, where the id survives
     /// promotion).
     ///
+    /// It is also the id a weld points at: a supersede that names [`id`] here
+    /// addresses no row, so an answered slot question welds onto `stored`
+    /// instead.
+    ///
     /// [`id`]: Self::id
     already_stored_as: Option<FactId>,
 }
@@ -11131,21 +11135,40 @@ pub async fn wiki_ingest_message(
                 // replaced something, and this question has already been put
                 // to a person and answered. Asking a model to agree with them
                 // could only overrule them.
-                // `this_id` is the matched fact when write-time dedup
-                // resolved the new body onto one already there, and that can
-                // be the very fact being replaced. A self-supersede closes a
-                // window and writes no successor link to explain it, leaving a
-                // fact that nothing contradicted marked `contradicted`.
-                if let Some(old_value) = weld_onto.filter(|old| old.fact_id != this_id) {
-                    weld_with_audience(
-                        pool,
-                        &old_value.fact_id,
-                        &this_id,
-                        &old_value.allow,
-                        &Principal::User(request.sender_id.clone()),
-                        turn_now,
-                    )
-                    .await;
+                //
+                // **The successor is the row that EXISTS, which is not always
+                // `this_id`.** Write-time dedup resolves a restated body onto
+                // a fact already in the memory and mints a fresh id for the
+                // audit trail without writing anything under it, so `this_id`
+                // can name no row at all — and a weld pointed at it would
+                // retire the target and leave `superseded_by` addressing
+                // nothing. `already_stored_as` is what the memory really
+                // holds ([`TurnFact::already_stored_as`]).
+                if let Some(old_value) = weld_onto {
+                    let successor = already_stored_as.as_ref().unwrap_or(&this_id);
+                    if old_value.fact_id == *successor {
+                        // The words the person replaced it WITH are the words
+                        // already on it: dedup resolved the new body onto the
+                        // very fact being replaced. A self-supersede closes a
+                        // window and writes no successor link to explain it,
+                        // leaving a fact that nothing contradicted marked
+                        // `contradicted` — so nothing happens, which is what
+                        // the answer amounts to.
+                        tracing::info!(
+                            target = old_value.fact_id.as_str(),
+                            "ingest: the replacement is the fact being replaced — nothing retired"
+                        );
+                    } else {
+                        weld_with_audience(
+                            pool,
+                            &old_value.fact_id,
+                            successor,
+                            &old_value.allow,
+                            &Principal::User(request.sender_id.clone()),
+                            turn_now,
+                        )
+                        .await;
+                    }
                 }
 
                 // Keep every extraction with what became of it — the
@@ -21464,6 +21487,147 @@ mod tests {
                 .unwrap();
         assert_eq!(pending, 0, "nobody needs asking: he is the subject");
         drop(dir);
+    }
+
+    /// «Replace» welds the old value onto the row that EXISTS, which is not
+    /// the id the capture minted when it wrote nothing.
+    ///
+    /// Write-time dedup resolves a restated body onto a fact already in the
+    /// memory and still hands back a fresh id for the audit trail. Welding to
+    /// that id retires the value the person rejected and points
+    /// `superseded_by` at nothing — a reader of the old value is sent to a
+    /// fact that does not exist.
+    #[tokio::test]
+    async fn replacing_with_words_already_stored_welds_onto_the_stored_fact() {
+        let (dir, tree, pool) = setup_family().await;
+        let card = plant_the_card_birthdate(&pool).await;
+        let twin = plant_bobs_twin(&pool, DERIVED_BIRTHDATE, TWIN_ID).await;
+
+        let resp = wiki_ingest_message(
+            &pool,
+            &tree,
+            fake_embedder(),
+            &FakeLlmBackend::new("fake", replace_into_a_page(DERIVED_BIRTHDATE)),
+            None,
+            the_age_turn("bob", Some(&format!("slot-replace:{CARD_FACT_ID}"))),
+            &IngestPolicy::default(),
+        )
+        .await
+        .expect("ingest");
+        assert!(
+            resp.capture_id.is_some(),
+            "the turn reports what it resolved"
+        );
+
+        let row = fact_index::find_by_id(&pool, &card)
+            .await
+            .unwrap()
+            .expect("the card fact stays");
+        assert_eq!(
+            row.superseded_by.as_ref(),
+            Some(&twin),
+            "the value bob rejected points at the fact that now holds the answer"
+        );
+        drop(dir);
+    }
+
+    /// And when the words are the words already on the fact being replaced,
+    /// nothing happens.
+    ///
+    /// Dedup resolves the new body onto the very target. Retiring it and
+    /// pointing it at itself closes a window and writes no successor link to
+    /// explain it, leaving a fact nothing contradicted marked `contradicted`.
+    #[tokio::test]
+    async fn replacing_a_value_with_its_own_words_retires_nothing() {
+        let (dir, tree, pool) = setup_family().await;
+        let card = plant_the_card_birthdate(&pool).await;
+        // The box says one date, the claim says another — so there is a
+        // disagreement to answer — while the WORDS are the card's own, and
+        // its audience is the one a turn of bob's produces, so write-time
+        // dedup resolves the new body onto the card itself.
+        sqlx::query(
+            "UPDATE fact_index SET slot = 'date_of_birth', slot_value = '2014-03-12', \
+             allow_ids = '[]' WHERE fact_id = ?",
+        )
+        .bind(card.as_str())
+        .execute(&pool)
+        .await
+        .unwrap();
+
+        wiki_ingest_message(
+            &pool,
+            &tree,
+            fake_embedder(),
+            &FakeLlmBackend::new("fake", replace_into_a_page(CARD_BIRTHDATE)),
+            None,
+            the_age_turn("bob", Some(&format!("slot-replace:{CARD_FACT_ID}"))),
+            &IngestPolicy::default(),
+        )
+        .await
+        .expect("ingest");
+
+        let row = fact_index::find_by_id(&pool, &card)
+            .await
+            .unwrap()
+            .expect("the card fact stays");
+        assert!(
+            row.valid_to.is_none() && row.superseded_at.is_none(),
+            "a fact is not retired in favour of itself"
+        );
+        drop(dir);
+    }
+
+    const TWIN_ID: &str = "0190f3c2-7a4e-7c31-9b02-2f6a1c8e5dc1";
+
+    /// A fact already in bob's memory, on the page this turn writes to and
+    /// with the audience a turn of his own produces, so write-time dedup
+    /// resolves onto it.
+    async fn plant_bobs_twin(pool: &SqlitePool, text: &str, fact_id: &str) -> FactId {
+        let fact_id = FactId::parse(fact_id).unwrap();
+        fact_index::insert(
+            pool,
+            &fact_index::NewFact {
+                subject_external: None,
+                slot: None,
+                slot_value: None,
+                authored_refs: Vec::new(),
+                fact_id: fact_id.clone(),
+                wiki_id: "bob".to_owned(),
+                source_path: "wikis/bob/nascita.md".to_owned(),
+                region_start: Some(0),
+                region_end: Some(40),
+                text: text.to_owned(),
+                embedding: vec![0.1, 0.2, 0.3, 0.4],
+                subject_id: Principal::User("bob".to_owned()),
+                allow_ids: Vec::new(),
+                sender_id: Some(Principal::User("bob".to_owned())),
+                fact_type: Some("bio".to_owned()),
+                topics: Vec::new(),
+                valid_from: Some("2026-07-02T00:00:00Z".to_owned()),
+                valid_to: None,
+                target_page: None,
+                style: None,
+                salience: Some("high".to_owned()),
+                source_ref: None,
+            },
+        )
+        .await
+        .expect("plant the twin");
+        fact_id
+    }
+
+    /// A card claim that names its own page, so it takes the LIVE write path
+    /// where dedup runs inside the turn rather than in the dream.
+    fn replace_into_a_page(body: &str) -> String {
+        format!(
+            "{{\"intent\":\"capture\",\"suggested_seed\":\"Noted.\",\"extractions\":[\
+             {{\"target_wiki_id\":\"bob\",\"subject_id\":\"user:bob\",\
+             \"target_page\":\"nascita.md\",\"requested_container\":true,\
+             \"page_description\":\"when bob was born\",\
+             \"body\":\"{body}\",\"fact_type\":\"bio\",\"salience\":\"high\",\
+             \"conflicts_with\":\"{CARD_FACT_ID}\",\"slot\":\"date_of_birth\",\
+             \"slot_value\":\"2012-07-08\"}}]}}"
+        )
     }
 
     /// Somebody else replaces it: the new value does NOT go on the page, and
