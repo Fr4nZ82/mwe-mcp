@@ -43,6 +43,7 @@ pub mod fact_index;
 pub mod gdpr;
 pub mod housekeeping;
 pub mod ingest;
+pub mod ingest_replay;
 pub mod jwt;
 pub mod link_key;
 pub mod lint;

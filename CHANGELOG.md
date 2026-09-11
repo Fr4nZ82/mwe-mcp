@@ -153,6 +153,24 @@ semver-governed surface: breaking changes are called out explicitly.
 
 ### Changed
 
+- **The same message delivered twice is answered once.** An assistant that
+  loses its connection mid-request sends the message again, and a voice note
+  sometimes arrives transcribed twice. The memory already refused to store any
+  of it a second time, but it still did all the work over — reading the memory,
+  deciding what the message meant, writing the reply — to arrive at the answer
+  it had already given. It now hands the first answer straight back, and the
+  reply reaches you even when the first attempt died before delivering it.
+
+  Only the message you sent **last** is answered this way, and only for **ten
+  minutes**: say anything else in between, to any assistant, and the earlier
+  one is asked again for real, so a repeat can never come back with an answer
+  the conversation has moved past. After the ten minutes, saying the same
+  thing again is a new message and gets a new answer. The operator can change
+  the window with `recall.repeat_window_minutes` in `mwe-mcp.config.yaml` (`0`
+  switches it off and every delivery is treated as a new message). A repeat is
+  marked as such on the **Traces** page, so a reply that arrives twice can be
+  told from a message answered twice.
+
 - **A list is a list again: its lines are items, not sentences.** Asking an
   assistant to put milk on the shopping list wrote *"Milk is needed."* on the
   page, and a list of a dozen things read as a dozen little sentences. From now

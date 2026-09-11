@@ -359,9 +359,10 @@ async fn save(
     parsed
         .ingest_timezone
         .clone_from(&cfg.recall.ingest_timezone);
-    // Same reason, same rule: the trace-retention window has no field on this
-    // panel, so a save here must leave whatever the operator configured.
+    // Same reason, same rule for the two windows that have no field on this
+    // panel: a save here must leave whatever the operator configured.
     parsed.trace_retention_days = cfg.recall.trace_retention_days;
+    parsed.repeat_window_minutes = cfg.recall.repeat_window_minutes;
     cfg.recall = parsed.clone();
 
     // Backup `.bak` of the live YAML (if any) before overwriting.
@@ -455,6 +456,11 @@ fn parse_form(form: &HashMap<String, String>) -> Result<RecallConfig> {
         // `usage.retention_days` rather than a slider next to the hop count.
         // Carried forward by the caller, same as the timezone above.
         trace_retention_days: None,
+        // How long a redelivered turn is answered with the first answer. Not a
+        // resource this panel hands out either — it says what counts as the
+        // same message — so it stays a config-file knob and is carried forward
+        // the same way.
+        repeat_window_minutes: None,
     })
 }
 
@@ -512,4 +518,23 @@ fn refused(
         Some(Flash { kind: "error", msg }),
     );
     (StatusCode::UNPROCESSABLE_ENTITY, Html(body)).into_response()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Two `recall:` knobs have no field on this panel, and the form must
+    /// leave them unset so [`save`] can carry the operator's values forward.
+    ///
+    /// A `Some` here would be a silent wipe: the panel would write its own
+    /// idea of the value — the default, or nothing — over whatever was in
+    /// `mwe-mcp.config.yaml`, on a save about something else entirely.
+    #[test]
+    fn the_knobs_this_panel_does_not_show_come_back_unset() {
+        let parsed = parse_form(&HashMap::new()).expect("an empty form is every default");
+        assert_eq!(parsed.trace_retention_days, None);
+        assert_eq!(parsed.repeat_window_minutes, None);
+        assert_eq!(parsed.ingest_timezone, None);
+    }
 }

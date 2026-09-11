@@ -9,6 +9,7 @@
 //! ## Pipeline (per call)
 //!
 //! ```text
+//! 0. same turn again?      ingest_replay::replay_of (a re-delivery returns the first turn's answer here)
 //! 1. recall context        recall::wiki_recall   (ranked hits, ACL filtered)
 //! 2. enumerate wikis       WikiTree::walk        (engine-internal — the classifier is shown NO wikis)
 //! 3. LLM intent + plan     llm::complete         (`ingest` slot, JSON out)
@@ -20,7 +21,10 @@
 //! ```
 //!
 //! **Two model calls on the `ingest` slot per turn**, not one and not three:
-//! the classifier (step 3) and the reconciler (step 7).
+//! the classifier (step 3) and the reconciler (step 7). **Zero when step 0
+//! answers**: a turn the consumer delivers twice inside the repeat window
+//! returns the first delivery's answer without reaching step 1, so it costs no
+//! model call, no search and no write ([`crate::ingest_replay`]).
 //!
 //! Step 3 is one call and that is the claim — the classifier is asked for one
 //! strict JSON object encoding both the intent and the operational plan
@@ -123,7 +127,7 @@ pub enum MessageRole {
 }
 
 impl MessageRole {
-    const fn as_str(self) -> &'static str {
+    pub(crate) const fn as_str(self) -> &'static str {
         match self {
             Self::User => "user",
             Self::Assistant => "assistant",
@@ -388,6 +392,19 @@ impl IntentKind {
             Self::Skip => "skip",
         }
     }
+
+    /// The inverse of [`Self::as_str`], for a token read back off a stored
+    /// row. `None` on anything else, which every caller reads as "this row
+    /// says nothing usable".
+    pub(crate) fn parse(token: &str) -> Option<Self> {
+        match token {
+            "capture" => Some(Self::Capture),
+            "recall" => Some(Self::Recall),
+            "structural" => Some(Self::Structural),
+            "skip" => Some(Self::Skip),
+            _ => None,
+        }
+    }
 }
 
 /// One disambiguation candidate returned by the LLM when the message
@@ -458,6 +475,11 @@ pub struct IngestResponse {
     pub llm_used: bool,
     /// Wall-clock duration of the orchestrator. Echoed as `took_ms` in
     /// the MCP response.
+    ///
+    /// This field and the one above describe the turn that PRODUCED this
+    /// answer. On a re-delivery they are the first delivery's, because the
+    /// answer is ([`crate::ingest_replay`]): saying the repeat took no time
+    /// and called no model would describe a turn nobody was served.
     pub took_ms: u64,
 }
 
@@ -675,6 +697,21 @@ pub struct IngestPolicy {
     /// why the journal is kept at all rather than capped at a handful of
     /// rows.
     pub trace_retention_days: i64,
+    /// How long the same turn, delivered again, is answered with the answer
+    /// the first delivery got instead of being run a second time
+    /// ([`crate::ingest_replay`]). In minutes; `0` switches it off.
+    ///
+    /// **The number decides what a repetition MEANS**, which is why it is
+    /// small. A consumer that lost its container, retried a request or
+    /// transcribed one voice note twice redelivers within seconds — ten
+    /// minutes is already generous for that. A person who says the same words
+    /// again is doing something else: adding the milk to the list a second
+    /// time because they bought the first, asking the same question because
+    /// the answer has moved on. Widen this and the second kind starts being
+    /// answered with a stale reply, which is the one failure the feature can
+    /// cause; narrow it and the worst case is the work being done twice,
+    /// which is what happened before it existed.
+    pub repeat_window_minutes: u32,
 }
 
 impl Default for IngestPolicy {
@@ -720,6 +757,7 @@ impl Default for IngestPolicy {
             recent_window_ttl_hours: 4,
             recent_window_chars: 1_200,
             trace_retention_days: crate::recall_trace::DEFAULT_TRACE_RETENTION_DAYS,
+            repeat_window_minutes: 10,
         }
     }
 }
@@ -9626,6 +9664,70 @@ pub async fn wiki_ingest_message(
     // `metadata.occurred_at` re-lives the turn at utterance time.
     let turn_now = request.turn_now();
 
+    // THE SAME TURN DELIVERED TWICE IS ANSWERED ONCE. Before anything else —
+    // before the searches, before the classifier — because a re-delivery must
+    // cost nothing: no model call, no write, not even a recall. What it gets
+    // back is the answer the first delivery produced, which is usually what
+    // the consumer redelivered FOR (its container died after the write, so
+    // what never reached the person was the reply).
+    //
+    // A guest is left out on both sides: the turn is ephemeral by
+    // construction, runs no classifier and writes nothing, so there is
+    // neither a row to find nor work worth saving.
+    let turn_key = (!enrollment::is_guest(&request.sender_id))
+        .then(|| crate::ingest_replay::TurnKey::of(&request));
+    if let Some(key) = &turn_key
+        && let Some((replayed, first_at)) = crate::ingest_replay::replay_of(
+            pool,
+            key,
+            policy.repeat_window_minutes,
+            chrono::Utc::now(),
+        )
+        .await
+    {
+        tracing::info!(
+            sender_id = request.sender_id,
+            first_answered_at = first_at,
+            window_minutes = policy.repeat_window_minutes,
+            "ingest: REPEAT of a turn already answered — the first answer is served again"
+        );
+        // The Traces page is a person's record of what the memory found for
+        // them, and this turn found it the first time round: the trace says
+        // the block was served again, and `seed_mode` says why there is
+        // nothing else on it. Skipped on an assistant turn, like every other
+        // section whose only product is that block.
+        if request.author != MessageRole::Assistant {
+            record_ingest_trace(
+                pool,
+                policy,
+                IngestTraceParts {
+                    request: &request,
+                    intent: replayed.intent,
+                    seed_mode: "repeat",
+                    seeds: &NavSeeds::default(),
+                    completed_message: None,
+                    flat_hits_from_completed: false,
+                    recall_hits: &[],
+                    flat_verdicts: &FlatVerdicts::new(),
+                    project_docs: &[],
+                    named_docs: 0,
+                    served_pages: &[],
+                    nav_tail: None,
+                    due_soon: None,
+                    injected_block: replayed.context_snippet.as_deref(),
+                    rules_block: replayed.rules.as_deref(),
+                    reconcile_candidates: &[],
+                    reconcile_verdict: None,
+                    refused_changes: &[],
+                    recall_clock: RecallClock::default(),
+                    took: start.elapsed(),
+                },
+            )
+            .await;
+        }
+        return Ok(replayed);
+    }
+
     // One scoped lookup feeds both the ACL `SenderContext` (bare ids)
     // and the prompt's `sender_groups` section (id + scope prose).
     // Deriving the ids from the scoped pairs keeps this to a single
@@ -12201,7 +12303,7 @@ pub async fn wiki_ingest_message(
         )
     };
 
-    Ok(IngestResponse {
+    let response = IngestResponse {
         intent,
         context_snippet,
         rules,
@@ -12212,7 +12314,22 @@ pub async fn wiki_ingest_message(
         disambig_candidates,
         llm_used: true,
         took_ms: u64::try_from(start.elapsed().as_millis()).unwrap_or(u64::MAX),
-    })
+    };
+    // Kept for a re-delivery of THIS turn, and only now: a row exists once the
+    // turn is finished, so a duplicate that arrives while the first is still
+    // in flight finds nothing and runs normally. That case is the write path's
+    // to make harmless, and it already is.
+    if let Some(key) = &turn_key {
+        crate::ingest_replay::record(
+            pool,
+            key,
+            &response,
+            policy.repeat_window_minutes,
+            chrono::Utc::now(),
+        )
+        .await;
+    }
+    Ok(response)
 }
 
 const fn capture_action_tag(action: &CaptureAction) -> &'static str {
@@ -15318,7 +15435,17 @@ mod tests {
             \"body\":\"Il colore preferito di Alice è l'indaco.\",\
             \"fact_type\":\"preference\",\"requested_container\":true}]}";
         let llm = RestatingReconciler::new(plan, EmptyHanded::Silence);
-        let policy = IngestPolicy::default();
+        // The repeat short-circuit is switched OFF here, and that is the case
+        // under test: a duplicate that arrives while the first delivery is
+        // still in flight finds no answer to be handed
+        // ([`crate::ingest_replay`] records one only when a turn finishes), so
+        // it runs the whole turn and meets these two guards. They are what
+        // makes it harmless, and they are load-bearing with or without the
+        // short-circuit in front of them.
+        let policy = IngestPolicy {
+            repeat_window_minutes: 0,
+            ..IngestPolicy::default()
+        };
         let deliver = || async {
             wiki_ingest_message(
                 &pool,
@@ -15389,7 +15516,13 @@ mod tests {
             \"body\":\"Il colore preferito di Alice è l'indaco.\",\
             \"fact_type\":\"preference\",\"requested_container\":true}]}";
         let llm = RestatingReconciler::new(plan, EmptyHanded::CloseTheCandidate);
-        let policy = IngestPolicy::default();
+        // Off for the same reason as the test above: the duplicate under test
+        // is the one that arrives before the first delivery has finished, so
+        // there is no stored answer to short-circuit it.
+        let policy = IngestPolicy {
+            repeat_window_minutes: 0,
+            ..IngestPolicy::default()
+        };
         let deliver = || async {
             wiki_ingest_message(
                 &pool,
@@ -19056,10 +19189,22 @@ mod tests {
             .await
             .unwrap();
         let policy = IngestPolicy::default();
-        for (scope, body) in [
-            ("per-user", "Rispondi conciso."),
-            ("user-global", "Parlami in italiano."),
-            ("agent-wide", "Non dare consigli medici."),
+        // Each rule is dictated in its own words: three turns of one message
+        // would be the same turn three times, and the second and third would
+        // be answered with the first one's reply instead of filing anything
+        // ([`crate::ingest_replay`]).
+        for (scope, body, said) in [
+            ("per-user", "Rispondi conciso.", "rispondimi conciso"),
+            (
+                "user-global",
+                "Parlami in italiano.",
+                "parlami sempre in italiano",
+            ),
+            (
+                "agent-wide",
+                "Non dare consigli medici.",
+                "non dare consigli medici a nessuno",
+            ),
         ] {
             let llm = FakeLlmBackend::new(
                 "fake",
@@ -19074,7 +19219,7 @@ mod tests {
                 fake_embedder(),
                 &llm,
                 None,
-                req_consumer("una regola", "alice", "botdeploy"),
+                req_consumer(said, "alice", "botdeploy"),
                 &policy,
             )
             .await
@@ -26664,6 +26809,128 @@ mod tests {
         drop(dir);
     }
 
+    /// The same turn delivered twice is answered once.
+    ///
+    /// The consumer whose container died after the shopping list was written
+    /// redelivers the turn to get the reply the person never received. The
+    /// engine hands back the first answer, word for word, and does nothing
+    /// else: the scripted model holds exactly the calls of ONE turn, so a
+    /// second classifier call fails the test rather than passing it quietly,
+    /// and the list is asserted to still hold one milk.
+    ///
+    /// The two shapes that must NOT be swallowed are asserted next to it: the
+    /// assistant feeding its own reply back is a turn of its own even with the
+    /// same words, and so is the same message once the window has passed.
+    #[tokio::test]
+    async fn the_same_turn_delivered_twice_is_answered_once() {
+        let (dir, tree, pool) = setup_workdir().await;
+        let policy = IngestPolicy::default();
+        let plan = "{\"intent\":\"capture\",\"extractions\":[\
+             {\"target_wiki_id\":\"alice\",\"target_page\":\"spesa.md\",\
+              \"page_description\":\"what still has to be bought\",\
+              \"subject_id\":\"user:alice\",\"body\":\"latte 2\",\
+              \"fact_type\":\"plan\",\"style\":\"lista\",\
+              \"requested_container\":true,\"topics\":[\"shopping\"]}],\
+             \"suggested_seed\":\"Aggiunto.\"}";
+        // One turn's worth of model calls, and not one more.
+        let llm = ScriptedLlm::new(&[plan]);
+        let delivery = || req_consumer("due litri di latte", "alice", "botdeploy");
+
+        let first = wiki_ingest_message(
+            &pool,
+            &tree,
+            fake_embedder(),
+            &llm,
+            None,
+            delivery(),
+            &policy,
+        )
+        .await
+        .expect("first delivery");
+
+        let second = wiki_ingest_message(
+            &pool,
+            &tree,
+            fake_embedder(),
+            &llm,
+            None,
+            delivery(),
+            &policy,
+        )
+        .await
+        .expect("the re-delivery is answered, not re-run");
+
+        assert_eq!(second.intent, first.intent);
+        assert_eq!(second.context_snippet, first.context_snippet);
+        assert_eq!(second.rules, first.rules);
+        assert_eq!(second.suggested_seed, first.suggested_seed);
+        assert_eq!(second.recent_window, first.recent_window);
+        assert_eq!(second.capture_id, first.capture_id);
+        assert_eq!(second.needs_disambig, first.needs_disambig);
+        assert_eq!(
+            second.took_ms, first.took_ms,
+            "it is the first turn's answer"
+        );
+
+        let live = fact_index::find_active_in_wiki(&pool, "alice")
+            .await
+            .unwrap();
+        assert_eq!(live.len(), 1, "the re-delivery wrote nothing: {live:?}");
+
+        // The assistant feeding its own reply back is a turn of its own, even
+        // word for word: it reaches its own classifier, and answers with what
+        // that one said.
+        let own_turn = IngestRequest {
+            author: MessageRole::Assistant,
+            ..req_consumer("due litri di latte", "alice", "botdeploy")
+        };
+        let own_llm = ScriptedLlm::new(&[
+            "{\"intent\":\"skip\",\"extractions\":[],\"suggested_seed\":\"the agent's own pass\"}",
+            "{\"closures\":[],\"supersedes\":[],\"validity_edits\":[],\"acl_changes\":[]}",
+        ]);
+        let own = wiki_ingest_message(
+            &pool,
+            &tree,
+            fake_embedder(),
+            &own_llm,
+            None,
+            own_turn,
+            &policy,
+        )
+        .await
+        .expect("the agent's own turn");
+        assert_eq!(
+            own.suggested_seed.as_deref(),
+            Some("the agent's own pass"),
+            "a turn the assistant authored is never answered with the user's reply"
+        );
+
+        // Past the window the same words are a new turn. Eleven minutes are
+        // simulated by ageing the row the first delivery wrote.
+        sqlx::query("UPDATE ingest_replies SET created_at = ?")
+            .bind((chrono::Utc::now() - chrono::Duration::minutes(11)).to_rfc3339())
+            .execute(&pool)
+            .await
+            .expect("age the row");
+        let again = ScriptedLlm::new(&[
+            plan,
+            "{\"closures\":[],\"supersedes\":[],\
+             \"validity_edits\":[],\"acl_changes\":[]}",
+        ]);
+        wiki_ingest_message(
+            &pool,
+            &tree,
+            fake_embedder(),
+            &again,
+            None,
+            delivery(),
+            &policy,
+        )
+        .await
+        .expect("a turn of its own");
+        drop(dir);
+    }
+
     /// The done-cue still lands on the right rows when the rows are bare
     /// entries.
     ///
@@ -29009,7 +29276,9 @@ mod tests {
             "fact + its valid_to rendered: {snippet}"
         );
 
-        // The slot honours its off switch.
+        // The slot honours its off switch. Different words, because the same
+        // ones again would be the same turn and would come back with the
+        // answer above ([`crate::ingest_replay`]).
         let policy_off = IngestPolicy {
             due_soon_top_k: 0,
             ..IngestPolicy::default()
@@ -29020,7 +29289,7 @@ mod tests {
             fake_embedder(),
             &llm,
             None,
-            req("ciao", "alice"),
+            req("ciao di nuovo", "alice"),
             &policy_off,
         )
         .await

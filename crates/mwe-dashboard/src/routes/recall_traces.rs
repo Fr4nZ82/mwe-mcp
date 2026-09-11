@@ -337,6 +337,7 @@ fn seed_mode_in_words(mode: &str) -> &str {
         "query_extraction" => "words pulled out of the question",
         "rag_only" => "similarity alone",
         "guest" => "a guest turn, with nobody to look up",
+        "repeat" => "the same message again, answered with the first answer",
         other => other,
     }
 }

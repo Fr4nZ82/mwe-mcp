@@ -1751,6 +1751,16 @@ pub struct RecallConfig {
     /// engine DB. Shorten it where the second concern wins.
     #[serde(default)]
     pub trace_retention_days: Option<i64>,
+    /// Override `IngestPolicy::repeat_window_minutes` — how long the same
+    /// turn, delivered again, is answered with the answer the first delivery
+    /// got instead of being run a second time (default 10; `0` switches it
+    /// off and every delivery is a turn).
+    ///
+    /// Raise it only where a consumer is known to retry late; the window is
+    /// also what tells a re-delivery from a person saying the same thing
+    /// again, and the second one deserves a fresh answer.
+    #[serde(default)]
+    pub repeat_window_minutes: Option<u32>,
 }
 
 impl RecallConfig {
@@ -1818,6 +1828,9 @@ impl RecallConfig {
         }
         if let Some(v) = self.trace_retention_days {
             p.trace_retention_days = v;
+        }
+        if let Some(v) = self.repeat_window_minutes {
+            p.repeat_window_minutes = v;
         }
         // Timezone: YAML field wins; otherwise fall back to the
         // `MWE_INGEST_TIMEZONE` env var so a deployment can enable it with a
