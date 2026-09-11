@@ -98,11 +98,12 @@ pub mod kind {
     ///
     /// The question goes to the person that fact is about — the card is
     /// theirs, whoever happened to state what is on it: *the memory says this,
-    /// somebody else says that — does yours still hold?* Only they answer it,
-    /// and the recommended answer is **keep**, so a proposal nobody reaches
-    /// leaves the stored value exactly where it was. Nothing else in the
-    /// engine ever chooses between two values of one slot — see
-    /// [`super::apply_slot_conflict`].
+    /// somebody else says that — what does your card carry?* Only they answer
+    /// it, and the recommended answer is **keep**, so a proposal nobody
+    /// reaches leaves the stored value exactly where it was. On a box that may
+    /// hold more than one value they may also answer that it carries both.
+    /// Nothing else in the engine ever chooses between two values of one slot
+    /// — see [`super::apply_slot_conflict`].
     pub const SLOT_CONFLICT: &str = "slot_conflict";
 
     /// Every canonical kind.
@@ -927,7 +928,7 @@ const SLOT_QUESTION_ID: &str = "verdict";
 #[derive(Debug, Clone)]
 pub struct SlotConflict {
     /// The one thing both values state. A box of the identity card
-    /// (`ingest::CARD_SLOTS`) where the question comes from a card, and the
+    /// (`ingest::card_slot`) where the question comes from a card, and the
     /// reconciler's own free wording — "the wifi password" — where it comes
     /// from a supersede somebody could not apply. Together with
     /// [`Self::kept_fact_id`] and [`Self::asserted_key`] it is what makes two
@@ -1118,8 +1119,8 @@ pub async fn emit_slot_conflict(pool: &SqlitePool, c: &SlotConflict) -> Result<S
     .await
 }
 
-/// Apply a `slot_conflict` proposal: the recipient said whether the stored
-/// value still holds.
+/// Apply a `slot_conflict` proposal: the recipient said what their card
+/// carries.
 ///
 /// - `keep` — the stored value stands and the claim that argued with it is
 ///   dropped. This is also what the timeout sweep applies, so silence leaves
@@ -1132,12 +1133,17 @@ pub async fn emit_slot_conflict(pool: &SqlitePool, c: &SlotConflict) -> Result<S
 ///   words are released into the queue, and the light dream promotes them onto
 ///   the card like any other capture — authored by whoever said them, about
 ///   whoever this card belongs to.
+/// - `both` — the parked words are released and the stored value is left
+///   alone, so the card carries the two. Offered, and honoured, only where the
+///   box may hold more than one value ([`SlotConflict::many_values`]); asked of
+///   a box that holds one it would put two live values where there can be one,
+///   so it falls back to the recommended answer.
 ///
-///   **This is not the engine writing a claim on somebody's behalf.** It is
-///   the person the card belongs to saying which of two values is theirs,
-///   which is the one answer nobody else could give and the whole reason they
-///   were asked. Retiring the old value and leaving the box empty made the
-///   answer a half-answer: the right value existed only inside the question.
+/// **Releasing is not the engine writing a claim on somebody's behalf.** It is
+/// the person the card belongs to saying what their own card carries, which is
+/// the one answer nobody else could give and the whole reason they were asked.
+/// An answer that retires the old value without writing the new one is half an
+/// answer: the right value would exist only inside the question.
 ///
 /// Releasing and dropping are both best-effort — the verdict on the stored
 /// value is the load-bearing half and it has already landed.

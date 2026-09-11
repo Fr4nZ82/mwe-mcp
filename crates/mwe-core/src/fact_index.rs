@@ -85,8 +85,8 @@ pub struct FactIndexRow {
     /// card: a named thing is not the person whose card it would land on.
     pub subject_external: Option<String>,
     /// The identity-card SLOT this fact fills — `mobile_number`,
-    /// `home_address`, one of `ingest::CARD_SLOTS` — and `None` for the vast
-    /// majority of facts, which fill no slot.
+    /// `home_address`, one of the card's own boxes (`ingest::card_slot`) — and
+    /// `None` for the vast majority of facts, which fill no slot.
     ///
     /// Kept so the engine can ask whether a new value refills a slot this card
     /// already fills **without a model**, which is what the speaker who may not
@@ -96,9 +96,9 @@ pub struct FactIndexRow {
     /// no comparison.
     ///
     /// Not a key: it only ever decides whether to ASK the card's owner. It is
-    /// a closed vocabulary, though — the classifier copies one of
-    /// `ingest::CARD_SLOTS` verbatim and anything else records nothing, so
-    /// two spellings of one slot cannot sit here as two slots.
+    /// a closed vocabulary, though — the classifier copies one of the card's
+    /// own box names verbatim (`ingest::card_slot`) and anything else records
+    /// nothing, so two spellings of one slot cannot sit here as two slots.
     pub slot: Option<String>,
     /// The bare VALUE this fact puts in that slot — `07700 900314`,
     /// `1983-05-09`, `Marco` — lifted out of the sentence by the classifier

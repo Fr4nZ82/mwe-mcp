@@ -1182,8 +1182,8 @@ struct LlmExtraction {
     /// nothing about a new turn makes it the one that is wrong.
     #[serde(default)]
     conflicts_with: Option<String>,
-    /// Which single-value box of the identity card this fact fills, named
-    /// from [`CARD_SLOTS`] and copied verbatim.
+    /// Which box of the identity card this fact fills, named from the card's
+    /// own list ([`card_slots`]) and copied verbatim.
     ///
     /// A CLOSED list, unlike the reconciler's free-worded [`LlmSupersede::slot`],
     /// and for a reason the reconciler does not have: this name is stored and
@@ -1256,7 +1256,9 @@ const EXTRACTION_FIELDS: &[&str] = &[
 ///
 /// A person has one date of birth, one address they live at, one mother. A
 /// second, different value in one of these is a disagreement whoever says it,
-/// and the engine may raise it without a model having judged anything.
+/// which is what makes it the only family the engine may raise by itself —
+/// under the rest of [`SlotSide::Served`]'s conditions, which say how sure it
+/// has to be before it does.
 const ONE_VALUE_SLOTS: &[&str] = &[
     "full_name",
     "date_of_birth",
@@ -1443,8 +1445,9 @@ struct CaptureUnit<'a> {
     /// (see [`LlmExtraction::conflicts_with`] and [`LlmExtraction::slot`]).
     conflicts_with: Option<&'a str>,
     /// The card slot this fact fills, as the model wrote it. The dispatch
-    /// narrows it to [`CARD_SLOTS`] ([`card_slot`]) before anything records or
-    /// compares it, so a name outside the list reaches the write as `None`.
+    /// narrows it to the card's own list ([`card_slot`]) before anything
+    /// records or compares it, so a name outside it reaches the write as
+    /// `None`.
     slot: Option<&'a str>,
     /// Borrowed view of [`LlmExtraction::slot_value`] — the bare value that
     /// slot holds.
@@ -2050,8 +2053,13 @@ impl ListRefusal {
 ///
 /// It says who was asked and nothing else. Naming the box, quoting what is on
 /// record or saying when it was said would each disclose exactly what the
-/// audience list withholds — and the speaker was excluded from that value on
-/// purpose.
+/// audience list withholds — and on the road this notice was written for, the
+/// speaker was excluded from that value on purpose.
+///
+/// It says nothing about WHY the claim was not theirs to settle, because two
+/// roads reach it: a value they may not read, and a turn already carrying a
+/// question of its own, which a speaker entitled to settle the box can reach
+/// as easily as anybody.
 /// Add an owner to the turn's one-shot notice, once.
 ///
 /// First appearance keeps its place, and a second claim about the same
@@ -2077,17 +2085,16 @@ fn slot_notice(owners: &[Principal]) -> Option<String> {
         .iter()
         .all(|owner| proposals::recipient_of_the_card(owner).is_some())
     {
-        "They have been asked which of the two is right and will decide."
+        "They have been asked what their record carries and will decide."
     } else {
         "It has been passed on for a decision: to each person it is about, and to the \
          administrator where the record belongs to a group."
     };
     Some(format!(
         "NOTE — what the user said about {who} fills a detail their record already holds with a \
-         different value, and it was not the user's to settle. It was NOT saved. {decided_by} \
-         Tell the user that much and nothing else: do NOT say what is on record, do NOT say \
-         which detail it is, do NOT guess, and do NOT say their version was saved or that it \
-         was rejected."
+         different value. It was NOT saved. {decided_by} Tell the user that much and nothing \
+         else: do NOT say what is on record, do NOT say which detail it is, do NOT guess, and \
+         do NOT say their version was saved or that it was rejected."
     ))
 }
 
@@ -6567,7 +6574,7 @@ impl BehaviourScope {
 /// of space, case.
 ///
 /// Both sides are always the engine's own words — a standing directive
-/// restated by the classifier, or a card-slot name out of [`CARD_SLOTS`] — so
+/// restated by the classifier, or a card-slot name out of [`card_slots`] — so
 /// nothing subtler than this is worth reading as sameness, and anything looser
 /// would retire a rule that says something else.
 fn same_words(a: &str, b: &str) -> bool {
@@ -7814,7 +7821,7 @@ struct StoredValue {
     /// whose subject is which of two claims is right.
     said_on: Option<String>,
     /// The card slot it fills, when the row records one — one of
-    /// [`CARD_SLOTS`] ([`fact_index::FactIndexRow::slot`]). A value that never
+    /// the card's own list ([`fact_index::FactIndexRow::slot`]). A value that never
     /// recorded its slot takes part in no slot comparison: there is nothing to
     /// compare it by, and guessing from its words is the model judgement this
     /// path exists to do without.
@@ -8350,7 +8357,7 @@ fn vet_slot_conflict<'a>(
 ///
 /// It is a string comparison and not a judgement. The claim names the box it
 /// fills, the stored fact remembers the box it fills, both names come from
-/// [`CARD_SLOTS`], and what decides "something else" is the two bare values
+/// [`card_slots`], and what decides "something else" is the two bare values
 /// ([`StoredValue::is_the_same_value`]). Nothing is read out of the sentences.
 ///
 /// `None` unless every one of these holds: the claim is a `bio` fact (nothing
@@ -10565,7 +10572,7 @@ pub async fn wiki_ingest_message(
                 }
 
                 // The box this claim fills is named from a closed list
-                // ([`CARD_SLOTS`]), because the name is written down and read
+                // ([`card_slots`]), because the name is written down and read
                 // back by a later turn: free words make `birth_date` and
                 // `birthday` two boxes that never collide. A name outside the
                 // list is refused here, once, so nothing downstream records or

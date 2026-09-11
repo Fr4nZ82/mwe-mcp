@@ -486,7 +486,7 @@ When it is, do not write it beside. Set on that extraction:
   - **an email address**: lowercase — `alice@example.com`.
   - **everything else**: as it was said, and nothing more — `Marco`, `Bologna`, `plumber`.
 
-The engine then holds that fact back and asks which of the two is right — the person in front of you, in this same turn; or, when this turn is already asking them something else, the person whose card it is — and writes only after the answer. **Nothing is lost** — the words you extracted travel with the question — and nothing is decided by you or by anybody else who was not there.
+The engine then holds that fact back and asks which of the two the card carries — the person in front of you, in this same turn; or, when this turn is already asking them something else, the person whose card it is — and writes only after the answer. **Nothing is lost** — the words you extracted travel with the question — and nothing is decided by you or by anybody else who was not there.
 
 - **You are not choosing.** Never drop the new value because the card disagrees, and never assume the card is stale because the turn is newer. Somebody stated what is on the card; you do not know who is right, and neither does the engine. Emit the extraction with `conflicts_with` and let the person say.
 - **Same value, no conflict.** A fact that says what the card already says is a duplicate: leave `conflicts_with` unset and let it file. This is for a DIFFERENT value in the same slot.

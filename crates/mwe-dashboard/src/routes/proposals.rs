@@ -687,7 +687,7 @@ fn label(row: &ProposalRow) -> &'static str {
         kind::FACT_FORGET => "A request to forget",
         kind::PAGE_CREATE => "A page the memory made",
         kind::RAIL_ADD => "A link between pages",
-        kind::SLOT_CONFLICT => "Two answers to one question",
+        kind::SLOT_CONFLICT => "Two values for one detail",
         // A row written by a newer engine shows as itself rather than
         // being swallowed into a wrong label.
         _ => "Something changed",

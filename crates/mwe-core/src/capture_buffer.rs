@@ -449,7 +449,7 @@ pub async fn buffer_capture_with_source(
 ///
 /// The claim is written down and nothing reads it: it is a value somebody
 /// stated for a slot of somebody else's identity card without the standing to
-/// settle it, and the card's owner has been asked which of the two is right.
+/// settle it, and the card's owner has been asked what their card carries.
 /// Losing the words would mean asking the owner a question whose answer
 /// nobody could act on; queueing them would be writing the claim the engine
 /// just decided not to write. So they wait, and the answer moves them
