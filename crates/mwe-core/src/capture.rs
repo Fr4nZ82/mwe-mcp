@@ -478,6 +478,18 @@ pub(crate) fn best_dedup_candidate<'a>(
 
 // ---------- a list entry is named, and the name is its identity ----------
 
+/// A list entry as two entries are compared: lowercased, whitespace
+/// collapsed, sentence punctuation trimmed. The middle dot survives — it
+/// separates a value, and a value is part of what is being compared.
+fn normalised_entry(body: &str) -> String {
+    body.to_lowercase()
+        .split_whitespace()
+        .collect::<Vec<_>>()
+        .join(" ")
+        .trim_matches(|c: char| ".,;:!?".contains(c))
+        .to_owned()
+}
+
 /// The NAME half of a list entry — what the row is OF, with the values the
 /// speaker gave it taken off.
 ///
@@ -488,8 +500,7 @@ pub(crate) fn best_dedup_candidate<'a>(
 /// values; before it, the run of words starting at the first digit is the
 /// first value.
 ///
-/// What is left is the name, lowercased with its whitespace collapsed and its
-/// sentence punctuation trimmed — so `Latte 2` and `latte 4` answer the same
+/// What is left is the name — so `Latte 2` and `latte 4` answer the same
 /// thing, while `pane senza glutine`, which carries no number at all, stays
 /// whole and is a different entry from `pane`. That is the intended reading:
 /// a qualifier is part of what you are buying, a quantity is not.
@@ -500,7 +511,7 @@ pub(crate) fn best_dedup_candidate<'a>(
 /// nothing, which is what every caller wants.
 #[must_use]
 pub(crate) fn list_entry_name(body: &str) -> String {
-    let head = body.split('·').next().unwrap_or(body).to_lowercase();
+    let head = normalised_entry(body.split('·').next().unwrap_or(body));
     let words: Vec<&str> = head.split_whitespace().collect();
     let cut = words
         .iter()
@@ -513,7 +524,33 @@ pub(crate) fn list_entry_name(body: &str) -> String {
         .to_owned()
 }
 
-/// The active list entry a new one REPLACES: same list, same name, new values.
+/// Whether a list body says anything BEYOND the name of its entry.
+///
+/// `latte 2` does, `yogurt · scade 20 settembre` does, `latte` does not, and
+/// neither does `pane senza glutine` — whose qualifier is part of the name and
+/// not a value ([`list_entry_name`]).
+fn list_entry_carries_values(body: &str) -> bool {
+    let whole = normalised_entry(body);
+    !whole.is_empty() && whole != list_entry_name(body)
+}
+
+/// What an incoming list entry does to the row already on the list under the
+/// same name.
+#[derive(Debug)]
+pub(crate) enum ListEntryVerdict<'a> {
+    /// Nothing on that list carries this name: an ordinary add.
+    New,
+    /// The same entry with different values: the row is brought up to date,
+    /// which means the new one is written and the old one retired.
+    Replaces(&'a FactIndexRow),
+    /// The same entry said again with NOTHING new — «anche il latte» when
+    /// `latte 2` is already on the list. A repetition of the entry is not an
+    /// amendment of it, and writing it would either lose the quantity or add a
+    /// second line: it is a duplicate, and the row that exists stands.
+    Restates(&'a FactIndexRow),
+}
+
+/// Read an incoming list entry against the list it is headed for.
 ///
 /// Founder, 2026-09-11: a list may carry values — «latte 2», «acqua 2 casse»,
 /// a use-by date — and saying one again with a different value is the same
@@ -524,21 +561,46 @@ pub(crate) fn list_entry_name(body: &str) -> String {
 /// be the answer — it judges from a model against the candidates it was
 /// shown, and a list is the one shape whose upkeep is arithmetic.
 ///
-/// Four fences, and each is a case this must NOT take:
+/// **Values REPLACE, they never merge.** «latte 2» then «latte · scade 20
+/// settembre» leaves the expiry and drops the quantity, because the engine has
+/// no way to tell a value that supersedes from a value that is being added and
+/// guessing would invent a row nobody said. Somebody who wants both says both.
+///
+/// Four fences on the row it may take, and each is a case this must NOT read
+/// as an amendment:
 ///
 /// - **the same page**, so an entry on the shopping list never displaces one
 ///   that names the same thing on another list;
 /// - **not already closed** (`decay_reason`), because a ticked-off `latte · ✓`
 ///   is the record that it was bought, and the list is expected to cycle
 ///   open → done → open: replacing it would delete the purchase;
-/// - **the same read set**, so the replacement reaches exactly the people the
-///   entry reached. The reporter is deliberately not compared — a shared list
-///   is a set of items, not a set of claims, and two people writing down the
-///   quantity of one item are writing one row;
+/// - **the same subject and the same `allow`**. Who WROTE the row is
+///   deliberately not compared — a shared list is a set of items, not a set of
+///   claims, and two people writing down the quantity of one item are writing
+///   one row — but the author is a reader of what they wrote
+///   ([`crate::acl::can_read`]), so a replacement that does not reach them is
+///   carried over to them by [`list_entry_to_replace`] rather than quietly
+///   narrowing the row;
 /// - **a different body**, because a verbatim restatement is a duplicate: it
 ///   belongs to the dedup skip, which keeps the row that exists instead of
 ///   minting a fresh id for the same words.
-pub(crate) fn list_entry_superseded<'a>(
+pub(crate) fn list_entry_verdict<'a>(
+    candidates: &'a [FactIndexRow],
+    req: &CaptureRequest,
+) -> ListEntryVerdict<'a> {
+    let Some(row) = list_entry_of_the_same_name(candidates, req) else {
+        return ListEntryVerdict::New;
+    };
+    if list_entry_carries_values(&crate::parser::strip_embed_markers(&req.body)) {
+        ListEntryVerdict::Replaces(row)
+    } else {
+        ListEntryVerdict::Restates(row)
+    }
+}
+
+/// The active row on this list that carries the same entry name, with a
+/// different body. See [`list_entry_verdict`] for the fences.
+fn list_entry_of_the_same_name<'a>(
     candidates: &'a [FactIndexRow],
     req: &CaptureRequest,
 ) -> Option<&'a FactIndexRow> {
@@ -581,8 +643,24 @@ pub(crate) fn list_entry_superseded<'a>(
     })
 }
 
-/// [`list_entry_superseded`] against the index: the entry this request
-/// replaces, or `None` when it adds a new one.
+/// The row this list entry replaces, and who the replacement must also reach.
+#[derive(Debug, Clone)]
+pub(crate) struct ListReplacement {
+    /// The row being brought up to date; it is retired by the write.
+    pub target: FactId,
+    /// A principal the replacement has to be readable by and would not be
+    /// otherwise: the AUTHOR of the row it replaces.
+    ///
+    /// A fact is readable by its subject, its `allow` list **and whoever wrote
+    /// it** ([`crate::acl::can_read`]), so a row Bob wrote on a list about
+    /// Alice is Bob's to read even with an empty `allow`. Replacing it with a
+    /// row Alice wrote would take it away from him — a silent narrowing of who
+    /// can see an item on a shared list. Widening to him instead discloses
+    /// nothing: he is the one who wrote the entry.
+    pub widen_to: Option<Principal>,
+}
+
+/// [`list_entry_verdict`] against the index, on the replacement branch.
 ///
 /// Soft on error — a lookup that cannot run lets the capture through as an
 /// ordinary add. The cost is a second line on the list, which is exactly what
@@ -591,7 +669,7 @@ pub(crate) fn list_entry_superseded<'a>(
 pub(crate) async fn list_entry_to_replace(
     pool: &SqlitePool,
     req: &CaptureRequest,
-) -> Option<FactId> {
+) -> Option<ListReplacement> {
     if req.style != Some(crate::wiki::PageStyle::Lista) || req.page.is_none() {
         return None;
     }
@@ -606,7 +684,44 @@ pub(crate) async fn list_entry_to_replace(
             return None;
         },
     };
-    list_entry_superseded(&candidates, req).map(|row| row.fact_id.clone())
+    let ListEntryVerdict::Replaces(row) = list_entry_verdict(&candidates, req) else {
+        return None;
+    };
+    Some(ListReplacement {
+        target: row.fact_id.clone(),
+        widen_to: reader_to_carry_over(pool, row, req).await,
+    })
+}
+
+/// The author of `row`, when the request as it stands would not let them read
+/// what replaces it. See [`ListReplacement::widen_to`].
+///
+/// The membership lookup is what keeps the widening quiet: on a family list
+/// the author is usually already covered by the group the row is about, and
+/// asking [`crate::acl::can_read`] rather than comparing principals is what
+/// tells the two cases apart. A lookup that fails widens — the safe direction,
+/// since the worst it costs is a redundant name on a list nobody else reads.
+async fn reader_to_carry_over(
+    pool: &SqlitePool,
+    row: &FactIndexRow,
+    req: &CaptureRequest,
+) -> Option<Principal> {
+    let author = row.sender_id.as_ref()?;
+    let Principal::User(bare) = author else {
+        // A group never authors a capture; nothing to carry over.
+        return None;
+    };
+    let groups = crate::enrollment::groups_for(pool, bare)
+        .await
+        .unwrap_or_default();
+    let acl = crate::types::Acl {
+        subject: Some(req.subject.clone()),
+        allow: req.allow.clone(),
+    };
+    if crate::acl::can_read(&acl, bare, &groups, req.sender.as_ref()) {
+        return None;
+    }
+    Some(author.clone())
 }
 
 // ---------- wiki_capture ----------
@@ -760,6 +875,39 @@ pub async fn wiki_capture_with_source(
             similarity,
             "capture: dedup hit overridden — embed sets differ (different media, distinct facts)"
         );
+    }
+
+    // A LIST ENTRY SAID AGAIN WITH NOTHING NEW is a duplicate, whatever the
+    // n-grams say. «anche il latte» against `latte 2` on the same list scores
+    // nowhere near the threshold — four letters against seven — so without
+    // this the list grows a bare `latte` beside the quantity, or, worse, the
+    // caller reads it as an amendment and the quantity is gone. The row that
+    // exists stands, and the reported similarity is the real one, so a caller
+    // logging the collision logs what actually happened
+    // ([`list_entry_verdict`]).
+    //
+    // Off when dedup is off: `wiki_supersede` disables it because a supersede
+    // is explicit intent, and this is a dedup rule like the one above.
+    if threshold <= 1.0
+        && let ListEntryVerdict::Restates(row) = list_entry_verdict(&candidates, &req)
+    {
+        let fresh = new_fact_id()?;
+        tracing::info!(
+            wiki_id = %wiki_id_str,
+            page = %page.display(),
+            matched_fact_id = row.fact_id.as_str(),
+            "capture: SKIPPED (the list entry was said again with nothing new)"
+        );
+        return Ok(CaptureOutcome {
+            fact_id: fresh,
+            action: CaptureAction::Skipped {
+                matched_fact_id: row.fact_id.clone(),
+                similarity: best
+                    .as_ref()
+                    .filter(|(matched, _)| matched.fact_id == row.fact_id)
+                    .map_or(0.0, |(_, score)| *score),
+            },
+        });
     }
 
     // Generate id, render the bare runtime marker, compute the new page
@@ -1289,6 +1437,12 @@ mod tests {
         }
     }
 
+    /// The id of the row this entry replaces, or `None` — the shape most of
+    /// the assertions below want, with the carried-over reader left aside.
+    async fn replaced(pool: &SqlitePool, req: &CaptureRequest) -> Option<FactId> {
+        list_entry_to_replace(pool, req).await.map(|r| r.target)
+    }
+
     fn list_request(page: &str, body: &str) -> CaptureRequest {
         CaptureRequest {
             page: Some(PathBuf::from(page)),
@@ -1368,7 +1522,7 @@ mod tests {
 
         // The same item, a new quantity → the milk row is the one replaced.
         assert_eq!(
-            list_entry_to_replace(&pool, &list_request("spesa.md", "latte 4")).await,
+            replaced(&pool, &list_request("spesa.md", "latte 4")).await,
             Some(milk.fact_id.clone()),
         );
         // And the other way round: an entry that gains a value for the first
@@ -1377,33 +1531,33 @@ mod tests {
             .await
             .expect("capture");
         assert_eq!(
-            list_entry_to_replace(&pool, &list_request("spesa.md", "yogurt · scade 20/09")).await,
+            replaced(&pool, &list_request("spesa.md", "yogurt · scade 20/09")).await,
             Some(yoghurt.fact_id),
         );
 
         // A different item, on the same list.
         assert!(
-            list_entry_to_replace(&pool, &list_request("spesa.md", "pane 2"))
+            replaced(&pool, &list_request("spesa.md", "pane 2"))
                 .await
                 .is_none(),
             "`pane 2` names a different item from `pane senza glutine`"
         );
         // The same words, on another list.
         assert!(
-            list_entry_to_replace(&pool, &list_request("spesa.md", "viti 40"))
+            replaced(&pool, &list_request("spesa.md", "viti 40"))
                 .await
                 .is_none(),
             "an entry never replaces one on a different page"
         );
         assert_eq!(
-            list_entry_to_replace(&pool, &list_request("ferramenta.md", "viti 40")).await,
+            replaced(&pool, &list_request("ferramenta.md", "viti 40")).await,
             Some(elsewhere.fact_id),
             "on its own list it does",
         );
         // The very same words: a duplicate, which the dedup skip settles by
         // keeping the row that exists.
         assert!(
-            list_entry_to_replace(&pool, &list_request("spesa.md", "latte 2"))
+            replaced(&pool, &list_request("spesa.md", "latte 2"))
                 .await
                 .is_none(),
             "a verbatim restatement is a duplicate, not a replacement"
@@ -1412,7 +1566,7 @@ mod tests {
         let mut prose = list_request("spesa.md", "latte 6");
         prose.style = Some(crate::wiki::PageStyle::Prosa);
         assert!(
-            list_entry_to_replace(&pool, &prose).await.is_none(),
+            replaced(&pool, &prose).await.is_none(),
             "only a `lista` body is read as an entry"
         );
 
@@ -1428,10 +1582,147 @@ mod tests {
         .await
         .expect("close");
         assert!(
-            list_entry_to_replace(&pool, &list_request("spesa.md", "latte 4"))
+            replaced(&pool, &list_request("spesa.md", "latte 4"))
                 .await
                 .is_none(),
             "a ticked-off entry is the record of a purchase, never a row to overwrite"
+        );
+        drop(dir);
+    }
+
+    /// **An entry said again with NOTHING new keeps the values it has.**
+    ///
+    /// «anche il latte», after `latte 2` is already on the list, is a
+    /// repetition of the entry and not an amendment of it. Reading it as one
+    /// would rewrite the row as a bare `latte` and the quantity would be gone;
+    /// filing it as a new claim would put `latte` on the list beside `latte 2`,
+    /// which the n-gram dedup cannot stop — four letters against seven score
+    /// nowhere near its threshold. So the write path skips it, and the row
+    /// stands.
+    ///
+    /// The other direction is the test beside it: a value said for the first
+    /// time IS an amendment.
+    #[tokio::test]
+    async fn a_list_entry_said_again_with_nothing_new_leaves_the_row_alone() {
+        let dir = tempdir().unwrap();
+        let tree = WikiTree::open(dir.path()).unwrap();
+        seed_alice(&tree);
+        let pool = make_pool().await;
+
+        let milk = wiki_capture(
+            &tree,
+            &pool,
+            embedder(),
+            list_request("spesa.md", "latte 2"),
+        )
+        .await
+        .expect("capture");
+
+        assert!(
+            replaced(&pool, &list_request("spesa.md", "latte"))
+                .await
+                .is_none(),
+            "a bare repetition is not a replacement"
+        );
+        let again = wiki_capture(&tree, &pool, embedder(), list_request("spesa.md", "latte"))
+            .await
+            .expect("capture");
+        match &again.action {
+            CaptureAction::Skipped {
+                matched_fact_id, ..
+            } => {
+                assert_eq!(matched_fact_id, &milk.fact_id);
+            },
+            other => panic!("the entry was said again with nothing new: {other:?}"),
+        }
+        let live = fact_index::find_active_by_subject(&pool, &"user:alice".parse().unwrap())
+            .await
+            .expect("rows");
+        assert_eq!(
+            live.len(),
+            1,
+            "one milk, and it kept its quantity: {live:?}"
+        );
+        assert_eq!(live[0].text, "latte 2");
+
+        // And the amendment still works from there: values replace values.
+        let with_a_date = wiki_capture(
+            &tree,
+            &pool,
+            embedder(),
+            list_request("spesa.md", "latte · scade 20 settembre"),
+        );
+        assert_eq!(
+            replaced(
+                &pool,
+                &list_request("spesa.md", "latte · scade 20 settembre")
+            )
+            .await,
+            Some(milk.fact_id),
+            "a value said for the first time is the same entry brought up to date"
+        );
+        drop(with_a_date);
+        drop(dir);
+    }
+
+    /// **A replacement never takes a row away from the person who wrote it.**
+    ///
+    /// A fact is readable by its subject, its `allow` list and its AUTHOR, so
+    /// Bob's `latte 2` on a list about Alice is Bob's to read with an empty
+    /// `allow`. Alice saying «latte 3» writes a row of her own, and without
+    /// the carry-over Bob would stop seeing an item he put on the list
+    /// himself — a silent narrowing, on the one axis that is not supposed to
+    /// move when content does.
+    ///
+    /// The widening is quiet where it can be: on a list the group already
+    /// covers, the author reads the replacement anyway and nothing is added.
+    #[tokio::test]
+    async fn replacing_a_row_carries_its_author_over_as_a_reader() {
+        let dir = tempdir().unwrap();
+        let tree = WikiTree::open(dir.path()).unwrap();
+        seed_alice(&tree);
+        let pool = make_pool().await;
+
+        let mut bobs = list_request("spesa.md", "latte 2");
+        bobs.sender = Some("user:bob".parse().unwrap());
+        let bobs_row = wiki_capture(&tree, &pool, embedder(), bobs)
+            .await
+            .expect("capture");
+
+        let alices = list_request("spesa.md", "latte 3");
+        let replacement = list_entry_to_replace(&pool, &alices)
+            .await
+            .expect("the same item, a new quantity");
+        assert_eq!(replacement.target, bobs_row.fact_id);
+        assert_eq!(
+            replacement.widen_to,
+            Some("user:bob".parse().unwrap()),
+            "the row is about alice and allows nobody, so bob only reads it as its author"
+        );
+
+        // Now the same pair inside a group both belong to: bob reads the
+        // replacement through the group, and nothing is carried over.
+        sqlx::query(
+            "INSERT INTO enrollment_groups (group_id, members) \
+             VALUES ('famiglia', '[\"alice\",\"bob\"]')",
+        )
+        .execute(&pool)
+        .await
+        .expect("group");
+        let mut shared = list_request("spesa.md", "pane 1");
+        shared.subject = "group:famiglia".parse().unwrap();
+        shared.sender = Some("user:bob".parse().unwrap());
+        wiki_capture(&tree, &pool, embedder(), shared.clone())
+            .await
+            .expect("capture");
+        let mut alices_bread = list_request("spesa.md", "pane 2");
+        alices_bread.subject = "group:famiglia".parse().unwrap();
+        let replacement = list_entry_to_replace(&pool, &alices_bread)
+            .await
+            .expect("the same item, a new quantity");
+        assert_eq!(
+            replacement.widen_to, None,
+            "the group the row is about already reaches its author"
         );
         drop(dir);
     }

@@ -198,10 +198,20 @@ semver-governed surface: breaking changes are called out explicitly.
   of adding one.** Say *"two litres of milk"* and later *"make that four"* and
   the list holds one milk, with four; the earlier line is kept as history on
   the **Facts** page, the way every replaced fact is. The same name is the same
-  item, whoever put it there — but an item you have already ticked off is the
-  record that you bought it, and buying it again opens a new line rather than
-  erasing that. A qualifier is part of the item: *gluten-free bread* is not
-  *bread* with a value, so both can sit on the list.
+  item, whoever put it there — and it stays readable by whoever put it there,
+  so an item somebody else added does not vanish from their view when you
+  correct the amount. But an item you have already ticked off is the record
+  that you bought it, and buying it again opens a new line rather than erasing
+  that. A qualifier is part of the item: *gluten-free bread* is not *bread*
+  with a value, so both can sit on the list.
+
+  **Mentioning an item again without saying anything new leaves it exactly as
+  it is.** *"the milk too"*, when *two litres of milk* is already on the list,
+  is you repeating yourself and not you correcting the quantity: nothing is
+  written, the line keeps its two litres, and no bare *milk* appears beside it.
+  What does replace is a new value, and a new value replaces the old one whole
+  — say *"milk, it expires on the 20th"* and the line becomes the expiry date,
+  not the date plus the quantity. Say both if you want both.
 
   Nothing rewrites what is on your lists today: the lines already written as
   sentences stay as they are. Saying one of them again writes the new short

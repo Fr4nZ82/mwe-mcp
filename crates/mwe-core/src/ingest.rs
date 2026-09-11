@@ -11249,11 +11249,6 @@ pub async fn wiki_ingest_message(
                 let unit_media =
                     resolve_unit_attachments(unit.attachments, &request, &mut claimed_attachments);
                 append_embed_markers(&mut cap_req.body, &unit_media);
-                let media_acl = (
-                    cap_req.subject.clone(),
-                    cap_req.allow.clone(),
-                    cap_req.sender.clone(),
-                );
 
                 // A LIST ENTRY SAID AGAIN WITH DIFFERENT VALUES IS THE SAME
                 // ENTRY. «latte 2» then «latte 4» is one line with a new
@@ -11261,14 +11256,38 @@ pub async fn wiki_ingest_message(
                 // it to a model: the write-time dedup scores two short entries
                 // far apart and files a second row, and the reconciliation
                 // stage judges from candidates it may not have been shown. See
-                // [`capture::list_entry_superseded`] for the four cases it
-                // refuses. The classifier's own `supersede_target` wins when it
-                // set one — that road is narrowed to standing directives and
-                // never reaches a list.
+                // [`capture::list_entry_verdict`] for what it refuses, the
+                // restatement included — that one never reaches here, because
+                // it is a duplicate and the write path skips it. The
+                // classifier's own `supersede_target` wins when it set one —
+                // that road is narrowed to standing directives and never
+                // reaches a list.
+                //
+                // The widening runs BEFORE the media snapshot below, so a
+                // photo riding the entry reaches the same people the entry
+                // does.
                 let supersede_target = match supersede_target {
                     Some(target) => Some(target),
-                    None => capture::list_entry_to_replace(pool, &cap_req).await,
+                    None => match capture::list_entry_to_replace(pool, &cap_req).await {
+                        Some(replacement) => {
+                            if let Some(reader) = replacement.widen_to {
+                                tracing::info!(
+                                    replaced = replacement.target.as_str(),
+                                    carried_over = %reader,
+                                    "ingest: the replaced list entry's author stays a reader of it"
+                                );
+                                cap_req.allow.push(reader);
+                            }
+                            Some(replacement.target)
+                        },
+                        None => None,
+                    },
                 };
+                let media_acl = (
+                    cap_req.subject.clone(),
+                    cap_req.allow.clone(),
+                    cap_req.sender.clone(),
+                );
 
                 // Standard wikis buffer the capture for the hourly round;
                 // a smart-wiki target would keep the direct-write path,
@@ -19828,7 +19847,7 @@ mod tests {
         ] {
             assert!(
                 BUNDLED_INGEST_PROMPT_MD.contains(needle),
-                "the bundled prompt no longer says: {needle}"
+                "the bundled prompt does not say: {needle}"
             );
         }
         assert!(
@@ -19863,7 +19882,7 @@ mod tests {
         ] {
             assert!(
                 BUNDLED_INGEST_PROMPT_MD.contains(needle),
-                "the bundled prompt no longer says: {needle}"
+                "the bundled prompt does not say: {needle}"
             );
         }
         assert!(
@@ -20043,7 +20062,7 @@ mod tests {
         ] {
             assert!(
                 BUNDLED_INGEST_PROMPT_MD.contains(needle),
-                "the bundled prompt no longer says: {needle}"
+                "the bundled prompt does not say: {needle}"
             );
         }
         assert!(
@@ -21092,7 +21111,7 @@ mod tests {
         assert!(
             BUNDLED_INGEST_PROMPT_MD
                 .contains("**They are written in the SAME LANGUAGE as the body**"),
-            "the topics section no longer says which language its words take"
+            "the topics section does not say which language its words take"
         );
         assert!(
             BUNDLED_INGEST_PROMPT_MD.contains("[\"car\", \"purchase\"]"),
@@ -27166,6 +27185,94 @@ mod tests {
         )
         .await
         .expect("a turn of its own");
+        drop(dir);
+    }
+
+    /// **Whoever could read a list row can still read it after somebody else
+    /// updates it.**
+    ///
+    /// Bob puts `latte 2` on a list about Alice: the row allows nobody, and he
+    /// reads it because he wrote it ([`crate::acl::can_read`]). Alice says
+    /// «latte 4» and the row is replaced by one of hers — which, left alone,
+    /// he would not read at all. An item disappearing off a shared list
+    /// because somebody corrected the quantity is not a content change, it is
+    /// a permission change, and nothing in this turn asked for one.
+    #[tokio::test]
+    async fn replacing_a_list_row_never_takes_it_away_from_its_author() {
+        let (dir, tree, pool) = setup_workdir().await;
+        let bobs = crate::capture::CaptureRequest {
+            subject_external: None,
+            slot: None,
+            slot_value: None,
+            authored_refs: Vec::new(),
+            wiki_id: crate::types::WikiId::parse("alice").unwrap(),
+            page: Some(PathBuf::from("spesa.md")),
+            body: "latte 2".to_owned(),
+            subject: "user:alice".parse().unwrap(),
+            allow: Vec::new(),
+            sender: Some(Principal::User("bob".into())),
+            fact_type: Some("plan".to_owned()),
+            topics: Vec::new(),
+            dedup_threshold: None,
+            valid_from: None,
+            valid_to: None,
+            style: Some(crate::wiki::PageStyle::Lista),
+            page_description: None,
+            salience: None,
+        };
+        let planted = capture::wiki_capture(&tree, &pool, fake_embedder(), bobs)
+            .await
+            .expect("bob puts it on the list");
+        let reads = async |pool: &SqlitePool, fact: &FactId| {
+            let row = fact_index::find_by_id(pool, fact)
+                .await
+                .expect("row")
+                .expect("row");
+            crate::acl::can_read(
+                &crate::types::Acl {
+                    subject: Some(row.subject_id.clone()),
+                    allow: row.allow_ids.clone(),
+                },
+                "bob",
+                &[],
+                row.sender_id.as_ref(),
+            )
+        };
+        assert!(
+            reads(&pool, &planted.fact_id).await,
+            "bob reads what he wrote"
+        );
+
+        let llm = ScriptedLlm::new(&[
+            "{\"intent\":\"capture\",\"extractions\":[\
+               {\"target_wiki_id\":\"alice\",\"target_page\":\"spesa.md\",\
+                \"subject_id\":\"user:alice\",\"body\":\"latte 4\",\
+                \"fact_type\":\"plan\",\"style\":\"lista\",\
+                \"requested_container\":true,\"topics\":[\"shopping\"]}]}",
+            "{\"closures\":[],\"supersedes\":[],\"validity_edits\":[],\"acl_changes\":[]}",
+        ]);
+        wiki_ingest_message(
+            &pool,
+            &tree,
+            fake_embedder(),
+            &llm,
+            None,
+            req("quattro litri di latte", "alice"),
+            &IngestPolicy::default(),
+        )
+        .await
+        .expect("alice updates the quantity");
+
+        let live = fact_index::find_active_in_wiki(&pool, "alice")
+            .await
+            .unwrap();
+        assert_eq!(live.len(), 1, "one milk: {live:?}");
+        assert_eq!(live[0].text, "latte 4");
+        assert!(
+            reads(&pool, &live[0].fact_id).await,
+            "and bob still reads the item he put on the list: {:?}",
+            live[0]
+        );
         drop(dir);
     }
 
