@@ -441,6 +441,7 @@ pub async fn buffer_capture_with_source(
         source_ref,
         staging,
         CaptureStatus::Buffered,
+        None,
     )
     .await
 }
@@ -460,6 +461,7 @@ pub async fn buffer_capture_with_source(
 /// See [`CaptureBufferError`].
 pub async fn park_capture(
     pool: &SqlitePool,
+    capture_id: FactId,
     req: CaptureRequest,
     staging: BufferStaging,
 ) -> Result<BufferOutcome> {
@@ -471,10 +473,34 @@ pub async fn park_capture(
         None,
         staging,
         CaptureStatus::Held,
+        Some(capture_id),
     )
     .await
 }
 
+/// Mint the id a claim will be parked under, before there is a row.
+///
+/// The question that asks about a parked claim has to NAME it, and the
+/// question is written first: opening it after the row exists leaves the loser
+/// of a race with a parked row and no question, waiting for the hourly sweep.
+/// So the id is minted, the question is written with it, and the row follows.
+///
+/// # Errors
+///
+/// [`CaptureBufferError`] when the minted uuid is not a well-formed fact id,
+/// which is a bug rather than a condition.
+pub fn mint_parked_id() -> Result<FactId> {
+    new_capture_id()
+}
+
+/// The one write both roads into the buffer take: [`buffer_capture`] and its
+/// variants for a claim that joins the queue, [`park_capture`] for one held
+/// out of it.
+///
+/// They differ in two things and must agree on everything else — the status
+/// the row lands on, and whether the caller brought an id of its own — so
+/// those are the parameters and the rest of the shaping (what the request
+/// keeps, what it drops, how the sender is materialised) lives here once.
 async fn write_capture(
     pool: &SqlitePool,
     req: CaptureRequest,
@@ -483,6 +509,7 @@ async fn write_capture(
     source_ref: Option<String>,
     staging: BufferStaging,
     status: CaptureStatus,
+    minted: Option<FactId>,
 ) -> Result<BufferOutcome> {
     let CaptureRequest {
         // The plan's destination stops here. It is the live route's — the
@@ -531,7 +558,10 @@ async fn write_capture(
     // rebinds the original provenance. NULL survives only as the degenerate
     // scrubbed state (e.g. a deleted user) that falls back to subject at read.
     let sender = sender.or_else(|| Some(subject.clone()));
-    let capture_id = new_capture_id()?;
+    let capture_id = match minted {
+        Some(id) => id,
+        None => new_capture_id()?,
+    };
     let cap = BufferedCapture {
         capture_id: capture_id.clone(),
         body,

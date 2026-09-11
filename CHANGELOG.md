@@ -84,12 +84,15 @@ semver-governed surface: breaking changes are called out explicitly.
 
   **Some of those details can honestly have more than one value** — a work
   email beside a personal one, a mobile beside a landline, a second job, a
-  second nationality — and a second value in one of them is not a
-  disagreement. Where the person speaking can see what is on the card, nothing
-  stops them and the assistant decides in the conversation. Where they cannot,
-  the question still goes to you, with a **third answer**: keep yours, take
-  theirs, or keep **both**. On the details there can only be one of — when you
-  were born, where you live, who your mother is — nothing changes.
+  second nationality, two mother tongues — and a second value in one of them is
+  not a disagreement. Where the person speaking can see what is on the card,
+  nothing stops them and the assistant decides in the conversation. Where they
+  cannot, the question still goes to you, with a **third answer**: keep yours,
+  take theirs, or keep **both** — and on those details **both** is also what
+  happens if you never answer, because throwing away something true costs more
+  than carrying a line you can remove. On the details there can only be one of
+  — when you were born, where you live, who your mother is — nothing changes,
+  and silence still keeps what your card had.
 
   Where the speaker may read the value the question reaches them as before —
   and now it reaches them even when the classifier read the card and failed to
@@ -101,7 +104,9 @@ semver-governed surface: breaking changes are called out explicitly.
   carrying its own value; one person repeating themselves is still one. And
   when a conversation is already asking you something else, a detail the
   memory notices by itself does not displace that question: it goes to the
-  person whose card it is.
+  person whose card it is — and when that person is you, your assistant says
+  so and points you at the page where the question is waiting, instead of
+  telling you somebody else has been asked about your own record.
 
   Facts written before this release do not record which detail they fill, or
   what they put in it, so they take no part in the comparison until they are

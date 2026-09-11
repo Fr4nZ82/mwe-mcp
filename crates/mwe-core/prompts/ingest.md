@@ -1,8 +1,8 @@
 ---
 name: ingest
 description: Classifier driving `wiki_ingest_message` — one JSON object per turn (intent + an `extractions[]` array of atomic facts, the SOLE fact container; every fact is prose, each carrying a per-fact validity interval `valid_from`/`valid_to`, a per-fact `style` (and, for `lista` material or a requested container, a `target_page` + `page_description`), a `requested_container` live-write flag, a per-fact `salience`, and an `engine_rule` flag routing a standing governance directive to `@rules.md` instead of `fact_index`, a `behaviour_rule` flag (with a `behaviour_scope` of `per-user`/`agent-wide`/`user-global`, read from the addressee) routing a how-an-agent-converses-or-operates directive to the calling consumer's own wiki — or, user-global, to the sender's identity wiki for every assistant serving them — and an `attachments` claim list linking the turn's media to the fact that describes them; plus two turn-level fields for a turn that TAKES SOMETHING BACK — `withdrawal` and, when what it takes back is a standing rule, `withdraw_target` naming that rule from the block of directives in force); targets the strong-model tier
-version: 2.94
-default_version_at_bootstrap: v2.94
+version: 2.95
+default_version_at_bootstrap: v2.95
 source_of_truth: crates/mwe-core/src/ingest.rs (fn wiki_ingest_message)
 ---
 
@@ -465,12 +465,12 @@ An identity card holds a handful of always-on facts: who somebody is, how they r
 **THE SLOTS, AND THERE ARE NO OTHERS.** Copy the name EXACTLY as written here, in English, whatever language this memory is written in — the name is stored with the fact and compared, months later, against the name another turn wrote for the same slot, so `date_of_birth` and `birthday` would be two slots that never meet. They come in two families, and the difference decides everything below:
 
 **ONE VALUE — a person has exactly one of these, so a second, different value is a disagreement:**
-`full_name` · `date_of_birth` · `place_of_birth` · `home_address` · `native_language` · `marital_status` · `partner` · `mother` · `father`
+`full_name` · `date_of_birth` · `place_of_birth` · `home_address` · `marital_status` · `partner` · `mother` · `father`
 
 **MORE THAN ONE — a person may honestly have several, so a second value is usually just a second value:**
-`email_address` · `mobile_number` · `landline_number` · `occupation` · `employer` · `nationality`
+`email_address` · `mobile_number` · `landline_number` · `occupation` · `employer` · `nationality` · `native_language`
 
-A work address beside a personal one, a mobile beside a landline, two nationalities, a second job: these are NOT conflicts. Set `conflicts_with` on one of them only when the two genuinely cannot both hold — «that number is dead, this is the one» — and never merely because the card already carries one.
+A work address beside a personal one, a mobile beside a landline, two nationalities, a second job, somebody raised in two languages: these are NOT conflicts. Set `conflicts_with` on one of them only when the two genuinely cannot both hold — «that number is dead, this is the one» — and never merely because the card already carries one.
 
 A `bio` fact that fills none of these leaves `slot` out, as does every fact that is not `bio`. A name that is not on this list is refused and the fact files with no slot recorded — which costs it every comparison below, so reach for the listed name rather than a better one of your own.
 

@@ -128,6 +128,17 @@ pub mod kind {
 /// Errors raised by the read side ([`list`]).
 #[derive(Debug, Error)]
 pub enum ProposalsError {
+    /// A question on this exact disagreement is already waiting on somebody.
+    ///
+    /// The uniqueness the database holds over *(stored fact, box, claimed
+    /// value)* for pending slot conflicts (migration 0080), raised as an
+    /// outcome rather than as a fault: two turns can read "nothing pending"
+    /// before either writes, and the loser of that race has done nothing wrong
+    /// — there is simply one question where it expected to open one. Told
+    /// apart from a real failure so the caller can leave the memory as it is
+    /// and say what it always says, instead of logging a broken write.
+    #[error("proposals: a question on this disagreement is already pending")]
+    AlreadyPending,
     /// Underlying SQL failure.
     #[error("proposals db: {0}")]
     Db(#[from] sqlx::Error),
@@ -636,8 +647,8 @@ pub fn recipient_of_the_card(subject: &crate::types::Principal) -> Option<String
     }
 }
 
-/// Whether a question about this fact and this slot is already waiting on
-/// somebody, and which one.
+/// Whether a question about this fact, this box and this claimed value is
+/// already waiting on somebody, and which one.
 ///
 /// Three turns restating the same value are one disagreement: without this the
 /// card's owner gets the same question three times, each carrying the value
@@ -652,6 +663,15 @@ pub fn recipient_of_the_card(subject: &crate::types::Principal) -> Option<String
 /// The key is folded (`ingest::folded_slot_value`), so restating one value in
 /// other words is still the one question.
 ///
+/// **A key either side did not write cannot tell two disagreements apart**, so
+/// where one is missing the pair alone decides and the claim joins whatever is
+/// open. That is the safe direction and not the precise one: a genuinely third
+/// value, said without its bare value, is folded into a question about
+/// something else rather than put to the owner a second time. It is also the
+/// only direction available — a claim with no value is a sentence, and two
+/// sentences carrying one number are as different as two carrying two, which
+/// is exactly the pair this key exists to stop being two questions.
+///
 /// The scan is over PENDING rows — `idx_struct_status` — and not over the
 /// table, which is the whole history of everything the memory rearranged and
 /// which nothing prunes.
@@ -663,14 +683,16 @@ pub async fn pending_slot_conflict(
     pool: &SqlitePool,
     kept: &crate::types::FactId,
     slot: &str,
-    asserted_key: &str,
+    asserted_key: Option<&str>,
 ) -> Result<Option<String>> {
     let found: Option<(String,)> = sqlx::query_as(
         "SELECT proposal_id FROM structure_proposals
           WHERE kind = ? AND status = 'pending'
             AND json_extract(context, '$.kept_fact_id') = ?
             AND json_extract(context, '$.slot') = ?
-            AND json_extract(context, '$.asserted_key') = ?
+            AND (?4 IS NULL
+                 OR json_extract(context, '$.asserted_key') IS NULL
+                 OR json_extract(context, '$.asserted_key') = ?4)
           LIMIT 1",
     )
     .bind(kind::SLOT_CONFLICT)
@@ -907,13 +929,22 @@ async fn apply_fact_forget(
 
 // ---------- slot conflict ----------
 
-/// The answer that leaves the memory exactly as it is — and the one the
-/// timeout sweep picks, so an unanswered conflict never changes anything.
+/// The answer that leaves the memory exactly as it is, and the one silence
+/// picks on a box that can only hold ONE value: what is on the card was stated
+/// by somebody entitled to state it, and no answer is not a reason to drop it.
 const SLOT_VERDICT_KEEP: &str = "keep";
 /// The answer that retires the stored value.
 const SLOT_VERDICT_RETIRE: &str = "retire";
 /// The answer that lets BOTH values stand — offered only where the box may
-/// honestly hold more than one ([`SlotConflict::many_values`]).
+/// honestly hold more than one ([`SlotConflict::many_values`]), and what
+/// silence picks there.
+///
+/// **The recommended answer follows the box, because the two families lose
+/// different things.** Where one value is all there can be, the safe silence
+/// keeps what is on record. Where a card may carry a second number or a second
+/// address, dropping the claim to be safe throws away something true and
+/// leaves the person to say it again; keeping both costs a line somebody can
+/// remove. Losing a true value costs more than holding one too many.
 const SLOT_VERDICT_BOTH: &str = "both";
 /// The question id both answers are given under.
 const SLOT_QUESTION_ID: &str = "verdict";
@@ -942,14 +973,24 @@ pub struct SlotConflict {
     /// there is nothing for that answer to mean, and it is not offered.
     pub many_values: bool,
     /// The value being claimed, folded (`ingest::folded_slot_value`) — the
-    /// third part of what makes two questions the same question.
+    /// third part of what makes two questions the same question, and `None`
+    /// when the claim never wrote its value out.
     ///
     /// Without it, "asked once per box" swallowed a SECOND person's different
     /// value: their claim was neither parked nor put in the question, and the
     /// owner was told the choice was between two values one of which nobody
     /// had said. With it, restating one value in other words reopens nothing
     /// and a different value opens its own question.
-    pub asserted_key: String,
+    ///
+    /// **`None` is not "a key that matches nothing", it is "no way to tell".**
+    /// A claim with no bare value is a sentence, and two sentences carrying
+    /// one number look as different as two sentences carrying two. So a
+    /// question missing the key on either side is treated as the same
+    /// question, and the limit is deliberate: a third value said without its
+    /// value written out joins the question already open instead of asking the
+    /// owner twice about what may be one thing. Every fact written before the
+    /// column existed is on this side of it.
+    pub asserted_key: Option<String>,
     /// Who the stored fact is about.
     pub subject: crate::types::Principal,
     /// The fact already stored.
@@ -1081,12 +1122,18 @@ pub async fn emit_slot_conflict(pool: &SqlitePool, c: &SlotConflict) -> Result<S
     } else {
         "Yes — it still holds; keep it and write nothing."
     };
+    // The third answer exists only where two values can both be right: a
+    // second number, a work address beside a personal one. It writes the value
+    // that was said and leaves the one on record where it is — and where it is
+    // offered it is the RECOMMENDED one, which is what the timeout sweep picks
+    // ([`SLOT_VERDICT_BOTH`]).
+    let both_offered = c.many_values && has_a_replacement;
     let mut options = vec![
         serde_json::json!({
             "id": SLOT_VERDICT_KEEP,
             "value": SLOT_VERDICT_KEEP,
             "text": keep_text,
-            "recommended": true,
+            "recommended": !both_offered,
         }),
         serde_json::json!({
             "id": SLOT_VERDICT_RETIRE,
@@ -1095,15 +1142,12 @@ pub async fn emit_slot_conflict(pool: &SqlitePool, c: &SlotConflict) -> Result<S
             "recommended": false,
         }),
     ];
-    // The third answer exists only where two values can both be right: a
-    // second number, a work address beside a personal one. It writes the value
-    // that was said and leaves the one on record where it is.
-    if c.many_values && has_a_replacement {
+    if both_offered {
         options.push(serde_json::json!({
             "id": SLOT_VERDICT_BOTH,
             "value": SLOT_VERDICT_BOTH,
             "text": "Both — keep it and record what was said as well.",
-            "recommended": false,
+            "recommended": true,
         }));
     }
     let questions = serde_json::json!([{
@@ -1167,25 +1211,31 @@ async fn apply_slot_conflict(
     let kept = crate::types::FactId::parse(kept_raw).map_err(|e| {
         ApplyError::InvalidPayload(format!("slot_conflict kept_fact_id {kept_raw:?}: {e}"))
     })?;
+    // *Both stand* is offered only where the box may hold more than one
+    // value, so it is honoured only where the row says so: answered on a box
+    // that holds one, it would leave two live values on a card that can have
+    // one, which is the defect the whole path exists to stop.
+    let many_values = context
+        .get("many_values")
+        .and_then(Value::as_bool)
+        .unwrap_or(false);
+    // An answers object with nothing in it is what an apply with no verdict
+    // sends, and it takes the recommended answer — which follows the box:
+    // *both* where a second value may be right, *keep* where it cannot.
     let verdict = answers
         .get(SLOT_QUESTION_ID)
         .and_then(Value::as_str)
-        .unwrap_or(SLOT_VERDICT_KEEP);
+        .unwrap_or(if many_values {
+            SLOT_VERDICT_BOTH
+        } else {
+            SLOT_VERDICT_KEEP
+        });
     let parked = context
         .get("parked_capture_id")
         .and_then(Value::as_str)
         .map(crate::types::FactId::parse)
         .transpose()
         .map_err(|e| ApplyError::InvalidPayload(format!("slot_conflict parked: {e}")))?;
-    // *Both stand* is offered only where the box may hold more than one
-    // value, so it is honoured only where the row says so: answered on a box
-    // that holds one, it would leave two live values on a card that can have
-    // one, which is the defect the whole path exists to stop. It falls back to
-    // the recommended answer.
-    let many_values = context
-        .get("many_values")
-        .and_then(Value::as_bool)
-        .unwrap_or(false);
     if verdict == SLOT_VERDICT_BOTH && many_values {
         let released = release_parked_claim(pool, parked.as_ref()).await;
         return Ok(serde_json::json!({
@@ -1668,7 +1718,8 @@ pub async fn emit_proposal(pool: &SqlitePool, params: EmitParams) -> Result<Stri
     .bind(timeout_at.to_rfc3339())
     .bind(params.recipient.as_deref())
     .execute(pool)
-    .await?;
+    .await
+    .map_err(one_question_per_disagreement)?;
 
     tracing::info!(
         proposal_id,
@@ -1883,6 +1934,25 @@ pub async fn auto_apply_overdue_proposals(
         }
     }
     Ok(report)
+}
+
+/// Read a unique-index violation on the pending-question index as the outcome
+/// it is ([`ProposalsError::AlreadyPending`]), and leave every other database
+/// error as itself.
+///
+/// The index is named here because the code it raises (`2067`,
+/// `SQLITE_CONSTRAINT_UNIQUE`) is shared by every unique index in the schema,
+/// and reading any of those as "somebody got there first" would swallow a real
+/// collision somewhere else.
+fn one_question_per_disagreement(err: sqlx::Error) -> ProposalsError {
+    let violated = err
+        .as_database_error()
+        .is_some_and(|db| db.message().contains("idx_slot_conflict_one_question"));
+    if violated {
+        ProposalsError::AlreadyPending
+    } else {
+        ProposalsError::Db(err)
+    }
 }
 
 /// Build the `answers` JSON the chassis expects from a questionnaire
@@ -2120,7 +2190,7 @@ mod tests {
         SlotConflict {
             slot: "the date of birth".to_owned(),
             many_values: false,
-            asserted_key: "bornon8july2012".to_owned(),
+            asserted_key: Some("bornon8july2012".to_owned()),
             subject: "user:bob".parse().unwrap(),
             kept_fact_id: kept.clone(),
             kept_text: "born on 12 March 2014 at 06:45".to_owned(),
@@ -2206,6 +2276,49 @@ mod tests {
         drop(dir);
     }
 
+    /// Two turns that raced the lookup leave ONE question, and the loser
+    /// parks nothing.
+    ///
+    /// Both read "nothing pending" before either wrote, so the index is what
+    /// decides. The loser's insert comes back as a condition and not a fault —
+    /// there is simply one question where it meant to open one — and because
+    /// the question is written before the row, it has no parked claim to leave
+    /// behind waiting for an answer that will never name it.
+    #[tokio::test]
+    async fn two_turns_racing_one_disagreement_leave_one_question_and_no_orphan() {
+        let (dir, pool, _tree) = fresh_pool_and_tree().await;
+        let kept = seed_fact(&pool, KEPT_ID, "user:bob", Some("user:bob")).await;
+        let first = emit_slot_conflict(&pool, &conflict(&kept, None))
+            .await
+            .expect("the winner opens it");
+
+        let second = emit_slot_conflict(&pool, &conflict(&kept, None)).await;
+        assert!(
+            matches!(second, Err(ProposalsError::AlreadyPending)),
+            "the loser is told a question is already pending, not that a write broke: {second:?}"
+        );
+
+        let pending: i64 = sqlx::query_scalar(
+            "SELECT count(*) FROM structure_proposals WHERE kind = ? AND status = 'pending'",
+        )
+        .bind(kind::SLOT_CONFLICT)
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+        assert_eq!(pending, 1, "one disagreement, one question");
+        let held: i64 =
+            sqlx::query_scalar("SELECT count(*) FROM capture_buffer WHERE status = 'held'")
+                .fetch_one(&pool)
+                .await
+                .unwrap();
+        assert_eq!(
+            held, 0,
+            "and nothing parked behind a question that is not there"
+        );
+        let _ = first;
+        drop(dir);
+    }
+
     /// Giving up on a question gives up on the claim parked behind it.
     ///
     /// The expiry sweep is a bare `UPDATE` and never reaches the handler, so
@@ -2281,6 +2394,7 @@ mod tests {
     async fn park_a_claim(pool: &SqlitePool) -> FactId {
         crate::capture_buffer::park_capture(
             pool,
+            crate::capture_buffer::mint_parked_id().expect("an id"),
             crate::capture::CaptureRequest {
                 wiki_id: crate::types::WikiId::parse("bob").unwrap(),
                 page: None,

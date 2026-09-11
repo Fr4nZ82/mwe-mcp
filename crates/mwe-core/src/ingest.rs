@@ -1264,7 +1264,6 @@ const ONE_VALUE_SLOTS: &[&str] = &[
     "date_of_birth",
     "place_of_birth",
     "home_address",
-    "native_language",
     "marital_status",
     "partner",
     "mother",
@@ -1274,7 +1273,8 @@ const ONE_VALUE_SLOTS: &[&str] = &[
 /// The boxes of an identity card that can honestly hold MORE THAN ONE value.
 ///
 /// A work address beside a personal one, a mobile beside a landline, two
-/// nationalities, a second job. They are boxes all the same — the name is what
+/// nationalities, a second job, a second mother tongue. They are boxes all the
+/// same — the name is what
 /// makes a later turn measurable against an earlier one — but two values in
 /// one of them is not by itself a disagreement, so the engine never decides it
 /// alone: on the values the speaker can READ the model judges, because it has
@@ -1287,6 +1287,7 @@ const MANY_VALUE_SLOTS: &[&str] = &[
     "occupation",
     "employer",
     "nationality",
+    "native_language",
 ];
 
 /// Every box a card has, in the order the prompt lists them: the one-value
@@ -1480,14 +1481,28 @@ impl LlmIngestPlan {
         if let Some(about) = self.behaviour_about.as_mut() {
             *about = folded_principal(about);
         }
+        fold_fact_id(&mut self.withdraw_target);
+        fold_fact_id(&mut self.supersede_target);
         for e in &mut self.extractions {
             fold_principals_of(&mut e.subject_id, &mut e.allow_ids);
             if let Some(about) = e.behaviour_about.as_mut() {
                 *about = folded_principal(about);
             }
+            fold_fact_id(&mut e.supersede_target);
+            fold_fact_id(&mut e.conflicts_with);
         }
         for c in &mut self.acl_changes {
             fold_principals_of(&mut c.subject_id, &mut c.allow_ids);
+            fold_fact_id(&mut c.target);
+        }
+        for c in &mut self.closures {
+            fold_fact_id(&mut c.target);
+        }
+        for e in &mut self.validity_edits {
+            fold_fact_id(&mut e.target);
+        }
+        for f in &mut self.fact_scores {
+            fold_fact_id(&mut f.target);
         }
     }
 
@@ -2044,22 +2059,6 @@ impl ListRefusal {
     }
 }
 
-/// The one-shot notice for the card values this turn passed to their owners.
-///
-/// **Every owner the turn reached, in one sentence**, because a message can
-/// say something about two people's cards at once: naming one of them tells
-/// the user their claim about the other went through, which is the opposite of
-/// what happened to it.
-///
-/// It says who was asked and nothing else. Naming the box, quoting what is on
-/// record or saying when it was said would each disclose exactly what the
-/// audience list withholds — and on the road this notice was written for, the
-/// speaker was excluded from that value on purpose.
-///
-/// It says nothing about WHY the claim was not theirs to settle, because two
-/// roads reach it: a value they may not read, and a turn already carrying a
-/// question of its own, which a speaker entitled to settle the box can reach
-/// as easily as anybody.
 /// Add an owner to the turn's one-shot notice, once.
 ///
 /// First appearance keeps its place, and a second claim about the same
@@ -2070,32 +2069,68 @@ fn note_the_owner(owners: &mut Vec<Principal>, owner: &Principal) {
     }
 }
 
-fn slot_notice(owners: &[Principal]) -> Option<String> {
-    let (first, rest) = owners.split_first()?;
-    let who = rest.iter().fold(first.to_string(), |mut acc, owner| {
-        acc.push_str(", ");
-        acc.push_str(&owner.to_string());
-        acc
-    });
-    // A GROUP's record has no one person to write to, so its question lands
-    // unaddressed and the administrator is who works that list
-    // (`proposals::recipient_of_the_card`). Saying "they have been asked" of a
-    // household would name somebody who was never asked.
-    let decided_by = if owners
-        .iter()
-        .all(|owner| proposals::recipient_of_the_card(owner).is_some())
-    {
-        "They have been asked what their record carries and will decide."
-    } else {
-        "It has been passed on for a decision: to each person it is about, and to the \
-         administrator where the record belongs to a group."
-    };
-    Some(format!(
-        "NOTE — what the user said about {who} fills a detail their record already holds with a \
-         different value. It was NOT saved. {decided_by} Tell the user that much and nothing \
-         else: do NOT say what is on record, do NOT say which detail it is, do NOT guess, and \
-         do NOT say their version was saved or that it was rejected."
-    ))
+/// The one-shot notice for the card values this turn passed to their owners.
+///
+/// **Every owner the turn reached, in one sentence**, because a message can
+/// say something about two people's cards at once: naming one of them tells
+/// the user their claim about the other went through, which is the opposite of
+/// what happened to it.
+///
+/// **The speaker's OWN card is a different sentence, in the second person.**
+/// A turn already carrying a question of its own sends the box to whoever the
+/// card belongs to, and that can be the person speaking: telling them that
+/// «they» have been asked, about their own record, is both wrong and useless.
+/// They are told it is their card, that it already holds another value for
+/// that detail, and where the question is waiting.
+///
+/// About anybody ELSE it says who was asked and nothing more. Naming the box,
+/// quoting what is on record or saying when it was said would each disclose
+/// exactly what the audience list withholds. It does not say WHY the claim was
+/// not theirs to settle, because two roads reach it — a value they may not
+/// read, and a turn that was already asking — and only the first is about
+/// entitlement.
+fn slot_notice(owners: &[Principal], speaker: &Principal) -> Option<String> {
+    let (mine, theirs): (Vec<&Principal>, Vec<&Principal>) =
+        owners.iter().partition(|owner| *owner == speaker);
+    let mut said: Vec<String> = Vec::new();
+    if !mine.is_empty() {
+        said.push(
+            "NOTE — something the user said about THEMSELVES gives a detail of their own record \
+             a second, different value, and this turn was already asking them something else, so \
+             it was NOT saved. Tell them, in the second person, that their record already holds \
+             another value for that detail and that the question is waiting for them on the \
+             dashboard's Proposals page. Do NOT guess which detail it is and do NOT say their \
+             version was saved."
+                .to_owned(),
+        );
+    }
+    if let Some((first, rest)) = theirs.split_first() {
+        let who = rest.iter().fold(first.to_string(), |mut acc, owner| {
+            acc.push_str(", ");
+            acc.push_str(&owner.to_string());
+            acc
+        });
+        // A GROUP's record has no one person to write to, so its question
+        // lands unaddressed and the administrator is who works that list
+        // (`proposals::recipient_of_the_card`). Saying "they have been asked"
+        // of a household would name somebody who was never asked.
+        let decided_by = if theirs
+            .iter()
+            .all(|owner| proposals::recipient_of_the_card(owner).is_some())
+        {
+            "They have been asked what their record carries and will decide."
+        } else {
+            "It has been passed on for a decision: to each person it is about, and to the \
+             administrator where the record belongs to a group."
+        };
+        said.push(format!(
+            "NOTE — what the user said about {who} fills a detail their record already holds \
+             with a different value. It was NOT saved. {decided_by} Tell the user that much and \
+             nothing else: do NOT say what is on record, do NOT say which detail it is, do NOT \
+             guess, and do NOT say their version was saved or that it was rejected."
+        ));
+    }
+    (!said.is_empty()).then(|| said.join("\n"))
 }
 
 /// Every notice this turn owes the user, one paragraph each, in the order they
@@ -3697,12 +3732,18 @@ fn vet_supersede<'a>(
 /// already filed — the reconciliation road, where the proposal names a
 /// successor instead.
 ///
+/// **The question is written before the row.** The id is minted first so the
+/// question can name it, and the row follows the question: parking first
+/// leaves the loser of a race holding a claim nothing will ever release, while
+/// the speaker has already been told its owner was asked.
+///
 /// Best-effort by contract, like every other write at the end of a turn: a
 /// proposal that cannot be opened is logged and the turn stands. The memory is
 /// then exactly where it was, which is the same place the recommended answer
 /// would have left it. A dedup lookup that fails is not a reason to stay
 /// silent: an extra question costs somebody a click, a swallowed one loses the
-/// disagreement.
+/// disagreement — and if that turns out to be the race the index catches, the
+/// question that IS open covers it.
 async fn ask_the_owner_of_the_slot(
     pool: &SqlitePool,
     mut conflict: proposals::SlotConflict,
@@ -3712,7 +3753,7 @@ async fn ask_the_owner_of_the_slot(
         pool,
         &conflict.kept_fact_id,
         &conflict.slot,
-        &conflict.asserted_key,
+        conflict.asserted_key.as_deref(),
     )
     .await
     {
@@ -3732,37 +3773,64 @@ async fn ask_the_owner_of_the_slot(
             "ingest: could not check for a question already pending — asking anyway"
         ),
     }
-    if let Some(req) = park {
+    // The id first, then the QUESTION, then the row. The question has to name
+    // the claim it is about, so the id is minted before either; and writing
+    // the row first leaves the loser of a race — two turns that both read
+    // "nothing pending" — with a parked claim and no question to release it,
+    // waiting on the hourly sweep while the speaker has already been told its
+    // owner was asked.
+    let minted = match park.as_ref().map(|_| capture_buffer::mint_parked_id()) {
+        Some(Ok(id)) => Some(id),
+        Some(Err(err)) => {
+            tracing::warn!(error = %err, "ingest: no id for the refused claim — nothing parked");
+            None
+        },
+        None => None,
+    };
+    conflict.parked = minted.clone();
+    let proposal_id = match proposals::emit_slot_conflict(pool, &conflict).await {
+        Ok(id) => id,
+        Err(proposals::ProposalsError::AlreadyPending) => {
+            tracing::info!(
+                target = conflict.kept_fact_id.as_str(),
+                slot = conflict.slot.as_str(),
+                "ingest: another turn opened this same question first — nothing parked"
+            );
+            return;
+        },
+        Err(err) => {
+            tracing::warn!(
+                error = %err,
+                target = conflict.kept_fact_id.as_str(),
+                "ingest: slot-conflict proposal not opened (the memory is unchanged)"
+            );
+            return;
+        },
+    };
+    if let (Some(req), Some(id)) = (park, minted.clone()) {
         // No staged vector: the claim may never be promoted, and promotion
         // computes one anyway. Staging is an optimisation for the queue, and
         // this row is deliberately not in the queue.
-        match capture_buffer::park_capture(pool, req, capture_buffer::BufferStaging::default())
-            .await
+        if let Err(err) =
+            capture_buffer::park_capture(pool, id, req, capture_buffer::BufferStaging::default())
+                .await
         {
-            Ok(parked) => conflict.parked = Some(parked.capture_id),
-            Err(err) => tracing::warn!(
+            tracing::warn!(
                 error = %err,
                 target = conflict.kept_fact_id.as_str(),
-                "ingest: the refused claim could not be parked — the question still goes out, \
-                 and answering it can only retire the stored value"
-            ),
+                "ingest: the refused claim could not be parked — the question stands, and \
+                 answering it can only retire the stored value"
+            );
         }
     }
-    match proposals::emit_slot_conflict(pool, &conflict).await {
-        Ok(proposal_id) => tracing::info!(
-            proposal_id,
-            target = conflict.kept_fact_id.as_str(),
-            subject = %conflict.subject,
-            slot = conflict.slot.as_str(),
-            parked = conflict.parked.as_ref().map_or("<none>", FactId::as_str),
-            "ingest: a slot holds two values and the speaker cannot choose — asked its owner"
-        ),
-        Err(err) => tracing::warn!(
-            error = %err,
-            target = conflict.kept_fact_id.as_str(),
-            "ingest: slot-conflict proposal not opened (the memory is unchanged)"
-        ),
-    }
+    tracing::info!(
+        proposal_id,
+        target = conflict.kept_fact_id.as_str(),
+        subject = %conflict.subject,
+        slot = conflict.slot.as_str(),
+        parked = minted.as_ref().map_or("<none>", FactId::as_str),
+        "ingest: a slot holds two values and the speaker cannot choose — asked its owner"
+    );
 }
 
 /// The name the question gives the box two values are fighting over.
@@ -4500,9 +4568,21 @@ async fn reconcile_after_reading(
         ReconcileDecision::default()
     });
     // The reconciler is a second model reading the same wire shape, so its
-    // principals are folded on the same terms as the classifier's.
+    // principals and the ids it copied are folded on the same terms as the
+    // classifier's.
     for c in &mut decision.acl_changes {
         fold_principals_of(&mut c.subject_id, &mut c.allow_ids);
+        fold_fact_id(&mut c.target);
+    }
+    for c in &mut decision.closures {
+        fold_fact_id(&mut c.target);
+    }
+    for e in &mut decision.validity_edits {
+        fold_fact_id(&mut e.target);
+    }
+    for sup in &mut decision.supersedes {
+        fold_fact_id(&mut sup.target);
+        fold_fact_id(&mut sup.successor);
     }
     tracing::info!(
         candidates = candidates.len(),
@@ -5710,6 +5790,21 @@ fn fold_principals_of(subject: &mut Option<String>, allow: &mut [String]) {
     }
     for a in allow.iter_mut() {
         *a = folded_principal(a);
+    }
+}
+
+/// Fold a `fact_id` the classifier copied, to the one spelling the memory
+/// stores them in.
+///
+/// A uuid's hex is written either way and means the same number, but every
+/// reader of these fields compares the STRING against an id the engine wrote
+/// in lowercase — so a model that copies `0190F3C2-…` out of the block it was
+/// shown names a fact nobody can find, and the guard against a hallucinated id
+/// throws away a pair the model got right. Recovering it is reading the id, not
+/// guessing at one.
+fn fold_fact_id(raw: &mut Option<String>) {
+    if let Some(id) = raw.as_mut() {
+        *id = id.trim().to_ascii_lowercase();
     }
 }
 
@@ -7992,7 +8087,17 @@ impl StoredValue {
             // the box: the VALUE being claimed, folded. Restating one value in
             // other words reopens nothing; a different value is a different
             // disagreement and gets its own question.
-            asserted_key: folded_slot_value(asserted_value.unwrap_or(asserted_text)),
+            //
+            // **Only the bare value will do**, and `None` when the classifier
+            // wrote none. Folding the SENTENCE instead looks like a key and is
+            // not one: two phrasings of one number fold to two keys and open
+            // two questions, each with its own parked claim, which is the very
+            // pair the key was added to stop. Nothing is lost by having none —
+            // the lookup then decides on the fact and the box alone
+            // (`proposals::pending_slot_conflict`).
+            asserted_key: asserted_value
+                .map(folded_slot_value)
+                .filter(|key| !key.is_empty()),
             slot: slot.to_owned(),
             subject: self.subject.clone(),
             kept_fact_id: self.fact_id.clone(),
@@ -10814,8 +10919,20 @@ pub async fn wiki_ingest_message(
                                 unit.slot_value,
                                 &Principal::User(request.sender_id.clone()),
                                 None,
-                                "the turn was already asking the speaker something else, and one \
-                                 turn cannot put two unrelated questions",
+                                // The truth is one of two, and the recipient
+                                // reads it: on their own card the only reason
+                                // is that the turn was busy; on somebody
+                                // else's it is that and the standing to
+                                // settle it.
+                                if stored.subject == claim_subject
+                                    && claim_subject == Principal::User(request.sender_id.clone())
+                                {
+                                    "the turn was already asking them something else, so the \
+                                     question waits here instead of in the conversation"
+                                } else {
+                                    "they are not the person this record belongs to, and the \
+                                     turn was already asking them something else"
+                                },
                             ),
                             parked_claim(&unit, &request, policy, &available, &list_pages),
                         )
@@ -11897,7 +12014,10 @@ pub async fn wiki_ingest_message(
     // different halves of it — a turn that said only the first would leave the
     // user believing the rest went through.
     let notice = assemble_notices(&[
-        slot_notice(&slots_passed_to_their_owners),
+        slot_notice(
+            &slots_passed_to_their_owners,
+            &Principal::User(request.sender_id.clone()),
+        ),
         list_page_refused.map(ListRefusal::notice),
         refused_rule_retraction.map(|r| r.notice().to_owned()),
         rule_about_other_denied.then(|| {
@@ -22849,12 +22969,14 @@ mod tests {
     /// it really went.
     #[test]
     fn a_shared_record_is_passed_to_the_administrator() {
-        let mine = slot_notice(&[Principal::User("zoe".to_owned())]).unwrap_or_default();
+        let alice = Principal::User("alice".to_owned());
+        let mine = slot_notice(&[Principal::User("zoe".to_owned())], &alice).unwrap_or_default();
         assert!(
             mine.contains("They have been asked"),
             "a person's own card is put to them: {mine}"
         );
-        let shared = slot_notice(&[Principal::Group("famiglia".to_owned())]).unwrap_or_default();
+        let shared =
+            slot_notice(&[Principal::Group("famiglia".to_owned())], &alice).unwrap_or_default();
         assert!(
             shared.contains("administrator"),
             "a group's record has no inbox, and the notice says so: {shared}"
@@ -22906,6 +23028,261 @@ mod tests {
                 .collect::<Vec<_>>(),
             "and the ones it calls many-valued are the ones it leaves to the model"
         );
+    }
+
+    /// Two phrasings of one number with no bare value written out are ONE
+    /// question, not two.
+    ///
+    /// The key that tells two disagreements apart is the claimed VALUE, and a
+    /// claim that never wrote its value out has none: folding the sentence
+    /// instead makes «Zoe's mobile is …» and «Zoe can be reached on …» two
+    /// keys, so the owner is asked twice about one number and two claims are
+    /// parked behind the two questions. Every fact written before the value
+    /// column existed is on this side of it.
+    #[tokio::test]
+    async fn two_phrasings_with_no_bare_value_are_one_question() {
+        const HERS: &str = "Zoe's mobile number is 07700 900314.";
+        let (dir, tree, pool) = setup_slot_family().await;
+        plant_private_number(&pool, HERS, "07700900314").await;
+        let claim = |body: &str| {
+            format!(
+                "{{\"intent\":\"capture\",\"extractions\":[\
+                 {{\"target_wiki_id\":\"zoe\",\"subject_id\":\"user:zoe\",\
+                 \"body\":\"{body}\",\"fact_type\":\"bio\",\"salience\":\"high\",\
+                 \"slot\":\"mobile_number\",\"topics\":[\"contact\"]}}]}}"
+            )
+        };
+        for body in [
+            "Zoe's mobile number is 07700 900275.",
+            "Zoe can be reached on 07700 900275",
+        ] {
+            wiki_ingest_message(
+                &pool,
+                &tree,
+                fake_embedder(),
+                &FakeLlmBackend::new("fake", claim(body)),
+                None,
+                req("Zoe's number is 07700 900275", "alice"),
+                &IngestPolicy::default(),
+            )
+            .await
+            .expect("ingest");
+        }
+
+        let opened: i64 = sqlx::query_scalar(
+            "SELECT count(*) FROM structure_proposals WHERE kind = ? AND status = 'pending'",
+        )
+        .bind(proposals::kind::SLOT_CONFLICT)
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+        assert_eq!(opened, 1, "one number, one question");
+        let parked: i64 =
+            sqlx::query_scalar("SELECT count(*) FROM capture_buffer WHERE status = 'held'")
+                .fetch_one(&pool)
+                .await
+                .unwrap();
+        assert_eq!(parked, 1, "and one claim behind it");
+        drop(dir);
+    }
+
+    /// When the card is the SPEAKER's own, the notice speaks to them and says
+    /// why — and the reason on the question is the true one.
+    ///
+    /// The turn was already asking them something else, which is the only
+    /// reason the box did not reach them in the conversation. Telling them
+    /// «they have been asked» about their own record names somebody who is not
+    /// there, and «they are not the person this record belongs to» is simply
+    /// false.
+    #[tokio::test]
+    async fn a_box_of_your_own_card_is_put_to_you_in_the_second_person() {
+        let (dir, tree, pool) = setup_family().await;
+        let card = plant_the_card_birthdate(&pool).await;
+        sqlx::query(
+            "UPDATE fact_index SET slot = 'date_of_birth', slot_value = '2014-03-12' \
+             WHERE fact_id = ?",
+        )
+        .bind(card.as_str())
+        .execute(&pool)
+        .await
+        .unwrap();
+        let asking = format!(
+            "{{\"intent\":\"capture\",\"suggested_seed\":\"Which one?\",\
+             \"needs_disambig\":true,\"disambig_candidates\":[\
+             {{\"candidate_id\":\"the-dentist\",\"description\":\"the dentist\"}},\
+             {{\"candidate_id\":\"the-doctor\",\"description\":\"the doctor\"}}],\
+             \"extractions\":[\
+             {{\"target_wiki_id\":\"bob\",\"subject_id\":\"user:bob\",\
+             \"body\":\"{DERIVED_BIRTHDATE}\",\"fact_type\":\"bio\",\"salience\":\"high\",\
+             \"slot\":\"date_of_birth\",\"slot_value\":\"2012-07-08\"}}]}}"
+        );
+        // bob speaks about bob's own card.
+        let resp = wiki_ingest_message(
+            &pool,
+            &tree,
+            fake_embedder(),
+            &FakeLlmBackend::new("fake", &asking),
+            None,
+            the_age_turn("bob", None),
+            &IngestPolicy::default(),
+        )
+        .await
+        .expect("ingest");
+
+        let notice = resp.rules.unwrap_or_default();
+        assert!(
+            notice.contains("THEMSELVES") && notice.contains("second person"),
+            "the agent is told to speak to him about his own record: {notice}"
+        );
+        assert!(
+            notice.contains("Proposals"),
+            "and to say where the question is waiting: {notice}"
+        );
+        assert!(
+            !notice.contains("They have been asked"),
+            "and not to speak of him in the third person: {notice}"
+        );
+        let context: String = sqlx::query_scalar(
+            "SELECT context FROM structure_proposals WHERE kind = ? AND status = 'pending'",
+        )
+        .bind(proposals::kind::SLOT_CONFLICT)
+        .fetch_one(&pool)
+        .await
+        .expect("the question is his");
+        assert!(
+            context.contains("the turn was already asking them something else"),
+            "the reason on the question is the true one: {context}"
+        );
+        assert!(
+            !context.contains("not the person this record belongs to"),
+            "and not the one about standing, which is false here: {context}"
+        );
+        drop(dir);
+    }
+
+    /// A box a card may carry two of keeps BOTH when nobody answers.
+    ///
+    /// Silence applies the recommended answer. On a detail there can only be
+    /// one of, that is *keep*: what is on record was stated by somebody
+    /// entitled to state it. On a detail a card may carry several of, dropping
+    /// the claim to be safe throws away something true and leaves the person
+    /// to say it again, so the recommended answer is *both*.
+    #[tokio::test]
+    async fn silence_keeps_both_values_where_a_card_may_carry_two() {
+        const HERS: &str = "Zoe's mobile number is 07700 900314.";
+        let (dir, tree, pool) = setup_slot_family().await;
+        let hers = plant_private_number(&pool, HERS, "07700900314").await;
+        let plan = "{\"intent\":\"capture\",\"extractions\":[\
+             {\"target_wiki_id\":\"zoe\",\"subject_id\":\"user:zoe\",\
+             \"body\":\"Zoe also has a work mobile, 07700 900601.\",\"fact_type\":\"bio\",\
+             \"salience\":\"high\",\"slot\":\"mobile_number\",\
+             \"slot_value\":\"07700900601\",\"topics\":[\"contact\"]}]}";
+        wiki_ingest_message(
+            &pool,
+            &tree,
+            fake_embedder(),
+            &FakeLlmBackend::new("fake", plan),
+            None,
+            req("Zoe's work mobile is 07700 900601", "alice"),
+            &IngestPolicy::default(),
+        )
+        .await
+        .expect("ingest");
+
+        // The deadline passes with no answer: the sweep applies whatever the
+        // question marked as recommended.
+        let overdue: String = sqlx::query_scalar(
+            "SELECT proposal_id FROM structure_proposals WHERE kind = ? AND status = 'pending'",
+        )
+        .bind(proposals::kind::SLOT_CONFLICT)
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+        sqlx::query("UPDATE structure_proposals SET timeout_at = ? WHERE proposal_id = ?")
+            .bind("2000-01-01T00:00:00Z")
+            .bind(&overdue)
+            .execute(&pool)
+            .await
+            .unwrap();
+        proposals::auto_apply_overdue_proposals(&pool, &tree, chrono::Utc::now())
+            .await
+            .expect("the sweep");
+
+        assert!(
+            fact_index::find_by_id(&pool, &hers)
+                .await
+                .unwrap()
+                .unwrap()
+                .valid_to
+                .is_none(),
+            "the number on record stands"
+        );
+        promote_buffer(&pool, &tree).await;
+        let card = fact_index::find_active_by_source_path(&pool, "wikis/zoe/@profile.md")
+            .await
+            .unwrap();
+        assert_eq!(
+            card.len(),
+            2,
+            "and the second one is kept too: losing a true value costs more than holding one \
+             too many"
+        );
+        drop(dir);
+    }
+
+    /// A uuid the model copied back in capitals names the fact it names.
+    ///
+    /// Every reader of these fields compares the string against an id the
+    /// engine wrote in lowercase, so `0190F3C2-…` matched nothing: the
+    /// declared conflict was dropped as a hallucinated id and the second birth
+    /// date filed beside the first.
+    #[tokio::test]
+    async fn a_fact_id_in_capitals_names_the_same_fact() {
+        let (dir, tree, pool) = setup_family().await;
+        let card = plant_the_card_birthdate(&pool).await;
+        let shouted = CARD_FACT_ID.to_uppercase();
+        let plan = format!(
+            "{{\"intent\":\"capture\",\"suggested_seed\":\"Noted.\",\"extractions\":[\
+             {{\"target_wiki_id\":\"bob\",\"subject_id\":\"user:bob\",\
+             \"body\":\"{DERIVED_BIRTHDATE}\",\"fact_type\":\"bio\",\"salience\":\"high\",\
+             \"conflicts_with\":\"{shouted}\",\"slot\":\"date_of_birth\",\
+             \"slot_value\":\"2012-07-08\"}}]}}"
+        );
+        let resp = wiki_ingest_message(
+            &pool,
+            &tree,
+            fake_embedder(),
+            &FakeLlmBackend::new("fake", &plan),
+            None,
+            the_age_turn("carol", None),
+            &IngestPolicy::default(),
+        )
+        .await
+        .expect("ingest");
+
+        assert!(
+            resp.needs_disambig,
+            "the conflict it declared is the one it meant"
+        );
+        let ids: Vec<&str> = resp
+            .disambig_candidates
+            .iter()
+            .map(|c| c.candidate_id.as_str())
+            .collect();
+        assert!(
+            ids.iter().all(|id| id.ends_with(CARD_FACT_ID)),
+            "and the candidates name the stored fact in the spelling the memory uses: {ids:?}"
+        );
+        assert!(
+            fact_index::find_by_id(&pool, &card)
+                .await
+                .unwrap()
+                .unwrap()
+                .valid_to
+                .is_none(),
+            "nothing is written until the answer"
+        );
+        drop(dir);
     }
 
     /// A slot name outside the list is refused; a listed one comes back in its

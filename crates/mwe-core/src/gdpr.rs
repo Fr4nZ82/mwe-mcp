@@ -1609,6 +1609,7 @@ mod tests {
         // Bob said something about a box of alice's card, and it waits on her.
         let parked = crate::capture_buffer::park_capture(
             &pool,
+            crate::capture_buffer::mint_parked_id().expect("an id"),
             CaptureRequest {
                 wiki_id: WikiId::parse("alice").unwrap(),
                 page: None,

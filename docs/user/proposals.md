@@ -60,10 +60,12 @@ value that was said instead, and who said that. Answer that the stored value
 still holds and what they said is dropped; answer that it is wrong and the
 stored value stops being asserted and theirs takes its place. On the details a
 card may carry more than one of — a second number, a work email — there is a
-third answer, **both**. **You have 24 hours.** Say nothing and the card keeps
-what it had — that is the answer marked as the one that happens by itself, and
-it is deliberate: the stored value was put there by somebody entitled to put it
-there.
+third answer, **both**. **You have 24 hours.** Each question marks the answer
+that happens by itself if you say nothing, and it is not the same one for both
+kinds: on a detail there can only be one of it keeps what was on record, which
+somebody entitled to put it there put there; on a detail a card may carry
+several of it keeps **both**, because throwing away something true costs more
+than carrying a line you can remove.
 
 **A request to forget a fact.** When somebody asks for a fact to be forgotten
 and they are not the one who said it, everybody who can read that fact is asked

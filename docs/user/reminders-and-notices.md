@@ -44,17 +44,22 @@ becomes part of the memory. Say **it is wrong** and the value on your card
 stops being asserted, and what they said takes its place — recorded as theirs
 and about you, when their words were still being held for you; the question
 says which of the two answers it is offering. Say nothing and, after the
-deadline shown on it, the card is left exactly as it was: silence keeps what
-you have. It is the same question whether it reaches you through your
-assistant, through the chat, or from [Proposals](proposals.md).
+deadline shown on it, a detail there can only be one of is left exactly as it
+was: silence keeps what you have. It is the same question whether it reaches
+you through your assistant, through the chat, or from
+[Proposals](proposals.md).
 
 **Some of those details can honestly have more than one value** — a work email
 beside a personal one, a mobile beside a landline, a second job, a second
-nationality. For those there is a third answer, **both**: the value on your
-card stays and what was said is recorded beside it. And nothing is put to you
-about them unless the person speaking could not see what your card already
-said; where they could, your assistant decides in the conversation, because it
-has both values in front of it.
+nationality, two mother tongues. For those there is a third answer, **both**:
+the value on your card stays and what was said is recorded beside it. It is
+also the answer that happens **by itself** if you say nothing, and that is the
+opposite of the rule for the details there can only be one of: throwing away
+something true costs more than carrying a line you can remove, and nobody has
+to say it to you twice. And nothing is put to you about these unless the person
+speaking could not see what your card already said; where they could, your
+assistant decides in the conversation, because it has both values in front of
+it.
 
 The same disagreement is asked once. Somebody repeating themselves on three
 different days does not put it to you three times — but two different people
@@ -63,6 +68,9 @@ saying two different things are two disagreements, and you are shown both.
 **When a conversation is already asking you something else**, a detail the
 memory notices on its own is not squeezed into that question: it goes to the
 person whose card it is, exactly as it would if they could not read the value.
+If that person is **you**, your assistant tells you so — your record already
+holds another value for that detail, and the question is waiting on the
+[Proposals](proposals.md) page.
 
 **Something waiting on your answer** waits here rather than reaching you: a
 request to forget a fact you can read, and a disagreement about one of those
