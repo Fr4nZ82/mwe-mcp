@@ -203,8 +203,13 @@ semver-governed surface: breaking changes are called out explicitly.
   erasing that. A qualifier is part of the item: *gluten-free bread* is not
   *bread* with a value, so both can sit on the list.
 
-  Lines already written as sentences stay as they are until somebody says them
-  again; nothing rewrites what is on your lists today.
+  Nothing rewrites what is on your lists today: the lines already written as
+  sentences stay as they are. Saying one of them again writes the new short
+  line, and whether the old sentence is retired with it is the ordinary
+  judgement the memory makes about a claim it holds — *"Milk is needed."* and
+  *"latte 2"* are not the same words, so the two can sit there together until
+  you close or delete one from the **Facts** page. Only short lines update each
+  other by name.
 
 - **A second birth date is a question now, not a second line on the card.**
   An identity card holds a handful of things there can only be one of: when
