@@ -4238,7 +4238,7 @@ fn speaks_of_the_same_thing(
 /// Ask [`speaks_of_the_same_thing`] of one pair and say, in the log, which
 /// way it failed — or `None` when the pair may be applied.
 ///
-/// The two failures are different mistakes and read differently in the trace:
+/// The three failures are different mistakes and read differently in the trace:
 /// one is a pair with no common box, the other a pair that would move a fact
 /// to somebody else on nobody's word.
 fn aboutness_refusal(
@@ -15834,9 +15834,10 @@ mod tests {
     /// The vote machinery refuses a request from the person who wrote the
     /// fact, on purpose: their own contribution is theirs to delete outright.
     /// The engine will not do that from a turn — an irreversible delete on a
-    /// model's reading of one sentence is not a thing it does — so the whole
-    /// gesture used to end in a log line, and the speaker was told nothing.
-    /// They asked for it to go, nothing went, and nobody said so.
+    /// The engine will not do that from a turn — an irreversible delete on a
+    /// model's reading of one sentence is not a thing it does — so the gesture
+    /// cannot end in a deletion. It must not end in silence either: they asked
+    /// for it to go, nothing went, and they are told so.
     #[tokio::test]
     async fn asking_to_be_rid_of_your_own_words_says_so_out_loud() {
         let (dir, tree, pool) = setup_workdir().await;
