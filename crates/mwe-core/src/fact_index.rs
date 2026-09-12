@@ -4983,6 +4983,77 @@ mod tests {
         ));
     }
 
+    /// **A person's own card is not private FROM THEM.**
+    ///
+    /// Zoe's `@profile.md` in the September demo showed her eight regions
+    /// replaced by `[redacted]` and the callout that says the whole page is
+    /// private, while the dashboard's Facts table listed those same eight
+    /// facts to the same person. Two reads of one thing disagreeing, and the
+    /// table is the one that is right: the subject reads their own facts.
+    ///
+    /// The card is where it showed, because every sentence on it sits inside a
+    /// marker — with no prose left outside, a page whose regions all redact
+    /// collapses to the callout instead of merely looking thin.
+    #[tokio::test]
+    async fn a_card_is_never_redacted_from_its_own_subject() {
+        use std::fmt::Write as _;
+        let pool = make_pool().await;
+        let page = "wikis/zoe/@profile.md";
+        let mut body = String::new();
+        for i in 0..8u8 {
+            let id = format!("018f1234-5678-7abc-9def-0123456789{i:02x}");
+            let mut f = sample_new_fact(&id, "zoe", "user:zoe", &format!("Zoe fact {i}."));
+            f.source_path = page.to_owned();
+            // Said by somebody else, shared with nobody: the shape the demo's
+            // card carried.
+            f.sender_id = Some("user:alice".parse().unwrap());
+            f.allow_ids = Vec::new();
+            insert(&pool, &f).await.expect("insert");
+            let _ = writeln!(body, "{{{{f={id}}}}}Zoe fact {i}.{{{{/}}}}\n");
+        }
+
+        let map = page_acl_map_active(&pool, page).await.expect("acl map");
+        assert_eq!(map.len(), 8, "every region's fact is in the page's map");
+
+        let out = crate::render::render_for_sender(&body, &map, "zoe", &[]);
+        assert_eq!(
+            out.blocks_redacted, 0,
+            "the subject reads her own facts — the page render must not tell her the page \
+             she is the subject of is private: {}",
+            out.text
+        );
+        assert!(
+            out.text.contains("Zoe fact 0.") && out.text.contains("Zoe fact 7."),
+            "and all eight are there: {}",
+            out.text
+        );
+
+        // The other side of the same predicate, so the test is not merely
+        // asserting that nothing is ever redacted: a stranger sees none of it.
+        let stranger = crate::render::render_for_sender(&body, &map, "morgana", &[]);
+        assert_eq!(
+            stranger.blocks_redacted, 8,
+            "somebody who is neither subject, audience nor author reads none of it"
+        );
+
+        // And the ONE way a page of her own facts can still come back wholly
+        // blank to her: when the index does not place those facts on THAT
+        // page. A runtime marker carries no ACL of its own — the columns are
+        // the ACL — so a region the map cannot vouch for is readable by
+        // nobody, the subject included. That is the fail-closed rule working,
+        // not the reader rule failing, and it is the shape to look for when a
+        // card reads as private to the person it is about.
+        let elsewhere = page_acl_map_active(&pool, "wikis/zoe/altro.md")
+            .await
+            .expect("acl map");
+        assert!(elsewhere.is_empty());
+        let blank = crate::render::render_for_sender(&body, &elsewhere, "zoe", &[]);
+        assert_eq!(
+            blank.blocks_redacted, 8,
+            "bytes the index does not vouch for are served to nobody"
+        );
+    }
+
     #[tokio::test]
     async fn set_validity_skips_unknown_and_tombstoned_rows() {
         let pool = make_pool().await;
