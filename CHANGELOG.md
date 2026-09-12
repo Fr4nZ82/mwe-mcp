@@ -167,23 +167,30 @@ semver-governed surface: breaking changes are called out explicitly.
 
 ### Changed
 
-- **The same message delivered twice is answered once.** An assistant that
+- **The same message delivered twice is acted on once.** An assistant that
   loses its connection mid-request sends the message again, and a voice note
   sometimes arrives transcribed twice. The memory already refused to store any
-  of it a second time, but it still did all the work over — reading the memory,
-  deciding what the message meant, writing the reply — to arrive at the answer
-  it had already given. It now hands the first answer straight back, and the
-  reply reaches you even when the first attempt died before delivering it.
+  of it a second time, but it still worked out what the message meant all over
+  again to arrive at the decisions it had already made. It now hands those
+  decisions straight back — what it filed, what it could not do, what it asked
+  you — so the reply reaches you even when the first attempt died before
+  delivering it.
 
-  Only the message you sent **last** is answered this way, and only for **ten
+  **What it does again is read.** The memory is looked up afresh for the second
+  delivery: if a fact was forgotten, a rule withdrawn or a sharing narrowed in
+  the meantime, the second reply is built from the memory as it stands, not
+  from the one the first delivery saw. Ten minutes is long enough for any of
+  those, and handing back an old picture of your memory is not something a
+  retry should be able to cause.
+
+  Only the message you sent **last** is treated this way, and only for **ten
   minutes**: say anything else in between, to any assistant, and the earlier
-  one is asked again for real, so a repeat can never come back with an answer
-  the conversation has moved past. After the ten minutes, saying the same
-  thing again is a new message and gets a new answer. The operator can change
-  the window with `recall.repeat_window_minutes` in `mwe-mcp.config.yaml` (`0`
-  switches it off and every delivery is treated as a new message). A repeat is
-  marked as such on the **Traces** page, so a reply that arrives twice can be
-  told from a message answered twice.
+  one is decided again for real. After the ten minutes, saying the same thing
+  again is a new message. The operator can change the window with
+  `recall.repeat_window_minutes` in `mwe-mcp.config.yaml` (`0` switches it off
+  and every delivery is treated as a new message). A repeat is marked as such
+  on the **Traces** page, so a reply that arrives twice can be told from a
+  message acted on twice.
 
 - **A list is a list again: its lines are items, not sentences.** Asking an
   assistant to put milk on the shopping list wrote *"Milk is needed."* on the

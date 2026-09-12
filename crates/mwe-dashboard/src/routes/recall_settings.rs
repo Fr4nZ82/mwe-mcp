@@ -456,10 +456,10 @@ fn parse_form(form: &HashMap<String, String>) -> Result<RecallConfig> {
         // `usage.retention_days` rather than a slider next to the hop count.
         // Carried forward by the caller, same as the timezone above.
         trace_retention_days: None,
-        // How long a redelivered turn is answered with the first answer. Not a
-        // resource this panel hands out either — it says what counts as the
-        // same message — so it stays a config-file knob and is carried forward
-        // the same way.
+        // How long a redelivered turn keeps the decisions the first delivery
+        // made. Not a resource this panel hands out either — it says what
+        // counts as the same message — so it stays a config-file knob and is
+        // carried forward the same way.
         repeat_window_minutes: None,
     })
 }

@@ -158,6 +158,10 @@ const PERSONAL_ROWS: &[(&str, &str, IdForm)] = &[
     ("recall_traces", "sender_id", IdForm::Bare),
     ("recall_log", "sender_id", IdForm::Bare),
     ("recall_misses", "sender_id", IdForm::Bare),
+    // The write outcome of their last turn, kept for a few minutes so a
+    // re-delivery is not decided twice: the seed it was answered with, the
+    // notices it owes them, the question it put to them.
+    ("ingest_replies", "sender_id", IdForm::Bare),
     // A wiki-admin lease is a live claim on a wiki; theirs expires with them.
     ("wiki_admin_leases", "sender_id", IdForm::Bare),
     // Briefing items carry the prose they wrote.
@@ -1562,6 +1566,36 @@ mod tests {
         .await
         .unwrap();
 
+        // The kept write outcome of her last turn: a serving buffer, but one
+        // that holds what the engine told HER — the seed it answered with, the
+        // notice about what it refused, the question it asked back.
+        crate::ingest_replay::record(
+            &pool,
+            &crate::ingest_replay::TurnKey::of(&crate::ingest::IngestRequest {
+                text: "aggiungi il latte".to_owned(),
+                author: crate::ingest::MessageRole::User,
+                sender_id: "alice".to_owned(),
+                consumer_id: None,
+                recent_messages: Vec::new(),
+                context_hint: crate::ingest::ContextHint::Conversation,
+                disambig_choice: None,
+                metadata: crate::ingest::IngestMetadata::default(),
+                attachments: Vec::new(),
+            }),
+            &crate::ingest_replay::TurnOutcome {
+                intent: crate::ingest::IntentKind::Capture,
+                suggested_seed: Some("Aggiunto.".to_owned()),
+                capture_id: None,
+                needs_disambig: false,
+                disambig_candidates: Vec::new(),
+                notice: Some("NOTE — the list was not opened.".to_owned()),
+                llm_used: true,
+            },
+            10,
+            chrono::Utc::now(),
+        )
+        .await;
+
         let report = forget_user(&pool, &tree, embedder(), "alice")
             .await
             .unwrap()
@@ -1579,6 +1613,25 @@ mod tests {
             photo,
             report,
         }
+    }
+
+    /// **What the engine last said to her goes with her.**
+    ///
+    /// The turn buffer that keeps a re-delivered turn from being decided twice
+    /// holds what the engine answered: a seed in her own language, a notice
+    /// saying what it would not do with what she said, the question it put
+    /// back to her. It empties itself in minutes, and that is not the same as
+    /// being erased on request — an erasure that leaves it is an erasure with
+    /// a ten-minute hole in it.
+    #[tokio::test]
+    async fn the_last_thing_the_engine_told_her_goes_with_her() {
+        let scene = forget_alice().await;
+        let left: i64 =
+            sqlx::query_scalar("SELECT count(*) FROM ingest_replies WHERE sender_id = 'alice'")
+                .fetch_one(&scene.pool)
+                .await
+                .expect("count");
+        assert_eq!(left, 0, "nothing of her last turn is kept");
     }
 
     async fn row(pool: &SqlitePool, id: &FactId) -> fact_index::FactIndexRow {

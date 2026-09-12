@@ -614,6 +614,15 @@ pub async fn run_light(
     llms: Option<&RemLlms<'_>>,
     policy: &LightPolicy,
 ) -> Result<LightOutcome> {
+    // Hygiene first, and before the budget gate: the kept write outcomes of
+    // re-delivered turns expire on a clock, and the write path only prunes
+    // them when somebody writes. On a deployment nobody is talking to — or one
+    // that has spent its budget — this is the only thing that empties the
+    // table, so it must not be behind a stop that means "do not spend".
+    let expired_replies = crate::ingest_replay::prune(pool, Utc::now()).await;
+    if expired_replies > 0 {
+        tracing::info!(expired_replies, "light dream: expired turn outcomes swept");
+    }
     if let Some(budget_stop) = budget_stop().await {
         return Ok(LightOutcome {
             budget_stop: Some(budget_stop),
@@ -1441,5 +1450,41 @@ mod tests {
             .expect("light must succeed on an empty workdir");
         assert_eq!(outcome.light.scanned, 0);
         assert!(outcome.compile.is_none());
+    }
+
+    /// **A deployment nobody is talking to keeps no kept turn.**
+    ///
+    /// The buffer that stops a re-delivered turn being decided twice is
+    /// emptied on the way into a write, and an idle install does not write:
+    /// without a sweep on the clock the last turn of the day sat there until
+    /// the next one, whenever that came. It runs before the budget gate, too —
+    /// a deployment that has stopped spending has not stopped keeping.
+    #[tokio::test]
+    async fn the_light_round_sweeps_kept_turns_past_their_window() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let pool = crate::db::open_or_init(dir.path()).await.expect("db");
+        let tree = WikiTree::open(dir.path()).expect("tree");
+        let embedder: Arc<dyn Embedder> = Arc::new(crate::embedder::FakeEmbedder::new("fake", 4));
+        sqlx::query(
+            "INSERT INTO ingest_replies \
+               (sender_id, consumer_id, author, turn_hash, created_at, expires_at, reply) \
+             VALUES ('alice', '', 'user', 'deadbeef', ?, ?, '{}')",
+        )
+        .bind((Utc::now() - chrono::Duration::hours(2)).to_rfc3339())
+        .bind((Utc::now() - chrono::Duration::hours(1)).to_rfc3339())
+        .execute(&pool)
+        .await
+        .expect("a turn kept this morning");
+
+        run_light(&pool, &tree, embedder, None, &LightPolicy::default())
+            .await
+            .expect("light round");
+
+        let left: i64 = sqlx::query_scalar("SELECT count(*) FROM ingest_replies")
+            .fetch_one(&pool)
+            .await
+            .expect("count");
+        assert_eq!(left, 0, "the round swept it by the clock");
+        drop(dir);
     }
 }

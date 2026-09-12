@@ -41,15 +41,18 @@ read with things you may not, the parts you may not are replaced by
 `[redacted]` before the page reaches you — and the page tells you it is showing
 you a partial view, without telling you what was withheld.
 
-**It does not answer the same message twice.** When your assistant delivers
+**It does not act on the same message twice.** When your assistant delivers
 the same message again within ten minutes — it retried after losing its
-connection, or a voice note reached it transcribed twice — the memory hands
-back the answer it already gave instead of reading and writing everything a
-second time. Nothing is stored twice, and you get the reply the first delivery
-may never have carried to you. This holds for the message you sent **last**
-and no earlier one: say anything else in between, on any of your assistants,
-and the earlier message is answered from scratch. Say the same thing again
-after the ten minutes and it is a new message, answered as one.
+connection, or a voice note reached it transcribed twice — the memory does not
+work out what it means a second time: nothing is stored twice, and you get back
+what it decided the first time, including the reply that first delivery may
+never have carried to you. What it does do again is **read**: the memory is
+looked up afresh, so if something was forgotten or a rule was withdrawn in
+those minutes, the second reply is built from the memory as it stands and not
+from the older one. This holds for the message you sent **last** and no earlier
+one: say anything else in between, on any of your assistants, and the earlier
+message is treated as new. Say the same thing again after the ten minutes and
+it is a new message.
 
 **It does not write pages the instant you speak.** A fact you just said is
 stored and can be recalled straight away, but the readable prose of the page it

@@ -1,19 +1,28 @@
-//! Idempotence at the entrance — the same turn delivered twice is answered
-//! once.
+// SPDX-License-Identifier: AGPL-3.0-or-later
+//! Idempotence at the entrance — the same turn delivered twice is **written**
+//! once, and **read** twice.
 //!
 //! A consumer redelivers a turn whenever it cannot tell whether the first
 //! delivery landed: its container was killed mid-call, the network retried, a
 //! voice note reached it transcribed twice. Nothing durable goes wrong when it
 //! does — the write path files no duplicate and the reconciler ends nothing
-//! twice — but the turn is not free either. It runs the classifier, the
-//! reconciliation stage and the navigator again, two or three model calls, to
-//! arrive at the answer it already produced.
+//! twice — but the turn is not free either. It runs the classifier and the
+//! reconciliation stage again, the two expensive calls, to arrive at the
+//! decisions it already made. And the answer is usually the point of the
+//! re-delivery: the shopping-list case that opened this, where the first
+//! container died AFTER the list was written, so what the person never
+//! received was the reply.
 //!
-//! And the answer is usually the point of the re-delivery. The shopping-list
-//! case that opened this: the first container died AFTER the list was written,
-//! so what the person never received was the reply. A second run that files
-//! nothing and says nothing is the wrong shape — the right one is to hand back
-//! what the first turn answered, which is what this module keeps.
+//! **What is kept is the WRITE half, and only that**: what the turn decided
+//! and filed — the intent, the seed, the id of what it captured, the notices
+//! it owes, the question it asked. The memory BLOCK is not kept and is never
+//! replayed. A recall block is a projection of the memory as it stands, and
+//! ten minutes is long enough for a fact to be forgotten, a permission to be
+//! narrowed or a rule to be withdrawn: handing back the old block would put
+//! the forgotten thing in front of the person again, and write it into the
+//! trace journal with today's date. So a repeat re-reads — recall, the
+//! navigator, the identity cards, the rules in force — and pays for that,
+//! while the classifier and the reconciler do not run at all.
 //!
 //! **Only COMPLETED turns are repeated.** A row is written when a turn
 //! finishes, so a duplicate that arrives while the first is still in flight
@@ -23,17 +32,21 @@
 //! **The window is short on purpose** ([`crate::ingest::IngestPolicy`]). Inside
 //! it the same words from the same speaker are a re-delivery; outside it they
 //! are somebody saying the same thing again, which is a turn of its own and is
-//! answered as one.
+//! answered as one. Each row carries its own `expires_at`, stamped from the
+//! window in force when it was written, so the serving check, the write-path
+//! prune and the light round's sweep ([`prune`]) agree without a knob between
+//! them.
 //!
 //! **And only the person's LAST turn is repeatable**, whichever surface it came
 //! from: recording one drops the rest ([`record`]). A retry is always of the
-//! call the consumer just made, so that costs nothing — and it is what stops a
-//! repeat ever handing back an answer the conversation has since moved past.
+//! call the consumer just made, so that costs nothing — and it is one more
+//! thing that stops a repeat handing back a decision the conversation has
+//! since moved past.
 
 use sqlx::SqlitePool;
 
 use crate::capture_buffer::origin_fingerprint;
-use crate::ingest::{DisambigCandidate, IngestRequest, IngestResponse, IntentKind, MessageRole};
+use crate::ingest::{DisambigCandidate, IngestRequest, IntentKind, MessageRole};
 use crate::types::FactId;
 
 /// What makes two deliveries the same turn.
@@ -44,12 +57,12 @@ use crate::types::FactId;
 ///   Telegram and the same words in the kitchen are two conversations;
 /// - the **speaker**, because a consumer feeds its own reply back for
 ///   extraction on the same surface as the user's message, and without this
-///   one could be served the other's answer;
+///   one could be served the other's outcome;
 /// - a **fingerprint of what the turn carried in** — the text, the media
 ///   riding it, and the disambiguation choice it answers. Those three are the
 ///   whole of what the turn asks the memory to act on; a re-delivery repeats
 ///   them exactly, while a photo re-sent under the same one-word caption does
-///   not, and must not be answered with the first photo's reply.
+///   not, and must not be answered with the first photo's outcome.
 ///
 /// What is deliberately NOT in it: the conversation the consumer attached. A
 /// retry may carry a window that has moved on by a turn, and that is the same
@@ -89,40 +102,61 @@ impl TurnKey {
     }
 }
 
-/// The answer a completed turn with this key gave inside the window, with the
-/// instant it finished.
+/// What a completed turn DID to the memory — the half a re-delivery must not
+/// do again.
 ///
-/// `None` when there is none, when the window is switched off (`0`), or when
-/// the stored answer cannot be read back — every one of which means "run the
-/// turn", which is always safe.
+/// Everything here is a DECISION of that turn, not a view of the store: what
+/// the engine read the message to be, what it filed, what it could not do with
+/// it, what it asked back. None of it goes stale in ten minutes, because none
+/// of it describes the memory — which is exactly why the recall block, which
+/// does, is not in this struct.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct TurnOutcome {
+    /// What the engine read the message to be.
+    pub intent: IntentKind,
+    /// The seed the consumer was handed to compose its reply from.
+    pub suggested_seed: Option<String>,
+    /// The id of the row the turn filed, when it filed one.
+    pub capture_id: Option<FactId>,
+    /// Whether the turn asked the person a question back.
+    pub needs_disambig: bool,
+    /// The choices that question offered.
+    pub disambig_candidates: Vec<DisambigCandidate>,
+    /// The one-shot notices the turn owes the person — each a thing the engine
+    /// did NOT do with what they said. They ride the `rules` channel beside
+    /// the directives in force, which a repeat recomputes.
+    pub notice: Option<String>,
+    /// Whether the classifier answered on the turn that produced this.
+    pub llm_used: bool,
+}
+
+/// The write outcome a completed turn with this key produced, with the instant
+/// it finished.
+///
+/// `None` when there is none, when the row has expired, or when the stored
+/// outcome cannot be read back — every one of which means "run the turn",
+/// which is always safe.
 ///
 /// **`now` is the WALL clock, never the turn's semantic one.** What this
 /// measures is how long ago the engine answered, and a backlog replay that
-/// re-lives a turn at its utterance time did not arrive a year ago. Reading
-/// the semantic clock here would also let one such import prune every live row
-/// on its way in.
+/// re-lives a turn at its utterance time did not arrive a year ago.
 ///
 /// Reading is cheap by construction: one point lookup on the primary key.
 pub async fn replay_of(
     pool: &SqlitePool,
     key: &TurnKey,
-    window_minutes: u32,
     now: chrono::DateTime<chrono::Utc>,
-) -> Option<(IngestResponse, String)> {
-    if window_minutes == 0 {
-        return None;
-    }
-    let cutoff = (now - chrono::Duration::minutes(i64::from(window_minutes))).to_rfc3339();
+) -> Option<(TurnOutcome, String)> {
     let row = sqlx::query_as::<_, (String, String)>(
         "SELECT created_at, reply FROM ingest_replies \
          WHERE sender_id = ? AND consumer_id = ? AND author = ? AND turn_hash = ? \
-           AND created_at >= ?",
+           AND expires_at > ?",
     )
     .bind(&key.sender_id)
     .bind(&key.consumer_id)
     .bind(key.author.as_str())
     .bind(&key.fingerprint)
-    .bind(&cutoff)
+    .bind(now.to_rfc3339())
     .fetch_optional(pool)
     .await
     .unwrap_or_else(|e| {
@@ -131,70 +165,72 @@ pub async fn replay_of(
     });
     let (created_at, reply) = row?;
     match serde_json::from_str::<Wire>(&reply) {
-        Ok(wire) => Some((wire.into_response(), created_at)),
+        Ok(wire) => Some((wire.into_outcome(), created_at)),
         Err(e) => {
-            tracing::warn!(error = %e, "ingest-replay: stored reply unreadable — the turn runs normally");
+            tracing::warn!(error = %e, "ingest-replay: stored outcome unreadable — the turn runs normally");
             None
         },
     }
 }
 
-/// Keep this turn's answer for a re-delivery, and drop what has aged out.
+/// Keep this turn's write outcome for a re-delivery, and drop what has aged
+/// out.
 ///
-/// Best-effort in both halves: a turn that cannot record its answer is a turn
+/// Best-effort in both halves: a turn that cannot record its outcome is a turn
 /// that will be run again if it arrives again, which is exactly the behaviour
 /// this module replaces. It is never a reason to fail a turn that succeeded.
 ///
 /// Both prunes ride the insert, the way [`crate::recent_window::record_exchange`]
-/// bounds its own buffer — the sender's earlier turns, then everything past the
-/// window — so the table cannot outgrow its contract even on a deployment where
-/// nothing is ever redelivered.
+/// bounds its own buffer — the sender's earlier turns, then everything past its
+/// expiry — so the table cannot outgrow its contract on a busy deployment; the
+/// light round's [`prune`] is what covers an idle one.
 ///
 /// `now` is the wall clock, for the reason spelled out on [`replay_of`].
 pub async fn record(
     pool: &SqlitePool,
     key: &TurnKey,
-    response: &IngestResponse,
+    outcome: &TurnOutcome,
     window_minutes: u32,
     now: chrono::DateTime<chrono::Utc>,
 ) {
     if window_minutes == 0 {
         return;
     }
-    let reply = match serde_json::to_string(&Wire::of(response)) {
+    let reply = match serde_json::to_string(&Wire::of(outcome)) {
         Ok(json) => json,
         Err(e) => {
-            tracing::warn!(error = %e, "ingest-replay: answer not serialisable — not kept");
+            tracing::warn!(error = %e, "ingest-replay: outcome not serialisable — not kept");
             return;
         },
     };
+    let expires_at = (now + chrono::Duration::minutes(i64::from(window_minutes))).to_rfc3339();
     // REPLACE, not INSERT: the same words said again after the window are a
-    // new turn, and it is the new answer a further re-delivery must get.
+    // new turn, and it is the new outcome a further re-delivery must get.
     if let Err(e) = sqlx::query(
         "INSERT OR REPLACE INTO ingest_replies \
-           (sender_id, consumer_id, author, turn_hash, created_at, reply) \
-         VALUES (?, ?, ?, ?, ?, ?)",
+           (sender_id, consumer_id, author, turn_hash, created_at, expires_at, reply) \
+         VALUES (?, ?, ?, ?, ?, ?, ?)",
     )
     .bind(&key.sender_id)
     .bind(&key.consumer_id)
     .bind(key.author.as_str())
     .bind(&key.fingerprint)
     .bind(now.to_rfc3339())
+    .bind(&expires_at)
     .bind(&reply)
     .execute(pool)
     .await
     {
-        tracing::warn!(error = %e, "ingest-replay: answer not kept (a repeat would be re-run)");
+        tracing::warn!(error = %e, "ingest-replay: outcome not kept (a repeat would be re-run)");
         return;
     }
     // ONLY THE PERSON'S LAST TURN IS REPEATABLE, across every surface they
     // talk to. A re-delivery is always of the call the consumer just made, so
     // nothing is lost by it — and it is what keeps a repeat from ever handing
-    // back an answer the conversation has moved past. «Cosa c'è sulla spesa?»,
-    // then «aggiungi il pane», then the same question again is a sequence a
-    // person really types, and inside a bare time window the third turn would
-    // have been served the list without the bread. Here the second turn drops
-    // the first one's row, so the third is a turn and finds the bread.
+    // back a decision the conversation has moved past. «Cosa c'è sulla
+    // spesa?», then «aggiungi il pane», then the same question again is a
+    // sequence a person really types: the second turn drops the first one's
+    // row, so the third is a turn of its own.
     if let Err(e) = sqlx::query(
         "DELETE FROM ingest_replies WHERE sender_id = ? \
            AND NOT (consumer_id = ? AND author = ? AND turn_hash = ?)",
@@ -208,18 +244,34 @@ pub async fn record(
     {
         tracing::warn!(error = %e, "ingest-replay: the sender's earlier turns were not dropped");
     }
-    // And a sender who stops talking leaves nothing behind either.
-    let cutoff = (now - chrono::Duration::minutes(i64::from(window_minutes))).to_rfc3339();
-    if let Err(e) = sqlx::query("DELETE FROM ingest_replies WHERE created_at < ?")
-        .bind(&cutoff)
+    prune(pool, now).await;
+}
+
+/// Drop every kept outcome past its expiry.
+///
+/// Called on the way into [`record`] and once per light round
+/// ([`crate::dream::run_light`]) — the second is what a deployment nobody is
+/// talking to needs, since the write-path prune only ever runs when somebody
+/// writes. Without it the last turn of the day sat in the table until the next
+/// one, whenever that came.
+///
+/// Best-effort and silent about the ordinary case: this is hygiene, and a
+/// sweep that cannot run leaves rows that are already refused at serving time.
+pub async fn prune(pool: &SqlitePool, now: chrono::DateTime<chrono::Utc>) -> u64 {
+    match sqlx::query("DELETE FROM ingest_replies WHERE expires_at <= ?")
+        .bind(now.to_rfc3339())
         .execute(pool)
         .await
     {
-        tracing::warn!(error = %e, "ingest-replay: aged rows not pruned");
+        Ok(done) => done.rows_affected(),
+        Err(e) => {
+            tracing::warn!(error = %e, "ingest-replay: expired rows not pruned");
+            0
+        },
     }
 }
 
-/// The stored shape of an [`IngestResponse`].
+/// The stored shape of a [`TurnOutcome`].
 ///
 /// Written out by hand rather than derived onto the public type: `FactId` and
 /// `IntentKind` enforce their own invariants at construction, and a derive
@@ -229,15 +281,12 @@ pub async fn record(
 #[derive(serde::Serialize, serde::Deserialize)]
 struct Wire {
     intent: String,
-    context_snippet: Option<String>,
-    rules: Option<String>,
     suggested_seed: Option<String>,
-    recent_window: Option<String>,
     capture_id: Option<String>,
     needs_disambig: bool,
     disambig_candidates: Vec<WireCandidate>,
+    notice: Option<String>,
     llm_used: bool,
-    took_ms: u64,
 }
 
 #[derive(serde::Serialize, serde::Deserialize)]
@@ -247,16 +296,13 @@ struct WireCandidate {
 }
 
 impl Wire {
-    fn of(response: &IngestResponse) -> Self {
+    fn of(outcome: &TurnOutcome) -> Self {
         Self {
-            intent: response.intent.as_str().to_owned(),
-            context_snippet: response.context_snippet.clone(),
-            rules: response.rules.clone(),
-            suggested_seed: response.suggested_seed.clone(),
-            recent_window: response.recent_window.clone(),
-            capture_id: response.capture_id.as_ref().map(|f| f.as_str().to_owned()),
-            needs_disambig: response.needs_disambig,
-            disambig_candidates: response
+            intent: outcome.intent.as_str().to_owned(),
+            suggested_seed: outcome.suggested_seed.clone(),
+            capture_id: outcome.capture_id.as_ref().map(|f| f.as_str().to_owned()),
+            needs_disambig: outcome.needs_disambig,
+            disambig_candidates: outcome
                 .disambig_candidates
                 .iter()
                 .map(|c| WireCandidate {
@@ -264,21 +310,15 @@ impl Wire {
                     description: c.description.clone(),
                 })
                 .collect(),
-            llm_used: response.llm_used,
-            took_ms: response.took_ms,
+            notice: outcome.notice.clone(),
+            llm_used: outcome.llm_used,
         }
     }
 
-    /// The answer as the consumer received it the first time — `took_ms` and
-    /// `llm_used` included. They describe the turn that produced this reply,
-    /// and this reply IS that turn's, handed over a second time.
-    fn into_response(self) -> IngestResponse {
-        IngestResponse {
+    fn into_outcome(self) -> TurnOutcome {
+        TurnOutcome {
             intent: IntentKind::parse(&self.intent).unwrap_or(IntentKind::Skip),
-            context_snippet: self.context_snippet,
-            rules: self.rules,
             suggested_seed: self.suggested_seed,
-            recent_window: self.recent_window,
             capture_id: self
                 .capture_id
                 .as_deref()
@@ -292,8 +332,8 @@ impl Wire {
                     description: c.description,
                 })
                 .collect(),
+            notice: self.notice,
             llm_used: self.llm_used,
-            took_ms: self.took_ms,
         }
     }
 }
@@ -330,13 +370,10 @@ mod tests {
         }
     }
 
-    fn answer() -> IngestResponse {
-        IngestResponse {
+    fn outcome() -> TurnOutcome {
+        TurnOutcome {
             intent: IntentKind::Capture,
-            context_snippet: Some("RELEVANT MEMORY\n- latte 2".to_owned()),
-            rules: Some("Answer concisely.".to_owned()),
             suggested_seed: Some("Segnato.".to_owned()),
-            recent_window: None,
             capture_id: Some(
                 FactId::parse("018f1234-5678-7abc-9def-0123456789ab").expect("fact id"),
             ),
@@ -345,46 +382,34 @@ mod tests {
                 candidate_id: "c1".to_owned(),
                 description: "the shopping list".to_owned(),
             }],
+            notice: Some("NOTE — the list was not opened.".to_owned()),
             llm_used: true,
-            took_ms: 1234,
         }
     }
 
     /// What comes back is what went in — every field of it.
     ///
-    /// The whole value of this table is that the second delivery gets the
-    /// FIRST one's answer, so a field quietly lost on the way through is the
-    /// bug it exists to prevent: a recall block, a seed, the capture id the
-    /// consumer logs, the disambiguation the person is waiting to answer.
+    /// The value of this table is that the second delivery does not decide
+    /// anything a second time, so a field quietly lost on the way through is
+    /// the bug it exists to prevent: the seed, the capture id the consumer
+    /// logs, the notice that says what was refused, the question the person is
+    /// waiting to answer.
     #[tokio::test]
-    async fn the_answer_comes_back_exactly_as_it_was_given() {
+    async fn the_write_outcome_comes_back_exactly_as_it_was_decided() {
         let pool = pool().await;
         let now = chrono::Utc::now();
         let key = TurnKey::of(&request("due litri di latte"));
-        record(&pool, &key, &answer(), 10, now).await;
+        record(&pool, &key, &outcome(), 10, now).await;
 
-        let (back, _) = replay_of(&pool, &key, 10, now)
+        let (back, _) = replay_of(&pool, &key, now)
             .await
             .expect("the turn is repeatable");
-        let first = answer();
-        assert_eq!(back.intent, first.intent);
-        assert_eq!(back.context_snippet, first.context_snippet);
-        assert_eq!(back.rules, first.rules);
-        assert_eq!(back.suggested_seed, first.suggested_seed);
-        assert_eq!(back.recent_window, first.recent_window);
-        assert_eq!(back.capture_id, first.capture_id);
-        assert_eq!(back.needs_disambig, first.needs_disambig);
-        assert_eq!(back.disambig_candidates, first.disambig_candidates);
-        assert_eq!(back.llm_used, first.llm_used);
-        assert_eq!(
-            back.took_ms, first.took_ms,
-            "the duration is the first turn's, because the answer is"
-        );
+        assert_eq!(back, outcome());
     }
 
     /// What separates two deliveries of one turn from two turns.
     ///
-    /// Each of these would be answered with somebody else's reply if the key
+    /// Each of these would be answered with somebody else's outcome if the key
     /// dropped that part, and the photo case is the one that costs a fact: the
     /// same one-word caption under a second picture is a different turn, with a
     /// different thing to say about it.
@@ -393,7 +418,7 @@ mod tests {
         let pool = pool().await;
         let now = chrono::Utc::now();
         let key = TurnKey::of(&request("ecco"));
-        record(&pool, &key, &answer(), 10, now).await;
+        record(&pool, &key, &outcome(), 10, now).await;
 
         for (what, other) in [
             ("other words", request("ecco qua")),
@@ -433,9 +458,7 @@ mod tests {
             ),
         ] {
             assert!(
-                replay_of(&pool, &TurnKey::of(&other), 10, now)
-                    .await
-                    .is_none(),
+                replay_of(&pool, &TurnKey::of(&other), now).await.is_none(),
                 "{what} is a turn of its own"
             );
         }
@@ -444,26 +467,26 @@ mod tests {
     /// The window is what tells a re-delivery from somebody saying the same
     /// thing again.
     ///
-    /// Past it the words are a new turn and are answered as one — and the new
-    /// answer is what a further re-delivery gets, which is why the row is
+    /// Past it the words are a new turn and are written as one — and the new
+    /// outcome is what a further re-delivery gets, which is why the row is
     /// replaced rather than added to.
     #[tokio::test]
     async fn the_same_words_after_the_window_are_a_new_turn() {
         let pool = pool().await;
         let now = chrono::Utc::now();
         let key = TurnKey::of(&request("come sempre"));
-        record(&pool, &key, &answer(), 10, now).await;
+        record(&pool, &key, &outcome(), 10, now).await;
 
         let later = now + chrono::Duration::minutes(11);
         assert!(
-            replay_of(&pool, &key, 10, later).await.is_none(),
+            replay_of(&pool, &key, later).await.is_none(),
             "eleven minutes on, the same words are a new turn"
         );
 
-        let mut second = answer();
+        let mut second = outcome();
         second.suggested_seed = Some("Di nuovo.".to_owned());
         record(&pool, &key, &second, 10, later).await;
-        let (back, _) = replay_of(&pool, &key, 10, later)
+        let (back, _) = replay_of(&pool, &key, later)
             .await
             .expect("the new turn is itself repeatable");
         assert_eq!(back.suggested_seed.as_deref(), Some("Di nuovo."));
@@ -481,33 +504,30 @@ mod tests {
     /// Only the person's LAST turn is repeatable, whichever surface it came
     /// from.
     ///
-    /// This is what keeps a repeat from ever serving an answer the
-    /// conversation has moved past: ask what is on the shopping list, add the
-    /// bread, ask again — inside a bare time window that third turn would come
-    /// back with the list as it was before the bread. Saying something else in
-    /// between drops the first answer, so the question is asked again for
-    /// real.
+    /// One more thing that keeps a repeat from acting on a decision the
+    /// conversation has moved past: saying something else in between drops the
+    /// earlier outcome, so the earlier turn is decided again for real.
     #[tokio::test]
     async fn saying_something_else_makes_the_earlier_turn_unrepeatable() {
         let pool = pool().await;
         let now = chrono::Utc::now();
         let question = TurnKey::of(&request("cosa c'è sulla spesa?"));
-        record(&pool, &question, &answer(), 10, now).await;
-        assert!(replay_of(&pool, &question, 10, now).await.is_some());
+        record(&pool, &question, &outcome(), 10, now).await;
+        assert!(replay_of(&pool, &question, now).await.is_some());
 
         // The same person, on another surface, says something else.
         let elsewhere = TurnKey::of(&IngestRequest {
             consumer_id: Some("voice".to_owned()),
             ..request("aggiungi il pane")
         });
-        record(&pool, &elsewhere, &answer(), 10, now).await;
+        record(&pool, &elsewhere, &outcome(), 10, now).await;
 
         assert!(
-            replay_of(&pool, &question, 10, now).await.is_none(),
-            "the question is asked again for real, and finds the bread"
+            replay_of(&pool, &question, now).await.is_none(),
+            "the earlier turn is decided again for real"
         );
         assert!(
-            replay_of(&pool, &elsewhere, 10, now).await.is_some(),
+            replay_of(&pool, &elsewhere, now).await.is_some(),
             "the turn that just happened is still the repeatable one"
         );
         // Another person's turn is not touched by any of it.
@@ -515,9 +535,41 @@ mod tests {
             sender_id: "bob".to_owned(),
             ..request("e le mie?")
         });
-        record(&pool, &bobs, &answer(), 10, now).await;
-        assert!(replay_of(&pool, &elsewhere, 10, now).await.is_some());
-        assert!(replay_of(&pool, &bobs, 10, now).await.is_some());
+        record(&pool, &bobs, &outcome(), 10, now).await;
+        assert!(replay_of(&pool, &elsewhere, now).await.is_some());
+        assert!(replay_of(&pool, &bobs, now).await.is_some());
+    }
+
+    /// **A deployment nobody is talking to keeps nothing.**
+    ///
+    /// The write-path prune only runs when somebody writes, so the last turn
+    /// of the day would otherwise sit in the table until the next one. The
+    /// sweep is by the clock, so an idle install holds the outcome for the
+    /// window and no longer.
+    #[tokio::test]
+    async fn an_idle_deployment_keeps_nothing_past_the_window() {
+        let pool = pool().await;
+        let now = chrono::Utc::now();
+        record(
+            &pool,
+            &TurnKey::of(&request("l'ultimo turno del giorno")),
+            &outcome(),
+            10,
+            now,
+        )
+        .await;
+
+        assert_eq!(
+            prune(&pool, now + chrono::Duration::minutes(9)).await,
+            0,
+            "inside the window it is still servable, so it stays"
+        );
+        assert_eq!(prune(&pool, now + chrono::Duration::minutes(11)).await, 1);
+        let rows: i64 = sqlx::query_scalar("SELECT count(*) FROM ingest_replies")
+            .fetch_one(&pool)
+            .await
+            .expect("count");
+        assert_eq!(rows, 0, "nothing of that turn is left");
     }
 
     /// A window of `0` switches the whole thing off: nothing is kept and
@@ -527,12 +579,12 @@ mod tests {
         let pool = pool().await;
         let now = chrono::Utc::now();
         let key = TurnKey::of(&request("niente"));
-        record(&pool, &key, &answer(), 0, now).await;
+        record(&pool, &key, &outcome(), 0, now).await;
         let rows: i64 = sqlx::query_scalar("SELECT count(*) FROM ingest_replies")
             .fetch_one(&pool)
             .await
             .expect("count");
         assert_eq!(rows, 0);
-        assert!(replay_of(&pool, &key, 0, now).await.is_none());
+        assert!(replay_of(&pool, &key, now).await.is_none());
     }
 }

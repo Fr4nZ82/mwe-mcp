@@ -1752,13 +1752,13 @@ pub struct RecallConfig {
     #[serde(default)]
     pub trace_retention_days: Option<i64>,
     /// Override `IngestPolicy::repeat_window_minutes` — how long the same
-    /// turn, delivered again, is answered with the answer the first delivery
-    /// got instead of being run a second time (default 10; `0` switches it
-    /// off and every delivery is a turn).
+    /// turn, delivered again, keeps the decisions the first delivery made
+    /// instead of making them a second time (default 10; `0` switches it off
+    /// and every delivery is a turn). The memory is read afresh either way.
     ///
     /// Raise it only where a consumer is known to retry late; the window is
     /// also what tells a re-delivery from a person saying the same thing
-    /// again, and the second one deserves a fresh answer.
+    /// again, and the second one deserves to be acted on.
     #[serde(default)]
     pub repeat_window_minutes: Option<u32>,
 }

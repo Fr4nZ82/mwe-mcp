@@ -9,7 +9,7 @@
 //! ## Pipeline (per call)
 //!
 //! ```text
-//! 0. same turn again?      ingest_replay::replay_of (a re-delivery returns the first turn's answer here)
+//! 0. same turn again?      ingest_replay::replay_of (a re-delivery skips steps 3 and 7, and reads everything else afresh)
 //! 1. recall context        recall::wiki_recall   (ranked hits, ACL filtered)
 //! 2. enumerate wikis       WikiTree::walk        (engine-internal — the classifier is shown NO wikis)
 //! 3. LLM intent + plan     llm::complete         (`ingest` slot, JSON out)
@@ -21,10 +21,12 @@
 //! ```
 //!
 //! **Two model calls on the `ingest` slot per turn**, not one and not three:
-//! the classifier (step 3) and the reconciler (step 7). **Zero when step 0
-//! answers**: a turn the consumer delivers twice inside the repeat window
-//! returns the first delivery's answer without reaching step 1, so it costs no
-//! model call, no search and no write ([`crate::ingest_replay`]).
+//! the classifier (step 3) and the reconciler (step 7). **Neither of them when
+//! step 0 answers**: a turn the consumer delivers twice inside the repeat
+//! window already has its decisions, so it skips both and writes nothing —
+//! while steps 1, 2, 6 and 8 run as usual, because a recall block describes
+//! the memory as it stands and ten minutes is long enough for that to change
+//! ([`crate::ingest_replay`]).
 //!
 //! Step 3 is one call and that is the claim — the classifier is asked for one
 //! strict JSON object encoding both the intent and the operational plan
@@ -471,15 +473,14 @@ pub struct IngestResponse {
     /// `true` when the classifier answered — even when its answer could
     /// not be read or applied and the turn fell back; `false` only when
     /// it could not be reached at all. A fallback turn is told apart by
-    /// its `suggested_seed`, which says nothing was stored.
+    /// its `suggested_seed`, which says nothing was stored. On a re-delivery
+    /// it is the answer of the delivery that classified, since this one did
+    /// not ([`crate::ingest_replay`]).
     pub llm_used: bool,
     /// Wall-clock duration of the orchestrator. Echoed as `took_ms` in
-    /// the MCP response.
-    ///
-    /// This field and the one above describe the turn that PRODUCED this
-    /// answer. On a re-delivery they are the first delivery's, because the
-    /// answer is ([`crate::ingest_replay`]): saying the repeat took no time
-    /// and called no model would describe a turn nobody was served.
+    /// the MCP response. Always THIS call's: a re-delivery really does read
+    /// the memory again, and is usually quicker for having skipped the two
+    /// model calls ([`crate::ingest_replay`]).
     pub took_ms: u64,
 }
 
@@ -697,9 +698,10 @@ pub struct IngestPolicy {
     /// why the journal is kept at all rather than capped at a handful of
     /// rows.
     pub trace_retention_days: i64,
-    /// How long the same turn, delivered again, is answered with the answer
-    /// the first delivery got instead of being run a second time
-    /// ([`crate::ingest_replay`]). In minutes; `0` switches it off.
+    /// How long the same turn, delivered again, keeps the decisions the first
+    /// delivery made instead of making them a second time — the classifier and
+    /// the reconciliation stage ([`crate::ingest_replay`]). The reading is
+    /// redone either way. In minutes; `0` switches it off.
     ///
     /// **The number decides what a repetition MEANS**, which is why it is
     /// small. A consumer that lost its container, retried a request or
@@ -707,10 +709,10 @@ pub struct IngestPolicy {
     /// minutes is already generous for that. A person who says the same words
     /// again is doing something else: adding the milk to the list a second
     /// time because they bought the first, asking the same question because
-    /// the answer has moved on. Widen this and the second kind starts being
-    /// answered with a stale reply, which is the one failure the feature can
-    /// cause; narrow it and the worst case is the work being done twice,
-    /// which is what happened before it existed.
+    /// something has changed. Widen this and the second kind starts having its
+    /// writing swallowed, which is the one failure the feature can cause;
+    /// narrow it and the worst case is the work being done twice, which is
+    /// what happened before it existed.
     pub repeat_window_minutes: u32,
 }
 
@@ -806,7 +808,12 @@ pub type Result<T> = std::result::Result<T, IngestError>;
 
 // ---------- Internal: LLM plan + capture-plan validation ----------
 
-#[derive(Debug, Deserialize)]
+// `Default` is the plan of a turn that STATES NOTHING: no extraction, no
+// reconciliation field, no question. One caller builds one — the re-delivery
+// of a turn already written, which must reach the reading half of the
+// orchestrator without asking a model what the message means a second time
+// ([`crate::ingest_replay`]).
+#[derive(Debug, Default, Deserialize)]
 // Four independent boolean flags mirror the LLM's JSON output
 // (requested_container / engine_rule / behaviour_rule / needs_disambig) — each
 // a distinct routing signal the model sets per turn, not a state to model as an
@@ -9672,69 +9679,41 @@ pub async fn wiki_ingest_message(
     // `metadata.occurred_at` re-lives the turn at utterance time.
     let turn_now = request.turn_now();
 
-    // THE SAME TURN DELIVERED TWICE IS ANSWERED ONCE. Before anything else —
-    // before the searches, before the classifier — because a re-delivery must
-    // cost nothing: no model call, no write, not even a recall. What it gets
-    // back is the answer the first delivery produced, which is usually what
-    // the consumer redelivered FOR (its container died after the write, so
-    // what never reached the person was the reply).
+    // THE SAME TURN DELIVERED TWICE IS WRITTEN ONCE AND READ TWICE. What the
+    // first delivery DECIDED is kept and handed back — the intent, the seed,
+    // the id of what it filed, the notices it owes, the question it asked — so
+    // the classifier and the reconciliation stage, the two expensive calls, do
+    // not run again. Everything that describes the MEMORY is read afresh
+    // below: ten minutes is long enough for a fact to be forgotten or a
+    // permission narrowed, and a block served from a row would put the
+    // forgotten thing back in front of the person and into the trace journal
+    // with today's date ([`crate::ingest_replay`]).
     //
     // A guest is left out on both sides: the turn is ephemeral by
     // construction, runs no classifier and writes nothing, so there is
-    // neither a row to find nor work worth saving.
+    // neither a row to find nor a decision worth keeping.
     let turn_key = (!enrollment::is_guest(&request.sender_id))
         .then(|| crate::ingest_replay::TurnKey::of(&request));
-    if let Some(key) = &turn_key
-        && let Some((replayed, first_at)) = crate::ingest_replay::replay_of(
-            pool,
-            key,
-            policy.repeat_window_minutes,
-            chrono::Utc::now(),
-        )
-        .await
-    {
-        tracing::info!(
-            sender_id = request.sender_id,
-            first_answered_at = first_at,
-            window_minutes = policy.repeat_window_minutes,
-            "ingest: REPEAT of a turn already answered — the first answer is served again"
-        );
-        // The Traces page is a person's record of what the memory found for
-        // them, and this turn found it the first time round: the trace says
-        // the block was served again, and `seed_mode` says why there is
-        // nothing else on it. Skipped on an assistant turn, like every other
-        // section whose only product is that block.
-        if request.author != MessageRole::Assistant {
-            record_ingest_trace(
-                pool,
-                policy,
-                IngestTraceParts {
-                    request: &request,
-                    intent: replayed.intent,
-                    seed_mode: "repeat",
-                    seeds: &NavSeeds::default(),
-                    completed_message: None,
-                    flat_hits_from_completed: false,
-                    recall_hits: &[],
-                    flat_verdicts: &FlatVerdicts::new(),
-                    project_docs: &[],
-                    named_docs: 0,
-                    served_pages: &[],
-                    nav_tail: None,
-                    due_soon: None,
-                    injected_block: replayed.context_snippet.as_deref(),
-                    rules_block: replayed.rules.as_deref(),
-                    reconcile_candidates: &[],
-                    reconcile_verdict: None,
-                    refused_changes: &[],
-                    recall_clock: RecallClock::default(),
-                    took: start.elapsed(),
-                },
-            )
-            .await;
-        }
-        return Ok(replayed);
-    }
+    let repeat: Option<crate::ingest_replay::TurnOutcome> = match &turn_key {
+        Some(key) => crate::ingest_replay::replay_of(pool, key, chrono::Utc::now())
+            .await
+            .map(|(outcome, first_at)| {
+                tracing::info!(
+                    sender_id = request.sender_id,
+                    first_written_at = first_at,
+                    "ingest: REPEAT of a turn already written — the writing is not done twice"
+                );
+                outcome
+            }),
+        None => None,
+    };
+    // Kept past the point where `repeat` moves into the turn's outcome. What
+    // reads it below is everything that would DO the work twice: the photo
+    // bytes for a classifier call that is not made, the media fallback, the
+    // reconciliation stage, the cross-consumer window, and the keeping of this
+    // turn's own outcome — plus the trace, which says which kind of turn it
+    // was.
+    let repeated = repeat.is_some();
 
     // One scoped lookup feeds both the ACL `SenderContext` (bare ids)
     // and the prompt's `sender_groups` section (id + scope prose).
@@ -10239,7 +10218,13 @@ pub async fn wiki_ingest_message(
             tracing::warn!(catalog_id = %att.catalog_id, error = %e, "ingest: annotation backfill failed");
         }
     }
-    let images = load_attachment_images(pool, tree.workdir(), &request.attachments, llm).await;
+    // A repeat calls no model, so the photo bytes are not read off disk for
+    // one either.
+    let images = if repeated {
+        Vec::new()
+    } else {
+        load_attachment_images(pool, tree.workdir(), &request.attachments, llm).await
+    };
     if !images.is_empty() {
         tracing::info!(
             images = images.len(),
@@ -10255,42 +10240,70 @@ pub async fn wiki_ingest_message(
     // the ceiling is unbalanced JSON, which parses as nothing at all; when
     // that happens the call is made once more with twice the room, because
     // the alternative is filing nothing and saying so.
-    let mut max_tokens = CLASSIFIER_MAX_TOKENS;
-    let llm_resp = loop {
-        let attempt = llm
-            .complete(
-                CompletionRequest::new(prompt.clone())
-                    .with_system(system_prompt.clone())
-                    .with_cached_system()
-                    .with_temperature(0.1)
-                    .with_max_tokens(max_tokens)
-                    .with_images(images.clone()),
-            )
-            .await;
-        match &attempt {
-            Ok(resp)
-                if resp.finish_reason == crate::llm::FinishReason::MaxTokens
-                    && parse_plan(&resp.text).is_none()
-                    && max_tokens < CLASSIFIER_MAX_TOKENS_WIDENED =>
-            {
-                tracing::warn!(
-                    max_tokens,
-                    "ingest: classifier reply hit the cap and did not parse — retrying wider"
-                );
-                max_tokens = CLASSIFIER_MAX_TOKENS_WIDENED;
-            },
-            _ => break attempt,
+    // THE FIRST OF THE TWO CALLS A REPEAT DOES NOT MAKE. What the message
+    // means was decided by the delivery that wrote it down, and rides in
+    // `repeat`; the plan handed to the rest of the orchestrator states
+    // NOTHING, so the capture loop files nothing and the closure verbs close
+    // nothing. Only the intent is set, because it is what decides whether the
+    // walk runs — and the reading is the half a repeat does pay for.
+    let plan = if let Some(stored) = &repeat {
+        LlmIngestPlan {
+            intent: stored.intent.as_str().to_owned(),
+            ..LlmIngestPlan::default()
         }
-    };
-    let plan = match llm_resp {
-        Ok(resp) => {
-            if let Some(p) = parse_plan(&resp.text) {
-                p
-            } else {
-                tracing::warn!(
-                    text_preview = %truncate(&resp.text, 200),
-                    "ingest: LLM returned unparseable JSON, falling back to skip"
-                );
+    } else {
+        let mut max_tokens = CLASSIFIER_MAX_TOKENS;
+        let llm_resp = loop {
+            let attempt = llm
+                .complete(
+                    CompletionRequest::new(prompt.clone())
+                        .with_system(system_prompt.clone())
+                        .with_cached_system()
+                        .with_temperature(0.1)
+                        .with_max_tokens(max_tokens)
+                        .with_images(images.clone()),
+                )
+                .await;
+            match &attempt {
+                Ok(resp)
+                    if resp.finish_reason == crate::llm::FinishReason::MaxTokens
+                        && parse_plan(&resp.text).is_none()
+                        && max_tokens < CLASSIFIER_MAX_TOKENS_WIDENED =>
+                {
+                    tracing::warn!(
+                        max_tokens,
+                        "ingest: classifier reply hit the cap and did not parse — retrying wider"
+                    );
+                    max_tokens = CLASSIFIER_MAX_TOKENS_WIDENED;
+                },
+                _ => break attempt,
+            }
+        };
+        match llm_resp {
+            Ok(resp) => {
+                if let Some(p) = parse_plan(&resp.text) {
+                    p
+                } else {
+                    tracing::warn!(
+                        text_preview = %truncate(&resp.text, 200),
+                        "ingest: LLM returned unparseable JSON, falling back to skip"
+                    );
+                    return Ok(fallback_with_unclaimed_media(
+                        pool,
+                        tree,
+                        &request,
+                        &available,
+                        policy,
+                        &recall_hits,
+                        start.elapsed(),
+                        true,
+                        &std::collections::HashSet::new(),
+                    )
+                    .await);
+                }
+            },
+            Err(err) => {
+                tracing::warn!(error = %err, "ingest: LLM unavailable, falling back to skip");
                 return Ok(fallback_with_unclaimed_media(
                     pool,
                     tree,
@@ -10299,27 +10312,12 @@ pub async fn wiki_ingest_message(
                     policy,
                     &recall_hits,
                     start.elapsed(),
-                    true,
+                    false,
                     &std::collections::HashSet::new(),
                 )
                 .await);
-            }
-        },
-        Err(err) => {
-            tracing::warn!(error = %err, "ingest: LLM unavailable, falling back to skip");
-            return Ok(fallback_with_unclaimed_media(
-                pool,
-                tree,
-                &request,
-                &available,
-                policy,
-                &recall_hits,
-                start.elapsed(),
-                false,
-                &std::collections::HashSet::new(),
-            )
-            .await);
-        },
+            },
+        }
     };
     tracing::debug!(intent = plan.intent.as_str(), "ingest: LLM plan parsed");
 
@@ -11756,7 +11754,9 @@ pub async fn wiki_ingest_message(
     // a photo, an extraction that never named its attachment — is filed
     // by the deterministic fallback: a catalogued media item never
     // stays dead memory.
-    if !request.attachments.is_empty() {
+    // A repeat files none of it again: the media this turn carries was
+    // catalogued and claimed by the delivery that wrote.
+    if !repeated && !request.attachments.is_empty() {
         let fallback_filed = file_unclaimed_attachments(
             pool,
             tree,
@@ -11935,7 +11935,11 @@ pub async fn wiki_ingest_message(
     // What the stage asked for and the engine did not do, beside the raw
     // answer that asked for it.
     let mut refused_changes: Vec<crate::recall_trace::TraceRefusedChange> = Vec::new();
-    if matches!(intent, IntentKind::Capture) {
+    // THE SECOND OF THE TWO CALLS A REPEAT DOES NOT MAKE. What this message
+    // does to the facts that were already there was decided by the delivery
+    // that wrote; asking again would put the same question to the same model
+    // about a store its own first answer has since changed.
+    if !repeated && matches!(intent, IntentKind::Capture) {
         let candidates = reconcile_candidates(
             pool,
             &embedder,
@@ -12221,9 +12225,10 @@ pub async fn wiki_ingest_message(
                 .to_owned()
         }),
     ]);
-    // Behaviour directives ride their own first-level field, kept
-    // apart from the recalled memory in `context_snippet`.
-    let rules = assemble_rules_block(notice, behaviour);
+    // Behaviour directives ride their own first-level field, kept apart from
+    // the recalled memory in `context_snippet`. The two halves are assembled
+    // at the end, where a repeat substitutes its own notices and keeps this
+    // turn's reading of the directives.
     let context_snippet = assemble_recall_block(
         who_you_are,
         who_is_speaking,
@@ -12244,71 +12249,6 @@ pub async fn wiki_ingest_message(
     if nothing_filed && context_snippet.is_none() && suggested_seed.is_none() {
         suggested_seed = Some(policy.fallback_suggested_seed.clone());
     }
-
-    // The write half of the cross-consumer recent window: buffer
-    // this turn for the user's other surfaces — the thread of discourse
-    // follows the user. It stays HERE, after everything the turn serves, so a
-    // requester can never be handed back the very message it just sent (the
-    // fetch ran at the top of the turn). Best-effort: a buffer hiccup never
-    // touches the turn.
-    let surface_channel = request.metadata.channel.clone().unwrap_or_default();
-    if let Err(e) = crate::recent_window::record_exchange(
-        pool,
-        &request.sender_id,
-        &consumer_surface,
-        &surface_channel,
-        request.author,
-        &request.text,
-        turn_now,
-        policy.recent_window_entries,
-        policy.recent_window_ttl_hours,
-    )
-    .await
-    {
-        tracing::warn!(error = %e, "recent-window: buffer write failed (turn unaffected)");
-    }
-
-    // Journal the route this recall took (the admin Traces page). Best-effort
-    // telemetry: a journal failure is logged and never touches the turn. A
-    // turn that served no block took no route, and a row for it would read on
-    // the page as a recall the person never got.
-    if serves_a_block {
-        record_ingest_trace(
-            pool,
-            policy,
-            IngestTraceParts {
-                request: &request,
-                intent,
-                seed_mode: "classifier",
-                seeds: &seeds,
-                completed_message,
-                flat_hits_from_completed,
-                recall_hits: &recall_hits,
-                flat_verdicts: &verdicts,
-                project_docs: &project_docs,
-                named_docs,
-                served_pages: &served_trace,
-                nav_tail: nav_tail.as_ref(),
-                due_soon: due_soon_tail.as_ref().map(|(_, hits)| hits.as_slice()),
-                injected_block: context_snippet.as_deref(),
-                rules_block: rules.as_deref(),
-                reconcile_candidates: &reconcile_journal,
-                reconcile_verdict: reconcile_verdict.as_deref(),
-                refused_changes: &refused_changes,
-                recall_clock,
-                took: start.elapsed(),
-            },
-        )
-        .await;
-    }
-
-    tracing::info!(
-        intent = intent.as_str(),
-        captured = capture_id.is_some(),
-        snippet_chars = context_snippet.as_deref().map_or(0, str::len),
-        rules_chars = rules.as_deref().map_or(0, str::len),
-        "ingest: done"
-    );
 
     // Disambig follow-up: when the consumer is calling back with the
     // chosen candidate, the orchestrator never re-surfaces ambiguity
@@ -12344,27 +12284,116 @@ pub async fn wiki_ingest_message(
         )
     };
 
-    let response = IngestResponse {
+    // What this turn DECIDED, as against what it read. On a repeat the
+    // decisions are the first delivery's — the whole point of keeping them —
+    // and everything beside them below was worked out afresh this turn.
+    let outcome = repeat.unwrap_or(crate::ingest_replay::TurnOutcome {
         intent,
-        context_snippet,
-        rules,
         suggested_seed,
-        recent_window,
         capture_id,
         needs_disambig,
         disambig_candidates,
+        notice,
         llm_used: true,
+    });
+    let intent = outcome.intent;
+    // Behaviour directives ride their own first-level field, kept apart from
+    // the recalled memory in `context_snippet`. The notices are the write half
+    // and travel with it; the directives in force are a reading of the memory
+    // and were recomputed this turn, so a rule withdrawn since the first
+    // delivery is gone from this block.
+    let rules = assemble_rules_block(outcome.notice.clone(), behaviour);
+
+    // The write half of the cross-consumer recent window: buffer
+    // this turn for the user's other surfaces — the thread of discourse
+    // follows the user. It stays HERE, after everything the turn serves, so a
+    // requester can never be handed back the very message it just sent (the
+    // fetch ran at the top of the turn). Best-effort: a buffer hiccup never
+    // touches the turn. A repeat records nothing: the exchange it carries was
+    // buffered by the delivery that wrote.
+    let surface_channel = request.metadata.channel.clone().unwrap_or_default();
+    if !repeated
+        && let Err(e) = crate::recent_window::record_exchange(
+            pool,
+            &request.sender_id,
+            &consumer_surface,
+            &surface_channel,
+            request.author,
+            &request.text,
+            turn_now,
+            policy.recent_window_entries,
+            policy.recent_window_ttl_hours,
+        )
+        .await
+    {
+        tracing::warn!(error = %e, "recent-window: buffer write failed (turn unaffected)");
+    }
+
+    // Journal the route this recall took (the admin Traces page). Best-effort
+    // telemetry: a journal failure is logged and never touches the turn. A
+    // turn that served no block took no route, and a row for it would read on
+    // the page as a recall the person never got.
+    if serves_a_block {
+        record_ingest_trace(
+            pool,
+            policy,
+            IngestTraceParts {
+                request: &request,
+                intent,
+                seed_mode: if repeated { "repeat" } else { "classifier" },
+                seeds: &seeds,
+                completed_message,
+                flat_hits_from_completed,
+                recall_hits: &recall_hits,
+                flat_verdicts: &verdicts,
+                project_docs: &project_docs,
+                named_docs,
+                served_pages: &served_trace,
+                nav_tail: nav_tail.as_ref(),
+                due_soon: due_soon_tail.as_ref().map(|(_, hits)| hits.as_slice()),
+                injected_block: context_snippet.as_deref(),
+                rules_block: rules.as_deref(),
+                reconcile_candidates: &reconcile_journal,
+                reconcile_verdict: reconcile_verdict.as_deref(),
+                refused_changes: &refused_changes,
+                recall_clock,
+                took: start.elapsed(),
+            },
+        )
+        .await;
+    }
+
+    tracing::info!(
+        intent = intent.as_str(),
+        captured = outcome.capture_id.is_some(),
+        snippet_chars = context_snippet.as_deref().map_or(0, str::len),
+        rules_chars = rules.as_deref().map_or(0, str::len),
+        "ingest: done"
+    );
+
+    let response = IngestResponse {
+        intent: outcome.intent,
+        context_snippet,
+        rules,
+        suggested_seed: outcome.suggested_seed.clone(),
+        recent_window,
+        capture_id: outcome.capture_id.clone(),
+        needs_disambig: outcome.needs_disambig,
+        disambig_candidates: outcome.disambig_candidates.clone(),
+        llm_used: outcome.llm_used,
         took_ms: u64::try_from(start.elapsed().as_millis()).unwrap_or(u64::MAX),
     };
-    // Kept for a re-delivery of THIS turn, and only now: a row exists once the
-    // turn is finished, so a duplicate that arrives while the first is still
-    // in flight finds nothing and runs normally. That case is the write path's
-    // to make harmless, and it already is.
-    if let Some(key) = &turn_key {
+    // Kept for a re-delivery of THIS turn, and only when this turn is the one
+    // that did the writing: a row exists once a turn is finished, so a
+    // duplicate that arrives while the first is still in flight finds nothing
+    // and runs normally — that case is the write path's to make harmless, and
+    // it already is. A repeat re-records nothing, so a consumer that retries
+    // in a loop cannot hold its own row open for ever.
+    if !repeated && let Some(key) = &turn_key {
         crate::ingest_replay::record(
             pool,
             key,
-            &response,
+            &outcome,
             policy.repeat_window_minutes,
             chrono::Utc::now(),
         )
@@ -15477,12 +15506,13 @@ mod tests {
             \"fact_type\":\"preference\",\"requested_container\":true}]}";
         let llm = RestatingReconciler::new(plan, EmptyHanded::Silence);
         // The repeat short-circuit is switched OFF here, and that is the case
-        // under test: a duplicate that arrives while the first delivery is
-        // still in flight finds no answer to be handed
-        // ([`crate::ingest_replay`] records one only when a turn finishes), so
-        // it runs the whole turn and meets these two guards. They are what
-        // makes it harmless, and they are load-bearing with or without the
-        // short-circuit in front of them.
+        // under test. In production the window is ten minutes and these guards
+        // cover everything outside it: a duplicate that arrives while the
+        // first delivery is still in flight (nothing is kept until a turn
+        // finishes), one that arrives on ANOTHER consumer, and one that
+        // arrives after the window — all of which run the whole turn and meet
+        // these two. They are what makes a re-delivery harmless, and they are
+        // load-bearing with or without the short-circuit in front of them.
         let policy = IngestPolicy {
             repeat_window_minutes: 0,
             ..IngestPolicy::default()
@@ -15557,9 +15587,10 @@ mod tests {
             \"body\":\"Il colore preferito di Alice è l'indaco.\",\
             \"fact_type\":\"preference\",\"requested_container\":true}]}";
         let llm = RestatingReconciler::new(plan, EmptyHanded::CloseTheCandidate);
-        // Off for the same reason as the test above: the duplicate under test
-        // is the one that arrives before the first delivery has finished, so
-        // there is no stored answer to short-circuit it.
+        // Off for the same reason as the test above: the duplicates these
+        // guards are for are the ones the repeat window never sees — before
+        // the first delivery finished, on another consumer, or after the ten
+        // minutes are up.
         let policy = IngestPolicy {
             repeat_window_minutes: 0,
             ..IngestPolicy::default()
@@ -27066,20 +27097,128 @@ mod tests {
         drop(dir);
     }
 
-    /// The same turn delivered twice is answered once.
+    /// **A repeat reads the memory as it stands NOW.**
+    ///
+    /// Ten minutes is long enough to forget something, and the reply to a
+    /// re-delivered turn must not be the block the first delivery was built
+    /// from: that would put the forgotten fact back in front of the person and
+    /// write it into the trace journal with today's date. So the block, the
+    /// walk and the rules in force are worked out again — and the two
+    /// expensive calls are not: the script holds the first turn's two and no
+    /// more, so a classifier or reconciler call on the repeat fails the test.
+    /// The navigator is a different backend and does run.
+    #[tokio::test]
+    async fn a_repeat_reads_the_memory_as_it_stands_now() {
+        const SECRET: &str = "018f1234-5678-7abc-9def-00000000e001";
+        let (dir, _, pool) = setup_workdir().await;
+        std::fs::write(
+            dir.path().join("wikis").join("alice").join("documenti.md"),
+            format!(
+                "---\ntitle: Documenti\n---\n\n\
+                 {{{{f={SECRET}}}}}Alice's passport number is X1234567.{{{{/}}}}\n"
+            ),
+        )
+        .unwrap();
+        insert_page_fact(
+            &pool,
+            SECRET,
+            "alice",
+            "wikis/alice/documenti.md",
+            "Alice's passport number is X1234567.",
+            Principal::User("alice".into()),
+        )
+        .await;
+        let tree = WikiTree::open(dir.path()).expect("reopen tree");
+
+        let policy = IngestPolicy::default();
+        let ask = || req_consumer("qual è il numero del passaporto?", "alice", "botdeploy");
+        let llm = ScriptedLlm::new(&["{\"intent\":\"recall\"}"]);
+        let nav = FakeLlmBackend::new("fake-nav", "{\"open\":[],\"done\":true}");
+        let first = wiki_ingest_message(
+            &pool,
+            &tree,
+            fake_embedder(),
+            &llm,
+            Some(&nav),
+            ask(),
+            &policy,
+        )
+        .await
+        .expect("first delivery");
+        assert!(
+            first
+                .context_snippet
+                .as_deref()
+                .unwrap_or_default()
+                .contains("X1234567"),
+            "the first delivery answered from the fact: {:?}",
+            first.context_snippet
+        );
+
+        // «dimenticalo» — by whatever road; what matters is that the memory
+        // has changed under the kept outcome.
+        capture::wiki_forget(
+            &tree,
+            &pool,
+            fake_embedder(),
+            &FactId::parse(SECRET).unwrap(),
+            "user_request",
+        )
+        .await
+        .expect("forget");
+
+        let second = wiki_ingest_message(
+            &pool,
+            &tree,
+            fake_embedder(),
+            &llm,
+            Some(&nav),
+            ask(),
+            &policy,
+        )
+        .await
+        .expect("the re-delivery reads again");
+        let block = second.context_snippet.clone().unwrap_or_default();
+        assert!(
+            !block.contains("X1234567"),
+            "a repeat never serves a fact the memory has since forgotten: {block}"
+        );
+
+        // And the journal says the same thing: the trace of the repeat is the
+        // reading it actually did, not a copy of the first one.
+        let traces = crate::recall_trace::recent_traces(&pool, 10)
+            .await
+            .expect("traces");
+        assert_eq!(traces.len(), 2, "each delivery journalled its own reading");
+        let newest = traces[0].parse().expect("payload decodes");
+        assert_eq!(
+            newest.seed_mode, "repeat",
+            "and it says why it carries no classifier reading"
+        );
+        assert!(
+            !newest
+                .injected_block
+                .unwrap_or_default()
+                .contains("X1234567"),
+            "the forgotten fact is not written back into the journal either"
+        );
+        drop(dir);
+    }
+
+    /// The same turn delivered twice is WRITTEN once.
     ///
     /// The consumer whose container died after the shopping list was written
-    /// redelivers the turn to get the reply the person never received. The
-    /// engine hands back the first answer, word for word, and does nothing
-    /// else: the scripted model holds exactly the calls of ONE turn, so a
-    /// second classifier call fails the test rather than passing it quietly,
-    /// and the list is asserted to still hold one milk.
+    /// redelivers the turn to get the reply the person never received. What it
+    /// gets back is the first delivery's decisions — the seed, the capture id,
+    /// the intent — and the list still holds one milk: the scripted model
+    /// holds exactly the two calls of ONE turn, so a second classifier or
+    /// reconciler call fails the test rather than passing it quietly.
     ///
     /// The two shapes that must NOT be swallowed are asserted next to it: the
     /// assistant feeding its own reply back is a turn of its own even with the
     /// same words, and so is the same message once the window has passed.
     #[tokio::test]
-    async fn the_same_turn_delivered_twice_is_answered_once() {
+    async fn the_same_turn_delivered_twice_is_written_once() {
         let (dir, tree, pool) = setup_workdir().await;
         let policy = IngestPolicy::default();
         let plan = "{\"intent\":\"capture\",\"extractions\":[\
@@ -27117,22 +27256,25 @@ mod tests {
         .await
         .expect("the re-delivery is answered, not re-run");
 
+        // What the first delivery DECIDED comes back; what it READ does not,
+        // and the test beside this one is about that half.
         assert_eq!(second.intent, first.intent);
-        assert_eq!(second.context_snippet, first.context_snippet);
-        assert_eq!(second.rules, first.rules);
         assert_eq!(second.suggested_seed, first.suggested_seed);
-        assert_eq!(second.recent_window, first.recent_window);
         assert_eq!(second.capture_id, first.capture_id);
         assert_eq!(second.needs_disambig, first.needs_disambig);
-        assert_eq!(
-            second.took_ms, first.took_ms,
-            "it is the first turn's answer"
-        );
 
         let live = fact_index::find_active_in_wiki(&pool, "alice")
             .await
             .unwrap();
         assert_eq!(live.len(), 1, "the re-delivery wrote nothing: {live:?}");
+        assert_eq!(
+            crate::recall_trace::recent_traces(&pool, 10)
+                .await
+                .expect("traces")
+                .len(),
+            2,
+            "both deliveries journalled the reading they actually did"
+        );
 
         // The assistant feeding its own reply back is a turn of its own, even
         // word for word: it reaches its own classifier, and answers with what
@@ -27163,9 +27305,9 @@ mod tests {
         );
 
         // Past the window the same words are a new turn. Eleven minutes are
-        // simulated by ageing the row the first delivery wrote.
-        sqlx::query("UPDATE ingest_replies SET created_at = ?")
-            .bind((chrono::Utc::now() - chrono::Duration::minutes(11)).to_rfc3339())
+        // simulated by expiring the row the first delivery wrote.
+        sqlx::query("UPDATE ingest_replies SET expires_at = ?")
+            .bind((chrono::Utc::now() - chrono::Duration::minutes(1)).to_rfc3339())
             .execute(&pool)
             .await
             .expect("age the row");
