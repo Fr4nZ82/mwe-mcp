@@ -4069,9 +4069,10 @@ struct LlmSupersede {
 
 /// What [`vet_supersede`] made of one requested supersede.
 ///
-/// Three outcomes and not two, because the fourth guard fails differently
-/// from the other three. A malformed pair is **noise** — an id nobody was
-/// shown, a slot nobody named — and dropping it costs nothing. A pair that is
+/// Three outcomes and not two, because the AUTHORITY guard fails differently
+/// from all the others. A malformed pair is **noise** — an id nobody was
+/// shown, a slot nobody named, two sentences about different things — and
+/// dropping it costs nothing. A pair that is
 /// sound but not the speaker's to apply is a **real disagreement between two
 /// people**: the memory holds one value, somebody just asserted another, and
 /// the engine has no standing to pick. Answering both with `continue` left
@@ -4194,10 +4195,6 @@ fn speaks_of_the_same_thing(
     successor: &TurnFact,
     reassigns_subject: bool,
 ) -> Aboutness {
-    let declared_conflict = successor
-        .conflicts_with
-        .as_ref()
-        .is_some_and(|declared| *declared == prev.fact_id);
     if prev.subject_id != successor.subject {
         if !reassigns_subject {
             return Aboutness::ReassignsTheSubjectUnasked;
@@ -4207,7 +4204,13 @@ fn speaks_of_the_same_thing(
             _ => Aboutness::ChangesWhoAnswersForIt,
         };
     }
-    if declared_conflict {
+    // Read only on this road: on the other one it is the field that gets the
+    // subject wrong, so it has no say there.
+    if successor
+        .conflicts_with
+        .as_ref()
+        .is_some_and(|declared| *declared == prev.fact_id)
+    {
         return Aboutness::OneThing;
     }
     let slot_words = content_words(slot);
