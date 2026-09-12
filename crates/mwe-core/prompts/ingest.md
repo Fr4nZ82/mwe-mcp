@@ -1,8 +1,8 @@
 ---
 name: ingest
 description: Classifier driving `wiki_ingest_message` — one JSON object per turn (intent + an `extractions[]` array of atomic facts, the SOLE fact container; every fact is prose except a `lista` entry, which is the bare item with its values; each carrying a per-fact validity interval `valid_from`/`valid_to`, a per-fact `style` (and, for `lista` material or a requested container, a `target_page` + `page_description`), a `requested_container` live-write flag, a per-fact `salience`, and an `engine_rule` flag routing a standing governance directive to `@rules.md` instead of `fact_index`, a `behaviour_rule` flag (with a `behaviour_scope` of `per-user`/`agent-wide`/`user-global`, read from the addressee) routing a how-an-agent-converses-or-operates directive to the calling consumer's own wiki — or, user-global, to the sender's identity wiki for every assistant serving them — and an `attachments` claim list linking the turn's media to the fact that describes them; plus three turn-level fields for a turn that TAKES SOMETHING BACK — `withdrawal`, `erasure` when the speaker asks for it to be taken OUT of the memory rather than merely ended, and, when what it takes back is a standing rule, `withdraw_target` naming that rule from the block of directives in force); targets the strong-model tier
-version: 3.1
-default_version_at_bootstrap: v3.1
+version: 3.2
+default_version_at_bootstrap: v3.2
 source_of_truth: crates/mwe-core/src/ingest.rs (fn wiki_ingest_message)
 ---
 
@@ -502,7 +502,7 @@ Four blocks ARE complete, and there you are expected to compare and choose:
 
 ## `identity_core` — the slots these people's cards already fill
 
-An identity card holds a handful of always-on facts: who somebody is, how they relate to others, when they were born, where they live, how to reach them. Each of those is a **slot**.
+An identity card holds what somebody IS (`fact_type: "bio"` — the record, their health and safety, their standing traits). A handful of those are things a card holds **one of**: their name, when they were born, where they live, how to reach them. Each of those is a **slot**, and this block is about the slots alone — everything else on a card is an ordinary `bio` fact with no slot to fill.
 
 **THE SLOTS, AND THERE ARE NO OTHERS.** Copy the name EXACTLY as written here, in English, whatever language this memory is written in — the name is stored with the fact and compared, months later, against the name another turn wrote for the same slot, so `date_of_birth` and `birthday` would be two slots that never meet. They come in two families, and the difference decides everything below:
 
@@ -670,9 +670,16 @@ Never name one of the reserved pages — `profile`, `rules`, `projects`, `projec
 
 Pick the best match from this CLOSED list (no other values) for each fact:
 
-- `bio` — stable biographical data: name, birth date, address, email, profession, family relationships. Example: "My name is Frodo, I live in Bologna".
-- `state` — current, time-bounded condition that will change: mood, health, location-today, current job. Example: "I have a headache", "Bob now works at AcmeCorp".
-- `preference` — stable like/dislike, taste, habit: "I prefer tea", "I do not eat meat", "I hate Monday meetings". A taste whose object is the ASSISTANT'S OWN CONDUCT is not one of these — "I prefer to get the summary as an audio message" is a standing directive (Part 7). Filed here it becomes knowledge ABOUT the speaker instead of a rule FOR you: the rules channel never carries it, and neither a revision nor a withdrawal can ever reach it.
+- `bio` — **WHO SOMEBODY IS**: what describes the person and stays true for months or years, and that anyone helping them would want to know. Three families, and all three are `bio`:
+  - **the record** — name, nickname, birth date, address, contacts, the language they speak, their timezone, pronouns, profession, and the people they are tied to: "My name is Frodo, I live in Bologna", "Zoe è la sorella minore di Alice", "mia madre abita qui vicino".
+  - **health and safety** — "ho la fobia dei ragni", "I am allergic to peanuts", "sono celiaca", "I am diabetic", "ho un impianto cocleare", "I am dyslexic", "non guido".
+  - **traits and standing conditions** — "sono vegetariana", "I speak Italian and English", "sono mancino", "I am a believer", "faccio il turno di notte", "ho due figli piccoli".
+
+  **THE LINE.** Does the sentence describe THE PERSON and stay true for a long time? Then it is `bio` and it belongs on their card. Does it describe a MOMENT, a THING, or what the assistant is to DO? Then it is one of the kinds below and it belongs elsewhere. Read the sentence twice before reaching for `preference`: a phobia, an allergy and a diet are not tastes, they are conditions somebody helping this person has to work around — "sono vegetariana" is `bio`, "preferisco il tè al caffè" is not.
+
+  `salience: "high"` on the ones that matter in EVERY interaction: safety, health, family, the language they speak. The rest of the record is `bio` at `normal`.
+- `state` — current, time-bounded condition that WILL change: mood, a passing illness, where somebody is today. "sono esausto", "ho il raffreddore", "oggi sono a casa", "Bob now works at AcmeCorp". The test against `bio` is time: a headache is gone next week and coeliac disease is not.
+- `preference` — a taste about a THING: which one they like better, what they enjoy, what they would rather have. "preferisco il tè al caffè", "I'd take the hybrid over the electric one", "I hate Monday meetings". Not a condition of the person: a diet, an allergy or a phobia is `bio` however much it sounds like a dislike — the difference is that somebody helping them has to work around it. A taste whose object is the ASSISTANT'S OWN CONDUCT is not one of these — "I prefer to get the summary as an audio message" is a standing directive (Part 7). Filed here it becomes knowledge ABOUT the speaker instead of a rule FOR you: the rules channel never carries it, and neither a revision nor a withdrawal can ever reach it.
 - `rule` — decision, policy, architectural choice, commitment that should bind future behaviour: "we chose Postgres over SQLite for scaling", "no smoking in the house".
 - `plan` — future intention, todo, scheduled action, shopping-list item: `detergent 2 bottles` (a list entry, and written as one — Part 2), "remind me on Tuesday at 9 to call the dentist", "I want to read Dune this summer".
 - `episode` — discrete past event worth remembering: meeting, trip, incident, conversation, a completed errand. "I met Bob today, he told me that…", "I bought the milk".

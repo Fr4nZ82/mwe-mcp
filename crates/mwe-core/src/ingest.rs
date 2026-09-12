@@ -22150,6 +22150,63 @@ mod tests {
         );
     }
 
+    /// **An identity card is WHO SOMEBODY IS, which is more than a record.**
+    ///
+    /// The engine holds a card to one kind, `bio`, and what `bio` MEANS is the
+    /// prompt's to say. Read as the registry office — name, address, birth
+    /// date — it leaves out the half of a person that anybody helping them has
+    /// to work around: «ho la fobia dei ragni», an allergy, a diet, a night
+    /// shift. Those are not tastes. The founder, 2026-09-13: *«solo anagrafica
+    /// è troppo restrittiva… una cosa come "ho la fobia dei ragni" va nel
+    /// profile»*.
+    ///
+    /// Both languages, because a memory is written in the one its people
+    /// speak and an example that exists only in English is an example half the
+    /// users never see.
+    #[test]
+    fn bundled_ingest_prompt_puts_traits_and_conditions_on_the_card() {
+        for needle in [
+            // The three families a card carries.
+            "**the record**",
+            "**health and safety**",
+            "**traits and standing conditions**",
+            // The line that decides, stated as a test and not as a list.
+            "Does the sentence describe THE PERSON and stay true for a long time?",
+            // Health and safety, in both languages.
+            "\"ho la fobia dei ragni\"",
+            "\"I am allergic to peanuts\"",
+            "\"sono celiaca\"",
+            "\"I am dyslexic\"",
+            // Traits, in both languages.
+            "\"sono vegetariana\"",
+            "\"I speak Italian and English\"",
+            "\"faccio il turno di notte\"",
+            // The pair that must not be confused, side by side.
+            "\"sono vegetariana\" is `bio`, \"preferisco il tè al caffè\" is not",
+            // And what a card still refuses.
+            "\"sono esausto\"",
+            "a headache is gone next week and coeliac disease is not",
+        ] {
+            assert!(
+                BUNDLED_INGEST_PROMPT_MD.contains(needle),
+                "the bundled prompt does not say: {needle}"
+            );
+        }
+
+        // The old wording filed a diet as a taste, which put it on a topic
+        // page instead of the card and left it out of every turn.
+        assert!(
+            !BUNDLED_INGEST_PROMPT_MD.contains("\"I do not eat meat\""),
+            "a diet is no longer offered as an example of a taste"
+        );
+
+        // The salience half: what a card carries is not all always-on.
+        assert!(
+            BUNDLED_INGEST_PROMPT_MD.contains("safety, health, family, the language they speak"),
+            "the prompt must say which of the three families is always-on"
+        );
+    }
+
     /// The turns a public-demo corpus lost, and the one gate that lost them.
     ///
     /// A standing directive, a stated position, a withdrawal of one's own

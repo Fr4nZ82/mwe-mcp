@@ -54,8 +54,9 @@ there what you want. See [The chat](the-chat.md).
 
 Two things arrive as a question.
 
-**Two values for one detail.** Your identity card holds a handful of things —
-when you were born, where you live, how to reach you. When somebody states a
+**Two values for one detail.** Your identity card holds who you are, and a
+handful of those are details you have only one of — when you were born, where
+you live, how to reach you. When somebody states a
 different value for one of them and is not entitled to overwrite it, nothing is
 written and the question comes to you, because the card is yours whoever
 happened to state what is on it: the value on record, who said it and when, the

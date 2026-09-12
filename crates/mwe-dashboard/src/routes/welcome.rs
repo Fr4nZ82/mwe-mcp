@@ -1050,6 +1050,41 @@ mod tests {
         assert!(!msg.contains("birthday"));
     }
 
+    /// **What the health-and-safety field composes is a sentence the
+    /// classifier files on the card.**
+    ///
+    /// The form asks for one thing about health or safety an assistant must
+    /// always know, and the engine holds an identity card to `bio` facts. So
+    /// the two have to agree about what «ho la fobia dei ragni» is: read as a
+    /// taste it lands on a topic page and is never in front of the agent
+    /// again. The ingest prompt names health and safety as a family of `bio`
+    /// with this very example (`ingest.md`, `fact_type`); this pins the half
+    /// the form owns — that the answer reaches the turn whole, inside a
+    /// sentence that says out loud it is always-on.
+    #[test]
+    fn the_health_and_safety_answer_reaches_the_turn_as_a_standing_fact() {
+        let form = ProfileSubmission {
+            display_name: "Frodo".into(),
+            health_safety: "ho la fobia dei ragni".into(),
+            ..ProfileSubmission::default()
+        };
+        let msg = compose_ingest_message(None, &form);
+        assert!(
+            msg.contains("ho la fobia dei ragni"),
+            "the answer reaches the turn in the person's own words: {msg}"
+        );
+        assert!(
+            msg.contains("deve sapere sempre"),
+            "and the sentence around it says it is always-on, which is what asks for              `salience: high`: {msg}"
+        );
+        // Left blank it composes nothing: a card carries no empty line.
+        let quiet = ProfileSubmission {
+            display_name: "Frodo".into(),
+            ..ProfileSubmission::default()
+        };
+        assert!(!compose_ingest_message(None, &quiet).contains("deve sapere sempre"));
+    }
+
     #[test]
     fn compose_joins_clauses_with_period_and_space() {
         let form = ProfileSubmission {

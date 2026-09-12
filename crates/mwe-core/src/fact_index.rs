@@ -201,8 +201,12 @@ impl FactIndexRow {
     /// relate to others* (`fact_type = "bio"` AND `salience = "high"`).
     ///
     /// The identity core is the small always-on set the ingest classifier
-    /// routes to the subject's card: name/aliases, **role(s) and the
-    /// people they are tied to (relations)**, birthdate, place, contacts.
+    /// routes to the subject's card: WHO SOMEBODY IS — the record (name,
+    /// aliases, **the people they are tied to**, birth date, place, contacts,
+    /// the language they speak), what somebody helping them has to work
+    /// around (an allergy, a phobia, a condition), and the traits that stay
+    /// true for years (a diet, a night shift, small children). Not a taste
+    /// about a thing, not a passing state, not an instruction to the agent.
     /// It is deliberately **stable** — automatic background reorganisation
     /// (the REM dedup revisor) must never silently retire one of these
     /// facts; only an explicit correction (a user-driven supersede, or a
