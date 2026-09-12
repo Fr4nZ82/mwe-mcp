@@ -617,6 +617,7 @@ mod tests {
             "2026-08-11T18:48:00Z",
             fact_index::decay::CONTRADICTED,
             None,
+            chrono::Utc::now(),
         )
         .await
         .expect("close")

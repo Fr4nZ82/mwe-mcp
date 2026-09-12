@@ -5745,10 +5745,17 @@ mod tests {
         );
         populate(&pool, rows).await;
         let closed_id = FactId::parse("018f1234-5678-7abc-9def-0123456789ac").unwrap();
-        fact_index::close_validity(&pool, &closed_id, "2026-06-10T00:00:00Z", "completed", None)
-            .await
-            .unwrap()
-            .expect("closed");
+        fact_index::close_validity(
+            &pool,
+            &closed_id,
+            "2026-06-10T00:00:00Z",
+            "completed",
+            None,
+            chrono::Utc::now(),
+        )
+        .await
+        .unwrap()
+        .expect("closed");
 
         let embedder = embedder_fixed(vec![1.0, 0.0, 0.0, 0.0]);
         let hits = wiki_search(

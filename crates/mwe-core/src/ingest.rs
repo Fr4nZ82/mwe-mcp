@@ -3090,6 +3090,7 @@ async fn withdraw_named_rule(
                 &valid_to,
                 fact_index::decay::RETRACTED,
                 None,
+                turn_now,
             )
             .await
             {
@@ -4248,8 +4249,14 @@ async fn weld_supersede(
         .ok()
         .flatten()
         .unwrap_or_else(|| fact_index::bound_from_instant(turn_now));
-    match capture_buffer::close_validity(pool, target, &closed_at, fact_index::decay::CONTRADICTED)
-        .await
+    match capture_buffer::close_validity(
+        pool,
+        target,
+        &closed_at,
+        fact_index::decay::CONTRADICTED,
+        turn_now,
+    )
+    .await
     {
         Ok(Some(_)) => {
             tracing::info!(
@@ -4896,11 +4903,19 @@ async fn apply_plan_closures(
         // capture that replaces it (a turn with a true replacement goes
         // through the supersede verb instead).
         let fact_close =
-            fact_index::close_validity(pool, &hit.fact_id, &valid_to, reason, None).await;
+            fact_index::close_validity(pool, &hit.fact_id, &valid_to, reason, None, turn_now).await;
         let (prev, surface) = match fact_close {
             Ok(Some(prev)) => (prev, promote::ClosureSurface::Fact),
             Ok(None) => {
-                match capture_buffer::close_validity(pool, &hit.fact_id, &valid_to, reason).await {
+                match capture_buffer::close_validity(
+                    pool,
+                    &hit.fact_id,
+                    &valid_to,
+                    reason,
+                    turn_now,
+                )
+                .await
+                {
                     Ok(Some(prev)) => (prev, promote::ClosureSurface::Buffer),
                     Ok(None) => {
                         tracing::warn!(
@@ -4920,6 +4935,11 @@ async fn apply_plan_closures(
                 continue;
             },
         };
+        // What the column holds, which the write is free to differ on: an end
+        // that would fall before the fact began is corrected there
+        // ([`fact_index::ClosedValidity::written_valid_to`]). The receipt and
+        // the log say the memory's answer, not the request.
+        let valid_to = prev.written_valid_to.clone();
         tracing::info!(
             fact_id = %hit.fact_id,
             reason,
@@ -5329,6 +5349,63 @@ impl EditRefusal {
     }
 }
 
+/// Correct one fact's dates wherever it lives: the promoted row first, then
+/// the still-buffered capture (the same-day flow, where the target has not
+/// been through the light dream yet).
+///
+/// `None` means nothing was written, and the log line says which of the three
+/// reasons it was — a target that vanished between recall and now, a
+/// correction that would close the window before it opens
+/// ([`fact_index::ValidityEdit::EndBeforeStart`]), or a store that failed.
+/// They are three different things and a caller that could not tell them apart
+/// would report the wrong one: the impossible window is the person's own
+/// mistake, sitting on a fact that is right there.
+async fn edit_validity_on_either_surface(
+    pool: &SqlitePool,
+    fact_id: &FactId,
+    valid_from: Option<&str>,
+    valid_to: Option<&str>,
+) -> Option<(fact_index::PrevValidity, promote::ClosureSurface)> {
+    use fact_index::ValidityEdit;
+    let on_the_fact = match fact_index::set_validity(pool, fact_id, valid_from, valid_to).await {
+        Ok(v) => v,
+        Err(err) => {
+            tracing::warn!(error = %err, "ingest: fact validity_edit failed — skipped");
+            return None;
+        },
+    };
+    let surfaced = match on_the_fact {
+        ValidityEdit::Applied(prev) => return Some((prev, promote::ClosureSurface::Fact)),
+        ValidityEdit::EndBeforeStart => ValidityEdit::EndBeforeStart,
+        ValidityEdit::NoSuchRow => {
+            match capture_buffer::set_validity(pool, fact_id, valid_from, valid_to).await {
+                Ok(ValidityEdit::Applied(prev)) => {
+                    return Some((prev, promote::ClosureSurface::Buffer));
+                },
+                Ok(other) => other,
+                Err(err) => {
+                    tracing::warn!(error = %err, "ingest: buffer validity_edit failed — skipped");
+                    return None;
+                },
+            }
+        },
+    };
+    if surfaced == ValidityEdit::EndBeforeStart {
+        tracing::warn!(
+            fact_id = %fact_id,
+            ?valid_from,
+            ?valid_to,
+            "ingest: validity_edit would end the fact before it began — skipped"
+        );
+    } else {
+        tracing::warn!(
+            fact_id = %fact_id,
+            "ingest: validity_edit target vanished after recall — skipped"
+        );
+    }
+    None
+}
+
 async fn apply_plan_validity_edits(
     pool: &SqlitePool,
     tree: &WikiTree,
@@ -5372,42 +5449,15 @@ async fn apply_plan_validity_edits(
             );
             continue;
         }
-        let fact_edit = fact_index::set_validity(
+        let Some((prev, surface)) = edit_validity_on_either_surface(
             pool,
             &hit.fact_id,
             valid_from.as_deref(),
             valid_to.as_deref(),
         )
-        .await;
-        let (prev, surface) = match fact_edit {
-            Ok(Some(prev)) => (prev, promote::ClosureSurface::Fact),
-            Ok(None) => {
-                match capture_buffer::set_validity(
-                    pool,
-                    &hit.fact_id,
-                    valid_from.as_deref(),
-                    valid_to.as_deref(),
-                )
-                .await
-                {
-                    Ok(Some(prev)) => (prev, promote::ClosureSurface::Buffer),
-                    Ok(None) => {
-                        tracing::warn!(
-                            fact_id = %hit.fact_id,
-                            "ingest: validity_edit target vanished after recall — skipped"
-                        );
-                        continue;
-                    },
-                    Err(err) => {
-                        tracing::warn!(error = %err, "ingest: buffer validity_edit failed — skipped");
-                        continue;
-                    },
-                }
-            },
-            Err(err) => {
-                tracing::warn!(error = %err, "ingest: fact validity_edit failed — skipped");
-                continue;
-            },
+        .await
+        else {
+            continue;
         };
         tracing::info!(
             fact_id = %hit.fact_id,
@@ -19784,10 +19834,17 @@ mod tests {
 
         // The closure verb retracts one (a validity statement, not a delete).
         let closed_at = (chrono::Utc::now() - chrono::Duration::minutes(5)).to_rfc3339();
-        fact_index::close_validity(&pool, &retracted.fact_id, &closed_at, "retracted", None)
-            .await
-            .expect("close")
-            .expect("row exists");
+        fact_index::close_validity(
+            &pool,
+            &retracted.fact_id,
+            &closed_at,
+            "retracted",
+            None,
+            chrono::Utc::now(),
+        )
+        .await
+        .expect("close")
+        .expect("row exists");
 
         let rules =
             behaviour_rows_on_page(&pool, "samvisebot", &Principal::User("samvisebot".into()))

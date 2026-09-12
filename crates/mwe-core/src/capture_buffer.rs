@@ -1030,6 +1030,11 @@ pub async fn mark_skipped_dup(
 /// left alone (their fact row is the closure target — the id is stable
 /// across promotion, so the fact-side verb hits first).
 ///
+/// `when_unstated` is the instant the closure is being made, in the turn's own
+/// clock — the fact-side parameter, for the fact-side reason: it is what gets
+/// stamped when the proposed end falls before the staged `valid_from`
+/// ([`crate::fact_index::end_not_before_start`]).
+///
 /// Returns the previous staged values for the receipt's record of what
 /// changed, or `None` when `capture_id` has no buffered row.
 ///
@@ -1041,28 +1046,36 @@ pub async fn close_validity(
     capture_id: &FactId,
     valid_to: &str,
     reason: &str,
+    when_unstated: chrono::DateTime<chrono::Utc>,
 ) -> Result<Option<crate::fact_index::ClosedValidity>> {
-    let prev: Option<(Option<String>, Option<String>)> = sqlx::query_as(
-        "SELECT valid_to, decay_reason FROM capture_buffer
+    let prev: Option<(Option<String>, Option<String>, Option<String>)> = sqlx::query_as(
+        "SELECT valid_to, decay_reason, valid_from FROM capture_buffer
           WHERE capture_id = ? AND status = 'buffered'",
     )
     .bind(capture_id.as_str())
     .fetch_optional(pool)
     .await?;
-    let Some((prev_valid_to, prev_decay_reason)) = prev else {
+    let Some((prev_valid_to, prev_decay_reason, staged_valid_from)) = prev else {
         return Ok(None);
     };
+    let valid_to = crate::fact_index::end_not_before_start(
+        capture_id,
+        staged_valid_from.as_deref(),
+        valid_to,
+        when_unstated,
+    );
     sqlx::query(
         "UPDATE capture_buffer
             SET valid_to = ?, decay_reason = ?
           WHERE capture_id = ? AND status = 'buffered'",
     )
-    .bind(valid_to)
+    .bind(&valid_to)
     .bind(reason)
     .bind(capture_id.as_str())
     .execute(pool)
     .await?;
     Ok(Some(crate::fact_index::ClosedValidity {
+        written_valid_to: valid_to,
         prev_valid_to,
         prev_decay_reason,
         // The buffer stages no successor pointer — closures land it on the
@@ -1081,8 +1094,9 @@ pub async fn close_validity(
 /// `Some(value)` SETS that bound, a `None` LEAVES it (COALESCE-in-Rust),
 /// exactly like the fact-side write.
 ///
-/// Returns the previous staged interval for the receipt's record of what
-/// changed, or `None` when `capture_id` has no buffered row.
+/// Returns what happened ([`crate::fact_index::ValidityEdit`]), exactly as the
+/// fact-side write does — including the refusal of a window that would end
+/// before it starts.
 ///
 /// # Errors
 ///
@@ -1092,7 +1106,7 @@ pub async fn set_validity(
     capture_id: &FactId,
     valid_from: Option<&str>,
     valid_to: Option<&str>,
-) -> Result<Option<crate::fact_index::PrevValidity>> {
+) -> Result<crate::fact_index::ValidityEdit> {
     let prev: Option<(Option<String>, Option<String>)> = sqlx::query_as(
         "SELECT valid_from, valid_to FROM capture_buffer
           WHERE capture_id = ? AND status = 'buffered'",
@@ -1101,10 +1115,20 @@ pub async fn set_validity(
     .fetch_optional(pool)
     .await?;
     let Some((prev_valid_from, prev_valid_to)) = prev else {
-        return Ok(None);
+        return Ok(crate::fact_index::ValidityEdit::NoSuchRow);
     };
     let new_from = valid_from.map_or_else(|| prev_valid_from.clone(), |v| Some(v.to_owned()));
     let new_to = valid_to.map_or_else(|| prev_valid_to.clone(), |v| Some(v.to_owned()));
+    if crate::fact_index::window_is_inverted(new_from.as_deref(), new_to.as_deref()) {
+        tracing::warn!(
+            capture_id = capture_id.as_str(),
+            valid_from = new_from.as_deref().unwrap_or_default(),
+            valid_to = new_to.as_deref().unwrap_or_default(),
+            "capture_buffer: a date correction would end this claim before it began — refused, \
+             the staged dates stand"
+        );
+        return Ok(crate::fact_index::ValidityEdit::EndBeforeStart);
+    }
     sqlx::query(
         "UPDATE capture_buffer
             SET valid_from = ?, valid_to = ?
@@ -1115,10 +1139,12 @@ pub async fn set_validity(
     .bind(capture_id.as_str())
     .execute(pool)
     .await?;
-    Ok(Some(crate::fact_index::PrevValidity {
-        prev_valid_from,
-        prev_valid_to,
-    }))
+    Ok(crate::fact_index::ValidityEdit::Applied(
+        crate::fact_index::PrevValidity {
+            prev_valid_from,
+            prev_valid_to,
+        },
+    ))
 }
 
 /// Replace the ACL columns of a still-**buffered** capture: set
@@ -1541,6 +1567,82 @@ mod tests {
             buffered[0].sender,
             Some("user:alice".parse::<Principal>().unwrap()),
             "sender must stay materialized (= subject), never collapsed to None"
+        );
+    }
+
+    /// **A staged window never closes before it opens either.**
+    ///
+    /// The buffered half of the closure verb runs on the same-day flow —
+    /// «serve il latte» closed by «comprato» before the light dream — and it
+    /// takes its date from the same places the fact-side one does. The guard
+    /// is at the write on BOTH stores, because a claim waiting in the buffer
+    /// carries its staged `valid_from` through promotion unchanged.
+    #[tokio::test]
+    async fn a_staged_window_never_closes_before_it_opens() {
+        let (_dir, pool) = setup().await;
+        let mut staged = req("alice", "Serve il latte.", "user:alice");
+        staged.valid_from = Some("2026-04-05T18:05:00Z".to_owned());
+        let buffered = buffer_capture(&pool, staged, None).await.unwrap();
+
+        close_validity(
+            &pool,
+            &buffered.capture_id,
+            "2026-03-25T20:40:00Z",
+            crate::fact_index::decay::COMPLETED,
+            chrono::DateTime::parse_from_rfc3339("2026-04-30T09:00:00Z")
+                .unwrap()
+                .to_utc(),
+        )
+        .await
+        .expect("close")
+        .expect("a buffered row");
+        let staged_to: Option<String> =
+            sqlx::query_scalar("SELECT valid_to FROM capture_buffer WHERE capture_id = ?")
+                .bind(buffered.capture_id.as_str())
+                .fetch_one(&pool)
+                .await
+                .unwrap();
+        assert_eq!(
+            staged_to.as_deref(),
+            Some("2026-04-30T09:00:00Z"),
+            "a staged closure dated before the claim was staged is written at the instant of \
+             the closure"
+        );
+    }
+
+    /// And a staged DATE CORRECTION that would invert the window is refused,
+    /// with the staged dates left standing — the buffer's half of the
+    /// fact-side refusal.
+    #[tokio::test]
+    async fn a_staged_date_correction_that_inverts_the_window_changes_nothing() {
+        let (_dir, pool) = setup().await;
+        let mut staged = req("alice", "Il corso di ottobre.", "user:alice");
+        staged.valid_from = Some("2026-06-10T00:00:00Z".to_owned());
+        staged.valid_to = Some("2026-06-25T00:00:00Z".to_owned());
+        let buffered = buffer_capture(&pool, staged, None).await.unwrap();
+
+        assert_eq!(
+            set_validity(
+                &pool,
+                &buffered.capture_id,
+                None,
+                Some("2026-06-01T00:00:00Z"),
+            )
+            .await
+            .expect("edit"),
+            crate::fact_index::ValidityEdit::EndBeforeStart,
+            "the staged end may not fall before the staged start"
+        );
+        let row: (Option<String>, Option<String>) =
+            sqlx::query_as("SELECT valid_from, valid_to FROM capture_buffer WHERE capture_id = ?")
+                .bind(buffered.capture_id.as_str())
+                .fetch_one(&pool)
+                .await
+                .unwrap();
+        assert_eq!(
+            (row.0.as_deref(), row.1.as_deref()),
+            (Some("2026-06-10T00:00:00Z"), Some("2026-06-25T00:00:00Z")),
+            "and the staged dates stand"
         );
     }
 }

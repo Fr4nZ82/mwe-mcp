@@ -495,6 +495,12 @@ pub mod decay {
 /// precisely because reaching for `now()` here is the mistake — it dates a
 /// June correction to the August evening the engine caught up.
 ///
+/// `when_unstated` also carries the second case, where the successor HAS a
+/// `valid_from` and it falls before the retired fact's own — a dedup merge
+/// keeps the better-written of two rows whatever their order. The end of a
+/// window may not precede its start, so the instant of the weld is written
+/// instead ([`end_not_before_start`]).
+///
 /// Returns the number of rows touched (0 when `old_fact_id` is unknown).
 ///
 /// # Errors
@@ -525,9 +531,20 @@ pub async fn mark_superseded(
     // anywhere — an undated successor — leaves the wall clock, which is the
     // best available answer and the live case.
     let now = chrono::Utc::now().to_rfc3339();
-    let closed_at = successor_valid_from(pool, new_fact_id)
+    let proposed = successor_valid_from(pool, new_fact_id)
         .await?
         .unwrap_or_else(|| bound_from_instant(when_unstated));
+    // The successor is not required to have STARTED after the fact it
+    // replaces: a dedup merge keeps the better-written of two rows whatever
+    // their order, and the winner's `valid_from` then lands on a loser that
+    // began later. The invariant is enforced where the value is written, not
+    // where it is guessed at ([`end_not_before_start`]).
+    let closed_at = end_not_before_start(
+        old_fact_id,
+        current_valid_from(pool, old_fact_id).await?.as_deref(),
+        &proposed,
+        when_unstated,
+    );
     let res = sqlx::query(
         "UPDATE fact_index
             SET superseded_at = ?, superseded_by = ?, updated_at = ?,
@@ -605,6 +622,20 @@ pub(crate) fn bound_from_instant(t: chrono::DateTime<chrono::Utc>) -> String {
     t.to_rfc3339_opts(chrono::SecondsFormat::Secs, true)
 }
 
+/// When a fact the engine is about to CLOSE started being true, read off the
+/// fact index. `None` on an open-start fact and on an id with no row.
+pub(crate) async fn current_valid_from(
+    pool: &SqlitePool,
+    fact_id: &FactId,
+) -> Result<Option<String>> {
+    sqlx::query_scalar::<_, Option<String>>("SELECT valid_from FROM fact_index WHERE fact_id = ?")
+        .bind(fact_id.as_str())
+        .fetch_optional(pool)
+        .await
+        .map(Option::flatten)
+        .map_err(Into::into)
+}
+
 /// When the successor of a supersede started being true, from whichever store
 /// holds it: the fact index first, then the capture buffer for a successor the
 /// light dream has staged but not promoted yet.
@@ -631,10 +662,93 @@ pub(crate) async fn successor_valid_from(
     .map_err(Into::into)
 }
 
+/// One instant read off a stored bound, or `None` when the column holds
+/// something that is not a date.
+///
+/// Public because a caller of [`close_validity`] has to hand it the instant
+/// the closure is being made, and that instant is usually a bound it already
+/// holds as a string — the evidence's start, the seed's end.
+#[must_use]
+pub fn instant_of(bound: &str) -> Option<chrono::DateTime<chrono::Utc>> {
+    chrono::DateTime::parse_from_rfc3339(bound)
+        .ok()
+        .map(|t| t.to_utc())
+}
+
+/// The `valid_to` a closure may actually write: **never before the fact's own
+/// `valid_from`**.
+///
+/// A window that ends before it starts is not a wrong date, it is an
+/// impossible fact, and everything downstream that reads validity as time —
+/// the due-soon scan, the page compiler's history, the reader deciding whether
+/// a claim is spent — reads it as noise. It reaches the column because the
+/// closing instant almost never comes from the fact being closed: a supersede
+/// takes it from the successor's `valid_from`, the REM cluster sweep takes it
+/// from the SEED's `valid_to` and stamps it on every satellite that fell with
+/// it, a dedup merge takes it from the winner. None of those is required to be
+/// later than the fact it lands on, and on a backlog replay it routinely is
+/// not — eggs put on a list on 5 April closed «bought on 25 March».
+///
+/// So the proposed end is kept when it is sound, and otherwise replaced by
+/// **the instant of the closure**, which every caller knows and none of them
+/// may read off the wall clock: a June closure replayed in September is a June
+/// closure. When even that precedes the start — a plan called off before the
+/// day it was to begin — the window closes where it opens, which says «this
+/// never held» and is exactly what happened; the `decay_reason` still carries
+/// why.
+///
+/// Nothing is judged when there is nothing to judge against: a fact with no
+/// `valid_from` (open-start, the ordinary shape of a claim that has no instant
+/// it started being true) or a column that does not parse as a date keeps
+/// whatever the caller proposed.
+pub(crate) fn end_not_before_start(
+    fact_id: &FactId,
+    valid_from: Option<&str>,
+    proposed_end: &str,
+    closure_instant: chrono::DateTime<chrono::Utc>,
+) -> String {
+    let (Some(start_raw), Some(start)) = (valid_from, valid_from.and_then(instant_of)) else {
+        return proposed_end.to_owned();
+    };
+    let Some(end) = instant_of(proposed_end) else {
+        return proposed_end.to_owned();
+    };
+    if end >= start {
+        return proposed_end.to_owned();
+    }
+    if closure_instant >= start {
+        let substituted = bound_from_instant(closure_instant);
+        tracing::warn!(
+            fact_id = fact_id.as_str(),
+            valid_from = start_raw,
+            proposed = proposed_end,
+            written = substituted,
+            "fact_index: a closure would end this fact before it began — the instant of the \
+             closure is written instead"
+        );
+        return substituted;
+    }
+    tracing::warn!(
+        fact_id = fact_id.as_str(),
+        valid_from = start_raw,
+        proposed = proposed_end,
+        "fact_index: this fact was closed before the day it was to begin — its window closes \
+         where it opens"
+    );
+    start_raw.to_owned()
+}
+
 /// Snapshot of a fact's validity fields the moment a closure overwrote
-/// them — what the act-first closure receipt records as the prior state.
+/// them — what the act-first closure receipt records as the prior state —
+/// together with the end the closure ACTUALLY wrote.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ClosedValidity {
+    /// The `valid_to` that reached the column. Not always the one the caller
+    /// asked for: an end that would fall before the fact's own `valid_from`
+    /// is replaced at the write ([`end_not_before_start`]). Carried so the
+    /// receipt, the page and the log say what the memory holds instead of what
+    /// somebody proposed.
+    pub written_valid_to: String,
     /// `valid_to` before the closure (`None` = the window was open).
     pub prev_valid_to: Option<String>,
     /// `decay_reason` before the closure (`None` in the normal case).
@@ -659,6 +773,13 @@ pub struct ClosedValidity {
 /// completion sweep its evidence). `Some` stamps `successor_fact_id`;
 /// `None` leaves any earlier pointer untouched.
 ///
+/// `when_unstated` is the instant the closure is BEING MADE, in the turn's own
+/// clock — the same parameter [`mark_superseded`] takes and for the same
+/// reason. It is what gets written when `valid_to` would fall before the
+/// fact's `valid_from` ([`end_not_before_start`]), and it is not optional
+/// precisely because reaching for the wall clock here dates a June closure to
+/// the September night a replay caught up with it.
+///
 /// Returns the previous values for the receipt's record of the change, or
 /// `None` when `fact_id` has no active row (unknown or tombstoned) — the
 /// caller skips the closure rather than failing the turn.
@@ -672,6 +793,7 @@ pub async fn close_validity(
     valid_to: &str,
     reason: &str,
     successor: Option<&FactId>,
+    when_unstated: chrono::DateTime<chrono::Utc>,
 ) -> Result<Option<ClosedValidity>> {
     let Some(row) = find_by_id(pool, fact_id).await? else {
         return Ok(None);
@@ -679,7 +801,10 @@ pub async fn close_validity(
     if row.deleted_at.is_some() {
         return Ok(None);
     }
+    let valid_to =
+        end_not_before_start(fact_id, row.valid_from.as_deref(), valid_to, when_unstated);
     let prev = ClosedValidity {
+        written_valid_to: valid_to.clone(),
         prev_valid_to: row.valid_to,
         prev_decay_reason: row.decay_reason,
         prev_successor_fact_id: row.successor_fact_id,
@@ -692,7 +817,7 @@ pub async fn close_validity(
                 updated_at = ?
           WHERE fact_id = ? AND deleted_at IS NULL",
     )
-    .bind(valid_to)
+    .bind(&valid_to)
     .bind(reason)
     .bind(successor.map(FactId::as_str))
     .bind(&now)
@@ -718,6 +843,27 @@ pub struct PrevValidity {
     pub prev_valid_to: Option<String>,
 }
 
+/// What a validity edit did, on either store.
+///
+/// Three outcomes and not two, because a refused edit and a missing row are
+/// different answers and the caller acts on them differently: a missing row
+/// sends it to the other store, a refusal is the end of the road. Collapsing
+/// them would have made the ingest path report «the target vanished after
+/// recall» about a fact sitting right there.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum ValidityEdit {
+    /// Written. Carries the interval it overwrote, for the receipt.
+    Applied(PrevValidity),
+    /// This store holds no active row under that id.
+    NoSuchRow,
+    /// The corrected window would END BEFORE IT STARTS. Nothing was written
+    /// and the fact keeps the dates it had: a correction that makes a window
+    /// impossible is a wrong correction, and unlike a closure there is no
+    /// instant to put in its place — the two dates ARE the whole of what the
+    /// verb says.
+    EndBeforeStart,
+}
+
 /// Correct a fact's validity *interval*: set `valid_from` and/or
 /// `valid_to` and bump `updated_at`, **leaving `decay_reason` untouched**.
 ///
@@ -730,9 +876,10 @@ pub struct PrevValidity {
 /// — and the page recompiles on the next dream because the validity fields
 /// are part of the page fingerprint.
 ///
-/// Returns the previous interval for the receipt's record of the change, or
-/// `None` when `fact_id` has no active row (unknown or tombstoned) — the
-/// caller skips the edit rather than failing the turn.
+/// Returns what happened ([`ValidityEdit`]): the previous interval when it
+/// applied, the absence of a row, or the refusal of an impossible window. The
+/// caller skips the edit rather than failing the turn in either of the last
+/// two.
 ///
 /// # Errors
 ///
@@ -742,12 +889,12 @@ pub async fn set_validity(
     fact_id: &FactId,
     valid_from: Option<&str>,
     valid_to: Option<&str>,
-) -> Result<Option<PrevValidity>> {
+) -> Result<ValidityEdit> {
     let Some(row) = find_by_id(pool, fact_id).await? else {
-        return Ok(None);
+        return Ok(ValidityEdit::NoSuchRow);
     };
     if row.deleted_at.is_some() {
-        return Ok(None);
+        return Ok(ValidityEdit::NoSuchRow);
     }
     let prev = PrevValidity {
         prev_valid_from: row.valid_from.clone(),
@@ -758,6 +905,16 @@ pub async fn set_validity(
     // date correction is not a closure.
     let new_from = valid_from.map_or(row.valid_from, |v| Some(v.to_owned()));
     let new_to = valid_to.map_or(row.valid_to, |v| Some(v.to_owned()));
+    if window_is_inverted(new_from.as_deref(), new_to.as_deref()) {
+        tracing::warn!(
+            fact_id = fact_id.as_str(),
+            valid_from = new_from.as_deref().unwrap_or_default(),
+            valid_to = new_to.as_deref().unwrap_or_default(),
+            "fact_index: a date correction would end this fact before it began — refused, the \
+             stored dates stand"
+        );
+        return Ok(ValidityEdit::EndBeforeStart);
+    }
     let now = chrono::Utc::now().to_rfc3339();
     sqlx::query(
         "UPDATE fact_index
@@ -770,7 +927,21 @@ pub async fn set_validity(
     .bind(fact_id.as_str())
     .execute(pool)
     .await?;
-    Ok(Some(prev))
+    Ok(ValidityEdit::Applied(prev))
+}
+
+/// Whether a validity interval would END BEFORE IT STARTS.
+///
+/// `false` whenever there is nothing to judge: either bound absent, either
+/// bound holding something that is not a date.
+pub(crate) fn window_is_inverted(valid_from: Option<&str>, valid_to: Option<&str>) -> bool {
+    let (Some(from), Some(to)) = (
+        valid_from.and_then(instant_of),
+        valid_to.and_then(instant_of),
+    ) else {
+        return false;
+    };
+    to < from
 }
 
 /// Snapshot of a fact's ACL columns the moment an ACL change overwrote
@@ -4426,6 +4597,7 @@ mod tests {
             "2026-06-11T20:00:00Z",
             decay::COMPLETED,
             Some(&successor),
+            chrono::Utc::now(),
         )
         .await
         .expect("close")
@@ -4433,6 +4605,7 @@ mod tests {
         assert_eq!(
             prev,
             ClosedValidity {
+                written_valid_to: "2026-06-11T20:00:00Z".to_owned(),
                 prev_valid_to: None,
                 prev_decay_reason: None,
                 prev_successor_fact_id: None
@@ -4458,6 +4631,7 @@ mod tests {
             "2026-06-11T20:00:00Z",
             decay::CONTRADICTED,
             Some(&successor),
+            chrono::Utc::now(),
         )
         .await
         .expect("close")
@@ -4469,6 +4643,7 @@ mod tests {
             "2026-06-12T08:00:00Z",
             decay::RETRACTED,
             None,
+            chrono::Utc::now(),
         )
         .await
         .expect("re-close")
@@ -4498,7 +4673,8 @@ mod tests {
                 &phantom,
                 "2026-06-11T00:00:00Z",
                 decay::RETRACTED,
-                None
+                None,
+                chrono::Utc::now(),
             )
             .await
             .expect("query")
@@ -4515,7 +4691,8 @@ mod tests {
                 &f.fact_id,
                 "2026-06-11T00:00:00Z",
                 decay::RETRACTED,
-                None
+                None,
+                chrono::Utc::now(),
             )
             .await
             .expect("query")
@@ -4535,10 +4712,13 @@ mod tests {
         insert(&pool, &f).await.expect("insert");
 
         // Correct only valid_to (the 25th was wrong; it's the 20th).
-        let prev = set_validity(&pool, &f.fact_id, None, Some("2026-06-20T00:00:00Z"))
-            .await
-            .expect("edit")
-            .expect("active row");
+        let ValidityEdit::Applied(prev) =
+            set_validity(&pool, &f.fact_id, None, Some("2026-06-20T00:00:00Z"))
+                .await
+                .expect("edit")
+        else {
+            panic!("an active row takes the edit");
+        };
         assert_eq!(
             prev,
             PrevValidity {
@@ -4566,26 +4746,231 @@ mod tests {
         assert_eq!(prev.prev_valid_to.as_deref(), Some("2026-06-25T00:00:00Z"));
     }
 
+    /// **A fact never ends before it begins**, whichever road stamps the end.
+    ///
+    /// Three roads write `valid_to` on a row that already exists, and not one
+    /// of them takes the date from the fact it is closing: a supersede takes
+    /// it from the successor's `valid_from`, a closure from whatever the
+    /// caller worked out — a confirmer's date, the seed of a contradiction
+    /// cluster, the winner of a dedup merge. None of those is required to fall
+    /// after the fact they land on, and in the September demo eleven facts
+    /// came out of the night with an end before their start: eggs put on a
+    /// list on 5 April, ticked «bought on 25 March».
+    ///
+    /// Each road is driven on its own, because the guard is at the write and a
+    /// road that skipped it would be silent. **Road 1: the supersede weld.**
+    #[tokio::test]
+    async fn a_supersede_never_closes_a_fact_before_it_began() {
+        let pool = make_pool().await;
+
+        // A successor that started EARLIER than the fact it replaces — the
+        // dedup-merge shape, where the better-written of two rows wins
+        // whatever their order.
+        let mut target = sample_new_fact(SAMPLE_UUID_V7_1, "bob", "user:bob", "dentist thursday");
+        target.valid_from = Some("2026-07-03T15:30:00Z".to_owned());
+        insert(&pool, &target).await.expect("insert target");
+        let mut successor = sample_new_fact(
+            SAMPLE_UUID_V7_2,
+            "bob",
+            "user:bob",
+            "dentist thursday, with mum",
+        );
+        successor.valid_from = Some("2026-07-02T08:05:00Z".to_owned());
+        insert(&pool, &successor).await.expect("insert successor");
+        let welded_at = chrono::DateTime::parse_from_rfc3339("2026-07-05T10:00:00Z")
+            .unwrap()
+            .to_utc();
+        mark_superseded(&pool, &target.fact_id, &successor.fact_id, welded_at)
+            .await
+            .expect("weld");
+        let row = find_by_id(&pool, &target.fact_id).await.unwrap().unwrap();
+        assert_eq!(
+            row.valid_to.as_deref(),
+            Some("2026-07-05T10:00:00Z"),
+            "the successor started first, so the weld is dated by the instant the weld was made \
+             — never by a start that precedes the fact being retired"
+        );
+    }
+
+    /// **Road 2: the closure verb**, on the shape that produced the demo's
+    /// eleven rows — a closing date that comes from somewhere other than the
+    /// fact being closed, and lands before it.
+    #[tokio::test]
+    async fn a_closure_never_ends_a_fact_before_it_began() {
+        let pool = make_pool().await;
+
+        // The eggs: on the list on 5 April, closed with a purchase that
+        // happened on 25 March.
+        let mut eggs = sample_new_fact(SAMPLE_UUID_V7_3, "alice", "user:alice", "eggs");
+        eggs.valid_from = Some("2026-04-05T18:05:00Z".to_owned());
+        insert(&pool, &eggs).await.expect("insert eggs");
+        let closed_at = chrono::DateTime::parse_from_rfc3339("2026-04-30T09:00:00Z")
+            .unwrap()
+            .to_utc();
+        let receipt = close_validity(
+            &pool,
+            &eggs.fact_id,
+            "2026-03-25T20:40:00Z",
+            decay::COMPLETED,
+            None,
+            closed_at,
+        )
+        .await
+        .expect("close")
+        .expect("an active row");
+        assert_eq!(
+            receipt.written_valid_to, "2026-04-30T09:00:00Z",
+            "the caller is told the end that reached the column, so the receipt and the page \
+             cannot narrate a date the memory does not hold"
+        );
+        let row = find_by_id(&pool, &eggs.fact_id).await.unwrap().unwrap();
+        assert_eq!(
+            row.valid_to.as_deref(),
+            Some("2026-04-30T09:00:00Z"),
+            "a closure dated before the fact existed is written at the instant of the closure"
+        );
+        assert_eq!(
+            row.decay_reason.as_deref(),
+            Some(decay::COMPLETED),
+            "and the closure still happened — only its date was corrected"
+        );
+
+        // ---- Road 2b: a plan called off BEFORE the day it was to begin. Even
+        // the instant of the closure precedes the start, so the window closes
+        // where it opens: this never held, which is what happened.
+        let mut future = sample_new_fact(
+            "018f1234-5678-7abc-9def-0123456789ae",
+            "alice",
+            "user:alice",
+            "the October course",
+        );
+        future.valid_from = Some("2026-10-01T00:00:00Z".to_owned());
+        insert(&pool, &future).await.expect("insert future plan");
+        close_validity(
+            &pool,
+            &future.fact_id,
+            "2026-03-25T20:40:00Z",
+            decay::RETRACTED,
+            None,
+            chrono::DateTime::parse_from_rfc3339("2026-09-12T08:00:00Z")
+                .unwrap()
+                .to_utc(),
+        )
+        .await
+        .expect("close")
+        .expect("an active row");
+        let row = find_by_id(&pool, &future.fact_id).await.unwrap().unwrap();
+        assert_eq!(
+            row.valid_to.as_deref(),
+            Some("2026-10-01T00:00:00Z"),
+            "called off before it began, the window closes where it opens"
+        );
+
+        // ---- And a sound closure is left exactly as the caller wrote it.
+        let mut sound = sample_new_fact(
+            "018f1234-5678-7abc-9def-0123456789af",
+            "alice",
+            "user:alice",
+            "milk",
+        );
+        sound.valid_from = Some("2026-06-01T00:00:00Z".to_owned());
+        insert(&pool, &sound).await.expect("insert sound");
+        close_validity(
+            &pool,
+            &sound.fact_id,
+            "2026-06-10T00:00:00Z",
+            decay::COMPLETED,
+            None,
+            chrono::Utc::now(),
+        )
+        .await
+        .expect("close")
+        .expect("an active row");
+        assert_eq!(
+            find_by_id(&pool, &sound.fact_id)
+                .await
+                .unwrap()
+                .unwrap()
+                .valid_to
+                .as_deref(),
+            Some("2026-06-10T00:00:00Z"),
+            "an end that falls after the start is nobody's business but the caller's"
+        );
+    }
+
+    /// **Road 3: a date correction that would invert the window is refused**,
+    /// and refused DIFFERENTLY from a closure.
+    ///
+    /// A closure has an instant to fall back on — the moment the closure is
+    /// being made. A validity edit has none: the two dates are the whole of
+    /// what the verb says, so a pair that cannot hold is simply a wrong
+    /// correction, and the fact keeps the dates it had.
+    #[tokio::test]
+    async fn a_date_correction_that_inverts_the_window_changes_nothing() {
+        let pool = make_pool().await;
+        let mut f = sample_new_fact(SAMPLE_UUID_V7_1, "alice", "user:alice", "milk expires");
+        f.valid_from = Some("2026-06-10T00:00:00Z".to_owned());
+        f.valid_to = Some("2026-06-25T00:00:00Z".to_owned());
+        insert(&pool, &f).await.expect("insert");
+
+        assert_eq!(
+            set_validity(&pool, &f.fact_id, None, Some("2026-06-01T00:00:00Z"))
+                .await
+                .expect("edit"),
+            ValidityEdit::EndBeforeStart,
+            "an end before the start is refused, and says so in its own words"
+        );
+        let row = find_by_id(&pool, &f.fact_id).await.unwrap().unwrap();
+        assert_eq!(
+            (row.valid_from.as_deref(), row.valid_to.as_deref()),
+            (Some("2026-06-10T00:00:00Z"), Some("2026-06-25T00:00:00Z")),
+            "and nothing was written: the stored dates stand"
+        );
+
+        // Moving the START past the stored end is the same mistake from the
+        // other side, and gets the same answer.
+        assert_eq!(
+            set_validity(&pool, &f.fact_id, Some("2026-07-01T00:00:00Z"), None)
+                .await
+                .expect("edit"),
+            ValidityEdit::EndBeforeStart,
+            "a start moved past the stored end inverts the window just as surely"
+        );
+
+        // A correction that leaves a window that can hold applies normally.
+        assert!(matches!(
+            set_validity(
+                &pool,
+                &f.fact_id,
+                Some("2026-06-05T00:00:00Z"),
+                Some("2026-06-20T00:00:00Z"),
+            )
+            .await
+            .expect("edit"),
+            ValidityEdit::Applied(_)
+        ));
+    }
+
     #[tokio::test]
     async fn set_validity_skips_unknown_and_tombstoned_rows() {
         let pool = make_pool().await;
         let phantom = FactId::parse(SAMPLE_UUID_V7_2).unwrap();
-        assert!(
+        assert_eq!(
             set_validity(&pool, &phantom, None, Some("2026-06-20T00:00:00Z"))
                 .await
-                .expect("query")
-                .is_none()
+                .expect("query"),
+            ValidityEdit::NoSuchRow
         );
         let f = sample_new_fact(SAMPLE_UUID_V7_1, "alice", "user:alice", "serra");
         insert(&pool, &f).await.expect("insert");
         mark_forgotten(&pool, &f.fact_id, "user_request")
             .await
             .expect("forget");
-        assert!(
+        assert_eq!(
             set_validity(&pool, &f.fact_id, None, Some("2026-06-20T00:00:00Z"))
                 .await
-                .expect("query")
-                .is_none()
+                .expect("query"),
+            ValidityEdit::NoSuchRow
         );
     }
 

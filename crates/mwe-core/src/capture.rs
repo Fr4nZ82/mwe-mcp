@@ -1578,6 +1578,7 @@ mod tests {
             "2026-09-12T00:00:00Z",
             crate::fact_index::decay::COMPLETED,
             None,
+            chrono::Utc::now(),
         )
         .await
         .expect("close");

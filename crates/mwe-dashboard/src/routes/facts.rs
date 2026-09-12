@@ -1012,12 +1012,18 @@ fn normalize_date_bound(raw: &str) -> Result<Option<String>> {
 
 /// Map an [`OperatorEditError`] onto a dashboard error. A vanished target
 /// is a `404` (the fact disappeared between the form render and the
-/// submit); a surface or receipt failure is an internal error — for the
-/// receipt case the change already stands, so the operator should refresh
-/// rather than retry.
+/// submit); dates that would close the window before it opens are the
+/// operator's own mistake and come back as a validation message they can act
+/// on; a surface or receipt failure is an internal error — for the receipt
+/// case the change already stands, so the operator should refresh rather than
+/// retry.
 fn map_operator_edit_err(err: &OperatorEditError) -> DashboardError {
     match err {
         OperatorEditError::FactVanished(_) => DashboardError::NotFound,
+        OperatorEditError::EndBeforeStart(_) => DashboardError::Validation(
+            "These dates end the fact before it begins: the end must not come before the start."
+                .to_owned(),
+        ),
         OperatorEditError::Direct(_)
         | OperatorEditError::FactSurface(_)
         | OperatorEditError::BufferSurface(_) => DashboardError::Internal(err.to_string()),

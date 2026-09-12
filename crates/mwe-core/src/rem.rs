@@ -5202,17 +5202,28 @@ async fn judge_completion_case(
         // The evidence fact IS the successor: it states the outcome the
         // closed fact was waiting for, so the page can point at its home.
         let reason = item.decay_reason();
+        // The closure's own instant, for the road the guard takes when the
+        // confirmer's date — or the evidence's own start — falls before the
+        // item ever began ([`fact_index::end_not_before_start`]). The evidence
+        // is what closed the item, so its start is that instant; the wall
+        // clock would put a June closure in the September night that read it.
+        let closed_when = fact_index::instant_of(evidence_began).unwrap_or_else(chrono::Utc::now);
         let Some(prev) = fact_index::close_validity(
             pool,
             &target.fact_id,
             &valid_to,
             reason,
             Some(&case.evidence.fact_id),
+            closed_when,
         )
         .await?
         else {
             continue; // vanished between gather and apply
         };
+        // The end the write actually stamped, which is not the proposed one
+        // when the proposed one fell before the item began
+        // ([`fact_index::ClosedValidity::written_valid_to`]).
+        let valid_to = prev.written_valid_to.clone();
         tracing::info!(
             fact_id = %target.fact_id,
             evidence = %case.evidence.fact_id,
@@ -6244,17 +6255,30 @@ async fn judge_contradiction_case(
         // A satellite falls with the seed, so it inherits the seed's
         // superseding fact as its successor (None when the seed was closed
         // without one — the pointer stays empty rather than guessing).
+        //
+        // Where the seed's date cannot reach — a satellite that BEGAN after
+        // the seed was closed, which is how the cluster sweep wrote eleven
+        // facts that ended before they started — the honest answer is this
+        // sweep's own instant: the satellite was in force until the pass
+        // decided it had fallen, and when it stopped being true is precisely
+        // what nobody here knows. It is the same last resort `seed_closed_at`
+        // already falls back to ([`fact_index::end_not_before_start`]).
         let Some(prev) = fact_index::close_validity(
             pool,
             &target.fact_id,
             &valid_to,
             fact_index::decay::CONTRADICTED,
             seed.superseded_by.as_ref(),
+            now,
         )
         .await?
         else {
             continue;
         };
+        // As above: the seed's instant is what the satellite is dated by only
+        // where the satellite can carry it
+        // ([`fact_index::ClosedValidity::written_valid_to`]).
+        let valid_to = prev.written_valid_to.clone();
         tracing::info!(
             fact_id = %target.fact_id,
             seed = %seed.fact_id,

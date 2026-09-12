@@ -1278,6 +1278,7 @@ async fn apply_slot_conflict(
             &crate::fact_index::bound_from_instant(now),
             crate::fact_index::decay::CONTRADICTED,
             None,
+            now,
         )
         .await
         .map_err(|e| ApplyError::HandlerData(format!("slot_conflict closure: {e}")))?

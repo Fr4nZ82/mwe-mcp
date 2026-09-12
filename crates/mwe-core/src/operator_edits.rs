@@ -34,6 +34,10 @@ pub enum OperatorEditError {
     /// submit). Nothing was changed.
     #[error("fact {0} has no active row on either surface")]
     FactVanished(FactId),
+    /// The corrected dates would close the fact's window before it opened.
+    /// Nothing was changed: the stored dates stand.
+    #[error("fact {0} would end before it begins under these dates")]
+    EndBeforeStart(FactId),
     /// The engine column was written, but the born-applied receipt could
     /// not be minted (or, for an ACL change, an earlier surface write
     /// failed). Maps the direct-promote error class through verbatim so
@@ -175,9 +179,12 @@ pub async fn acl_change_operator(
 /// correction carries no disclosure signal), mirroring the chat path's
 /// `apply_plan_validity_edits` for a single target:
 ///
-/// 1. `fact_index::set_validity` (probe the promoted row); on `Ok(None)`
-///    fall through to `capture_buffer::set_validity`. A miss on both is
-///    [`OperatorEditError::FactVanished`].
+/// 1. `fact_index::set_validity` (probe the promoted row); on
+///    [`fact_index::ValidityEdit::NoSuchRow`] fall through to
+///    `capture_buffer::set_validity`. A miss on both is
+///    [`OperatorEditError::FactVanished`]; dates that would close the window
+///    before it opens are [`OperatorEditError::EndBeforeStart`] on either
+///    store, and nothing is written.
 /// 2. Mint ONE born-applied `validity_edit` receipt via
 ///    [`promote::emit_validity_edit_receipt`].
 ///
@@ -189,6 +196,8 @@ pub async fn acl_change_operator(
 /// # Errors
 ///
 /// [`OperatorEditError::FactVanished`] when the target has no active row;
+/// [`OperatorEditError::EndBeforeStart`] when the corrected dates would close
+/// the window before it opens;
 /// [`OperatorEditError::FactSurface`] / [`OperatorEditError::BufferSurface`]
 /// when the surface write fails;
 /// [`OperatorEditError::Direct`] when the edit applied but the receipt
@@ -203,15 +212,25 @@ pub async fn validity_edit_operator(
     actor_id: &str,
     recipient: Option<String>,
 ) -> Result<promote::DirectApplied, OperatorEditError> {
-    let (prev, surface) = match fact_index::set_validity(pool, fact_id, valid_from, valid_to)
-        .await?
-    {
-        Some(prev) => (prev, promote::ClosureSurface::Fact),
-        None => match capture_buffer::set_validity(pool, fact_id, valid_from, valid_to).await? {
-            Some(prev) => (prev, promote::ClosureSurface::Buffer),
-            None => return Err(OperatorEditError::FactVanished(fact_id.clone())),
-        },
-    };
+    use fact_index::ValidityEdit;
+    let (prev, surface) =
+        match fact_index::set_validity(pool, fact_id, valid_from, valid_to).await? {
+            ValidityEdit::Applied(prev) => (prev, promote::ClosureSurface::Fact),
+            ValidityEdit::EndBeforeStart => {
+                return Err(OperatorEditError::EndBeforeStart(fact_id.clone()));
+            },
+            ValidityEdit::NoSuchRow => {
+                match capture_buffer::set_validity(pool, fact_id, valid_from, valid_to).await? {
+                    ValidityEdit::Applied(prev) => (prev, promote::ClosureSurface::Buffer),
+                    ValidityEdit::EndBeforeStart => {
+                        return Err(OperatorEditError::EndBeforeStart(fact_id.clone()));
+                    },
+                    ValidityEdit::NoSuchRow => {
+                        return Err(OperatorEditError::FactVanished(fact_id.clone()));
+                    },
+                }
+            },
+        };
 
     tracing::info!(
         fact_id = %fact_id,

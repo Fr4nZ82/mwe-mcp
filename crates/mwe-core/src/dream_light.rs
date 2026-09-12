@@ -1221,6 +1221,7 @@ mod tests {
             &buffered.capture_id,
             "2026-06-11T18:00:00Z",
             fact_index::decay::COMPLETED,
+            chrono::Utc::now(),
         )
         .await
         .unwrap()
