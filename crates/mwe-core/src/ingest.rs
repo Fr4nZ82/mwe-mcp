@@ -831,6 +831,25 @@ struct LlmIngestPlan {
     /// standing rules to the reconciliation stage.
     #[serde(default)]
     withdrawal: bool,
+    /// The speaker asked for something to be TAKEN OUT of the memory, not
+    /// merely ended: «I don't want that in here any more», «cancella quella
+    /// cosa», «delete what I told you about the interview».
+    ///
+    /// A stricter thing than [`withdrawal`], and the difference is the whole
+    /// point. A withdrawal says the claim has stopped holding, and a closure
+    /// answers it: the fact stays readable as history, with an end date, which
+    /// is right for «I've given up on the project». An erasure says the
+    /// sentence should not be in the memory at all, and a closure does not
+    /// answer it — in the September demo the sentence the speaker asked to be
+    /// rid of was closed and left sitting on her page, word for word.
+    ///
+    /// It is the classifier's to declare because only the turn says which
+    /// gesture it is; WHICH facts it reaches is the reconciliation stage's,
+    /// which is the one shown the candidates complete.
+    ///
+    /// [`withdrawal`]: Self::withdrawal
+    #[serde(default)]
+    erasure: bool,
     /// The `fact_id` of the standing rule this turn withdraws, from the
     /// `agent_behaviour_rules` block the classifier is shown.
     ///
@@ -4374,13 +4393,23 @@ async fn successor_exists(pool: &SqlitePool, successor: &FactId) -> bool {
 ///
 /// Shared by the two verbs that can take a stored fact away, because a reader
 /// of the trace asks them the same question: how many happened, and for each
-/// one that did not, why.
+/// one that did not, why. The third field is the closure verb's alone and the
+/// supersede verb leaves it empty — see [`Self::retracted`].
 #[derive(Debug, Default)]
 struct AppliedChanges {
     /// How many the engine made.
     applied: usize,
     /// One record per change it did not, for the recall trace.
     refused: Vec<crate::recall_trace::TraceRefusedChange>,
+    /// The facts the CLOSURE verb closed as `retracted` — the ones the
+    /// speaker TOOK BACK, as opposed to spent or contradicted.
+    ///
+    /// They are the only closures an erasure turn may go on to ask to have
+    /// removed ([`LlmIngestPlan::erasure`]): «I bought the milk» ends an
+    /// intention and says nothing about wanting it gone, and neither does a
+    /// claim some later fact made false. Always empty from the supersede
+    /// verb, which retires nothing anybody withdrew.
+    retracted: Vec<FactId>,
 }
 
 /// Journal one refused pair **as the model wrote it** — unparsed ids included,
@@ -5372,10 +5401,16 @@ async fn apply_plan_closures(
             surface,
         });
     }
+    let retracted: Vec<FactId> = applied
+        .iter()
+        .filter(|a| a.reason == fact_index::decay::RETRACTED)
+        .map(|a| a.fact_id.clone())
+        .collect();
     if applied.is_empty() {
         return AppliedChanges {
             applied: 0,
             refused,
+            retracted,
         };
     }
     // A closed item on a LIST is shown now, not at the next dream: the page is
@@ -5409,6 +5444,75 @@ async fn apply_plan_closures(
     AppliedChanges {
         applied: applied.len(),
         refused,
+        retracted,
+    }
+}
+
+/// Put the speaker's «take it out of here» to the people the fact was shared
+/// with: one pending forget request per fact they withdrew
+/// ([`crate::votes::open_forget_request`]).
+///
+/// **A closure does not answer an erasure.** Closing says the claim stopped
+/// holding and leaves it readable as history, which is right for «I've given
+/// up on the project» and is not what «I don't want that in here any more»
+/// asked for. In the September demo the sentence a speaker asked to be rid of
+/// was closed and left on her page, word for word, with nobody asked anything.
+///
+/// It asks rather than acts, and that is the shape on purpose: the audience is
+/// given a window to object, and a turn the classifier read too eagerly costs
+/// a question rather than a deletion. Two roads are deliberately left alone:
+///
+/// - the speaker **authored** the fact. The vote machinery refuses that case
+///   on purpose — a person's own contribution is theirs to delete outright —
+///   and doing it here would make a model's reading of one sentence
+///   irreversible. The agent's `wiki_forget` tool stays the road for it;
+/// - the speaker is **neither the subject nor its author**, which is not
+///   theirs to ask about at all.
+///
+/// The speaker acts as themselves and never as an administrator: `is_admin`
+/// is `false` whoever is speaking, because a turn is a conversation and not
+/// the dashboard.
+async fn ask_to_forget_what_was_withdrawn(
+    pool: &SqlitePool,
+    tree: &WikiTree,
+    embedder: &Arc<dyn Embedder>,
+    retracted: &[FactId],
+    request: &IngestRequest,
+) {
+    for fact_id in retracted {
+        match crate::votes::open_forget_request(
+            pool,
+            tree,
+            embedder,
+            fact_id,
+            request.sender_id.as_str(),
+            false,
+        )
+        .await
+        {
+            Ok(crate::votes::ForgetRequest::VoteOpened {
+                proposal_id,
+                eligible_voters,
+                deadline,
+                ..
+            }) => tracing::info!(
+                fact_id = fact_id.as_str(),
+                proposal_id,
+                voters = eligible_voters.join(","),
+                deadline,
+                "ingest: the speaker asked for this to be taken out — forget request opened"
+            ),
+            Ok(crate::votes::ForgetRequest::AppliedImmediately { .. }) => tracing::info!(
+                fact_id = fact_id.as_str(),
+                "ingest: the speaker asked for this to be taken out and nobody else could read                  it — forgotten"
+            ),
+            Err(err) => tracing::info!(
+                fact_id = fact_id.as_str(),
+                sender_id = request.sender_id.as_str(),
+                error = %err,
+                "ingest: no forget request opened — the closure stands on its own"
+            ),
+        }
     }
 }
 
@@ -12216,6 +12320,16 @@ pub async fn wiki_ingest_message(
                 turn_now,
             )
             .await;
+            if plan.erasure {
+                ask_to_forget_what_was_withdrawn(
+                    pool,
+                    tree,
+                    &embedder,
+                    &closed.retracted,
+                    &request,
+                )
+                .await;
+            }
             if closed.applied > 0 {
                 captured_any = true;
             }
@@ -12541,6 +12655,19 @@ pub async fn wiki_ingest_message(
             )
             .await;
             reconciled += closures.applied;
+            // «I don't want that in here any more» asked for the sentence to
+            // be GONE, and closing it only says it stopped holding
+            // ([`ask_to_forget_what_was_withdrawn`]).
+            if plan.erasure {
+                ask_to_forget_what_was_withdrawn(
+                    pool,
+                    tree,
+                    &embedder,
+                    &closures.retracted,
+                    &request,
+                )
+                .await;
+            }
             refused_changes = closures.refused;
             let supersedes = apply_reconciled_supersedes(
                 pool,
@@ -13876,6 +14003,7 @@ mod tests {
         // disk inside the turn, so it is the one that had to be closed.
         let plan = LlmIngestPlan {
             withdrawal: false,
+            erasure: false,
             withdraw_target: None,
             subject_external: None,
             intent: "capture".into(),
@@ -13930,6 +14058,7 @@ mod tests {
     fn validate_capture_plan_derives_the_wiki_from_the_sender() {
         let plan = LlmIngestPlan {
             withdrawal: false,
+            erasure: false,
             withdraw_target: None,
             subject_external: None,
             intent: "capture".into(),
@@ -13980,6 +14109,7 @@ mod tests {
     fn validate_capture_plan_defaults_subject_to_sender() {
         let plan = LlmIngestPlan {
             withdrawal: false,
+            erasure: false,
             withdraw_target: None,
             subject_external: None,
             intent: "capture".into(),
@@ -14038,6 +14168,7 @@ mod tests {
         // while keeping the legitimate entries.
         let plan = LlmIngestPlan {
             withdrawal: false,
+            erasure: false,
             withdraw_target: None,
             subject_external: None,
             intent: "capture".into(),
@@ -14084,6 +14215,7 @@ mod tests {
     fn validate_capture_plan_rejects_bad_principal() {
         let plan = LlmIngestPlan {
             withdrawal: false,
+            erasure: false,
             withdraw_target: None,
             subject_external: None,
             intent: "capture".into(),
@@ -14165,6 +14297,7 @@ mod tests {
     fn validate_capture_plan_ignores_a_hallucinated_target_wiki() {
         let plan = LlmIngestPlan {
             withdrawal: false,
+            erasure: false,
             withdraw_target: None,
             subject_external: None,
             intent: "capture".into(),
@@ -14674,6 +14807,7 @@ mod tests {
     fn plan_with_supersede(target: Option<&str>) -> LlmIngestPlan {
         LlmIngestPlan {
             withdrawal: false,
+            erasure: false,
             withdraw_target: None,
             subject_external: None,
             intent: "capture".into(),
@@ -14991,6 +15125,151 @@ mod tests {
             "empty brackets name no missing piece"
         );
         assert!(!carries_a_placeholder("Keep answers short."));
+    }
+
+    /// **«I don't want that in here any more» is not a closure.**
+    ///
+    /// Turn t0158 of the September demo, word for word: *«That thing about my
+    /// contract not being renewed. I don't want that in here any more.»* The
+    /// engine read it as an ordinary withdrawal, closed the fact, and left the
+    /// sentence sitting on her page — `valid_to` stamped, `decay_reason`
+    /// `retracted`, nothing deleted, nobody asked anything. What the speaker
+    /// asked for was to be rid of it.
+    ///
+    /// The fact was ABOUT her and said by somebody else, so it is hers to ask
+    /// about and not hers to delete: a pending request goes to the one other
+    /// person who can read it, and the fact stays alive until that window
+    /// closes.
+    ///
+    /// The two halves are driven on their own because the test backend answers
+    /// every stage of a turn with the same JSON, so one end-to-end run would
+    /// put the same closure through both the classifier's road and the
+    /// reconciler's and ask twice.
+    #[tokio::test]
+    async fn a_turn_that_asks_to_be_rid_of_a_fact_opens_a_forget_request() {
+        let (dir, tree, pool) = setup_workdir().await;
+        // Said by alice, about zoe, shared with nobody else.
+        let planted = capture::wiki_capture(
+            &tree,
+            &pool,
+            fake_embedder(),
+            CaptureRequest {
+                subject_external: None,
+                slot: None,
+                slot_value: None,
+                authored_refs: Vec::new(),
+                wiki_id: WikiId::parse("alice").unwrap(),
+                page: Some(PathBuf::from("cucina.md")),
+                body: "Zoe's contract was not renewed.".into(),
+                subject: Principal::User("zoe".into()),
+                allow: Vec::new(),
+                sender: Some(Principal::User("alice".into())),
+                fact_type: Some("state".to_owned()),
+                page_description: None,
+                topics: vec!["work".to_owned(), "employment".to_owned()],
+                dedup_threshold: Some(1.01),
+                valid_from: Some("2026-05-02T09:15:00Z".to_owned()),
+                valid_to: None,
+                style: None,
+                salience: None,
+            },
+        )
+        .await
+        .expect("plant");
+        let row = fact_index::find_by_id(&pool, &planted.fact_id)
+            .await
+            .unwrap()
+            .unwrap();
+        let candidates = vec![recall::RecallHit::from_row(row, 1.0)];
+
+        // The reconciler reads the turn as a retraction, which it is — and
+        // that half was already right.
+        let request = req(
+            "That thing about my contract not being renewed. I don't want that in here any more.",
+            "zoe",
+        );
+        let closed = apply_plan_closures(
+            &pool,
+            &tree,
+            &[LlmClosure {
+                target: Some(planted.fact_id.as_str().to_owned()),
+                reason: Some("retracted".to_owned()),
+                valid_to: None,
+            }],
+            &candidates,
+            &[],
+            &request,
+            None,
+            request.turn_now(),
+        )
+        .await;
+        assert_eq!(closed.applied, 1, "the closure still happens");
+        assert_eq!(
+            closed.retracted,
+            vec![planted.fact_id.clone()],
+            "and the verb says which facts the speaker TOOK BACK, as opposed to spent"
+        );
+
+        // The half that was missing: the erasure the turn actually asked for.
+        ask_to_forget_what_was_withdrawn(
+            &pool,
+            &tree,
+            &fake_embedder(),
+            &closed.retracted,
+            &request,
+        )
+        .await;
+
+        let open: Vec<(String, String)> = sqlx::query_as(
+            "SELECT proposal_id, context FROM structure_proposals WHERE kind = 'fact_forget'",
+        )
+        .fetch_all(&pool)
+        .await
+        .expect("read proposals");
+        assert_eq!(open.len(), 1, "one forget request, on the fact she named");
+        let context: serde_json::Value = serde_json::from_str(&open[0].1).expect("context json");
+        assert_eq!(context["fact_id"], planted.fact_id.as_str());
+        assert_eq!(context["requester"], "zoe");
+        assert_eq!(
+            context["eligible_voters"],
+            serde_json::json!(["alice"]),
+            "the one other person who can read it is asked — the electorate that was missing"
+        );
+
+        // And nothing is deleted yet: asking is not doing, which is what
+        // makes a turn the classifier read too eagerly cost a question
+        // instead of a deletion.
+        assert!(
+            fact_index::find_by_id(&pool, &planted.fact_id)
+                .await
+                .unwrap()
+                .expect("the row is still there")
+                .deleted_at
+                .is_none(),
+            "the fact stays until the window closes"
+        );
+        drop(dir);
+    }
+
+    /// The classifier's half: the flag that says the turn asked for the
+    /// sentence to be GONE, read off the wire.
+    #[test]
+    fn a_plan_carries_the_erasure_the_turn_asked_for() {
+        let erasing: LlmIngestPlan = serde_json::from_str(
+            "{\"intent\":\"capture\",\"withdrawal\":true,\"erasure\":true,\"extractions\":[]}",
+        )
+        .expect("plan");
+        assert!(erasing.erasure);
+
+        // A withdrawal that ends something without asking for it to be
+        // removed stays a withdrawal: «I have given up on the project» leaves
+        // the fact readable as history, and that is the point of the two
+        // flags being two.
+        let giving_up: LlmIngestPlan =
+            serde_json::from_str("{\"intent\":\"capture\",\"withdrawal\":true,\"extractions\":[]}")
+                .expect("plan");
+        assert!(giving_up.withdrawal);
+        assert!(!giving_up.erasure);
     }
 
     /// **A rule is dated by the turn that laid it down, not by the night the
