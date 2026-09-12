@@ -4,6 +4,10 @@
 
 **Every AI agent you use, remembering into one shared Markdown wiki. Every fact in it governed individually: who it's about, who said it, who may read it, and when it stops being true.**
 
+**[▸ Open the public demo · demo.contea.casa](https://demo.contea.casa)**
+
+One household's shared memory: three people, three assistants, 203 turns of conversation from 2 March to 18 July 2026, rebuilt by the engine and then frozen. Enter as **Bob**, **Alice** or **Zoe** with one click, on any page, and see what each of them may read. It is read-only: nothing you do changes it, nothing you click calls a model, and no agent can be attached to it. [The guided tour](#a-walk-through-the-demo) walks eight pages of it.
+
 [![License](https://img.shields.io/badge/license-AGPL--3.0-blue.svg)](#license)
 [![Rust](https://img.shields.io/badge/rust-1.88%2B-orange.svg?logo=rust)](rust-toolchain.toml)
 [![Edition](https://img.shields.io/badge/edition-2024-orange.svg)](Cargo.toml)
@@ -11,7 +15,7 @@
 [![CI](https://github.com/Fr4nZ82/mwe-mcp/actions/workflows/ci.yml/badge.svg)](.github/workflows/ci.yml)
 [![Release](https://img.shields.io/github/v/release/Fr4nZ82/mwe-mcp?label=release)](https://github.com/Fr4nZ82/mwe-mcp/releases/latest)
 
-[Why](#why-this-exists) · [The demo](#same-page-two-readers-two-answers) · [Quickstart](#quickstart) · [Where it fits](#where-this-fits) · [How it works](#how-it-works) · [Docs](#documentation)
+[Why](#why-this-exists) · [The demo](https://demo.contea.casa) · [The tour](#a-walk-through-the-demo) · [The idea, in one page](#same-page-two-readers-two-answers) · [Quickstart](#quickstart) · [Where it fits](#where-this-fits) · [How it works](#how-it-works) · [Docs](#documentation)
 
 </div>
 
@@ -60,6 +64,42 @@ She weighs [redacted] as of May 10, and just cut her hair.
 The built-in dashboard renders the same page the same way: reading it is decided by the fact's subject, audience and sender, not by whose wiki the page sits in, and the reader is told the view is declassified, never what was withheld.
 
 No permissions database bolted on top, no per-document walls. Visibility is enforced fragment by fragment, sentence by sentence. **This is the thing most agent memories simply cannot express.**
+
+**None of that is a diagram.** There is a frozen instance of exactly this at **[demo.contea.casa](https://demo.contea.casa)**, built by the engine out of four and a half months of one household talking to three different assistants. In it the group is called `renovation`, the kitchen rebuild, and Zoe was taken out of it on 5 June, six weeks after the tiler's quote was written down. Open [the kitchen trades page](https://demo.contea.casa/dashboard/wiki/renovation/view/kitchen_renovation_trades.md) as Bob and the £9,800 is there. Click *Zoe* in the bar at the top of the page you are already on, and the same paragraph comes back with that figure gone and the rest of it still reading. Nobody had to remember to hide it: her membership changed and the fact did not.
+
+## A walk through the demo
+
+Eight stops on the frozen instance at **[demo.contea.casa](https://demo.contea.casa)**. Every link below opens a real page there, and nothing on it can be changed: the instance is frozen.
+
+Each stop says who to be. The sign-in screen offers **Enter as Bob · Enter as Alice · Enter as Zoe**, and the same switch sits in the bar at the top of every page as **Look as:**, so changing identity costs one click and puts you back on the page you were reading. A link followed from cold passes through the sign-in screen and then lands on the page it named. Entering as one of them is not a preview mode: the session carries that person's own identity and role, and the memory answers exactly as it would for them. Bob is also the operator of this deployment, which is why one of the stops below has to be his.
+
+The cast is invented. Bob, Alice and Zoe share a house, Zoe is Alice's sister, Nora is Bob's mother and Sam a colleague of his, Marco is the tiler, Pepper is the cat. The three assistants are a speaker in the kitchen, a bot on the phones, and a coding agent on Bob's laptop. The three groups are `household`, all three of them; `parents`, the money and the family health; and `renovation`, the kitchen rebuild. Zoe joined `parents` on 10 May and left `renovation` on 5 June, and both changes were made in the identity console, with no fact edited and nothing re-indexed.
+
+**1 · One list, three readers, no copies.** *[The shopping list](https://demo.contea.casa/dashboard/wiki/household/view/shopping_list_to_buy.md) · as Bob, then Alice, then Zoe.*
+Nineteen rows still to buy. Switch identity twice on that page and the nineteen rows do not move: every one of them is about `group:household`, and all three are in it. The same holds for everything else the household owns: type `group:household` into **About** on the [Facts page](https://demo.contea.casa/dashboard/facts) and the same 73 rows come back whoever you are. There is one list, not three private copies somebody has to keep in step.
+
+**2 · Two values for one detail, and only one person can settle it.** *[The question waiting on Zoe](https://demo.contea.casa/dashboard/proposals/20c33831-5531-4c79-9668-f0bea8a6b8b7) · as Zoe.*
+On 24 June Zoe gave the memory her mobile number. Later Alice gave a different one for her. The memory did not pick, and it could not ask Alice either, because Alice may not read the number already on Zoe's card: it parked the new value and put the question to the one person entitled to answer it. The page shows both numbers, says why it stopped, and offers the three answers it will take.
+
+**3 · Forgetting is a vote when the fact is not only yours.** *[The forget request](https://demo.contea.casa/dashboard/proposals/2c086f6d-8be2-44a1-9d8a-951edf32d1d7) · as Alice.*
+Zoe asked the memory to forget that her contract was not renewed. She is who the fact is about, but she is not who put it there, and it is readable by more than her, so it is not hers to delete alone: the request became a ballot among the people who can read it, Alice and Bob. Silence consents, a majority of *no* blocks it, and the request is sitting on Alice until one or the other happens.
+
+**4 · A rule that changed address, and so changed which agents obey it.** *[Zoe's rules page](https://demo.contea.casa/dashboard/wiki/zoe/view/@rules.md) · as Zoe.*
+On 3 March Zoe told the kitchen speaker to keep it short. On 2 April she said she meant every assistant and not just that one, so the rule left that assistant and attached to her: it is on her own rules page now, and no longer on [the kitchen assistant's](https://demo.contea.casa/dashboard/wiki/kitchen/view/@rules.md). Nothing was deleted, and the [Facts page](https://demo.contea.casa/dashboard/facts) shows it: put `user:zoe` in **About**, tick *include facts that no longer hold*, and the old row is there, held from 3 March to 2 April, its **Wiki** the kitchen assistant's and its **Replaced by** naming the one that took over. Where a rule lives is what decides which agents obey it.
+
+**5 · One page, three readers, three versions of it.** *[The kitchen trades page](https://demo.contea.casa/dashboard/wiki/renovation/view/kitchen_renovation_trades.md) · as Alice, then Bob, then Zoe.*
+Twenty-three facts, the whole job from the first site visit to the final payment, and Alice reads every one. Bob is short two of them: Alice's own copy of the quotation, and her own note of the date by which she had to confirm the booking. Being the operator does not help him: the admin role opens consoles, not facts, and the reveal lens that would widen it is locked shut on this instance. Zoe is short thirteen, the tiler's £9,800 quote among them, and what she gets instead is `[redacted]` inside sentences that still read, with no note of what was withheld. One span survives her switch, the tile samples dropped round on 17 May, because she is the one who said it: whoever captured a fact always re-reads it.
+
+**6 · Four words in the margin, applied overnight.** *[The night that applied them](https://demo.contea.casa/dashboard/dream/runs/117) · as Bob.*
+The line about the tile samples used to say Matteo, because that is the name Zoe used and believing people is what memory does. Alice left four words against it in the margin of that same page, *this is wrong, the tiler is Marco not Matteo*, and the next night applied them. Run 117 prints that night's whole internal report; the block to find is `briefing_processor`, and it reads one note examined, one processed, one fact corrected, nothing added, moved or removed. The page has said Marco ever since, and the correction touched the claim and nothing around it.
+
+**7 · A question three pages could not close, and why that is the honest answer.** *[Recall trace 204](https://demo.contea.casa/dashboard/recall-traces/204) · as Zoe.*
+*Who was in the house when the plumber came?* Nobody ever said it in so many words. The trace replays the route: three pages opened, the plumber booked for Thursday 18 June at nine, the spare key kept at number 9, Zoe's own note of when she is home, and then a stop, because there was no further door worth opening. The missing piece is that Bob was away that week, and he said it as his own diary, so it is his and Zoe does not read it. Note what is also not there: not one line of those three pages came back redacted.
+
+**8 · Changes the turn asked for and did not get.** *[Recall trace 10](https://demo.contea.casa/dashboard/recall-traces/10) · as Alice.*
+On 7 March Alice said *Got everything on the list except the bin bags, they'd sold out.* The turn asked to tick the bin bags off with the rest of the shop, and the engine refused, because the message had named them as the exception. Scroll to **Changes it asked for and did not get** and read both refusals with the reason each was given. The bin bags stayed open until 28 March, which is the date they carry on [the completed list](https://demo.contea.casa/dashboard/wiki/household/view/past_shopping_trips.md).
+
+Everything the tour walks through is fiction: the household, the tiler, the kitchen. What is not fiction is the engine. It is the server this repository builds, and the memory is one it built for itself out of 203 ordinary conversation turns. Not a page of it was written by hand: the compiler owns the prose, which is why correcting a fact is stop 6 and not a text editor.
 
 ## What sets it apart
 
@@ -175,7 +215,7 @@ The agent talks to a small surface of **high-level** MCP tools grouped into fami
 | **H — Smart-wiki writes** | Authoritative writes for coding agents: push, pull, notify, cooperative leases. |
 | **I — Skill catalog** | Server-served operational instructions, etag-cached, pulled on demand instead of baked into a system prompt. |
 | **K — Smart bootstrap** | Smart-consumer session start and transversal recall. |
-| **L — Forget** | `wiki_forget`, `wiki_forget_bulk`: a person forgets their own facts outright; a request about somebody else's fact goes to a vote among its readers. |
+| **L — Forget** | `wiki_forget`, `wiki_forget_bulk`: what you said yourself you withdraw outright; a fact that is about you but was reported by somebody else takes a vote among the people who can read it. |
 
 The families are the stable, semver-governed surface. Exact tool counts may still grow within them across minor versions. Call `tools/list` for the deployment's real roster and each tool's full contract.
 
