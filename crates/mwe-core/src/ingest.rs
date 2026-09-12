@@ -578,7 +578,8 @@ pub struct IngestPolicy {
     /// sliding window ("keepTurns×2"). Older messages are dropped
     /// silently. The consumer owns the transcript and supplies the window via
     /// `IngestRequest.recent_messages`; this caps how much of it the prompt
-    /// carries.
+    /// carries — and, through [`window_shown`], how much of it every stage
+    /// that reasons about the window may read.
     pub max_recent_messages: usize,
     /// Per-message character cap before prompt injection (oldest
     /// trimmed first). Stops a runaway tail from blowing the prompt
@@ -1865,6 +1866,21 @@ pub(crate) fn body_names_user(
     })
 }
 
+/// The recent window AS THE PROMPT SHOWS IT: the last
+/// `policy.max_recent_messages` of whatever the consumer sent.
+///
+/// One copy, because everything that reasons about the window has to reason
+/// about the same messages the classifier was looking at. A guard that reads
+/// further back than the prompt does judges an answer against evidence the
+/// model never saw.
+fn window_shown<'a>(request: &'a IngestRequest, policy: &IngestPolicy) -> &'a [RecentMessage] {
+    let take_from = request
+        .recent_messages
+        .len()
+        .saturating_sub(policy.max_recent_messages);
+    &request.recent_messages[take_from..]
+}
+
 /// The words the turn is READ AGAINST: the current message, then the recent
 /// window the prompt showed alongside it, capped the same way the prompt caps
 /// it.
@@ -1877,11 +1893,7 @@ pub(crate) fn body_names_user(
 /// person's phone number ends up filed as another person's.
 fn turn_words(request: &IngestRequest, policy: &IngestPolicy) -> String {
     let mut words = request.text.clone();
-    let take_from = request
-        .recent_messages
-        .len()
-        .saturating_sub(policy.max_recent_messages);
-    for m in &request.recent_messages[take_from..] {
+    for m in window_shown(request, policy) {
         words.push('\n');
         words.push_str(&m.text);
     }
@@ -6869,11 +6881,7 @@ fn build_prompt(
     if request.recent_messages.is_empty() {
         out.push_str("  (none)\n");
     } else {
-        let take_from = request
-            .recent_messages
-            .len()
-            .saturating_sub(policy.max_recent_messages);
-        for m in &request.recent_messages[take_from..] {
+        for m in window_shown(request, policy) {
             out.push_str("  - role: ");
             out.push_str(m.role.as_str());
             if let Some(ts) = &m.timestamp {
@@ -11175,7 +11183,7 @@ pub async fn wiki_ingest_message(
                         body,
                         unit.slot_value,
                         &request.text,
-                        &request.recent_messages,
+                        window_shown(&request, policy),
                     )
                 {
                     tracing::warn!(
@@ -11239,6 +11247,7 @@ pub async fn wiki_ingest_message(
                 // when the user supersedes one the classifier was shown — but
                 // only the admin may revise an AGENT-WIDE rule (a non-admin's
                 // revision files at its own scope, leaving the floor intact).
+                //
                 // The rules channel is injected into every turn as policy in
                 // force, so what lands there is FOLLOWED, not merely
                 // remembered. A claim that tells the agent nothing to do does
@@ -15425,6 +15434,32 @@ mod tests {
                 &window(&["bob's kidney results came back today"]),
             ),
             "a name resolved from the conversation is the completion doing its job"
+        );
+
+        // A message further back than the prompt shows is not the window:
+        // the guard judges the answer against the same messages the model was
+        // looking at, and nothing else ([`window_shown`]).
+        let older_than_the_prompt = window(&[
+            "Alice's number is 07700 900275, that's the one I've got in my phone.",
+            "The painter's coming Monday for the walls.",
+        ]);
+        assert!(
+            lifted_from_the_window(
+                "Alice's mobile number is 07700 900275.",
+                Some("07700900275"),
+                morning,
+                &older_than_the_prompt,
+            ),
+            "inside the window it is caught"
+        );
+        assert!(
+            !lifted_from_the_window(
+                "Alice's mobile number is 07700 900275.",
+                Some("07700900275"),
+                morning,
+                &older_than_the_prompt[1..],
+            ),
+            "and out of it there is nothing to compare against"
         );
 
         // And a body copied out of an earlier message whole is caught even
