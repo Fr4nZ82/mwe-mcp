@@ -3647,14 +3647,17 @@ fn exception_clauses(text: &str) -> Vec<String> {
 /// «bin bags big» against «the bin bags, they'd sold out» matches on two of
 /// its three, and «coffee filters» on the same clause matches on none. A
 /// fraction and not every word, because the entry as stored carries the
-/// qualifiers a speaker drops — nobody says «the big bin bags» twice — and
-/// not one word, because a single shared noun would rule out half a shopping
-/// list.
+/// qualifiers a speaker drops — nobody says «the big bin bags» twice.
 ///
-/// It errs toward NOT closing, and that is the right direction: a missed
-/// closure comes back on the next turn, while an item ticked off because it
-/// shares a word with the one thing the speaker ruled out is the memory
-/// telling the household they bought something they did not.
+/// **On a short entry that fraction is one word, and a shared noun protects
+/// its neighbours.** «tranne il latte» holds back «latte di cocco» as well as
+/// «latte», because half of two words is one. That is the rule working, not
+/// the rule slipping: it errs toward NOT closing, and the two outcomes are
+/// not worth the same. An item left on a list is a tick the speaker adds next
+/// time, or the next turn does. An item ticked off because it shares a noun
+/// with the one thing they took the trouble to rule out is the memory telling
+/// the household they bought something they did not — and nothing downstream
+/// ever asks again.
 fn named_in_an_exception(claim: &str, clauses: &[String]) -> bool {
     let words = content_words(claim);
     if words.is_empty() {
@@ -16091,6 +16094,36 @@ mod tests {
         assert!(
             exception_clauses("The menopause clinic called about a minuscule detail.").is_empty(),
             "a marker inside a longer word is not a marker"
+        );
+    }
+
+    /// **A shared noun protects its neighbours, and that is the rule working.**
+    ///
+    /// Half the content words of a two-word entry is one, so «tranne il latte»
+    /// holds back «latte di cocco» too. The two outcomes are not worth the
+    /// same: an item left on a list is ticked next time, an item ticked off
+    /// because it shares a noun with the one thing the speaker ruled out is
+    /// the memory asserting a purchase that did not happen, and nothing ever
+    /// asks again.
+    #[test]
+    fn a_shared_noun_holds_back_the_neighbour_too() {
+        let clauses = exception_clauses("Ho preso tutto tranne il latte, era finito.");
+        assert!(
+            named_in_an_exception("latte", &clauses),
+            "the item the speaker ruled out"
+        );
+        assert!(
+            named_in_an_exception("latte di cocco", &clauses),
+            "and its neighbour with it: one of its two content words is the ruled-out noun, \
+             and a tick nobody earned costs more than a tick that waits"
+        );
+        assert!(
+            !named_in_an_exception("filtri del caffè", &clauses),
+            "an entry that shares nothing with the clause closes normally"
+        );
+        assert!(
+            !named_in_an_exception("latte di cocco", &exception_clauses("Ho preso tutto.")),
+            "and with no exception in the turn, nothing is held back"
         );
     }
 
