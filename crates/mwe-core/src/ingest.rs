@@ -3535,6 +3535,17 @@ const SHORTEST_TRAVELLING_VALUE: usize = 5;
 /// What is deliberately NOT looked for is a word the body shares with the
 /// window. Completing a fragment from the window is the feature: the NAME may
 /// come from two messages ago, and does. It is the value that may not.
+///
+/// **What this costs, said out loud.** The window carries no author, so a bare
+/// confirmation is indistinguishable from a claim lifted out of it: «yes,
+/// that's the one», after the assistant has read a number back, is dropped,
+/// while «yes, the number is 07700 900275» files. That is the trade taken
+/// knowingly and it is the cheap side of it. A value the ASSISTANT read back
+/// came out of the memory, so it is already in the memory and the drop costs
+/// nothing; a value it had picked up from the conversation is one the person
+/// says again in full the moment it matters. What the other choice costs is
+/// not recoverable at all — a fact filed under the wrong person, with the
+/// wrong author, and nothing anywhere saying where it came from.
 fn lifted_from_the_window(
     body: &str,
     slot_value: Option<&str>,

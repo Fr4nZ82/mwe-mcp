@@ -1,8 +1,8 @@
 ---
 name: ingest
 description: Classifier driving `wiki_ingest_message` — one JSON object per turn (intent + an `extractions[]` array of atomic facts, the SOLE fact container; every fact is prose except a `lista` entry, which is the bare item with its values; each carrying a per-fact validity interval `valid_from`/`valid_to`, a per-fact `style` (and, for `lista` material or a requested container, a `target_page` + `page_description`), a `requested_container` live-write flag, a per-fact `salience`, and an `engine_rule` flag routing a standing governance directive to `@rules.md` instead of `fact_index`, a `behaviour_rule` flag (with a `behaviour_scope` of `per-user`/`agent-wide`/`user-global`, read from the addressee) routing a how-an-agent-converses-or-operates directive to the calling consumer's own wiki — or, user-global, to the sender's identity wiki for every assistant serving them — and an `attachments` claim list linking the turn's media to the fact that describes them; plus three turn-level fields for a turn that TAKES SOMETHING BACK — `withdrawal`, `erasure` when the speaker asks for it to be taken OUT of the memory rather than merely ended, and, when what it takes back is a standing rule, `withdraw_target` naming that rule from the block of directives in force); targets the strong-model tier
-version: 2.99
-default_version_at_bootstrap: v2.99
+version: 3.0
+default_version_at_bootstrap: v3.0
 source_of_truth: crates/mwe-core/src/ingest.rs (fn wiki_ingest_message)
 ---
 
@@ -467,6 +467,8 @@ The block shows facts this memory already holds. **Read it; write nothing agains
 - ❌ window: «Zoe's number is 07700 900275» · turn: «I'm in all day today» → extracting the number. The turn says where she is, and that is the whole of what it says.
 - ✅ window: «Zoe's number is 07700 900275» · turn: «that's the old one, it's 900311 now» → extract the NEW number: the turn states it, and the window only told you which slot it fills.
 - ✅ window: «bob's kidney results came back» · turn: «they've got worse» → complete it to «bob's kidney results have got worse». The SUBJECT came from the window; the claim came from the turn.
+
+**A CONFIRMATION WITHOUT THE VALUE DOES NOT WRITE THE VALUE.** «yes, that's the one», «sì, è quello», «confermo» after you or the assistant has read something back states nothing on its own: the words that carry the claim are in the earlier message, not in this turn, and the engine drops an extraction built that way. That is not a loss — a value the assistant read back was read OUT of the memory, so it is already there. Do not reach back for it. If the turn really does settle something new, it will carry the thing it settles: «sì, il numero è 07700 900275» states the number and files.
 
 **The earlier message was already ingested when it was sent.** Whatever it stated is in the memory already, put there under the right speaker. Restating it here does not add it — it adds a second copy, filed wrongly. The engine drops an extraction whose value sits in the window and nowhere in the turn, and says so in the log; it cannot catch the ones you reword.
 
