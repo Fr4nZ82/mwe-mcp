@@ -9,51 +9,53 @@ From 1.0, the public interface — the MCP tool surface, family by family, as
 the dispatcher in `crates/mwe-mcp-server/src/mcp/` declares it — is a stable,
 semver-governed surface: breaking changes are called out explicitly.
 
-## Unreleased
+## 2.2.0 — 2026-09-12
 
-### Fixed
+This release is about the memory reading a **conversation** properly: what a
+sentence is, what it is allowed to change, and what it must never quietly take
+away.
 
-- **A note about a move quotes only the comment its reader left.** A page can
-  carry pending comments from several people, and one round of them can move
-  several facts belonging to several owners. Every note written about those
-  moves repeated the same line, built from **all** the comments on the page at
-  once — so each owner read what the others had asked for. Each note now quotes
-  its own reader's comments, and says only that a comment asked for the move
-  when they wrote none.
-- **A receipt goes to one person, and carries only that person's facts.** When
-  one turn closed, re-dated or re-shared several facts at once — which happens
-  whenever somebody tidies up things that were shared with them — the memory
-  wrote a single note, addressed it to whoever the first fact belonged to, and
-  put a hundred-and-twenty-character preview of **every** fact in it, plus the
-  sentence that had been typed. So one person could read the opening of another
-  person's fact, and what a third had said, in a note about their own. Now
-  there is one note per person, each carrying only their own facts, and the
-  sentence somebody typed reaches only them. The same held for the nightly
-  passes, and holds no longer.
-- **The people asked to vote on a forget request can now see it.** A request to
-  forget somebody's fact is put to everybody who can read that fact, and the
-  request itself was addressed only to whoever asked for the forget — so the
-  voters were told to go and vote and found nothing on the **Proposals** page,
-  nothing in the chat and nothing in the badge. Silence lets a forget through
-  after seven days, so this was a vote nobody could cast. They see it now, and
-  nobody else does.
-- **The chat and the Proposals page answer "what may I see" the same way.** The
-  chat handed any signed-in person the notes the nightly run addresses to
-  nobody, which the page keeps for the admin, and the badge counted rows the
-  page then withheld. All three read by one rule now.
+**A page can be found for what it is**, and not only for the words written on
+it: *"I'm off to the supermarket, can you write me the shopping list?"* reaches
+the page described as *"what the family still needs to buy"* instead of ten
+things about cooking, because every page now carries a line saying what it is
+for and that line is matched against what you asked.
 
-- **A read-only deployment can no longer be made to call a model.** The freeze
-  refused anything that would *change* something and let every read through on
-  the strength of its method, and four reads were spending real model calls
-  behind that rule: the two that open a proposal in the chat, the per-slot
-  reachability probe on the **Health** page — six calls, which that page starts
-  by itself as it paints, before anyone clicks anything — and the model listing
-  the **LLM** page fetches to fill its picker. On an instance shown to
-  strangers, with a passwordless door, that was somebody else's bill. Now every
-  route that can reach a model is refused there whatever its method, and says
-  which of the two reasons it was refused for. The pages that used to ask say
-  so plainly instead of showing a spinner that turns into an error. **Nothing
-  changes on an ordinary deployment.**
+An assistant can also be **told how to behave**, and the instruction stays an
+instruction. It is filed where the assistant reads it, it belongs to whoever
+gave it, how you phrased it decides whether it binds that one assistant or
+every assistant you talk to, only whoever gave it can take it back — by talking
+about the instruction and not by accident — and no unrelated remark two days
+later can wipe it out. **Lists read like lists**: a line is the thing itself with
+whatever you said about it — `latte 2`, `pane senza glutine` — and saying an
+item again with a new amount updates that line instead of adding a second one.
+And **a second value for something there can only be one of** — a birth date,
+an address, a phone number — is a question rather than a second line on the
+card; where the value on record is one you alone may read, the question comes
+to **you**, with both values in front of it.
+
+The memory also **refuses more than it did, out loud**. A correction cannot
+hand your fact to somebody else unless the message said so; a sentence about
+the calendar cannot replace a sentence about money; asking for something to be
+taken out opens a request the people who can read it may object to, instead of
+closing it in silence and telling you nothing; a shopping list is not ticked
+off entire because you said you had got everything *except the bin bags*; and
+where the memory cannot do one of the things a message asked, it now says which
+one and why.
+
+On the dashboard there are **two new screens**. **Proposals** lists everything
+the memory has proposed about your facts — the pages it made, the facts it
+merged or closed, the questions it is waiting on — without going through the
+chat, which is what lets a read-only instance be read at all. And a **search
+box in the top bar** finds the pages a word appears on, within what you are
+allowed to read. Both have their own page in the guide, behind the **?** beside
+the title. A link into a page now survives signing in, and a frozen instance
+can no longer be made to spend a model call by anybody who opens it.
+
+Five migrations, `0078` through `0082`, and no breaking change on the tool
+surface. One thing to know about the migrations: a fact already in your memory
+does not record which card detail it fills or what value it put there, so it
+takes no part in the new comparison until it is stated again.
 
 ### Added
 
@@ -70,61 +72,6 @@ semver-governed surface: breaking changes are called out explicitly.
   when a consumer searches the memory directly. Nothing is shown to anybody who
   could not already open the page, and on the **Traces** page such a door is
   listed as *the page says it is about this*.
-
-- **A card value nobody else may read can still be corrected, by the person it
-  belongs to.** Your identity card holds a handful of things there can only be
-  one of — when you were born, where you live, how to reach you — and when a
-  conversation states a different value for one of them the memory stops and
-  asks which is right. It could only ask somebody who was allowed to READ the
-  value already on record, because asking quotes it back to them. So a value
-  you had kept to yourself was invisible to that question, and a second one
-  filed quietly beside it: two numbers on one card, with neither you nor the
-  person who said it told anything at all.
-
-  The memory now compares the two itself, without a model and without reading
-  either value out. Nothing is written; **you** are asked, with both values,
-  because you are the one person entitled to see them both; and the person who
-  spoke is told only that what they said was not saved and that it has been
-  passed to you — not what is on record, and not which detail it was. If one
-  message does this about two people, both are named to them.
-
-  It compares the **values** and not the sentences around them, so «Zoe can be
-  reached on 07700 900314» and «Zoe's mobile number is 07700 900314.» are one
-  number said twice and nobody is asked anything. Which detail a fact fills is
-  named from a fixed list, so *birth date* and *birthday* cannot be two details
-  that never meet — in a memory kept in two languages they would have been
-  three. A card fact whose detail is not on that list records none and behaves
-  as every fact behaved before the list existed.
-
-  **Some of those details can honestly have more than one value** — a work
-  email beside a personal one, a mobile beside a landline, a second job, a
-  second nationality, two mother tongues — and a second value in one of them is
-  not a disagreement. Where the person speaking can see what is on the card,
-  nothing stops them and the assistant decides in the conversation. Where they
-  cannot, the question still goes to you, with a **third answer**: keep yours,
-  take theirs, or keep **both** — and on those details **both** is also what
-  happens if you never answer, because throwing away something true costs more
-  than carrying a line you can remove. On the details there can only be one of
-  — when you were born, where you live, who your mother is — nothing changes,
-  and silence still keeps what your card had.
-
-  Where the speaker may read the value the question reaches them as before —
-  and now it reaches them even when the classifier read the card and failed to
-  say the two disagreed, on those details there can only be one of and where
-  both values were written out plainly. Elsewhere the assistant decides, as it
-  did, because it has both values in front of it and the memory does not.
-
-  **Two people who disagree with the same card value are two questions**, each
-  carrying its own value; one person repeating themselves is still one. And
-  when a conversation is already asking you something else, a detail the
-  memory notices by itself does not displace that question: it goes to the
-  person whose card it is — and when that person is you, your assistant says
-  so and points you at the page where the question is waiting, instead of
-  telling you somebody else has been asked about your own record.
-
-  Facts written before this release do not record which detail they fill, or
-  what they put in it, so they take no part in the comparison until they are
-  stated again.
 
 - **A page for the proposals, so you can read them without asking the chat.**
   The memory keeps rearranging how your facts are filed — it makes a page for a
@@ -149,6 +96,7 @@ semver-governed surface: breaking changes are called out explicitly.
   nobody in particular, and Admin reveal shows every recipient's. Reachable
   from the top bar, from your home page, from the count on the admin's home,
   and with its own page in the guide behind the **?** beside its title.
+
 - **A search box, in the top bar, for the pages a word appears on.** There was
   no way to ask *where does this word appear* — you could read a page you had
   found some other way, or filter the facts table by who and when, but not by a
@@ -167,30 +115,75 @@ semver-governed surface: breaking changes are called out explicitly.
 
 ### Changed
 
-- **The same message delivered twice is acted on once.** An assistant that
-  loses its connection mid-request sends the message again, and a voice note
-  sometimes arrives transcribed twice. The memory already refused to store any
-  of it a second time, but it still worked out what the message meant all over
-  again to arrive at the decisions it had already made. It now hands those
-  decisions straight back — what it filed, what it could not do, what it asked
-  you — so the reply reaches you even when the first attempt died before
-  delivering it.
+- **A second value for a card detail is a question now, not a second line on
+  the card.** An identity card holds a handful of things there can only be one
+  of: when somebody was born, where they live, how to reach them. When a
+  conversation stated a *different* value for one of them, the memory wrote it
+  down beside the one already there and nothing downstream noticed — a child's
+  card ended up carrying two birth dates, five years apart, both live. Now
+  nothing is written until somebody has chosen.
 
-  **What it does again is read.** The memory is looked up afresh for the second
-  delivery: if a fact was forgotten, a rule withdrawn or a sharing narrowed in
-  the meantime, the second reply is built from the memory as it stands, not
-  from the one the first delivery saw. Ten minutes is long enough for any of
-  those, and handing back an old picture of your memory is not something a
-  retry should be able to cause.
+  **Where the person speaking may read what is on the card**, the assistant
+  asks in the same turn, quoting the value on record with who said it and when,
+  and stores only after the answer. Keep it and nothing changes; replace it and
+  the old value is retired, pointing at the new one.
 
-  Only the message you sent **last** is treated this way, and only for **ten
-  minutes**: say anything else in between, to any assistant, and the earlier
-  one is decided again for real. After the ten minutes, saying the same thing
-  again is a new message. The operator can change the window with
-  `recall.repeat_window_minutes` in `mwe-mcp.config.yaml` (`0` switches it off
-  and every delivery is treated as a new message). A repeat is marked as such
-  on the **Traces** page, so a reply that arrives twice can be told from a
-  message acted on twice.
+  **Where they may not** — it is somebody else's card, and they neither said
+  what is on it nor are the person it describes — the question goes to **the
+  person whose card it is**, as a proposal waiting in the dashboard, because
+  they are the one person entitled to see both values. What was said is held
+  aside meanwhile, read by nothing: the owner saying *it is wrong* retires the
+  stored value and releases those words onto the card, recorded as theirs; the
+  owner keeping their own value drops them, and so does the deadline passing.
+  Until then the card keeps what it had. The person who spoke is told only that
+  what they said was not saved and that it has been passed on — not what is on
+  record, and not which detail it was. If one message does this about two
+  people, both are named to them.
+
+  A value you had kept to yourself used to escape all of this, because asking
+  quotes the value back and the question could only be put to somebody allowed
+  to read it — so a second value filed quietly beside the first, with neither
+  you nor the person who spoke told anything at all. The memory now compares
+  the two itself, without a model and without reading either value out. It
+  compares the **values** and not the sentences around them, so *"Zoe can be
+  reached on 07700 900314"* and *"Zoe's mobile number is 07700 900314."* are one
+  number said twice and nobody is asked anything. And a disagreement the
+  assistant read straight past is still a disagreement: every card claim now
+  names the detail it fills and every card fact remembers the detail it fills,
+  so the engine runs the comparison itself — on the details there can only be
+  one of, and where both sides say plainly what the value is. A pair it cannot
+  be sure about is still left to the assistant, which has both values in front
+  of it. Which detail a fact fills is named from a fixed list, so *birth date*
+  and *birthday* cannot be two details that never meet — in a memory kept in
+  two languages they would have been three. A card fact whose detail is not on
+  that list records none and behaves as every fact behaved before the list
+  existed.
+
+  **Some of those details can honestly have more than one value** — a work
+  email beside a personal one, a mobile beside a landline, a second job, a
+  second nationality, two mother tongues — and a second value in one of them is
+  not a disagreement. Where the person speaking can see what is on the card,
+  nothing stops them and the assistant decides in the conversation. Where they
+  cannot, the question still goes to you, with a **third answer**: keep yours,
+  take theirs, or keep **both** — and on those details **both** is also what
+  happens if you never answer, because throwing away something true costs more
+  than carrying a line you can remove. On the details there can only be one of
+  — when you were born, where you live, who your mother is — nothing changes,
+  and silence still keeps what your card had.
+
+  **Two people who disagree with the same card value are two questions**, each
+  carrying its own value; one person repeating themselves is still one. And
+  when a conversation is already asking you something else, a detail the memory
+  notices by itself does not displace that question: it goes to the person
+  whose card it is — and when that person is you, your assistant says so and
+  points you at the page where the question is waiting, instead of telling you
+  somebody else has been asked about your own record. The engine also stops
+  turning an age into a birth date: *"he is about 14 in July"* is stored as an
+  age, not converted into a day nobody said.
+
+  Facts written before this release do not record which detail they fill, or
+  what they put in it, so they take no part in the comparison until they are
+  stated again.
 
 - **A list is a list again: its lines are items, not sentences.** Asking an
   assistant to put milk on the shopping list wrote *"Milk is needed."* on the
@@ -228,33 +221,38 @@ semver-governed surface: breaking changes are called out explicitly.
   you close or delete one from the **Facts** page. Only short lines update each
   other by name.
 
-- **A second birth date is a question now, not a second line on the card.**
-  An identity card holds a handful of things there can only be one of: when
-  somebody was born, where they live, how to reach them. When a conversation
-  stated a *different* value for one of them, the memory wrote it down beside
-  the one already there and nothing downstream noticed — a child's card ended
-  up carrying two birth dates, five years apart, both live. Now nothing is
-  written: the assistant asks which of the two is right, in the same turn,
-  quoting the value on record with who said it and when, and stores only after
-  the answer. Keep it and nothing changes; replace it and the old value is
-  retired, pointing at the new one. If the person asking is not entitled to
-  rewrite that value — it is somebody else's, and they neither said it nor are
-  it — the question goes to **the person whose card it is**, whoever happened
-  to state what is on it, as a proposal waiting in the dashboard. What they
-  said is held aside meanwhile, read by nothing: the owner saying *it is wrong*
-  retires the stored value and releases those words onto the card, recorded as
-  theirs; the owner keeping their own value drops them, and so does the
-  deadline passing. Until then the card keeps what it had. The same detail is
-  asked about once, however many times somebody restates it. No model ever
-  chooses between the two, and no value is lost in silence. The engine also
-  stops turning an age into a birth date: *«he is about 14 in July»* is stored
-  as an age, not converted into a day nobody said.
+- **The same message delivered twice is acted on once.** An assistant that
+  loses its connection mid-request sends the message again, and a voice note
+  sometimes arrives transcribed twice. The memory already refused to store any
+  of it a second time, but it still worked out what the message meant all over
+  again to arrive at the decisions it had already made. It now hands those
+  decisions straight back — what it filed, what it could not do, what it asked
+  you — so the reply reaches you even when the first attempt died before
+  delivering it.
+
+  **What it does again is read.** The memory is looked up afresh for the second
+  delivery: if a fact was forgotten, a rule withdrawn or a sharing narrowed in
+  the meantime, the second reply is built from the memory as it stands, not
+  from the one the first delivery saw. Ten minutes is long enough for any of
+  those, and handing back an old picture of your memory is not something a
+  retry should be able to cause.
+
+  Only the message you sent **last** is treated this way, and only for **ten
+  minutes**: say anything else in between, to any assistant, and the earlier
+  one is decided again for real. After the ten minutes, saying the same thing
+  again is a new message. The operator can change the window with
+  `recall.repeat_window_minutes` in `mwe-mcp.config.yaml` (`0` switches it off
+  and every delivery is treated as a new message). A repeat is marked as such
+  on the **Traces** page, so a reply that arrives twice can be told from a
+  message acted on twice.
+
 - **Traces shows what the last step of a turn was asked, and what it answered.**
   One call at the end of every turn decides whether the message retires,
   replaces, re-dates or re-shares something already stored — the only call that
   can take a fact away — and it was the one step of the route that left no
   record. The **Traces** page now shows the facts it was given and its answer,
   word for word.
+
 - **Traces shows only the recalls a person was actually given.** When an
   assistant answers, its reply is sent back to the memory so that the memory
   keeps the assistant's half of the conversation as well as yours. That second
@@ -271,8 +269,8 @@ semver-governed surface: breaking changes are called out explicitly.
 ### Fixed
 
 - **A rule you set the assistant cannot be wiped out by an unrelated remark.**
-  A standing instruction — *«keep it short with me»*, *«never bring up my
-  mother's health»* — lives apart from ordinary facts, and every part of the
+  A standing instruction — *"keep it short with me"*, *"never bring up my
+  mother's health"* — lives apart from ordinary facts, and every part of the
   engine leaves it alone except the one step that decides what a message
   retires. That step was being shown the rules alongside everything else, so a
   passing sentence about dinner, two days later and from the same person, could
@@ -281,8 +279,8 @@ semver-governed surface: breaking changes are called out explicitly.
   widen it had nothing left to widen.
 
   **What you can do to an instruction, from now on, you do by talking about
-  the instruction.** Take one back by saying so — *«forget the rule about
-  keeping it short»* — and it stops applying and its page says when it stopped,
+  the instruction.** Take one back by saying so — *"forget the rule about
+  keeping it short"* — and it stops applying and its page says when it stopped,
   so what is written there is still the list of what binds the assistant. It
   has to be yours to take back: an instruction belongs to whoever gave it, and
   one that applies to everybody on an assistant belongs to the administrator,
@@ -297,8 +295,8 @@ semver-governed surface: breaking changes are called out explicitly.
   message adjusts by accident.
 
 - **Telling the assistant how you want to be treated is a rule now, not a note
-  on your card.** *«I'd like the summaries as a voice message»*, *«answers for
-  me have to be short»* — phrased that way, those were being filed as a taste
+  on your card.** *"I'd like the summaries as a voice message"*, *"answers for
+  me have to be short"* — phrased that way, those were being filed as a taste
   of yours, a line on your identity card next to your phone number and what you
   do not eat. To a person the two read alike; they are not alike. Nobody can
   act on a taste, so an instruction filed as one was never handed to the
@@ -306,33 +304,36 @@ semver-governed surface: breaking changes are called out explicitly.
   place, and did not go away when you asked it to stop. The dividing line is
   whether the sentence only comes true if the assistant behaves differently. If
   it does, it is an instruction. If it stays true with no assistant in the room
-  — *«I prefer tea»*, *«I avoid the oven in hot weather»* — it is a fact about
+  — *"I prefer tea"*, *"I avoid the oven in hot weather"* — it is a fact about
   you, and nothing about it changes.
 
   **And how you phrase it decides who it binds.** Say it to the assistant in
-  front of you — *«answer me in audio»*, *«call me Franz»* — and it stays with
+  front of you — *"answer me in audio"*, *"call me Frodo"* — and it stays with
   that assistant, the one you were speaking to. Say it about yourself, without
-  telling anyone in particular to do it — *«I'd like the answers in audio»* —
+  telling anyone in particular to do it — *"I'd like the answers in audio"* —
   and it is yours: it travels with you, and every assistant you talk to applies
   it. Until now an instruction stayed with whichever assistant happened to hear
-  it unless you spelled out «every assistant», which is not how anybody speaks.
-  Drawing the line yourself still works and still wins: *«qui le risposte le
-  voglio brevi»* stays with the assistant you said it to. Widening one **moves**
-  it rather than adding a second: the narrower copy sitting on the assistant
-  you first said it to is retired, so no assistant ends up reading the same
-  instruction twice. That holds whichever road the widening came by — your own
-  words, or an administrator setting it for you from the operator chat.
+  it unless you spelled out "every assistant", which is not how anybody speaks.
+  Drawing the line yourself still works and still wins: *"in here I want the
+  answers short"* stays with the assistant you said it to. Widening one
+  **moves** it rather than adding a second: the narrower copy sitting on the
+  assistant you first said it to is retired, so no assistant ends up reading
+  the same instruction twice. That holds whichever road the widening came by —
+  your own words, or an administrator setting it for you from the operator
+  chat. And a rule you set about **yourself** is yours to set: one of them was
+  now and then read as a rule about somebody else and refused, which told you
+  that you may not set rules about other people — about your own.
 
   **You cannot set a rule about how somebody else is treated by talking to the
-  assistant, and now you are told so.** *«Leggi a voce alta tutte le risposte
-  che mandi a Bob»* is a rule about Bob, and no conversation sets one —
-  instructions are filed under whoever gives them, so this would have ended up
-  applying to you and never to Bob. It used to be read as a rule for everybody
-  and refused with *«only the administrator can do that»*, which was an answer
-  about a rule nobody had asked for. Now the answer is the true one: a rule
-  about another person is not yours to set, Bob saying it about himself works
-  as it always did, and an administrator can set one for him from the
-  dashboard's operator chat.
+  assistant, and now you are told so.** *"Read aloud every reply you send to
+  Bob"* is a rule about Bob, and no conversation sets one — instructions are
+  filed under whoever gives them, so this would have ended up applying to you
+  and never to Bob. It used to be read as a rule for everybody and refused with
+  *"only the administrator can do that"*, which was an answer about a rule
+  nobody had asked for. Now the answer is the true one: a rule about another
+  person is not yours to set, Bob saying it about himself works as it always
+  did, and an administrator can set one for him from the dashboard's operator
+  chat.
 
   **And that chat can now do it.** *"Read aloud every reply you send to Bob"*,
   said to the operator chat by an administrator, sets a standing rule for one
@@ -340,24 +341,122 @@ semver-governed surface: breaking changes are called out explicitly.
   to or one you name, and the rule itself. It is the only road there is, which
   is why it exists. Written down in the guide, under **The chat**.
 
+- **The page that holds what binds the assistant holds nothing else.** A rule
+  is not remembered, it is followed: the page it lives on is handed to the
+  assistant every turn as policy in force. So anything that landed there was
+  obeyed, and two things had landed there that were not instructions at all —
+  an occasion somebody cooked a meal on, filed as policy, and a half-finished
+  note the model had left for itself and then read back as a standing directive
+  every turn since. Only what binds the assistant goes on that page now. A rule
+  is also dated by the turn that laid it down rather than by the moment it was
+  written, which is what makes *"from next Monday"* mean the Monday after you
+  said it when a backlog of messages is caught up days later.
+
+- **Asking for something to be taken out opens a request, and you are told what
+  happened.** *"That thing about my contract not being renewed — I don't want
+  that in here any more."* The memory read it as you saying the claim had
+  stopped holding, stamped it closed, and left the sentence sitting on your
+  page word for word, with nobody asked anything. Closing is the right answer
+  to *"I have given up on the project"* and is the opposite of what that turn
+  asked for. The two are now two gestures. Asking to be rid of something opens
+  a **forget request** to everybody who can read it, which is the machinery the
+  dashboard already had and which a conversation had no way into: it asks
+  rather than acts, so the people it was shared with get a window to object and
+  a sentence read too eagerly costs a question instead of a deletion. You ask
+  as yourself and never as an administrator, because a conversation is not the
+  dashboard. Where the words are **your own** the request cannot be put — your
+  own contribution is yours to delete outright, and the memory will not delete
+  on one reading of one sentence — so the assistant is now told to say exactly
+  that and to offer to remove it for good, instead of the whole thing ending in
+  silence that left you believing it had gone.
+
+- **A correction cannot hand your fact to somebody else unless the message said
+  so.** Two sentences can fill the same box on two different cards — *"Alice's
+  number is …"* beside *"Bob's number is …"* — and the memory was allowed to
+  treat the second as replacing the first, which deletes a phone number nobody
+  withdrew. Moving a fact from one person to another is now a separate act with
+  a separate bar: the message has to say it. *"Actually it's Bob who's going to
+  the dentist on Thursday"* corrects who the appointment was about and the old
+  fact has to go; *"Alice pays the bill"* restated as *"the parents pay the
+  bill"* does not, because it widens who may read it as well as who answers for
+  it, and that is a change of sharing, not a replacement. Person to group,
+  group to person and group to group are refused, each under its own reason on
+  the **Traces** page.
+
+- **And a replacement has to be about the same thing.** *"The ceiling budget
+  for the kitchen is such-and-such"* was being retired by *"the kitchen design
+  is finalised; the project now moves to trades and scheduling"* — which
+  probably does end the budget's life, by **finishing** it, and that is a
+  closure that leaves the budget readable with the day it stopped. It is not a
+  new value for it, and the memory was left holding a budget that pointed at a
+  successor never mentioning one. Two facts are now admitted as a pair only
+  when something says they fill one box, and sharing the subject of a whole
+  wiki is not enough on its own.
+
 - **A message that goes wrong in two ways is now reported in both.** One
   message can lose an item off a list *and* say something about somebody
   else's card, and only the first of those reached you: the other went
   unmentioned, so an item you believed was on your list was not there. Every
   one of these notices is now said, one sentence each.
+
+- **And a list item that could not be filed says which of the three reasons.**
+  An item was refused with a notice saying the memory already held the maximum
+  number of lists. It held one; the ceiling is thirty-two. Three different
+  things end in *this item has no page to go on* and the code read them as two,
+  so the commonest of them — the assistant naming no page at all — came back
+  under the name of the rarest. Each now says which it was, and none of them
+  promises the item is being held somewhere for later.
+
 - **Four kinds of sentence the memory was letting go past it.** A rule you lay
-  down for the assistant (*«keep it short with me»*), a preference or a
-  position you take in a discussion that is still open (*«I'd take the hybrid
-  instead»*), taking back something you said yourself in favour of somebody
-  else's version (*«you were right, close mine»*), and a plain statement about
-  somebody the memory has never heard of (*«Sam is taking over the
-  releases»*) were all read as small talk, or — the last one — as a question
+  down for the assistant (*"keep it short with me"*), a preference or a
+  position you take in a discussion that is still open (*"I'd take the hybrid
+  instead"*), taking back something you said yourself in favour of somebody
+  else's version (*"you were right, close mine"*), and a plain statement about
+  somebody the memory has never heard of (*"Sam is taking over the
+  releases"*) were all read as small talk, or — the last one — as a question
   about a name, and nothing was kept. Each of the four is now named for what
   it is, so the rule is filed where the assistant reads it, the two opposing
   positions stand side by side with who said each, the withdrawn claim is
   closed, and the person outside the address book gets their fact. The
   sentences that must still pass without a trace pass unchanged: a thank-you,
   an instruction meant for this reply only, and a question about a name.
+
+- **Saying you got everything *except* one thing no longer ticks that one off.**
+  *"Got everything on the list except the bin bags, they'd sold out"* is one
+  sentence carrying two instructions, and the memory acted on the first and
+  read straight past the second: five things marked bought, the bin bags among
+  them, with the date. The exception is in your own words and is now read as
+  one, so the thing you took the trouble to say you had **not** got stays on
+  the list.
+
+- **A fact never stops holding before it started.** Nothing that closes a fact
+  takes the closing date from the fact itself — a replacement takes it from the
+  sentence replacing it, a nightly merge from the fact it merged into — and
+  none of those has to fall after the thing it lands on. On a backlog of older
+  messages caught up later it routinely did not: eggs put on a shopping list on
+  5 April, ticked *bought on 25 March*. A date that would end a fact before its
+  own beginning is now refused on every road that writes one.
+
+- **A bare day of the month lands in the month that was meant.** *"Carol's
+  birthday is on the 14th"*, said in April, was stored as 14 May — a month
+  nothing in the sentence pointed at — while the same bare day two days later
+  came out as April. What the date is *for* decides it now: something that
+  happens once, an appointment or a payment or a deadline, really does take its
+  month from when you said it, forward or back with the tense; an anniversary
+  happens every year, so there is no next one to find and the month is simply
+  missing rather than guessed.
+
+- **What you said in this turn is not confused with what somebody said in the
+  last one.** An assistant sends the last few messages along so that a sentence
+  which does not stand on its own can be understood. Shown eight messages and
+  asked what *this* one states, a model would now and then answer with what one
+  of the other eight stated: one evening somebody gave another person's phone
+  number, and the next morning that other person said *"I'm in all day"* and
+  the turn came back carrying her number as something she had just said about
+  herself. The recent conversation is what a turn is read **against**, never a
+  source of what it says, and the guard that enforces it reads exactly the
+  messages the model was shown — no more, so nothing is dropped over a message
+  it never saw.
 
 - **A fact about a pet, a tradesman or anyone else without an account.** When
   the memory was told something about somebody it has no account for, it
@@ -383,9 +482,11 @@ semver-governed surface: breaking changes are called out explicitly.
   the same thing is deliberately filed under a word already in use. One memory
   ended up with the same idea under two words in two languages, which is
   exactly what the second word is meant to prevent. The instruction now covers
-  every word written for a person to read, labels included. Nothing changes for
-  a memory whose language was already being followed: the language is still the
-  one on the person's account, set where it always was.
+  every word written for a person to read, labels included, and it is the last
+  thing the writer reads before it writes a page, so a page cannot come out in
+  a language nobody on it speaks. Nothing changes for a memory whose language
+  was already being followed: the language is still the one on the person's
+  account, set where it always was.
 
 - **A page no longer looks as though it repeats its own opening.** When the
   writer leaves a fact out of the prose, the engine adds it back at the end so
@@ -396,6 +497,60 @@ semver-governed surface: breaking changes are called out explicitly.
   rule, plainly not part of the narrative, and the writer is told what leaving
   a fact untagged costs.
 
+- **A page the nightly run moves stays where it was moved to.** Moving a page
+  into another wiki left the record of where it lives naming the wiki it had
+  just left, and the rebuild that closes the same night reads that record — so
+  the move was undone within the hour it was made. A page is also followed by
+  its own record now and not by a namesake's: two wikis can hold a page of the
+  same name, and moving one of them was repointing whichever of the two the
+  name found first, which left a page nobody had touched recorded as living
+  somewhere it did not.
+
+- **A note about a move quotes only the comment its reader left.** A page can
+  carry pending comments from several people, and one round of them can move
+  several facts belonging to several owners. Every note written about those
+  moves repeated the same line, built from **all** the comments on the page at
+  once — so each owner read what the others had asked for. Each note now quotes
+  its own reader's comments, and says only that a comment asked for the move
+  when they wrote none.
+
+- **A receipt goes to one person, and carries only that person's facts.** When
+  one turn closed, re-dated or re-shared several facts at once — which happens
+  whenever somebody tidies up things that were shared with them — the memory
+  wrote a single note, addressed it to whoever the first fact belonged to, and
+  put a hundred-and-twenty-character preview of **every** fact in it, plus the
+  sentence that had been typed. So one person could read the opening of another
+  person's fact, and what a third had said, in a note about their own. Now
+  there is one note per person, each carrying only their own facts, and the
+  sentence somebody typed reaches only them. The same held for the nightly
+  passes, and holds no longer.
+
+- **The people asked to vote on a forget request can now see it.** A request to
+  forget somebody's fact is put to everybody who can read that fact, and the
+  request itself was addressed only to whoever asked for the forget — so the
+  voters were told to go and vote and found nothing on the **Proposals** page,
+  nothing in the chat and nothing in the badge. Silence lets a forget through
+  after seven days, so this was a vote nobody could cast. They see it now, and
+  nobody else does.
+
+- **The chat and the Proposals page answer "what may I see" the same way.** The
+  chat handed any signed-in person the notes the nightly run addresses to
+  nobody, which the page keeps for the admin, and the badge counted rows the
+  page then withheld. All three read by one rule now.
+
+- **A read-only deployment can no longer be made to call a model.** The freeze
+  refused anything that would *change* something and let every read through on
+  the strength of its method, and four reads were spending real model calls
+  behind that rule: the two that open a proposal in the chat, the probe on the
+  **Health** page that checks each of the six model slots answers — six calls,
+  which that page starts by itself as it paints, before anyone clicks anything
+  — and the model listing the **LLM** page fetches to fill its picker. On an
+  instance shown to strangers, with a passwordless door, that was somebody
+  else's bill. Now every route that can reach a model is refused there
+  whatever its method, and says which of the two reasons it was refused for.
+  The pages that used to ask say so plainly instead of showing a spinner that
+  turns into an error. **Nothing changes on an ordinary deployment.**
+
 - **A new release shows its new dashboard at once.** The stylesheet and the
   scripts the dashboard embeds are asked for at an address that carries a
   fingerprint of the file's own content, so a build that changes one of them
@@ -404,6 +559,18 @@ semver-governed surface: breaking changes are called out explicitly.
   is read from the copy already on the machine. The dashboard now also tells
   browsers they may keep any of these files for a year, which is safe exactly
   because a changed file arrives under a different address.
+
+- **A link to a page takes you to that page, even when you have to sign in
+  first.** Following a link into a page of a memory you are not signed in for
+  put you on the sign-in screen, which is right, and then — whichever way you
+  signed in — on the panel home, which is not: the page you had asked for was
+  forgotten between the two, and nothing on the screen said so. It now travels
+  with you, so signing in finishes the journey the link started. On a shown
+  instance, where signing in is one click on *Enter as…*, the same is true of
+  the buttons: they carry the page, and the visitor lands on it as the person
+  they picked. This is what makes a link into a demonstration — from a tour, a
+  README, a post — a link to what it promised rather than to a panel that
+  explains nothing.
 
 - **The ready-made assistant remembers what it just answered.** On the nanoclaw
   bridge the agent's own reply was read back out of the text the provider hands
@@ -432,18 +599,6 @@ semver-governed surface: breaking changes are called out explicitly.
   the reply enters the recent conversation the moment the person receives it,
   and the conversation goes in front of every turn whether the memory answered
   or not — the memory is told afterwards and may take as long as it needs.
-
-- **A link to a page takes you to that page, even when you have to sign in
-  first.** Following a link into a page of a memory you are not signed in for
-  put you on the sign-in screen, which is right, and then — whichever way you
-  signed in — on the panel home, which is not: the page you had asked for was
-  forgotten between the two, and nothing on the screen said so. It now travels
-  with you, so signing in finishes the journey the link started. On a shown
-  instance, where signing in is one click on *Enter as…*, the same is true of
-  the buttons: they carry the page, and the visitor lands on it as the person
-  they picked. This is what makes a link into a demonstration — from a tour, a
-  README, a post — a link to what it promised rather than to a panel that
-  explains nothing.
 
 ## 2.1.0 — 2026-09-08
 

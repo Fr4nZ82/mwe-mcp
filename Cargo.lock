@@ -2449,7 +2449,7 @@ dependencies = [
 
 [[package]]
 name = "mwe-core"
-version = "2.1.0"
+version = "2.2.0"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -2488,7 +2488,7 @@ dependencies = [
 
 [[package]]
 name = "mwe-dashboard"
-version = "2.1.0"
+version = "2.2.0"
 dependencies = [
  "anyhow",
  "argon2",
@@ -2529,7 +2529,7 @@ dependencies = [
 
 [[package]]
 name = "mwe-mcp-server"
-version = "2.1.0"
+version = "2.2.0"
 dependencies = [
  "anyhow",
  "axum",
@@ -2560,7 +2560,7 @@ dependencies = [
 
 [[package]]
 name = "mwe-mcp-tray"
-version = "2.1.0"
+version = "2.2.0"
 dependencies = [
  "anyhow",
  "ksni",
