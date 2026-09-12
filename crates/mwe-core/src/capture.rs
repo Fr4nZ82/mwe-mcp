@@ -88,6 +88,15 @@ pub enum CaptureError {
     #[error("capture body must not contain literal {{{{ or }}}} (markers are managed by mwe-mcp)")]
     BodyContainsMarker,
 
+    /// A standing directive carrying a `[…]` placeholder — a note the writer
+    /// left for themselves, not an instruction the agent can follow. The
+    /// rules channel is read back to the model on every turn, so a sentence
+    /// that asks for the rest of itself is obeyed as though it were whole.
+    #[error(
+        "a standing directive must not carry a [placeholder]: it is a note, not an instruction"
+    )]
+    RuleIsAPlaceholder,
+
     /// Page path failed [`is_safe_page_path`]. Wraps the offending
     /// path so the caller can echo it back to the agent.
     #[error("capture page path {path:?} is not safe inside a wiki")]

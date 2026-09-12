@@ -3266,6 +3266,197 @@ impl ClosurePlanError {
     }
 }
 
+/// Words that make a sentence BIND: an order, an obligation, a standing
+/// preference.
+///
+/// Listed here because the list is the rule, like [`EXCEPTION_MARKERS`], and
+/// generous on purpose — it is only ever asked about a sentence that already
+/// carries a calendar date, and the cost of missing a phrasing is a rule filed
+/// as an ordinary fact instead. Both languages, and both the bare imperative
+/// and the polite form, because a person laying down a rule uses whichever
+/// comes to hand.
+const DIRECTIVE_MARKERS: &[&str] = &[
+    // English
+    "must",
+    "should",
+    "shall",
+    "always",
+    "never",
+    "do not",
+    "don't",
+    "avoid",
+    "keep",
+    "prefer",
+    "prefers",
+    "please",
+    "use",
+    "answer",
+    "reply",
+    "respond",
+    "ask",
+    "tell",
+    "say",
+    "write",
+    "speak",
+    "call me",
+    "remember",
+    "remind",
+    "make sure",
+    "stop",
+    "limit",
+    "treat",
+    "address me",
+    // Italian
+    "devi",
+    "deve",
+    "dovresti",
+    "sempre",
+    "mai",
+    "non",
+    "evita",
+    "evitare",
+    "tieni",
+    "tenere",
+    "preferisco",
+    "preferisce",
+    "per favore",
+    "usa",
+    "usare",
+    "rispondi",
+    "rispondere",
+    "chiedi",
+    "chiedere",
+    "dimmi",
+    "dirmi",
+    "parlami",
+    "parla",
+    "scrivi",
+    "ricorda",
+    "ricordati",
+    "smetti",
+    "chiamami",
+    "trattami",
+    "dammi",
+    "mandami",
+    "limita",
+];
+
+/// Whether the slice `lower[at..after]` stands on its own rather than inside a
+/// longer word — «minus» in «minuscule», «meno» in «menopausa», «use» in
+/// «because».
+///
+/// One copy, because the two readers of a marker list ask this same question
+/// and a second spelling of it would drift.
+fn stands_alone(lower: &str, at: usize, after: usize) -> bool {
+    lower[..at]
+        .chars()
+        .next_back()
+        .is_none_or(|c| !c.is_alphanumeric())
+        && lower[after..]
+            .chars()
+            .next()
+            .is_none_or(|c| !c.is_alphanumeric())
+}
+
+/// Whether `text` contains one of `markers` as a whole word or phrase.
+fn names_one_of(text: &str, markers: &[&str]) -> bool {
+    let lower = text.to_lowercase();
+    markers.iter().any(|marker| {
+        let mut from = 0usize;
+        while let Some(found) = lower[from..].find(marker) {
+            let at = from + found;
+            let after = at + marker.len();
+            if stands_alone(&lower, at, after) {
+                return true;
+            }
+            from = after;
+        }
+        false
+    })
+}
+
+/// Month names, both languages, as the other half of «this sentence names a
+/// day».
+const MONTH_NAMES: &[&str] = &[
+    "january",
+    "february",
+    "march",
+    "april",
+    "may",
+    "june",
+    "july",
+    "august",
+    "september",
+    "october",
+    "november",
+    "december",
+    "gennaio",
+    "febbraio",
+    "marzo",
+    "aprile",
+    "maggio",
+    "giugno",
+    "luglio",
+    "agosto",
+    "settembre",
+    "ottobre",
+    "novembre",
+    "dicembre",
+];
+
+/// Whether the text names a day on the calendar: a month, or a year written
+/// out.
+fn names_a_calendar_day(text: &str) -> bool {
+    names_one_of(text, MONTH_NAMES)
+        || text
+            .split(|c: char| !c.is_ascii_digit())
+            .any(|t| t.len() == 4 && (t.starts_with("19") || t.starts_with("20")))
+}
+
+/// Whether the text carries a `[…]` placeholder — a span in square brackets
+/// with words in it.
+///
+/// The model writing a note to itself where the instruction should be: *«the
+/// reasoning: [to be completed by the user in dialogue]»*, which sat on a
+/// rules page of the September demo and was read back to the agent every turn
+/// as a standing directive.
+fn carries_a_placeholder(text: &str) -> bool {
+    let mut rest = text;
+    while let Some(open) = rest.find('[') {
+        let after = &rest[open + 1..];
+        if let Some(close) = after.find(']') {
+            if after[..close].chars().any(char::is_alphabetic) {
+                return true;
+            }
+            rest = &after[close + 1..];
+        } else {
+            return false;
+        }
+    }
+    false
+}
+
+/// Whether this text BINDS the agent — whether, read back on every turn, it
+/// tells the agent something to do.
+///
+/// The rules channel is not a second memory: what lands there is injected into
+/// every turn as policy in force, so a sentence that is not an instruction is
+/// still obeyed as one. The September demo put *«Alice cooked the first proper
+/// meal in the new kitchen on 13 July 2026»* on a kitchen's rules page, where
+/// it is a lovely thing to remember and a nonsense thing to follow.
+///
+/// The test is deliberately narrow, because the expensive mistake here is the
+/// other one: refusing a rule somebody really did lay down leaves the agent
+/// ignoring them, and a rule is written in whatever words came to hand
+/// («parlami in modo informale», «short answers please»). So only one shape is
+/// refused — a sentence that NAMES A DAY and tells the agent nothing to do. A
+/// dated rule is perfectly ordinary («keep answers short this week, I'm on a
+/// bad connection») and passes on its verb; an undated sentence is left alone
+/// entirely, whatever its grammar.
+fn stands_as_a_directive(text: &str) -> bool {
+    !names_a_calendar_day(text) || names_one_of(text, DIRECTIVE_MARKERS)
+}
+
 /// One piece of text reduced to the run of letters and digits inside it,
 /// lowercased.
 ///
@@ -3407,17 +3598,7 @@ fn exception_clauses(text: &str) -> Vec<String> {
         let mut from = 0usize;
         while let Some(found) = lower[from..].find(marker) {
             let after = from + found + marker.len();
-            // A marker inside a longer word is not a marker: «minus» in
-            // «minuscule», «meno» in «menopausa».
-            let boundary_before = lower[..from + found]
-                .chars()
-                .next_back()
-                .is_none_or(|c| !c.is_alphanumeric());
-            let boundary_after = lower[after..]
-                .chars()
-                .next()
-                .is_none_or(|c| !c.is_alphanumeric());
-            if boundary_before && boundary_after {
+            if stands_alone(&lower, from + found, after) {
                 let end = lower[after..]
                     .find(['.', '!', '?', ';', '\n'])
                     .map_or(lower.len(), |i| after + i);
@@ -7309,7 +7490,9 @@ async fn capture_behaviour_rule(
 ///
 /// # Errors
 ///
-/// As [`capture::wiki_capture`] / [`capture::wiki_supersede`].
+/// [`capture::CaptureError::RuleIsAPlaceholder`] when the text carries a `[…]`
+/// placeholder instead of an instruction; otherwise as
+/// [`capture::wiki_capture`] / [`capture::wiki_supersede`].
 pub async fn file_behaviour_rule(
     tree: &WikiTree,
     pool: &SqlitePool,
@@ -7320,6 +7503,21 @@ pub async fn file_behaviour_rule(
     rule: &str,
     supersede: Option<(&FactId, chrono::DateTime<chrono::Utc>)>,
 ) -> crate::capture::Result<crate::capture::CaptureOutcome> {
+    // A directive that asks for the rest of itself is a note the writer left
+    // for themselves, and the rules page is the one place a note like that is
+    // read back as policy every turn. The ingest road drops such an extraction
+    // before it gets here, so what this catches is the operator chat, where
+    // the answer a person needs is an error rather than a silent nothing —
+    // and any road added later, which is the point of putting it in the
+    // chokepoint.
+    if carries_a_placeholder(rule) {
+        tracing::warn!(
+            rule,
+            wiki_id = home.as_str(),
+            "ingest: a standing directive carries a [placeholder] — refused"
+        );
+        return Err(crate::capture::CaptureError::RuleIsAPlaceholder);
+    }
     let page_description = match scope {
         BehaviourScope::PerUser => {
             "How this agent should behave, per requesting user (per-user \
@@ -10917,7 +11115,37 @@ pub async fn wiki_ingest_message(
                 // when the user supersedes one the classifier was shown — but
                 // only the admin may revise an AGENT-WIDE rule (a non-admin's
                 // revision files at its own scope, leaving the floor intact).
-                if unit.behaviour_rule {
+                // The rules channel is injected into every turn as policy in
+                // force, so what lands there is FOLLOWED, not merely
+                // remembered. A claim that tells the agent nothing to do does
+                // not belong on it — and it is a perfectly good fact, so it
+                // takes the ordinary road instead of being lost
+                // ([`stands_as_a_directive`]).
+                let mut rules_channel = unit.behaviour_rule;
+                if rules_channel
+                    && let Some(body) = unit.body.map(str::trim).filter(|b| !b.is_empty())
+                {
+                    if carries_a_placeholder(body) {
+                        // A note the model left for itself. It is not a rule
+                        // and it is not a fact either, so it goes nowhere —
+                        // and the turn carries on, because one bad extraction
+                        // never demotes the rest.
+                        tracing::warn!(
+                            body,
+                            "ingest: behaviour_rule extraction is a [placeholder] note — dropped"
+                        );
+                        continue;
+                    }
+                    if !stands_as_a_directive(body) {
+                        tracing::warn!(
+                            body,
+                            "ingest: behaviour_rule extraction names a day and asks for nothing \
+                             — filed as an ordinary fact instead of a standing directive"
+                        );
+                        rules_channel = false;
+                    }
+                }
+                if rules_channel {
                     let Some(rule) = unit.body.map(str::trim).filter(|b| !b.is_empty()) else {
                         tracing::warn!("ingest: behaviour_rule extraction has no body — dropped");
                         continue;
@@ -14676,6 +14904,102 @@ mod tests {
             filed,
             vec!["Alice is at home all day today."],
             "the turn's own claim is filed and the number it never mentioned is not"
+        );
+        drop(dir);
+    }
+
+    /// **The rules channel holds what BINDS the agent.**
+    ///
+    /// Two things sat on rules pages of the September demo: *«Alice cooked the
+    /// first proper meal in the new kitchen on 13 July 2026»*, a memory filed
+    /// as policy, and *«the reasoning: [to be completed by the user in
+    /// dialogue]»*, a note the model left for itself. Both were read back to
+    /// the agent every turn as directives in force.
+    ///
+    /// The expensive mistake is the other one, so the refusals are narrow and
+    /// this test spends most of its length on what must still get through — in
+    /// both languages, and in the three forms a rule actually arrives in: an
+    /// order, a prohibition, a preference.
+    #[test]
+    fn only_a_standing_directive_goes_on_the_rules_channel() {
+        // Refused: a day named, nothing asked.
+        assert!(
+            !stands_as_a_directive(
+                "Alice cooked the first proper meal in the new kitchen on 13 July 2026."
+            ),
+            "an occasion with a date is a memory, and the rules page is not where memories go"
+        );
+        assert!(
+            !stands_as_a_directive("Il trasloco è finito il 3 marzo 2026."),
+            "and the same in Italian"
+        );
+
+        // Admitted: every shape a real rule takes.
+        for rule in [
+            "Answer concisely: give the answer without the preamble.",
+            "Never bring up my mother's health.",
+            "Keep answers short this week, I am on a bad connection until 13 September 2026.",
+            "I prefer short answers.",
+            "Please use the subscription, not the API.",
+            "Parlami in modo informale.",
+            "Rispondi sempre in italiano.",
+            "Mai parlare di lavoro dopo le otto.",
+            "Preferisco risposte brevi.",
+            "Dal 7 al 13 settembre 2026 tieni le risposte corte.",
+        ] {
+            assert!(
+                stands_as_a_directive(rule),
+                "a rule somebody really laid down must bind: {rule}"
+            );
+        }
+
+        // An undated sentence is left alone whatever its grammar: refusing on
+        // grammar is what would cost a person their rule.
+        assert!(
+            stands_as_a_directive("Sono sempre di fretta la mattina."),
+            "no date, no judgement — the classifier's call stands"
+        );
+
+        // And the placeholder, which is never a rule in any language.
+        assert!(carries_a_placeholder(
+            "For Kestrel: the queue was ruled out. The reasoning: \
+             [to be completed by the user in dialogue]"
+        ));
+        assert!(carries_a_placeholder("Rispondi in [lingua da definire]."));
+        assert!(
+            !carries_a_placeholder("Answer concisely [] and plainly."),
+            "empty brackets name no missing piece"
+        );
+        assert!(!carries_a_placeholder("Keep answers short."));
+    }
+
+    /// The placeholder refusal is at the chokepoint, so no road into the rules
+    /// channel can write one — including the operator chat, which has no
+    /// classifier in front of it.
+    #[tokio::test]
+    async fn a_placeholder_never_reaches_a_rules_page() {
+        let (dir, tree, pool) = setup_workdir().await;
+        let err = file_behaviour_rule(
+            &tree,
+            &pool,
+            fake_embedder(),
+            WikiId::parse("alice").unwrap(),
+            Principal::User("alice".into()),
+            BehaviourScope::PerUser,
+            "The reasoning: [to be completed by the user in dialogue]",
+            None,
+        )
+        .await
+        .expect_err("a placeholder is refused");
+        assert!(matches!(
+            err,
+            crate::capture::CaptureError::RuleIsAPlaceholder
+        ));
+        assert!(
+            behaviour_rows_on_page(&pool, "alice", &Principal::User("alice".into()))
+                .await
+                .is_empty(),
+            "and nothing was written"
         );
         drop(dir);
     }
