@@ -15125,7 +15125,7 @@ mod tests {
 
         // And the placeholder, which is never a rule in any language.
         assert!(carries_a_placeholder(
-            "For Kestrel: the queue was ruled out. The reasoning: \
+            "For the move: the queue was ruled out. The reasoning: \
              [to be completed by the user in dialogue]"
         ));
         assert!(carries_a_placeholder("Rispondi in [lingua da definire]."));
