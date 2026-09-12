@@ -1758,7 +1758,7 @@ fn list_records<'a>(
 /// come through here: `fact_index::close_validity` stamps the row and leaves
 /// the file alone, so *«ho comprato il latte»* showed no `✓` until the next
 /// compile, up to an hour later; and REPLACING an entry
-/// ([`crate::capture::list_entry_superseded`]) cuts the old record's bytes out
+/// ([`crate::capture::list_entry_verdict`]) cuts the old record's bytes out
 /// from under its bullet and appends the new one at the end of the file. Both
 /// leave the page a poor copy of the list until it is rebuilt, which costs
 /// nothing here — so it is rebuilt in the turn that changed it.

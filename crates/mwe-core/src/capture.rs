@@ -200,7 +200,7 @@ pub struct CaptureRequest {
     /// `prosa` | `prosa-tecnica` | `lista`; the dominant writing register of
     /// the target page. Read twice on the way in: [`seed_page_card`] writes it
     /// into the testata of a page born here, and `lista` is what tells
-    /// [`list_entry_superseded`] this body is an ENTRY and not a sentence.
+    /// [`list_entry_verdict`] this body is an ENTRY and not a sentence.
     pub style: Option<crate::wiki::PageStyle>,
     /// The page description that aids future placement — the one-line
     /// `description:` of the testata [`seed_page_card`] writes for a page born
@@ -369,12 +369,12 @@ impl Audience<'_> {
     /// `allow` set, order-insensitive — with the reporter left out of it.
     ///
     /// The ACL half of [`Self::same_as_row`], separate because one caller
-    /// needs exactly this and no more: [`list_entry_superseded`], where the
-    /// two rows being weighed are one item on one list and WHO wrote the
-    /// quantity down is not what makes them one item. Merging on the read set
-    /// alone is safe in the way the whole-audience test is safe — the
-    /// replacement reaches the same people the entry already reached — and it
-    /// is the only part of the audience that safety depends on.
+    /// needs exactly this and no more: [`list_entry_verdict`], where the two
+    /// rows being weighed are one item on one list and WHO wrote the quantity
+    /// down is not what makes them one item. The author is not forgotten by
+    /// leaving them out here — they are a reader of what they wrote, and
+    /// [`list_entry_to_replace`] carries them onto the replacement rather than
+    /// letting the row narrow.
     fn same_read_set_as(&self, row: &FactIndexRow) -> bool {
         if &row.subject_id != self.subject {
             return false;
