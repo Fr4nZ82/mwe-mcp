@@ -1,8 +1,8 @@
 ---
 name: ingest-reconcile
 description: Reconciler — after the memory has been read, decide what this turn closes, replaces, re-dates or re-shares among the facts the turn actually saw; strict JSON out; change nothing rather than the wrong thing
-version: 1.17
-default_version_at_bootstrap: v1.17
+version: 1.18
+default_version_at_bootstrap: v1.18
 ---
 
 # Prompt: ingest-reconcile
@@ -114,6 +114,10 @@ Four verbs, and each one has to be plainly stated by the message:
 
 4. `acl_changes` — WHO MAY READ the fact changes, and the message says so: "make that visible to everyone", "share it with the family", "keep that one private". `allow_ids` REPLACES the current audience list, so restate it in full: copy the audience shown on the candidate line and add to or remove from it. An empty array means "subject only".
 
+   **THE MESSAGE HAS TO NAME THE THING.** Set `named_in_the_message: true` on every entry, and only where it is true: the speaker pointed at THAT claim — «fai vedere a tutti quello che ti ho detto del giardino», «questa tienila per te». The engine refuses an entry without it and writes the refusal to the trace.
+
+   **A FRAME AROUND A MESSAGE IS NOT A REQUEST ABOUT THE MEMORY.** A turn can open by saying how its own contents are to be treated — «everything I write below is public», which is what the welcome form puts in front of what a new person types. That sentence is about what THIS TURN STATES. What the turn states is written with the audience it asked for, by the stage before you, and needs nothing from this verb. Read as a policy instead, it reaches every candidate the recall happened to surface — including things OTHER PEOPLE said about the speaker, which are not the speaker's to publish. Fifteen stored facts were widened that way by one turn of the September demo. A frame changes nothing that was already in the memory: return `acl_changes: []`.
+
 Rules that hold for all four:
 
 - **Read the message together with its completion.** WHAT IT SAYS IN FULL, below, is this same message with what the speaker left out written in — "I bought it" → "I bought the milk" — worked out earlier this turn from the conversation, which you cannot see. When it is there, that is the sentence to match candidates against: "I bought it", "done!", "sorted, no need any more" name nothing on their own words, and a closure they plainly make would be missed for want of a noun. It says `(none)` when the message already said everything. It is a reading and not the user's words, so where the two disagree the message above wins.
@@ -147,5 +151,5 @@ CANDIDATES — facts that existed BEFORE this turn (fact_id · validity · audie
 {candidates}
 
 Output ONE strict JSON object, nothing else:
-{"closures": [ { "target": "<fact_id>", "reason": "completed" | "retracted" | "contradicted", "valid_to": "<ISO-8601 Z>" | null } ], "supersedes": [ { "slot": "<the ONE thing both facts state, in your own words — it must appear in BOTH bodies>", "target": "<fact_id from CANDIDATES>", "successor": "<fact_id from FACTS THIS TURN WROTE>", "reassigns_subject": false | true } ], "validity_edits": [ { "target": "<fact_id>", "valid_from": "<ISO-8601 Z>" | null, "valid_to": "<ISO-8601 Z>" | null } ], "acl_changes": [ { "target": "<fact_id>", "allow_ids": ["user:<id>" | "group:<id>", ...] } ]}
+{"closures": [ { "target": "<fact_id>", "reason": "completed" | "retracted" | "contradicted", "valid_to": "<ISO-8601 Z>" | null } ], "supersedes": [ { "slot": "<the ONE thing both facts state, in your own words — it must appear in BOTH bodies>", "target": "<fact_id from CANDIDATES>", "successor": "<fact_id from FACTS THIS TURN WROTE>", "reassigns_subject": false | true } ], "validity_edits": [ { "target": "<fact_id>", "valid_from": "<ISO-8601 Z>" | null, "valid_to": "<ISO-8601 Z>" | null } ], "acl_changes": [ { "target": "<fact_id>", "allow_ids": ["user:<id>" | "group:<id>", ...], "named_in_the_message": true } ]}
 ```

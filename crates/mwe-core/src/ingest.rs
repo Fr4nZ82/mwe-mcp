@@ -1153,6 +1153,24 @@ struct LlmAclChange {
     /// New allow-list principal wire strings (replaces the old list).
     #[serde(default)]
     allow_ids: Vec<String>,
+    /// The message NAMES THIS FACT as the thing whose audience changes —
+    /// «fai vedere a tutti quello che ti ho detto del giardino», «questa
+    /// tienila per te».
+    ///
+    /// Required, because the alternative is a frame. A message can carry a
+    /// sentence about how its own contents are to be treated — «everything I
+    /// write below is public» is the one the dashboard's welcome form puts in
+    /// front of what a new person types — and a frame like that is about what
+    /// the turn STATES, never about what the memory already holds. Read as a
+    /// policy it reaches every fact the recall happened to surface, which on a
+    /// real memory means facts OTHER PEOPLE said about the speaker: fifteen of
+    /// them were widened that way in one turn of the September demo, three to
+    /// `global`.
+    ///
+    /// Asked of the entry and not of the turn for the same reason: the frame
+    /// is exactly the thing a turn-level answer cannot tell from a request.
+    #[serde(default)]
+    named_in_the_message: bool,
 }
 
 /// One atomic fact in a multi-fact `capture` plan. Mirrors the per-fact
@@ -4722,6 +4740,19 @@ fn refused_pair(
     }
 }
 
+/// Journal one refused ACL change, as the model wrote it. It names no slot and
+/// no successor: the two columns stay empty, which is how the trace shows
+/// which verb asked.
+fn refused_acl(c: &LlmAclChange, reason: &str) -> crate::recall_trace::TraceRefusedChange {
+    crate::recall_trace::TraceRefusedChange {
+        verb: "share".to_owned(),
+        slot: String::new(),
+        target: c.target.clone().unwrap_or_default(),
+        successor: String::new(),
+        reason: reason.to_owned(),
+    }
+}
+
 /// Journal one refused closure, likewise as the model wrote it. A closure
 /// names no successor and no slot: the two columns stay empty, which is how
 /// the trace shows which verb asked.
@@ -6483,14 +6514,16 @@ async fn apply_plan_acl_changes(
     tree: &WikiTree,
     changes: &[LlmAclChange],
     recall_hits: &[RecallHit],
+    turn_facts: &[TurnFact],
     request: &IngestRequest,
-) -> usize {
+) -> AppliedChanges {
     // Resolve the sender's groups once so the subject gate can admit a
     // member of an owning group, not just the owning user.
     let sender_groups = enrollment::groups_for(pool, &request.sender_id)
         .await
         .unwrap_or_default();
     let mut applied: Vec<promote::AppliedAclChange> = Vec::new();
+    let mut refused: Vec<crate::recall_trace::TraceRefusedChange> = Vec::new();
     for change in changes {
         let (hit, new_subject, new_allow) = match validate_acl_change(
             change,
@@ -6501,9 +6534,30 @@ async fn apply_plan_acl_changes(
             Ok(v) => v,
             Err(err) => {
                 tracing::warn!(error = %err, "ingest: acl_change invalid — skipped");
+                refused.push(refused_acl(change, "invalid"));
                 continue;
             },
         };
+        // **A FRAME IS NOT A REQUEST.** Changing who may read a stored fact
+        // takes the message naming that fact — «fai vedere a tutti quello che
+        // ti ho detto del giardino». A sentence about the message itself
+        // («everything I write below is public», which the welcome form puts
+        // in front of what a new person types) is about what the turn STATES,
+        // and read as a policy it reaches every fact the recall happened to
+        // surface: fifteen were widened that way in one turn of the September
+        // demo, several of them things OTHER PEOPLE had said about the
+        // speaker. A turn's own extractions are born with the audience the
+        // frame asked for and need nothing from this verb.
+        if !change.named_in_the_message && !turn_facts.iter().any(|f| f.id == hit.fact_id) {
+            tracing::warn!(
+                fact_id = %hit.fact_id,
+                sender_id = request.sender_id.as_str(),
+                "ingest: acl_change on a fact the message never named — refused (a frame around \
+                 a message says nothing about what the memory already holds)"
+            );
+            refused.push(refused_acl(change, "not_named_in_the_message"));
+            continue;
+        }
         if applied.iter().any(|a| a.fact_id == hit.fact_id) {
             continue; // the model repeated a target — first one wins
         }
@@ -6609,10 +6663,18 @@ async fn apply_plan_acl_changes(
         });
     }
     if applied.is_empty() {
-        return 0;
+        return AppliedChanges {
+            applied: 0,
+            refused,
+            retracted: Vec::new(),
+        };
     }
     emit_acl_change_paper_trail(pool, &applied, recall_hits, request).await;
-    applied.len()
+    AppliedChanges {
+        applied: applied.len(),
+        refused,
+        retracted: Vec::new(),
+    }
 }
 
 /// The act-first paper trail of an ACL-change batch: ONE born-applied
@@ -12679,9 +12741,16 @@ pub async fn wiki_ingest_message(
 
             // The acl-change half — sharing changes on a recalled fact the
             // sender OWNS, with a disclosure-audit row per change.
-            let reacled =
-                apply_plan_acl_changes(pool, tree, &plan.acl_changes, &recall_hits, &request).await;
-            if reacled > 0 {
+            let reacled = apply_plan_acl_changes(
+                pool,
+                tree,
+                &plan.acl_changes,
+                &recall_hits,
+                &turn_facts,
+                &request,
+            )
+            .await;
+            if reacled.applied > 0 {
                 captured_any = true;
             }
 
@@ -13019,9 +13088,17 @@ pub async fn wiki_ingest_message(
                 &request,
             )
             .await;
-            reconciled +=
-                apply_plan_acl_changes(pool, tree, &decision.acl_changes, &candidates, &request)
-                    .await;
+            let shared = apply_plan_acl_changes(
+                pool,
+                tree,
+                &decision.acl_changes,
+                &candidates,
+                &turn_facts,
+                &request,
+            )
+            .await;
+            reconciled += shared.applied;
+            refused_changes.extend(shared.refused);
         }
         // A turn that filed no fact but retired one is not a turn that did
         // nothing. `nothing_filed` was computed before this stage ran, and it
@@ -15825,6 +15902,122 @@ mod tests {
                 .deleted_at
                 .is_none(),
             "the fact stays until the window closes"
+        );
+        drop(dir);
+    }
+
+    /// **A frame around a message is not a request about the memory.**
+    ///
+    /// The dashboard's welcome form puts a sentence in front of what a new
+    /// person types — everything below is public — and one turn of the
+    /// September demo read it as a policy and widened FIFTEEN stored facts the
+    /// recall happened to surface, several of them things other people had
+    /// said about the speaker, three of them to `global`. What the turn itself
+    /// states is written with the audience the frame asked for by the stage
+    /// before this verb; what was already in the memory is nobody's to
+    /// republish on the strength of a preamble.
+    #[tokio::test]
+    async fn a_frame_widens_nothing_and_a_named_thing_is_shared() {
+        let (dir, tree, pool) = setup_workdir().await;
+        // Said by alice, about zoe, inside the household.
+        let theirs = capture::wiki_capture(
+            &tree,
+            &pool,
+            fake_embedder(),
+            CaptureRequest {
+                subject_external: None,
+                slot: None,
+                slot_value: None,
+                authored_refs: Vec::new(),
+                wiki_id: WikiId::parse("alice").unwrap(),
+                page: Some(PathBuf::from("cucina.md")),
+                body: "Zoe is looking for work.".into(),
+                subject: Principal::User("zoe".into()),
+                allow: vec![Principal::Group("parents".into())],
+                sender: Some(Principal::User("alice".into())),
+                fact_type: Some("state".to_owned()),
+                page_description: None,
+                topics: vec!["casa".to_owned(), "giardino".to_owned()],
+                dedup_threshold: Some(1.01),
+                valid_from: None,
+                valid_to: None,
+                style: None,
+                salience: None,
+            },
+        )
+        .await
+        .expect("plant");
+        let row = fact_index::find_by_id(&pool, &theirs.fact_id)
+            .await
+            .unwrap()
+            .unwrap();
+        let candidates = vec![recall::RecallHit::from_row(row, 1.0)];
+
+        // The frame: the verdict asks to publish a candidate the message never
+        // named.
+        let framed = apply_plan_acl_changes(
+            &pool,
+            &tree,
+            &[LlmAclChange {
+                target: Some(theirs.fact_id.as_str().to_owned()),
+                subject_id: None,
+                allow_ids: vec!["global".to_owned()],
+                named_in_the_message: false,
+            }],
+            &candidates,
+            &[],
+            &req(
+                "Everything I write below is public. I am Zoe, I am 24.",
+                "zoe",
+            ),
+        )
+        .await;
+        assert_eq!(framed.applied, 0, "a frame widens nothing");
+        assert_eq!(
+            fact_index::find_by_id(&pool, &theirs.fact_id)
+                .await
+                .unwrap()
+                .unwrap()
+                .allow_ids,
+            vec![Principal::Group("parents".into())],
+            "the household fact somebody else said about her keeps the audience it had"
+        );
+        assert_eq!(
+            framed
+                .refused
+                .iter()
+                .map(|r| (r.verb.as_str(), r.reason.as_str()))
+                .collect::<Vec<_>>(),
+            vec![("share", "not_named_in_the_message")],
+            "and the person can see what was asked for and did not happen"
+        );
+
+        // And the thing the speaker DID point at is shared.
+        let named = apply_plan_acl_changes(
+            &pool,
+            &tree,
+            &[LlmAclChange {
+                target: Some(theirs.fact_id.as_str().to_owned()),
+                subject_id: None,
+                allow_ids: vec!["global".to_owned()],
+                named_in_the_message: true,
+            }],
+            &candidates,
+            &[],
+            &req(
+                "fai vedere a tutti quello che ti ho detto del giardino",
+                "zoe",
+            ),
+        )
+        .await;
+        assert_eq!(named.applied, 1, "a thing the message names is shared");
+        assert_eq!(
+            fact_index::find_by_id(&pool, &theirs.fact_id)
+                .await
+                .unwrap()
+                .unwrap()
+                .allow_ids,
+            vec![Principal::global()],
         );
         drop(dir);
     }
@@ -23815,6 +24008,7 @@ mod tests {
             target: Some(target.fact_id.as_str().to_owned()),
             subject_id: None,
             allow_ids: vec!["group:famiglia".to_owned()],
+            named_in_the_message: true,
         };
         assert!(
             matches!(
@@ -28375,7 +28569,7 @@ mod tests {
         let llm_resp = format!(
             "{{\"intent\":\"capture\",\"extractions\":[],\
              \"acl_changes\":[{{\"target\":\"{}\",\"subject_id\":null,\
-             \"allow_ids\":[\"global\"]}}],\
+             \"allow_ids\":[\"global\"],\"named_in_the_message\":true}}],\
              \"suggested_seed\":\"Reso pubblico.\"}}",
             planted.fact_id.as_str()
         );
@@ -28451,7 +28645,7 @@ mod tests {
         let llm_resp = format!(
             "{{\"intent\":\"capture\",\"extractions\":[],\
              \"acl_changes\":[{{\"target\":\"{}\",\"subject_id\":null,\
-             \"allow_ids\":[\"user:bob\"]}}],\
+             \"allow_ids\":[\"user:bob\"],\"named_in_the_message\":true}}],\
              \"suggested_seed\":\"Condiviso con bob.\"}}",
             planted.fact_id.as_str()
         );
@@ -28546,16 +28740,21 @@ mod tests {
             target: Some(fid.as_str().to_owned()),
             subject_id: None,
             allow_ids: vec!["global".into()],
+            named_in_the_message: true,
         };
         let applied = apply_plan_acl_changes(
             &pool,
             &tree,
             std::slice::from_ref(&change),
             std::slice::from_ref(&hit),
+            &[],
             &req("esponi a tutti questo del progetto", "alice"),
         )
         .await;
-        assert_eq!(applied, 0, "an acl_change on a smart-wiki fact is refused");
+        assert_eq!(
+            applied.applied, 0,
+            "an acl_change on a smart-wiki fact is refused"
+        );
 
         let row = fact_index::find_by_id(&pool, &fid).await.unwrap().unwrap();
         assert!(
