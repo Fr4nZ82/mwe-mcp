@@ -180,7 +180,7 @@ pub async fn replay_of(
 /// that will be run again if it arrives again, which is exactly the behaviour
 /// this module replaces. It is never a reason to fail a turn that succeeded.
 ///
-/// Both prunes ride the insert, the way [`crate::recent_window::record_exchange`]
+/// Both prunes run with the insert, the way [`crate::recent_window::record_exchange`]
 /// bounds its own buffer — the sender's earlier turns, then everything past its
 /// expiry — so the table cannot outgrow its contract on a busy deployment; the
 /// light round's [`prune`] is what covers an idle one.
@@ -249,7 +249,7 @@ pub async fn record(
 
 /// Drop every kept outcome past its expiry.
 ///
-/// Called on the way into [`record`] and once per light round
+/// Called at the end of [`record`] and once per light round
 /// ([`crate::dream::run_light`]) — the second is what a deployment nobody is
 /// talking to needs, since the write-path prune only ever runs when somebody
 /// writes. Without it the last turn of the day sat in the table until the next
