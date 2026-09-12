@@ -1,8 +1,8 @@
 ---
 name: ingest-reconcile
 description: Reconciler — after the memory has been read, decide what this turn closes, replaces, re-dates or re-shares among the facts the turn actually saw; strict JSON out; change nothing rather than the wrong thing
-version: 1.14
-default_version_at_bootstrap: v1.14
+version: 1.15
+default_version_at_bootstrap: v1.15
 ---
 
 # Prompt: ingest-reconcile
@@ -92,6 +92,8 @@ Four verbs, and each one has to be plainly stated by the message:
 
    Writing "completed" for a thing that never happened puts a false event in the memory, which is worse than leaving the fact open: the memory then says the user did something they did not do. When the message ends an intention and does not say the thing was carried out, the reason is "retracted".
 
+   **AN EXCEPTION IS PART OF THE SENTENCE, AND IT IS THE PART THAT COSTS.** «Got everything on the list except the bin bags, they'd sold out» closes four items and says, in as many words, that it does not close the fifth. A message that finishes a set and then names one thing it did NOT finish leaves that one exactly as it was — «tutto tranne il latte», «everything apart from the milk», «I did it all but not the phone call». Read the whole sentence before you write the list: the exception arrives AFTER the part that looks like the answer, and a reader who has already decided «completed» never gets to it. The thing named as the exception takes no verb at all — not «completed», not «contradicted», nothing — because the message just told you it is still open.
+
    `valid_to`: when the message says WHEN it stopped holding, resolve it against current_time = {current_time}; otherwise null (= this turn's instant).
 
 2. `supersedes` — the fact is REPLACED by something this turn wrote. Use this, not "contradicted", whenever the message restates the same claim with a new value: "the appointment moved to the 20th", "Bob works at Initech now", "we changed the wifi password". **THE TEST — can both be true at once?** A supersede is one slot holding a new value, so the old and the new CANNOT both hold: an appointment is not on the 14th and the 20th, Bob does not hold that job at ACME and at Initech, a password is not two strings. If the two can be true of the person at the same moment, they are two facts and this is NOT a supersede, however much they overlap in subject or wording — «she is a mother» and «she is 29 weeks pregnant» are both true together, and superseding either would delete a claim nobody withdrew. Ask the question before naming a pair; overlapping words are what makes a wrong pair look right. **Name the slot, in `slot`, before you name the pair** — "the due date", "where she lives", "the wifi password". Write the words down: a pair that really is a supersede has one slot to name, and a pair that is not has none, so the field is the test rather than a report of it. An entry with no `slot` is refused, and so is one whose slot is a subject ("Galadriel", "the pregnancy") rather than the thing being restated. **The case that reads as two facts and is one:** a count measured from a fixed point, stored with the day it was true of («at 24 June she was at 29 weeks»), and a later turn that states the point itself («the due date is mid-September»). The memory keeps the POINT — a count moves with the calendar and the point does not — so this IS a supersede, its slot is the thing being dated, and leaving both puts a line that ages beside a line that does not. `target` is the OLD fact, from the candidates; `successor` is one of the FACTS THIS TURN WROTE, listed below — never invent one, never name a candidate. **The two lists share nothing:** every candidate existed before this turn, every entry below was written by it, and no id is in both. If nothing this turn wrote is the replacement, it is a closure, not a supersede. A supersede carries the audience over by itself: do NOT also emit an acl_change for it.
@@ -124,6 +126,7 @@ Rules that hold for all four:
 - A candidate whose validity already shows a closed window needs no second closure — skip it. Read the line as written: `open, due <date>` is an **open** fact carrying a deadline, and it is the most likely thing a message closes ("I bought the milk"). Only `closed <date>` is already settled.
 - One candidate gets at most one verb. A supersede already retires the old fact, so never close it as well.
 - Say nothing about facts that are simply still true. Most turns change nothing, and empty arrays are the correct answer for them.
+- **The engine checks the exception behind you.** A candidate the message named after «except / apart from / but not / all but / tranne / eccetto / a parte / meno» is refused whatever verb you give it, and the refusal is written to the trace. It is a net and not a licence: it reads the words of the turn, so a set you close without reading the exception is still a wrong answer everywhere the wording is less plain than those.
 
 USER MESSAGE:
 {message}

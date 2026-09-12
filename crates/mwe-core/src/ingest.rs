@@ -3221,6 +3221,12 @@ enum ClosurePlanError {
          and was not shared with you"
     )]
     NotEntitledToRetract { id: String, subject: String },
+    /// The turn NAMED THIS TARGET AS THE EXCEPTION: «got everything on the
+    /// list except the bin bags». The message ends the others and says in as
+    /// many words that it does not end this one, so closing it writes the one
+    /// thing the speaker took the trouble to rule out.
+    #[error("closure target `{0}` is what the turn named as the exception")]
+    NamedAsTheException(String),
     /// An extraction of THIS turn restated the target: the message says the
     /// fact again, and saying a thing again does not end it.
     ///
@@ -3246,9 +3252,135 @@ impl ClosurePlanError {
             Self::UnknownReason(_) => "unknown_reason",
             Self::TargetIsAStandingRule(_) => "target_is_a_rule",
             Self::NotEntitledToRetract { .. } => "not_theirs_to_retract",
+            Self::NamedAsTheException(_) => "named_as_the_exception",
             Self::TargetRestatedThisTurn(_) => "target_restated_this_turn",
         }
     }
+}
+
+/// Words that tell no two claims apart, dropped before any two pieces of text
+/// are compared word against word.
+///
+/// Both languages the product is spoken in, and deliberately only function
+/// words and the copula: a claim made of nothing else says nothing, and the
+/// comparison then finds no words to look for, which is the right answer.
+const STOPWORDS: &[&str] = &[
+    // English
+    "a", "an", "the", "of", "for", "in", "on", "at", "to", "from", "by", "with", "and", "or", "is",
+    "are", "was", "were", "be", "been", "its", "his", "her", "their", "our", "my", "your", "this",
+    "that", "these", "those", "which", "who", "whom", "whose", "where", "when", "what", "how",
+    "she", "he", "it", "they", "them", "i", "you", "we", "one", "thing", // Italian
+    "il", "lo", "la", "i", "gli", "le", "un", "uno", "una", "del", "dello", "della", "dei",
+    "degli", "delle", "di", "da", "dal", "dalla", "nel", "nella", "su", "sul", "sulla", "per",
+    "con", "tra", "fra", "e", "o", "è", "sono", "era", "erano", "essere", "suo", "sua", "suoi",
+    "sue", "loro", "mio", "mia", "questo", "questa", "quello", "quella", "che", "chi", "dove",
+    "quando", "come", "lei", "lui", "cosa",
+];
+
+/// The words of a phrase worth comparing: lowercased, split on everything that
+/// is not a letter or a digit, with [`STOPWORDS`] and bare single characters
+/// dropped.
+fn content_words(phrase: &str) -> Vec<String> {
+    phrase
+        .split(|c: char| !c.is_alphanumeric())
+        .map(str::to_lowercase)
+        .filter(|w| w.chars().count() > 1 && !STOPWORDS.contains(&w.as_str()))
+        .collect()
+}
+
+/// The words that open an EXCEPTION, in both languages the product is spoken
+/// in.
+///
+/// Listed here, beside the only thing that reads them, because the list IS the
+/// rule: a phrasing missing from it is a phrasing whose exception the engine
+/// cannot see. Deliberately only the words that do nothing but except — «meno»
+/// earns its place («tutto meno i sacchi») and «senza» does not, being an
+/// ordinary preposition that says nothing about a set.
+const EXCEPTION_MARKERS: &[&str] = &[
+    // English
+    "except for",
+    "except",
+    "apart from",
+    "but not",
+    "all but",
+    "other than",
+    "save for",
+    "minus",
+    // Italian
+    "tranne",
+    "eccetto",
+    "fuorché",
+    "fuorche",
+    "a parte",
+    "salvo",
+    "escluso",
+    "esclusi",
+    "meno",
+];
+
+/// What the turn RULED OUT: everything after each exception marker, to the end
+/// of its sentence.
+///
+/// To the end of the SENTENCE and not of the message, because «I got
+/// everything except the bin bags. I also picked up milk.» rules out the bags
+/// and nothing else; a comma does not end it, since the reason usually follows
+/// one — «except the bin bags, they'd sold out».
+fn exception_clauses(text: &str) -> Vec<String> {
+    let lower = text.to_lowercase();
+    let mut out = Vec::new();
+    for marker in EXCEPTION_MARKERS {
+        let mut from = 0usize;
+        while let Some(found) = lower[from..].find(marker) {
+            let after = from + found + marker.len();
+            // A marker inside a longer word is not a marker: «minus» in
+            // «minuscule», «meno» in «menopausa».
+            let boundary_before = lower[..from + found]
+                .chars()
+                .next_back()
+                .is_none_or(|c| !c.is_alphanumeric());
+            let boundary_after = lower[after..]
+                .chars()
+                .next()
+                .is_none_or(|c| !c.is_alphanumeric());
+            if boundary_before && boundary_after {
+                let end = lower[after..]
+                    .find(['.', '!', '?', ';', '\n'])
+                    .map_or(lower.len(), |i| after + i);
+                out.push(lower[after..end].to_owned());
+            }
+            from = after;
+        }
+    }
+    out
+}
+
+/// Whether one of the turn's exception clauses NAMES this claim.
+///
+/// Half of the claim's content words, rounded up and never fewer than one:
+/// «bin bags big» against «the bin bags, they'd sold out» matches on two of
+/// its three, and «coffee filters» on the same clause matches on none. A
+/// fraction and not every word, because the entry as stored carries the
+/// qualifiers a speaker drops — nobody says «the big bin bags» twice — and
+/// not one word, because a single shared noun would rule out half a shopping
+/// list.
+///
+/// It errs toward NOT closing, and that is the right direction: a missed
+/// closure comes back on the next turn, while an item ticked off because it
+/// shares a word with the one thing the speaker ruled out is the memory
+/// telling the household they bought something they did not.
+fn named_in_an_exception(claim: &str, clauses: &[String]) -> bool {
+    let words = content_words(claim);
+    if words.is_empty() {
+        return false;
+    }
+    let needed = words.len().div_ceil(2);
+    clauses.iter().any(|clause| {
+        let present: std::collections::HashSet<String> = clause
+            .split(|c: char| !c.is_alphanumeric())
+            .map(str::to_lowercase)
+            .collect();
+        words.iter().filter(|w| present.contains(*w)).count() >= needed
+    })
 }
 
 /// Validate one requested closure against this turn's recall window.
@@ -3260,6 +3392,13 @@ impl ClosurePlanError {
 /// for: `contradiction` for `contradicted`, and `superseded`, which is not a
 /// spelling but a stage saying it had no successor to name. Both mean
 /// `contradicted` and nothing else is admitted.
+///
+/// **A target the turn named as its EXCEPTION is refused** — see
+/// [`ClosurePlanError::NamedAsTheException`]. «Got everything on the list
+/// except the bin bags» is one sentence carrying two instructions, and the
+/// second one arrives after the first has already looked like the whole
+/// answer; the clause is in the turn's own words, so the engine reads it
+/// rather than hoping ([`exception_clauses`]).
 ///
 /// **A target this same turn restated is refused** — see
 /// [`ClosurePlanError::TargetRestatedThisTurn`], the closure verb's half of
@@ -3276,6 +3415,7 @@ fn validate_closure<'a>(
     turn_facts: &[TurnFact],
     sender_id: &str,
     sender_groups: &[String],
+    exceptions: &[String],
 ) -> std::result::Result<(&'a RecallHit, &'static str), ClosurePlanError> {
     let raw = closure
         .target
@@ -3299,6 +3439,15 @@ fn validate_closure<'a>(
             },
         });
     };
+    // «Ho preso tutto TRANNE i sacchi» ends four things and names the fifth as
+    // the one it does not end. A model reading such a turn sees a completion
+    // and closes the lot — five items ticked on the demo's very first shopping
+    // list, the bin bags among them — because the exception is a clause it has
+    // to hold on to while it matches, and the matching is what it is doing.
+    // The engine can read the clause and does ([`exception_clauses`]).
+    if named_in_an_exception(&hit.text, exceptions) {
+        return Err(ClosurePlanError::NamedAsTheException(raw.to_owned()));
+    }
     // Retraction gate: closing a fact's validity withdraws an assertion, so
     // the subject may do it, so may whoever MADE it, and so may whoever it
     // was SHARED with — a claim handed to a household is the household's to
@@ -4859,6 +5008,7 @@ async fn apply_plan_closures(
     recall_hits: &[RecallHit],
     turn_facts: &[TurnFact],
     request: &IngestRequest,
+    completed_message: Option<&str>,
     turn_now: chrono::DateTime<chrono::Utc>,
 ) -> AppliedChanges {
     // Resolve the sender's groups once so the subject gate can admit a
@@ -4866,6 +5016,14 @@ async fn apply_plan_closures(
     let sender_groups = enrollment::groups_for(pool, &request.sender_id)
         .await
         .unwrap_or_default();
+    // What the turn ruled out, read once for the whole batch. The completed
+    // message is read alongside the raw one for the same reason every other
+    // stage reads it: «got everything except the bags» is the sentence with
+    // the noun in it, and the raw turn is not always that sentence.
+    let exceptions: Vec<String> = std::iter::once(request.text.as_str())
+        .chain(completed_message)
+        .flat_map(exception_clauses)
+        .collect();
     let mut applied: Vec<promote::AppliedClosure> = Vec::new();
     let mut refused: Vec<crate::recall_trace::TraceRefusedChange> = Vec::new();
     for closure in plan_closures {
@@ -4875,6 +5033,7 @@ async fn apply_plan_closures(
             turn_facts,
             &request.sender_id,
             &sender_groups,
+            &exceptions,
         ) {
             Ok(v) => v,
             Err(err) => {
@@ -11702,6 +11861,7 @@ pub async fn wiki_ingest_message(
                 &closure_hits,
                 &turn_facts,
                 &request,
+                completed_message,
                 turn_now,
             )
             .await;
@@ -12025,6 +12185,7 @@ pub async fn wiki_ingest_message(
                 &candidates,
                 &turn_facts,
                 &request,
+                completed_message,
                 turn_now,
             )
             .await;
@@ -14313,7 +14474,7 @@ mod tests {
             valid_to: None,
         };
         let hits = vec![sample_recall_hit(id)]; // hit subject = user:alice
-        let err = validate_closure(&closure, &hits, &[], "morgana", &[])
+        let err = validate_closure(&closure, &hits, &[], "morgana", &[], &[])
             .expect_err("cross-subject closure must fail");
         match err {
             ClosurePlanError::NotEntitledToRetract {
@@ -14326,7 +14487,7 @@ mod tests {
             other => panic!("expected NotEntitledToRetract, got {other:?}"),
         }
         // The subject herself can close it.
-        assert!(validate_closure(&closure, &hits, &[], "alice", &[]).is_ok());
+        assert!(validate_closure(&closure, &hits, &[], "alice", &[], &[]).is_ok());
 
         // And so can the person who said it, about somebody else: the same
         // hit, now carrying carol as its author, is closable by carol.
@@ -14334,11 +14495,11 @@ mod tests {
         authored.sender_id = Some(Principal::User("carol".into()));
         let hits = vec![authored];
         assert!(
-            validate_closure(&closure, &hits, &[], "carol", &[]).is_ok(),
+            validate_closure(&closure, &hits, &[], "carol", &[], &[]).is_ok(),
             "the author may withdraw what they said, whoever it was about"
         );
         // A third party is still none of the three.
-        assert!(validate_closure(&closure, &hits, &[], "morgana", &[]).is_err());
+        assert!(validate_closure(&closure, &hits, &[], "morgana", &[], &[]).is_err());
 
         // The audience opens the third door: the same hit, about alice and
         // said by carol, now carries `group:famiglia` in its allow list, and
@@ -14348,12 +14509,110 @@ mod tests {
         shared.allow_ids = vec![Principal::Group("famiglia".into())];
         let hits = vec![shared];
         assert!(
-            validate_closure(&closure, &hits, &[], "dora", &["famiglia".to_owned()]).is_ok(),
+            validate_closure(&closure, &hits, &[], "dora", &["famiglia".to_owned()], &[]).is_ok(),
             "a member of the audience the fact was shared with may retire it"
         );
         // Reading it some other way is not being in the audience: morgana is
         // in no group of the allow list and is still refused.
-        assert!(validate_closure(&closure, &hits, &[], "morgana", &[]).is_err());
+        assert!(validate_closure(&closure, &hits, &[], "morgana", &[], &[]).is_err());
+    }
+
+    /// **«Got everything on the list except the bin bags» does not tick the
+    /// bin bags.**
+    ///
+    /// The first shopping list of the September demo: five items open, one
+    /// turn that finishes four of them and says in as many words that it did
+    /// not finish the fifth. The reconciler read the completion and closed the
+    /// lot — `bin bags big` among them, ticked `✓` on the page with the date —
+    /// because holding an exception in mind while matching five candidates is
+    /// exactly the thing a matcher is bad at. The clause is right there in the
+    /// turn, and the engine reads it.
+    #[test]
+    fn a_turn_that_excepts_an_item_does_not_close_it() {
+        let turn = "Got everything on the list except the bin bags, they'd sold out.";
+        let exceptions = exception_clauses(turn);
+
+        let entry = |n: u8, text: &str| {
+            let mut hit = sample_recall_hit(&format!("018f1234-5678-7abc-9def-01234567890{n}"));
+            hit.text = text.to_owned();
+            hit
+        };
+        let list = vec![
+            entry(1, "bin bags big"),
+            entry(2, "coffee filters"),
+            entry(3, "washing-up liquid"),
+            entry(4, "milk"),
+            entry(5, "oat milk"),
+        ];
+
+        let closed: Vec<&str> = list
+            .iter()
+            .filter(|hit| {
+                let closure = LlmClosure {
+                    target: Some(hit.fact_id.as_str().to_owned()),
+                    reason: Some("completed".to_owned()),
+                    valid_to: None,
+                };
+                validate_closure(&closure, &list, &[], "alice", &[], &exceptions).is_ok()
+            })
+            .map(|hit| hit.text.as_str())
+            .collect();
+        assert_eq!(
+            closed,
+            vec!["coffee filters", "washing-up liquid", "milk", "oat milk"],
+            "the four the turn finished are ticked, and the one it ruled out is not"
+        );
+
+        // And the refusal names itself, so the trace shows which item the turn
+        // protected and why.
+        let bags = LlmClosure {
+            target: Some(list[0].fact_id.as_str().to_owned()),
+            reason: Some("completed".to_owned()),
+            valid_to: None,
+        };
+        let err = validate_closure(&bags, &list, &[], "alice", &[], &exceptions)
+            .expect_err("the excepted item is refused");
+        assert_eq!(err.as_token(), "named_as_the_exception");
+
+        // With no exception in the turn, all five close: what holds the bags
+        // back is the clause, not the item.
+        let plain = exception_clauses("Got everything on the list.");
+        assert!(plain.is_empty());
+        assert!(
+            validate_closure(&bags, &list, &[], "alice", &[], &plain).is_ok(),
+            "a turn that excepts nothing closes everything it names"
+        );
+    }
+
+    /// The exception clause runs to the end of its SENTENCE, in both
+    /// languages, and a marker buried inside a word is not a marker.
+    #[test]
+    fn an_exception_clause_ends_with_its_sentence() {
+        assert_eq!(
+            exception_clauses("Got everything except the bin bags. I also got milk."),
+            vec![" the bin bags"],
+            "what follows the full stop is a new sentence and excepts nothing"
+        );
+        assert_eq!(
+            exception_clauses("Ho preso tutto tranne i sacchi, erano finiti."),
+            vec![" i sacchi, erano finiti"],
+            "a comma does not end it: the reason usually follows one"
+        );
+        for phrasing in [
+            "everything apart from the milk",
+            "I got it all but not the milk",
+            "tutto eccetto il latte",
+            "tutto meno il latte",
+        ] {
+            assert!(
+                !exception_clauses(phrasing).is_empty(),
+                "{phrasing} opens an exception"
+            );
+        }
+        assert!(
+            exception_clauses("The menopause clinic called about a minuscule detail.").is_empty(),
+            "a marker inside a longer word is not a marker"
+        );
     }
 
     /// A validity edit rides the same three doors as a closure, and the
@@ -21737,8 +21996,14 @@ mod tests {
                 reason: Some(reason.to_owned()),
                 valid_to: None,
             };
-            let got =
-                validate_closure(&closure, std::slice::from_ref(&rule), &[], "alice", &groups);
+            let got = validate_closure(
+                &closure,
+                std::slice::from_ref(&rule),
+                &[],
+                "alice",
+                &groups,
+                &[],
+            );
             assert!(
                 matches!(got, Err(ClosurePlanError::TargetIsAStandingRule(_))),
                 "a `{reason}` closure on a standing directive: {got:?}"
@@ -21758,7 +22023,8 @@ mod tests {
                     std::slice::from_ref(&plain),
                     &[],
                     "alice",
-                    &groups
+                    &groups,
+                    &[]
                 )
                 .is_ok(),
                 "`{reason}` is refused on an ordinary fact"
