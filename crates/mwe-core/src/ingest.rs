@@ -1846,8 +1846,16 @@ pub(crate) fn body_names_user(
     })
 }
 
-/// The turn's own words: the current message, then the recent window the
-/// prompt showed alongside it, capped the same way the prompt caps it.
+/// The words the turn is READ AGAINST: the current message, then the recent
+/// window the prompt showed alongside it, capped the same way the prompt caps
+/// it.
+///
+/// The window belongs here and nowhere near what gets written. Deciding who a
+/// turn is ABOUT is a question the conversation answers — a name said one
+/// message earlier still names its person — and deciding what a turn STATES is
+/// one only the turn answers ([`lifted_from_the_window`]). The same eight
+/// messages, two different questions, and running them together is how one
+/// person's phone number ends up filed as another person's.
 fn turn_words(request: &IngestRequest, policy: &IngestPolicy) -> String {
     let mut words = request.text.clone();
     let take_from = request
@@ -3256,6 +3264,73 @@ impl ClosurePlanError {
             Self::TargetRestatedThisTurn(_) => "target_restated_this_turn",
         }
     }
+}
+
+/// One piece of text reduced to the run of letters and digits inside it,
+/// lowercased.
+///
+/// Spelling, spacing and punctuation are exactly what moves between a message
+/// and a model's restatement of it — «07700 900275» and «07700900275» are one
+/// number — so a comparison meant to find a value that TRAVELLED has to ignore
+/// them.
+fn bare_characters(text: &str) -> String {
+    text.chars()
+        .filter(|c| c.is_alphanumeric())
+        .flat_map(char::to_lowercase)
+        .collect()
+}
+
+/// The shortest value worth looking for inside a message.
+///
+/// A phone number, a date, an email, a postcode all clear it comfortably; an
+/// age or a house number does not, and those are precisely the values short
+/// enough to turn up inside an unrelated word once spacing is stripped.
+const SHORTEST_TRAVELLING_VALUE: usize = 5;
+
+/// Whether this extraction was lifted out of the RECENT WINDOW rather than
+/// read off the turn.
+///
+/// The window is the last several messages of the conversation, sent by the
+/// consumer so the classifier can UNDERSTAND a turn that does not stand on its
+/// own — «her kidneys have got worse» needs the name somebody said two
+/// messages ago. It is context, and the prompt says so; but a model shown
+/// eight messages and asked what this one states will now and then answer with
+/// what one of the other eight stated. In the September demo Alice gave Zoe's
+/// phone number in the evening; the next morning Zoe said «I'm in all day» and
+/// the turn came back carrying **Zoe's number, filed as something Zoe had just
+/// said**. The window carries no author — the wire shape has `role` and text
+/// and nothing else — so whatever it is read as saying becomes the claim of
+/// whoever is speaking now.
+///
+/// Two things are looked for, and both ask the same question: is this in the
+/// window and NOT in the turn?
+///
+/// - the **value** the extraction says the slot holds, which is the substance
+///   of a card fact and the thing that must have been said this turn;
+/// - the **body** verbatim, which catches the blunt copy — a window sentence
+///   already in the third person, lifted whole.
+///
+/// What is deliberately NOT looked for is a word the body shares with the
+/// window. Completing a fragment from the window is the feature: the NAME may
+/// come from two messages ago, and does. It is the value that may not.
+fn lifted_from_the_window(
+    body: &str,
+    slot_value: Option<&str>,
+    turn: &str,
+    window: &[RecentMessage],
+) -> bool {
+    let spoken_now = bare_characters(turn);
+    let travelled = |needle: &str| {
+        !needle.is_empty()
+            && !spoken_now.contains(needle)
+            && window
+                .iter()
+                .any(|m| bare_characters(&m.text).contains(needle))
+    };
+    slot_value
+        .map(bare_characters)
+        .is_some_and(|v| v.chars().count() >= SHORTEST_TRAVELLING_VALUE && travelled(&v))
+        || travelled(&bare_characters(body))
 }
 
 /// Words that tell no two claims apart, dropped before any two pieces of text
@@ -10762,6 +10837,34 @@ pub async fn wiki_ingest_message(
                     "ingest: fact validity + style deduced (placement signal)"
                 );
 
+                // The window is what the turn is read AGAINST, never what it
+                // says ([`lifted_from_the_window`]). A claim whose substance
+                // is in one of the earlier messages and nowhere in this one
+                // was not stated here, and filing it here would file it under
+                // whoever happens to be speaking — which is how one person's
+                // phone number became another person's, said by her, on a
+                // morning she had said nothing of the sort.
+                //
+                // Dropped silently: the speaker asserted nothing to be told
+                // about, and the claim is already in the memory from the turn
+                // that really did state it.
+                if let Some(body) = unit.body.map(str::trim).filter(|b| !b.is_empty())
+                    && lifted_from_the_window(
+                        body,
+                        unit.slot_value,
+                        &request.text,
+                        &request.recent_messages,
+                    )
+                {
+                    tracing::warn!(
+                        body,
+                        slot_value = unit.slot_value.unwrap_or(""),
+                        "ingest: extraction says what an EARLIER message said and this turn does \
+                         not — dropped (the recent window is context, never content)"
+                    );
+                    continue;
+                }
+
                 // An engine-rule is a
                 // standing GOVERNANCE directive (a privacy/sharing policy, or a
                 // do-not-store rule), not a fact. The classifier flags it; the
@@ -14515,6 +14618,151 @@ mod tests {
         // Reading it some other way is not being in the audience: morgana is
         // in no group of the allow list and is still refused.
         assert!(validate_closure(&closure, &hits, &[], "morgana", &[], &[]).is_err());
+    }
+
+    /// The same rule driven through a real turn: **the lifted claim never
+    /// reaches the memory, and what the turn really said does.**
+    ///
+    /// The predicate above states the decision; this one pins that the
+    /// decision is actually taken on the road every extraction travels.
+    #[tokio::test]
+    async fn a_turn_files_what_it_said_and_not_what_the_window_said() {
+        let (dir, tree, pool) = setup_workdir().await;
+        // What the classifier answered on e0021: the claim the turn makes,
+        // and — out of the window — the number Alice gave the evening before.
+        let json = "{\"intent\":\"capture\",\"extractions\":[{\
+            \"target_wiki_id\":\"alice\",\"target_page\":\"cucina.md\",\
+            \"subject_id\":\"user:alice\",\
+            \"body\":\"Alice is at home all day today.\",\
+            \"fact_type\":\"state\",\"requested_container\":true},{\
+            \"target_wiki_id\":\"alice\",\"target_page\":\"cucina.md\",\
+            \"subject_id\":\"user:alice\",\
+            \"body\":\"Alice's mobile number is 07700 900275.\",\
+            \"fact_type\":\"bio\",\"slot\":\"mobile_number\",\
+            \"slot_value\":\"07700900275\",\"requested_container\":true}]}";
+        let llm = FakeLlmBackend::new("fake", json);
+        let mut request = req(
+            "I'm in all day today if anyone's expecting anybody.",
+            "alice",
+        );
+        request.recent_messages = vec![RecentMessage {
+            role: MessageRole::User,
+            text: "Alice's number is 07700 900275, that's the one I've got in my phone.".to_owned(),
+            timestamp: None,
+        }];
+        wiki_ingest_message(
+            &pool,
+            &tree,
+            fake_embedder(),
+            &llm,
+            None,
+            request,
+            &IngestPolicy {
+                recall_top_k: 0,
+                recall_fresh_top_k: 0,
+                ..IngestPolicy::default()
+            },
+        )
+        .await
+        .expect("ingest");
+
+        let filed: Vec<String> = fact_index::find_active_in_wiki(&pool, "alice")
+            .await
+            .expect("read back")
+            .into_iter()
+            .map(|r| r.text)
+            .collect();
+        assert_eq!(
+            filed,
+            vec!["Alice is at home all day today."],
+            "the turn's own claim is filed and the number it never mentioned is not"
+        );
+        drop(dir);
+    }
+
+    /// **The value in the recent window belongs to the turn that said it, not
+    /// to whoever speaks next.**
+    ///
+    /// The demo's e0020/e0021 pair: Alice gives Zoe's number in the evening,
+    /// Zoe says «I'm in all day» the next morning, and the classifier answers
+    /// with Zoe's number as a thing Zoe had just said. The window carries no
+    /// author — `role` and text, nothing more — so a claim taken out of it is
+    /// filed under whoever is speaking, about themselves.
+    #[test]
+    fn a_value_from_the_recent_window_is_not_this_turn_to_state() {
+        let window = |texts: &[&str]| -> Vec<RecentMessage> {
+            texts
+                .iter()
+                .map(|t| RecentMessage {
+                    role: MessageRole::User,
+                    text: (*t).to_owned(),
+                    timestamp: None,
+                })
+                .collect()
+        };
+        let evening = window(&[
+            "The painter's coming Monday for the walls.",
+            "Zoe's number is 07700 900275, that's the one I've got in my phone.",
+        ]);
+        let morning = "I'm in all day today if anyone's expecting anybody.";
+
+        assert!(
+            lifted_from_the_window(
+                "Zoe's mobile number is 07700 900275.",
+                Some("07700900275"),
+                morning,
+                &evening,
+            ),
+            "the number was said last night by somebody else; this turn says where she is"
+        );
+
+        // What the turn DOES state files normally.
+        assert!(
+            !lifted_from_the_window(
+                "Zoe is at home all day today and available if anyone needs her in person.",
+                None,
+                morning,
+                &evening,
+            ),
+            "the claim the turn actually makes is supported by its own words"
+        );
+
+        // A turn that states the value itself is not repeating the window,
+        // even with the window holding the old one — this is the correction
+        // case, and refusing it would lose the very fact the turn is for.
+        assert!(
+            !lifted_from_the_window(
+                "Zoe's mobile number is 07700 900311.",
+                Some("07700900311"),
+                "that's the old one, it's 07700 900311 now",
+                &evening,
+            ),
+            "a value said in THIS turn is this turn's to state, whatever the window holds"
+        );
+
+        // Completion still works: the SUBJECT may come from the window, and
+        // that is the documented feature. Only the substance may not.
+        assert!(
+            !lifted_from_the_window(
+                "Bob's kidney results have got worse.",
+                None,
+                "they've got worse",
+                &window(&["bob's kidney results came back today"]),
+            ),
+            "a name resolved from the conversation is the completion doing its job"
+        );
+
+        // And a body copied out of an earlier message whole is caught even
+        // with no slot value to key on.
+        assert!(
+            lifted_from_the_window(
+                "The painter's coming Monday for the walls.",
+                None,
+                morning,
+                &evening,
+            ),
+            "a window sentence lifted verbatim is the blunt form of the same mistake"
+        );
     }
 
     /// **«Got everything on the list except the bin bags» does not tick the

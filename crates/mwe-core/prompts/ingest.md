@@ -1,8 +1,8 @@
 ---
 name: ingest
 description: Classifier driving `wiki_ingest_message` — one JSON object per turn (intent + an `extractions[]` array of atomic facts, the SOLE fact container; every fact is prose except a `lista` entry, which is the bare item with its values; each carrying a per-fact validity interval `valid_from`/`valid_to`, a per-fact `style` (and, for `lista` material or a requested container, a `target_page` + `page_description`), a `requested_container` live-write flag, a per-fact `salience`, and an `engine_rule` flag routing a standing governance directive to `@rules.md` instead of `fact_index`, a `behaviour_rule` flag (with a `behaviour_scope` of `per-user`/`agent-wide`/`user-global`, read from the addressee) routing a how-an-agent-converses-or-operates directive to the calling consumer's own wiki — or, user-global, to the sender's identity wiki for every assistant serving them — and an `attachments` claim list linking the turn's media to the fact that describes them; plus two turn-level fields for a turn that TAKES SOMETHING BACK — `withdrawal` and, when what it takes back is a standing rule, `withdraw_target` naming that rule from the block of directives in force); targets the strong-model tier
-version: 2.96
-default_version_at_bootstrap: v2.96
+version: 2.97
+default_version_at_bootstrap: v2.97
 source_of_truth: crates/mwe-core/src/ingest.rs (fn wiki_ingest_message)
 ---
 
@@ -437,6 +437,18 @@ The block shows facts this memory already holds. **Read it; write nothing agains
 - **Write the same message, not a better one.** Keep the wording, keep the question, keep the tense. You are filling in a pronoun or a missing object, not rephrasing and not answering.
 - **Omit the field when nothing is implicit.** Most turns name what they are about, and repeating them costs a search for nothing. If you would write the message unchanged, leave it out.
 - **When you cannot tell who or what, leave it out.** A guess sends the search after the wrong person, and the block it fills is what the agent will answer from — and a guessed object can close the wrong stored fact, which the next turn does not undo the way it recovers a missed search.
+
+### `recent_messages` IS CONTEXT, NEVER CONTENT
+
+**You extract from the CURRENT MESSAGE and from nothing else.** The window exists so you can understand a turn that does not stand on its own; it is not a backlog of things to write down. Every fact you emit must be SUPPORTED BY WORDS OF THIS TURN — the turn may leave out who or what (that is what `completed_message` is for), but it may never leave out the thing being stated. If the value, the date, the number, the address is not in this message, this message did not state it.
+
+**Why this costs more than it looks.** The window carries no author: each entry says `user` or `assistant` and no more. So a claim you take out of an earlier message is filed as something THE PERSON SPEAKING NOW said, about themselves. One person gives you somebody else's phone number in the evening; the next morning that somebody says «I'm in all day», and if you answer with the number it becomes a number they gave you about themselves — a fact with the wrong author, the wrong subject and no way for anyone to see where it came from.
+
+- ❌ window: «Zoe's number is 07700 900275» · turn: «I'm in all day today» → extracting the number. The turn says where she is, and that is the whole of what it says.
+- ✅ window: «Zoe's number is 07700 900275» · turn: «that's the old one, it's 900311 now» → extract the NEW number: the turn states it, and the window only told you which slot it fills.
+- ✅ window: «bob's kidney results came back» · turn: «they've got worse» → complete it to «bob's kidney results have got worse». The SUBJECT came from the window; the claim came from the turn.
+
+**The earlier message was already ingested when it was sent.** Whatever it stated is in the memory already, put there under the right speaker. Restating it here does not add it — it adds a second copy, filed wrongly. The engine drops an extraction whose value sits in the window and nowhere in the turn, and says so in the log; it cannot catch the ones you reword.
 
 ### `fact_scores` — say which of them actually answers the turn
 
