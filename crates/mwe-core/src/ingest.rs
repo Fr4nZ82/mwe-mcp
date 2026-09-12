@@ -15829,6 +15829,103 @@ mod tests {
         drop(dir);
     }
 
+    /// **A restriction on what may be REVEALED of the speaker's own things is
+    /// the speaker's to set**, and the fence against setting rules about other
+    /// people must not swallow it.
+    ///
+    /// Bob's card in the September demo opened with *«I don't want Zoe to hear
+    /// about Mum's scan result from the assistant»* — a sharing policy, filed
+    /// as a line of his identity. Routed instead as a rule ABOUT Zoe it would
+    /// have been refused, because a person does not set rules about another
+    /// person by talking to the assistant. The two are not the same act: that
+    /// fence is about how the assistant TREATS somebody else; this is about
+    /// what it may say of what BOB told it, which nobody but Bob decides.
+    ///
+    /// The governance channel is where it belongs and it is reached first, so
+    /// the fence is unreachable for it even when the classifier names the
+    /// other person in `behaviour_about`. Both directions are driven here,
+    /// because the whole defect is the line between them.
+    #[tokio::test]
+    async fn a_sharing_restriction_is_the_speakers_own_rule() {
+        let (dir, tree, pool) = setup_workdir().await;
+
+        // Bob withholds his own thing from a named person. It names Zoe, and
+        // it is still a policy about Bob's information.
+        let json = "{\"intent\":\"capture\",\"extractions\":[{\
+            \"subject_id\":\"user:alice\",\"engine_rule\":true,\
+            \"behaviour_about\":\"user:zoe\",\
+            \"body\":\"Never tell Zoe about the scan result.\"}]}";
+        let llm = FakeLlmBackend::new("fake", json);
+        let resp = wiki_ingest_message(
+            &pool,
+            &tree,
+            fake_embedder(),
+            &llm,
+            None,
+            req(
+                "I don't want Zoe to hear about the scan result from you.",
+                "alice",
+            ),
+            &IngestPolicy::default(),
+        )
+        .await
+        .expect("ingest");
+
+        let rules = std::fs::read_to_string(
+            dir.path()
+                .join("wikis/alice")
+                .join(crate::wiki::RULES_FILENAME),
+        )
+        .expect("the speaker's rules page");
+        assert!(
+            rules.contains("Never tell Zoe about the scan result."),
+            "a sharing policy of the speaker's own reaches their rules page: {rules}"
+        );
+        assert!(
+            !resp
+                .rules
+                .unwrap_or_default()
+                .contains("rule about how you treat SOMEBODY ELSE"),
+            "and it is not refused as a rule set about another person"
+        );
+
+        // The other direction, unchanged: how the assistant TREATS Zoe is not
+        // Alice's to lay down, whatever channel it arrives on.
+        let json = "{\"intent\":\"capture\",\"extractions\":[{\
+            \"subject_id\":\"user:alice\",\"behaviour_rule\":true,\
+            \"behaviour_scope\":\"per-user\",\"behaviour_about\":\"user:zoe\",\
+            \"body\":\"Read every reply to Zoe out loud.\"}]}";
+        let llm = FakeLlmBackend::new("fake", json);
+        let resp = wiki_ingest_message(
+            &pool,
+            &tree,
+            fake_embedder(),
+            &llm,
+            None,
+            req("read aloud every reply you send to Zoe", "alice"),
+            &IngestPolicy::default(),
+        )
+        .await
+        .expect("ingest");
+        assert!(
+            resp.rules
+                .unwrap_or_default()
+                .contains("rule about how you treat SOMEBODY ELSE"),
+            "a rule about how to treat another person is still refused"
+        );
+        let rules = std::fs::read_to_string(
+            dir.path()
+                .join("wikis/alice")
+                .join(crate::wiki::RULES_FILENAME),
+        )
+        .expect("the speaker's rules page");
+        assert!(
+            !rules.contains("Read every reply to Zoe out loud."),
+            "and nothing of it was written: {rules}"
+        );
+        drop(dir);
+    }
+
     /// **Asking to be rid of your OWN words gets an answer, not a silence.**
     ///
     /// The vote machinery refuses a request from the person who wrote the
