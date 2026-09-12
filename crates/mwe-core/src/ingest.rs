@@ -15834,7 +15834,6 @@ mod tests {
     /// The vote machinery refuses a request from the person who wrote the
     /// fact, on purpose: their own contribution is theirs to delete outright.
     /// The engine will not do that from a turn — an irreversible delete on a
-    /// The engine will not do that from a turn — an irreversible delete on a
     /// model's reading of one sentence is not a thing it does — so the gesture
     /// cannot end in a deletion. It must not end in silence either: they asked
     /// for it to go, nothing went, and they are told so.
