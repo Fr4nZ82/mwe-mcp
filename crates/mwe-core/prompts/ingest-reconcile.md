@@ -1,8 +1,8 @@
 ---
 name: ingest-reconcile
 description: Reconciler — after the memory has been read, decide what this turn closes, replaces, re-dates or re-shares among the facts the turn actually saw; strict JSON out; change nothing rather than the wrong thing
-version: 1.16
-default_version_at_bootstrap: v1.16
+version: 1.17
+default_version_at_bootstrap: v1.17
 ---
 
 # Prompt: ingest-reconcile
@@ -104,7 +104,7 @@ Four verbs, and each one has to be plainly stated by the message:
 
    The contrast to hold it against is the case just above: a COUNT measured from a fixed point ages and IS superseded by the point itself. A count moves with the calendar; a measurement does not move at all.
 
-   **A PAIR THAT MOVES THE FACT TO SOMEBODY ELSE NEEDS THE MESSAGE TO SAY SO.** Set `reassigns_subject: true` when the message itself corrects WHO the old fact was about — «veramente dal dentista giovedì ci va Bob», «no, that one was Alice's, not mine», «era il mio, non il suo». That pair MUST be named: leaving both puts two people at the dentist on Thursday, which is the contradiction this verb exists to end. Outside that, a supersede keeps the fact with the person it was already about. «Alice's number is 07700 900275» and «Bob's number is 07700 900311» look exactly alike to every test you can run on the words — one slot, one kind of value, the same wording — and they are two facts about two people, both true. Nobody corrected anything: name no pair. The engine refuses a pair that changes whose the fact is unless you declared it, and the refusal is written to the trace.
+   **A PAIR THAT MOVES THE FACT TO SOMEBODY ELSE NEEDS THE MESSAGE TO SAY SO.** Set `reassigns_subject: true` when the message itself corrects WHO the old fact was about — «veramente dal dentista giovedì ci va Bob», «no, that one was Alice's, not mine», «era il mio, non il suo». That pair MUST be named: leaving both puts two people at the dentist on Thursday, which is the contradiction this verb exists to end. **BETWEEN TWO PEOPLE AND NOWHERE ELSE.** «Alice pays the bill» restated as «the parents pay the bill» is not a person corrected into another person: it widens who answers for the claim, and with them who may read it. That is `acl_changes`, which states the audience in full and leaves both facts standing — never a supersede, which would retire her fact in favour of the household's with nobody told the reach changed. Person to group, group to person and group to group are refused here. Outside that, a supersede keeps the fact with the person it was already about. «Alice's number is 07700 900275» and «Bob's number is 07700 900311» look exactly alike to every test you can run on the words — one slot, one kind of value, the same wording — and they are two facts about two people, both true. Nobody corrected anything: name no pair. The engine refuses a pair that changes whose the fact is unless you declared it, and the refusal is written to the trace.
 
    **THE COUNTEREXAMPLE TO READ TWICE.** «The ceiling budget for the kitchen renovation is £14,000» against «the kitchen design is finalised; all choices are made, the project now moves to trades and scheduling». The design being settled probably does end the budget's life — by FINISHING it, which is verb 1 with reason `completed`, and which leaves the budget readable with the day it stopped. It does not REPLACE it: a sentence about the calendar is not a new value for a sentence about money, and the slot you would have to write down («the kitchen design status») is one the budget's body never mentions. Superseding it left a budget pointing at a successor that says nothing about budgets, and the history unreadable. **When the slot you are about to write appears in only ONE of the two bodies, you have not found a slot — you have found the successor's subject.**
 

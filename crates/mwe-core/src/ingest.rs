@@ -3975,6 +3975,10 @@ enum SupersedeRefusal {
     /// the old fact was about the wrong person. A supersede would change whose
     /// the fact is, which is a correction and has to be stated to be made.
     ReassignsTheSubjectUnasked,
+    /// The stated correction moves the fact between a person and a group, or
+    /// between two groups: it widens or narrows who answers for the claim and
+    /// who may read it, which `acl_changes` does and this verb does not.
+    ChangesWhoAnswersForIt,
     /// The pair is sound, and the sender is not entitled to rewrite the
     /// target: the question went to whoever is.
     NotTheSendersToRewrite,
@@ -3998,6 +4002,7 @@ impl SupersedeRefusal {
             Self::SuccessorNotThisTurn => "successor_not_this_turn",
             Self::NotAboutTheSameThing => "not_about_the_same_thing",
             Self::ReassignsTheSubjectUnasked => "reassigns_the_subject_unasked",
+            Self::ChangesWhoAnswersForIt => "changes_who_answers_for_it",
             Self::NotTheSendersToRewrite => "not_the_senders_to_rewrite",
             Self::WeldFailed => "weld_failed",
         }
@@ -4110,6 +4115,11 @@ enum Aboutness {
     /// The successor is about SOMEBODY ELSE, and nothing in the message said
     /// the old fact was about the wrong person.
     ReassignsTheSubjectUnasked,
+    /// The message DID state a correction, and what it moves the fact between
+    /// is not two people: a person and a group, or two groups. That widens or
+    /// narrows who answers for the claim and who may read it, which is the
+    /// permissions verb's work and not this one's.
+    ChangesWhoAnswersForIt,
 }
 
 /// Whether a supersede's two facts SPEAK OF THE SAME THING.
@@ -4143,15 +4153,27 @@ enum Aboutness {
 ///   stronger statement than anything derivable from the words.
 ///
 /// **A pair that moves the fact to somebody else is a different act**, and
-/// exactly one thing admits it: the message SAYING SO. «Veramente dal dentista
-/// giovedì ci va Bob» corrects who the appointment was about, and the old fact
-/// has to go — leaving it puts two people at the dentist on Thursday, which is
-/// the very thing this verb exists to prevent. But «Alice's number is X»
-/// beside «Bob's number is Y» corrects nothing: both hold, they merely share
-/// the word *number*, and superseding either deletes a phone number nobody
-/// withdrew. No amount of overlap tells those two apart and the message tells
-/// them apart at once, so the declaration decides and the words do not get a
-/// vote ([`LlmSupersede::reassigns_subject`]).
+/// exactly one thing admits it: the message SAYING SO
+/// ([`LlmSupersede::reassigns_subject`]). «Veramente dal dentista giovedì ci va
+/// Bob» corrects who the appointment was about, and the old fact has to go —
+/// leaving it puts two people at the dentist on Thursday, which is the very
+/// thing this verb exists to prevent. But «Alice's number is X» beside «Bob's
+/// number is Y» corrects nothing: both hold, they merely share the word
+/// *number*, and superseding either deletes a phone number nobody withdrew. No
+/// amount of overlap tells those two apart and the message tells them apart at
+/// once, so the declaration decides and the words do not get a vote — the
+/// classifier's `conflicts_with` does not either, since it is the field that
+/// gets the SUBJECT wrong often enough to need a per-person perimeter of its
+/// own, and the pair it would wave through is exactly the two phone numbers.
+///
+/// **And only between two PEOPLE.** «Alice pays the bill» restated as «the
+/// parents pay the bill» is a correction of a kind, and it is not this one: it
+/// widens who answers for the claim and, with them, who may read it. That is
+/// the permissions verb's work — `acl_changes`, which states the audience in
+/// full and leaves both facts standing — and doing it through a supersede
+/// retires a person's fact in favour of a group's with nobody told the reach
+/// changed. Person to group, group to person and group to group are all
+/// refused here for that one reason.
 fn speaks_of_the_same_thing(
     slot: &str,
     prev: &RecallHit,
@@ -4163,10 +4185,12 @@ fn speaks_of_the_same_thing(
         .as_ref()
         .is_some_and(|declared| *declared == prev.fact_id);
     if prev.subject_id != successor.subject {
-        return if reassigns_subject || declared_conflict {
-            Aboutness::OneThing
-        } else {
-            Aboutness::ReassignsTheSubjectUnasked
+        if !reassigns_subject {
+            return Aboutness::ReassignsTheSubjectUnasked;
+        }
+        return match (&prev.subject_id, &successor.subject) {
+            (Principal::User(_), Principal::User(_)) => Aboutness::OneThing,
+            _ => Aboutness::ChangesWhoAnswersForIt,
         };
     }
     if declared_conflict {
@@ -4229,6 +4253,17 @@ fn aboutness_refusal(
                  never said so — refused"
             );
             Some(SupersedeRefusal::ReassignsTheSubjectUnasked)
+        },
+        Aboutness::ChangesWhoAnswersForIt => {
+            tracing::warn!(
+                target = s.target.as_deref().unwrap_or_default(),
+                successor = s.successor.as_deref().unwrap_or_default(),
+                subject = %prev.subject_id,
+                new_subject = %successor.subject,
+                "ingest: reconcile supersede would widen or narrow who answers for the fact — \
+                 refused (that is the acl_change verb's, and it leaves both facts standing)"
+            );
+            Some(SupersedeRefusal::ChangesWhoAnswersForIt)
         },
     }
 }
@@ -14939,9 +14974,47 @@ mod tests {
         );
     }
 
+    /// A stored fact as recall surfaced it, for the supersede cases below.
+    fn stored(id: &str, text: &str, subject: Principal, topics: &[&str]) -> RecallHit {
+        let mut h = sample_recall_hit(id);
+        h.text = text.to_owned();
+        h.subject_id = subject;
+        h.topics = topics.iter().map(|t| (*t).to_owned()).collect();
+        h
+    }
+
+    /// A fact this turn wrote, with what the classifier said it is about.
+    fn wrote(id: &str, body: &str, subject: Principal, topics: &[&str]) -> TurnFact {
+        TurnFact::filed(FactId::parse(id).unwrap(), body.to_owned(), subject)
+            .about(topics.iter().map(|t| (*t).to_owned()).collect(), None)
+    }
+
+    /// What the verb made of one pair, as a word.
+    ///
+    /// Alice speaks for the household, so the authority gate — which runs
+    /// AFTER the guard under test — never decides any of these.
+    fn verdict_on(slot: &str, target: &RecallHit, successor: &TurnFact, reassigns: bool) -> String {
+        let pair = LlmSupersede {
+            slot: Some(slot.to_owned()),
+            target: Some(target.fact_id.as_str().to_owned()),
+            successor: Some(successor.id.as_str().to_owned()),
+            reassigns_subject: reassigns,
+        };
+        match vet_supersede(
+            &pair,
+            std::slice::from_ref(target),
+            std::slice::from_ref(successor),
+            "alice",
+            &["parents".to_owned()],
+        ) {
+            VettedSupersede::Sound { .. } => "applied".to_owned(),
+            VettedSupersede::NotTheirs { .. } => "asked".to_owned(),
+            VettedSupersede::Unsound(r) => r.as_str().to_owned(),
+        }
+    }
+
     /// **A supersede says one claim stands in for another, and that has to be
-    /// true.** Four pairs, from the September demo and from the case the
-    /// engine already handled.
+    /// true.** Two pairs about one subject, both from the September demo.
     ///
     /// 1. THE KITCHEN, refused. «The ceiling budget for the kitchen
     ///    renovation is £14,000» was retired by «the kitchen design is
@@ -14954,54 +15027,18 @@ mod tests {
     ///    never mentions one.
     /// 2. THE BUDGET, applied. The same fact against «the kitchen budget has
     ///    risen to £16,000» is what a supersede is for.
-    /// 3. THE DENTIST, applied. «Veramente dal dentista giovedì ci va Bob»
-    ///    moves the fact to another person, and it must: leaving it puts two
-    ///    people at the dentist on Thursday.
-    /// 4. THE TWO NUMBERS, refused. «Alice's number is X» beside «Bob's number
-    ///    is Y» moves the fact to another person too, and must not — both
-    ///    hold, and they share nothing but the word *number*.
     ///
-    /// Three and four are the same shape in every respect the words can see.
-    /// What tells them apart is that the dentist turn SAYS it is a correction
-    /// and the numbers turn says nothing of the kind.
+    /// A pair whose successor is about somebody ELSE is a different act with
+    /// a different bar, and lives in the test below.
     #[test]
     fn a_supersede_must_be_about_one_thing_and_a_reassignment_must_be_stated() {
-        let hit = |id: &str, text: &str, subject: Principal, topics: &[&str]| {
-            let mut h = sample_recall_hit(id);
-            h.text = text.to_owned();
-            h.subject_id = subject;
-            h.topics = topics.iter().map(|t| (*t).to_owned()).collect();
-            h
-        };
-        let filed = |id: &str, body: &str, subject: Principal, topics: &[&str]| {
-            TurnFact::filed(FactId::parse(id).unwrap(), body.to_owned(), subject)
-                .about(topics.iter().map(|t| (*t).to_owned()).collect(), None)
-        };
-        let verdict = |slot: &str, target: &RecallHit, successor: &TurnFact, reassigns: bool| {
-            let pair = LlmSupersede {
-                slot: Some(slot.to_owned()),
-                target: Some(target.fact_id.as_str().to_owned()),
-                successor: Some(successor.id.as_str().to_owned()),
-                reassigns_subject: reassigns,
-            };
-            // Alice speaks for the household, so the authority gate — which
-            // runs AFTER this one — never decides any of the four.
-            match vet_supersede(
-                &pair,
-                std::slice::from_ref(target),
-                std::slice::from_ref(successor),
-                "alice",
-                &["parents".to_owned()],
-            ) {
-                VettedSupersede::Sound { .. } => "applied".to_owned(),
-                VettedSupersede::NotTheirs { .. } => "asked".to_owned(),
-                VettedSupersede::Unsound(r) => r.as_str().to_owned(),
-            }
-        };
+        let hit = stored;
+        let filed = wrote;
+        let verdict = verdict_on;
 
-        // 1 — the kitchen. Same subject here, which is the harder half of the
-        // case: even inside one subject the pair has to name a box both facts
-        // fill, and «the kitchen design status» is not one the budget fills.
+        // The kitchen. Even inside one subject the pair has to name a box both
+        // facts fill, and «the kitchen design status» is not one the budget
+        // fills.
         let budget = hit(
             "0190f3c2-7a4e-7c31-9b02-2f6a1c8e5e01",
             "The ceiling budget for the kitchen renovation is £14,000.",
@@ -15022,7 +15059,7 @@ mod tests {
              the budget's body"
         );
 
-        // 2 — the budget, said again with a new number.
+        // The budget, said again with a new number.
         let raised = filed(
             "0190f3c2-7a4e-7c31-9b02-2f6a1c8e5e03",
             "The ceiling budget for the kitchen renovation has risen to £16,000.",
@@ -15034,8 +15071,23 @@ mod tests {
             "applied",
             "one slot, a new value — the pair the verb exists for"
         );
+    }
 
-        // 3 — the dentist: the fact moves to another person, and the turn says so.
+    /// **Moving a fact to somebody else takes the message saying so, and
+    /// works only between two PEOPLE.**
+    ///
+    /// The dentist and the two phone numbers are the same shape to every test
+    /// the words can run: one slot, one kind of value, the same wording, two
+    /// different people. Only the message tells them apart — «veramente ci va
+    /// Bob» corrects, «Bob's number is Y» states a second fact — so the
+    /// declaration decides and nothing derived from the text gets a vote.
+    #[test]
+    fn moving_a_fact_to_somebody_else_takes_the_message_saying_so() {
+        let hit = stored;
+        let filed = wrote;
+        let verdict = verdict_on;
+
+        // The dentist: the fact moves to another person, and the turn says so.
         let alices = hit(
             "0190f3c2-7a4e-7c31-9b02-2f6a1c8e5e04",
             "alice ha il dentista giovedì",
@@ -15060,8 +15112,8 @@ mod tests {
              alone cannot tell it from case 4"
         );
 
-        // 4 — two people's phone numbers. Same shape as 3 to every test the
-        // words can run, and nothing was corrected.
+        // Two people's phone numbers. Same shape as the dentist to every test
+        // the words can run, and nothing was corrected.
         let alices_number = hit(
             "0190f3c2-7a4e-7c31-9b02-2f6a1c8e5e06",
             "Alice's mobile number is 07700 900275.",
@@ -15078,6 +15130,76 @@ mod tests {
             verdict("the mobile number", &alices_number, &bobs_number, false),
             "reassigns_the_subject_unasked",
             "both numbers hold; superseding either deletes a phone number nobody withdrew"
+        );
+
+        // The same two numbers, with the CLASSIFIER declaring the conflict and
+        // the reconciler declaring nothing. Refused all the same.
+        //
+        // `conflicts_with` is the field that gets the SUBJECT wrong often
+        // enough to have needed a per-person perimeter of its own, and the
+        // pair it waves through is precisely this one: two people's numbers
+        // fill the same box of two different cards. Only the stage that reads
+        // the MESSAGE may say a fact was about the wrong person.
+        let declared = TurnFact::filed(
+            FactId::parse("0190f3c2-7a4e-7c31-9b02-2f6a1c8e5e08").unwrap(),
+            "Bob's mobile number is 07700 900311.".to_owned(),
+            Principal::User("bob".into()),
+        )
+        .about(
+            vec!["contact".to_owned(), "phone".to_owned()],
+            Some(alices_number.fact_id.clone()),
+        );
+        assert_eq!(
+            verdict("the mobile number", &alices_number, &declared, false),
+            "reassigns_the_subject_unasked",
+            "a conflict the classifier declared is not the message saying the fact was \
+             somebody else's — and this is the pair it gets wrong"
+        );
+
+        // «Alice pays the bill» restated as «the parents pay the bill», with
+        // the correction stated. It is a correction of a kind, and not this
+        // one: it widens who answers for the claim and who may read it, which
+        // `acl_changes` says in full and leaves both facts standing.
+        let hers = hit(
+            "0190f3c2-7a4e-7c31-9b02-2f6a1c8e5e09",
+            "Alice pays the electricity bill.",
+            Principal::User("alice".into()),
+            &["casa", "bollette"],
+        );
+        let theirs = filed(
+            "0190f3c2-7a4e-7c31-9b02-2f6a1c8e5e0a",
+            "The parents pay the electricity bill.",
+            Principal::Group("parents".into()),
+            &["casa", "bollette"],
+        );
+        assert_eq!(
+            verdict("who pays the electricity bill", &hers, &theirs, true),
+            "changes_who_answers_for_it",
+            "widening from a person to a household is the permissions verb's work, and \
+             doing it here retires her fact with nobody told the reach changed"
+        );
+        // Narrowing the other way is the same act read backwards.
+        let the_households = hit(
+            "0190f3c2-7a4e-7c31-9b02-2f6a1c8e5e0b",
+            "The parents pay the electricity bill.",
+            Principal::Group("parents".into()),
+            &["casa", "bollette"],
+        );
+        let hers_alone = filed(
+            "0190f3c2-7a4e-7c31-9b02-2f6a1c8e5e0c",
+            "Alice pays the electricity bill.",
+            Principal::User("alice".into()),
+            &["casa", "bollette"],
+        );
+        assert_eq!(
+            verdict(
+                "who pays the electricity bill",
+                &the_households,
+                &hers_alone,
+                true
+            ),
+            "changes_who_answers_for_it",
+            "and group to person is the same act read backwards"
         );
     }
 
