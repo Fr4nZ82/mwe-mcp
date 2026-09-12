@@ -1269,7 +1269,7 @@ fn identity_card_slug_for(wiki_slug: &str, pages: &BTreeMap<String, PagePlan>) -
 
 /// Deterministic 64-bit FNV-1a over `bytes`.
 ///
-/// Used to fold a fact's claim text into [`page_fingerprint`] so a content
+/// Folds a fact's claim text into [`page_fingerprint`] so a content
 /// correction is detected. Must stay stable across runs (the fingerprint is
 /// persisted in the plan and compared next cycle), which rules out the
 /// randomised `std` hasher.

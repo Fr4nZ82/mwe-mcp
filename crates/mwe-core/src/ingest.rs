@@ -255,7 +255,7 @@ pub struct IngestRequest {
     /// is reconstructed where needed).
     pub sender_id: String,
     /// The calling consumer's deployment id (the `consumer_id` JWT
-    /// claim), when present. Used to resolve the consumer's **own**
+    /// claim), when present. Resolves the consumer's **own**
     /// memory wiki so a behaviour rule the user dictates to their agent
     /// lands there (carrying `sender=<user>`) instead of in the sender's
     /// fact memory. `None` for callers without a consumer id (e.g. the
@@ -13324,7 +13324,7 @@ pub async fn wiki_ingest_message(
         }),
         (own_facts_not_removed > 0).then(|| {
             "NOTE — the user asked to have something taken OUT of the memory, and what \
-             they named is a thing THEY said themselves. It has been marked as no longer \
+             they named is a thing THEY said themselves. It is marked as having ended, \
              holding, but it has NOT been removed, and nothing was asked of anybody: a \
              person's own words are theirs to delete, and deleting them is not something \
              this turn may do on its own. Tell them plainly that it is still there and \
@@ -22117,7 +22117,7 @@ mod tests {
         assert!(
             BUNDLED_INGEST_PROMPT_MD
                 .contains("The anchor rule is about the turn's own clock, and nothing else"),
-            "the anchor rule no longer excludes ages and durations, so it licenses them again"
+            "the anchor rule stopped excluding ages and durations, so it licenses them again"
         );
     }
 
@@ -22183,9 +22183,20 @@ mod tests {
             "\"faccio il turno di notte\"",
             // The pair that must not be confused, side by side.
             "\"sono vegetariana\" is `bio`, \"preferisco il tè al caffè\" is not",
+            // A condition that ends is a `state`, however long it runs — the
+            // card carries what has no foreseen end. Both languages.
+            "A CONDITION THAT WILL END IS `state`, HOWEVER LONG IT LASTS",
+            "\"sono incinta\"",
+            "\"sono in cassa integrazione\"",
+            "\"sono in convalescenza\"",
+            "\"I'm on crutches until April\"",
+            "a pregnancy runs most of a year and matters in every interaction, and it still ends",
+            // And the pair inside the pair: the rule against the stretch.
+            "a STANDING DIETARY RULE — vegetarian, coeliac, halal, kosher — is who the person is",
+            "BEING ON A DIET for a while is a `state` that ends",
             // And what a card still refuses.
             "\"sono esausto\"",
-            "a headache is gone next week and coeliac disease is not",
+            "a headache and a pregnancy both do, coeliac disease does not",
         ] {
             assert!(
                 BUNDLED_INGEST_PROMPT_MD.contains(needle),
@@ -22193,17 +22204,87 @@ mod tests {
             );
         }
 
-        // The old wording filed a diet as a taste, which put it on a topic
-        // page instead of the card and left it out of every turn.
+        // A dietary rule as an example of a TASTE puts it on a topic page
+        // instead of the card, and out of every turn.
         assert!(
             !BUNDLED_INGEST_PROMPT_MD.contains("\"I do not eat meat\""),
-            "a diet is no longer offered as an example of a taste"
+            "a standing dietary rule is never offered as an example of a taste"
         );
+
+        // The document path carries its own copy of the same closed list, so
+        // a letter and a sentence must not file one allergy two ways.
+        for needle in [
+            "a standing dietary rule such as vegetarian or halal",
+            "a condition that WILL END, however long it runs",
+            "coeliac disease is `bio`, a course of antibiotics is not",
+        ] {
+            assert!(
+                crate::document::BUNDLED_DOCUMENT_EXTRACT_MD.contains(needle),
+                "the bundled document prompt does not say: {needle}"
+            );
+        }
 
         // The salience half: what a card carries is not all always-on.
         assert!(
             BUNDLED_INGEST_PROMPT_MD.contains("safety, health, family, the language they speak"),
             "the prompt must say which of the three families is always-on"
+        );
+    }
+
+    /// **Nothing in this file narrates what the code once did.**
+    ///
+    /// «Write what is, never what was» binds every comment and every test
+    /// message, and this file is where it keeps escaping: four times in one
+    /// week an assertion said what a rule ONCE did instead of what it does,
+    /// which is a sentence the next reader believes and cannot check. The two
+    /// phrasings that carry almost all of it are named in the body below, and
+    /// are simply not available here.
+    ///
+    /// A failure message does not need them. «the reconciler STOPPED answering
+    /// the no-successor case» says what has gone wrong without narrating a
+    /// history, and a guarantee is stated in the present: «a standing dietary
+    /// rule is NEVER offered as an example of a taste».
+    ///
+    /// Whole words, because `refused to` and `caused to` end in one of them.
+    /// The scan skips this function's own body and nothing else, since it has
+    /// to write the phrasings down in order to look for them — the same
+    /// exemption `read_only.rs` gives itself in the dashboard crate.
+    #[test]
+    fn this_file_never_says_what_the_code_once_did() {
+        // This function's own body is the one place the phrasings are
+        // allowed, because it has to write them down to look for them: the
+        // scan skips from its signature to the line that closes it.
+        const OWN_BODY_OPENS: &str = "fn this_file_never_says_what_the_code_once_did";
+        const OWN_BODY_CLOSES: &str = "    }";
+        let banned: [[&str; 2]; 2] = [["used", "to"], ["no", "longer"]];
+        let mut caught: Vec<String> = Vec::new();
+        let mut inside_own_body = false;
+        for (n, line) in include_str!("ingest.rs").lines().enumerate() {
+            if inside_own_body {
+                inside_own_body = line != OWN_BODY_CLOSES;
+                continue;
+            }
+            if line.contains(OWN_BODY_OPENS) {
+                inside_own_body = true;
+                continue;
+            }
+            let words: Vec<String> = line
+                .split(|c: char| !c.is_alphanumeric())
+                .filter(|w| !w.is_empty())
+                .map(str::to_lowercase)
+                .collect();
+            if banned
+                .iter()
+                .any(|p| words.windows(2).any(|w| w[0] == p[0] && w[1] == p[1]))
+            {
+                caught.push(format!("{}: {}", n + 1, line.trim()));
+            }
+        }
+        assert!(
+            caught.is_empty(),
+            "this file narrates what the code once did. Write what it does — «stopped X-ing» \
+             for a failure, the present tense for a guarantee:\n{}",
+            caught.join("\n")
         );
     }
 
@@ -22250,7 +22331,7 @@ mod tests {
     /// under whoever dictated it, so "read aloud every reply you send to bob"
     /// from anyone but bob has nowhere to go — routed per-user it would bind
     /// the SPEAKER and fire when the speaker talks, never when bob does. Read
-    /// as a rule for everyone it used to reach the admin gate instead, and an
+    /// as a rule for everyone it reaches the admin gate instead, and an
     /// ordinary user was refused for a rule they had not asked to set. So the
     /// classifier names the case (`behaviour_about`) and the engine answers it,
     /// on the same one-shot channel the admin refusal uses. What must NOT
@@ -22424,7 +22505,7 @@ mod tests {
         assert!(
             BUNDLED_INGEST_PROMPT_MD.contains("(BOB moves"),
             "the counter-example whose mover is a THIRD PERSON is gone, and it is the \
-             one a two-question test used to get wrong"
+             one a two-question test gets wrong without it"
         );
         // The naming rule has to justify itself with the criterion in force:
         // "your name is Gandalf" is per-user because it says YOUR, not because
@@ -23398,7 +23479,7 @@ mod tests {
     fn the_closing_stages_say_what_to_write_when_there_is_no_successor_to_name() {
         assert!(
             BUNDLED_INGEST_RECONCILE_MD.contains("a closure, reason\n      **\"contradicted\"**"),
-            "the reconciler no longer answers the no-successor case"
+            "the reconciler stopped answering the no-successor case"
         );
         assert!(
             BUNDLED_INGEST_RECONCILE_MD.contains("There is no fourth case"),
@@ -23406,7 +23487,7 @@ mod tests {
         );
         assert!(
             BUNDLED_INGEST_CLOSURES_MD.contains("there is no \"superseded\""),
-            "the topic-closure pass no longer rules the word out"
+            "the topic-closure pass stopped ruling the word out"
         );
     }
 
@@ -23439,12 +23520,12 @@ mod tests {
                 .collect::<String>();
             assert!(
                 passage.contains("withdraw_target"),
-                "the {name} is no longer told where a withdrawal is really named, \
+                "the {name} stopped being told where a withdrawal is really named, \
                  so it has no answer for a person asking to drop a rule"
             );
             assert!(
                 passage.contains("refused"),
-                "the {name} is no longer told that naming a rule here is refused"
+                "the {name} stopped being told that naming a rule here is refused"
             );
         }
     }
@@ -24292,7 +24373,7 @@ mod tests {
         assert!(
             BUNDLED_INGEST_RECONCILE_MD
                 .contains("nothing downstream folds two live values into one later"),
-            "the reconciler no longer knows a second live value stays where it lands"
+            "the reconciler stopped knowing a second live value stays where it lands"
         );
     }
 
