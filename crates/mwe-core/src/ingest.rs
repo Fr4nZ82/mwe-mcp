@@ -7453,7 +7453,8 @@ async fn capture_behaviour_rule(
         subject.clone(),
         scope,
         rule,
-        supersede.map(|old| (old, request.turn_now())),
+        supersede,
+        request.turn_now(),
     )
     .await?;
     Ok(Some(outcome))
@@ -7472,10 +7473,21 @@ async fn capture_behaviour_rule(
 /// technical-prose style, and the card the page is seeded with the first time
 /// it is created.
 ///
-/// `supersede` carries the fact being replaced together with the clock the
-/// replacement is stamped at; `None` is additive, and the capture layer dedups
-/// it against the rules already on **this** page
-/// (`capture::ChannelScope`).
+/// `dictated_at` is the instant of the TURN that laid the rule down, and it
+/// becomes the rule's `valid_from`. Not a nicety: everything that later
+/// reasons about when a sentence was uttered reads the earlier of `valid_from`
+/// and `created_at`, and `created_at` is the row's WRITE instant — on a
+/// backlog replay, the wall clock of the replay run. A rule left with no
+/// `valid_from` therefore dates itself to the night the engine caught up, and
+/// the date normaliser then resolves «this week» against that night: a rule
+/// dictated in June came out of a September pass reading «during the week of
+/// 7–13 September». Ordinary facts never had the problem because ingest gives
+/// them a `valid_from` from the classifier.
+///
+/// `supersede` names the fact being replaced; `None` is additive, and the
+/// capture layer dedups it against the rules already on **this** page
+/// (`capture::ChannelScope`). The replacement is stamped at `dictated_at` too
+/// — one turn, one clock.
 ///
 /// A USER-GLOBAL rule also RETIRES the narrower copies of the same directive
 /// ([`retire_narrower_twins`]): widening moves a rule rather than adding one.
@@ -7493,6 +7505,10 @@ async fn capture_behaviour_rule(
 /// [`capture::CaptureError::RuleIsAPlaceholder`] when the text carries a `[…]`
 /// placeholder instead of an instruction; otherwise as
 /// [`capture::wiki_capture`] / [`capture::wiki_supersede`].
+#[allow(
+    clippy::too_many_arguments,
+    reason = "the destination (wiki, subject, scope) and the directive (text, what it replaces, when it was laid down) are decided by two different callers and neither half is a struct anybody else holds"
+)]
 pub async fn file_behaviour_rule(
     tree: &WikiTree,
     pool: &SqlitePool,
@@ -7501,7 +7517,8 @@ pub async fn file_behaviour_rule(
     subject: Principal,
     scope: BehaviourScope,
     rule: &str,
-    supersede: Option<(&FactId, chrono::DateTime<chrono::Utc>)>,
+    supersede: Option<&FactId>,
+    dictated_at: chrono::DateTime<chrono::Utc>,
 ) -> crate::capture::Result<crate::capture::CaptureOutcome> {
     // A directive that asks for the rest of itself is a note the writer left
     // for themselves, and the rules page is the one place a note like that is
@@ -7551,7 +7568,10 @@ pub async fn file_behaviour_rule(
         fact_type: Some("rule".to_owned()),
         topics: Vec::new(),
         dedup_threshold: None,
-        valid_from: None,
+        // When the rule was LAID DOWN. See the doc comment: without it the
+        // rule dates itself to the instant it was written, which is the same
+        // thing live and months out on a replay.
+        valid_from: Some(crate::fact_index::bound_from_instant(dictated_at)),
         valid_to: None,
         style: Some(crate::wiki::PageStyle::ProsaTecnica),
         // The behaviour-rules page's own card, written on its testata the
@@ -7560,10 +7580,10 @@ pub async fn file_behaviour_rule(
         salience: None,
         authored_refs: Vec::new(),
     };
-    let now = supersede.map_or_else(chrono::Utc::now, |(_, when)| when);
     let outcome = match supersede {
-        Some((old, when)) => {
-            capture::wiki_supersede(tree, pool, Arc::clone(&embedder), old, cap_req, when).await?
+        Some(old) => {
+            capture::wiki_supersede(tree, pool, Arc::clone(&embedder), old, cap_req, dictated_at)
+                .await?
         },
         None => capture::wiki_capture(tree, pool, Arc::clone(&embedder), cap_req).await?,
     };
@@ -7588,7 +7608,7 @@ pub async fn file_behaviour_rule(
             rule,
             home_wiki.as_str(),
             &anchor,
-            now,
+            dictated_at,
         )
         .await;
     }
@@ -14973,6 +14993,57 @@ mod tests {
         assert!(!carries_a_placeholder("Keep answers short."));
     }
 
+    /// **A rule is dated by the turn that laid it down, not by the night the
+    /// engine wrote it.**
+    ///
+    /// Bob said «I'm on a terrible connection all week» on 15 June of the demo
+    /// script. The rule filed correctly, carrying «this week»; a REM date pass
+    /// then rewrote the phrase into a real date and resolved it against the
+    /// row's `created_at` — the replay run's wall clock — so a June rule came
+    /// out of the night reading «during the week of 7–13 September 2026», the
+    /// real week just gone, inside a dataset set in spring. Ordinary facts
+    /// escaped it only because ingest gives them a `valid_from`; a rule had
+    /// none at all.
+    #[tokio::test]
+    async fn a_behaviour_rule_is_dated_by_the_turn_that_laid_it_down() {
+        let (dir, tree, pool) = setup_workdir().await;
+        let dictated = chrono::DateTime::parse_from_rfc3339("2026-06-15T19:30:00Z")
+            .unwrap()
+            .to_utc();
+        let outcome = file_behaviour_rule(
+            &tree,
+            &pool,
+            fake_embedder(),
+            WikiId::parse("alice").unwrap(),
+            Principal::User("alice".into()),
+            BehaviourScope::PerUser,
+            "Keep answers short: I am on a poor connection this week.",
+            None,
+            dictated,
+        )
+        .await
+        .expect("the rule files");
+
+        let row = fact_index::find_by_id(&pool, &outcome.fact_id)
+            .await
+            .unwrap()
+            .expect("the rule row");
+        assert_eq!(
+            row.valid_from.as_deref(),
+            Some("2026-06-15T19:30:00Z"),
+            "the rule carries the instant of the turn that dictated it"
+        );
+        assert!(
+            row.valid_from.as_deref() < Some(row.created_at.as_str()),
+            "and it is earlier than the write instant, which is what makes every later \
+             reader — the date normaliser above all — resolve «this week» against June \
+             instead of against the night the row was written: {:?} vs {}",
+            row.valid_from,
+            row.created_at
+        );
+        drop(dir);
+    }
+
     /// The placeholder refusal is at the chokepoint, so no road into the rules
     /// channel can write one — including the operator chat, which has no
     /// classifier in front of it.
@@ -14988,6 +15059,7 @@ mod tests {
             BehaviourScope::PerUser,
             "The reasoning: [to be completed by the user in dialogue]",
             None,
+            chrono::Utc::now(),
         )
         .await
         .expect_err("a placeholder is refused");
@@ -19855,6 +19927,7 @@ mod tests {
             BehaviourScope::UserGlobal,
             RULE,
             None,
+            chrono::Utc::now(),
         )
         .await
         .expect("the admin widens it");

@@ -1887,6 +1887,7 @@ async fn dispatch_wiki_set_behaviour_rule(
         scope,
         rule,
         None,
+        chrono::Utc::now(),
     )
     .await
     .map_err(|e| AgenticToolError::InternalFailure {
