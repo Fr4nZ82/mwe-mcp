@@ -1210,14 +1210,19 @@ fn resolve_page_wiki(slug: &str, slug_source_wiki: &BTreeMap<String, String>) ->
 /// Here nobody judged. A claim reaches this path because no page was found
 /// for it at all, and the engine will not invent one — there is no page that
 /// means "unsorted". So it routes exactly what the classifier RESERVED as
-/// always-on core, `salience: "high"`, and leaves everything else waiting.
+/// always-on core, and leaves everything else waiting.
 ///
-/// WHAT may sit on a card is one question with one answer
-/// ([`fact_index::belongs_on_an_identity_card`]): a card carries who somebody
-/// is, so `bio` and `high` and nothing else. The kinds are named positively
-/// rather than by exclusion, because a claim with no `fact_type` at all is a
-/// claim nobody said was an identity — and the page a person's profile opens
-/// with is the wrong place to guess.
+/// The pair is `bio` and `high`
+/// ([`fact_index::belongs_on_an_identity_card`]): the KIND, which every road
+/// onto a card asks about ([`fact_index::is_an_identity_kind`]) because a card
+/// carries who somebody is; and the mark, which only THIS road reads. A claim
+/// nobody placed may be homed on a card only where the classifier reserved it,
+/// and where somebody did look at the claim and the card together that mark
+/// has no vote.
+///
+/// The kinds are named positively rather than by exclusion, because a claim
+/// with no `fact_type` at all is a claim nobody said was an identity — and the
+/// page a person's profile opens with is the wrong place to guess.
 fn fact_belongs_on_a_card(f: &FactForPage) -> bool {
     fact_index::belongs_on_an_identity_card(f.fact_type.as_deref(), f.salience.as_deref())
 }
