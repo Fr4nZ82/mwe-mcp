@@ -7,9 +7,9 @@ is the record of those recalls — the most recent first, and only your own. The
 page's own empty state says when a row appears: as soon as a turn or a deep
 search runs.
 
-The table says **When**, **What ran**, **Who it was for**, **What was asked**,
-how many facts were found and how, how many **steps** the search walked, **why
-it stopped**, and how much text was handed over.
+The table's columns are **When**, **What ran**, **Who it was for**, **What was
+asked**, **Facts found** (how many, and how), **Steps walked**, **Why it
+stopped** and **Text handed over**.
 
 ## Opening one
 
@@ -52,10 +52,12 @@ the same recall as text:
   were put to it and shows the answer it gave, word for word. It is the only
   step that can retire something you had stored, so it is shown raw.
 - **Changes it asked for and did not get** — replacing a stored fact and
-  closing one both take it out of what the memory answers with, so every one is
-  checked before it is carried out. This panel lists the ones that did not pass,
-  which verb asked and why, and it appears only on a turn that had one. The fact
-  that would have been taken away is exactly as it was.
+  closing one both take it out of what the memory answers with, so every one
+  is checked before it is carried out. This panel lists the ones that did
+  not pass, a row each: **Asked for** (which verb), **The fact**, **Replaced
+  by**, **Over** (what the two were said to have in common) and **Why not**.
+  It appears only on a turn that had one, and the fact that would have been
+  taken away is exactly as it was.
 - **Handed to the consumer** — the text that actually reached your assistant
   (a deep search shows **Answered to the caller** instead).
 - **Standing rules handed over** — your standing rules as they went with it,

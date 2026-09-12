@@ -23,9 +23,12 @@ can open one, see it in words, and fix it. See [Your facts](your-facts.md).
   about other people — [Your facts](your-facts.md).
 - Correct a fact, close it, or forget it.
 - Read the memory as pages of ordinary text — [Wikis and pages](wikis-and-pages.md).
+- Find the pages a word appears on, from the box in the top bar — [Search](search.md).
 - Leave a note on a page for the memory to act on — [Comments](comments.md).
 - Ask the memory to do something, in plain language — [The chat](the-chat.md).
 - See what was recalled for you, and why — [What was recalled for you](traces.md).
+- Read what the memory rearranged about its own filing, and answer the two
+  things it stops to ask — [Proposals](proposals.md).
 
 ## What it does not do
 

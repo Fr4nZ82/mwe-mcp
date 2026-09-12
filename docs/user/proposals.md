@@ -16,11 +16,14 @@ are marked **Pending**.
 Above the table, four tabs: **All** (where the page opens), **Pending**,
 **Applied**, **Expired**. The table has six columns.
 
-- **What** — the kind of change, in a couple of words. There are a dozen or so:
-  *A page the memory made*, *A link between pages*, *A page of its own*, *A fact
-  moved*, *Two pages merged*, *Two facts merged*, *Facts closed*, *Dates
-  corrected*, *Sharing changed*, and the two that are questions — *Two answers
-  to one question* and *A request to forget*.
+- **What** — the kind of change, in a couple of words: *A page the memory
+  made*, *A link between pages*, *A page of its own*, *A fact moved*, *Two
+  pages merged*, *A wiki of their own*, *Pages filed away*, *Pages moved wiki*,
+  *Two facts merged*, *Facts closed*, *Dates corrected*, *Sharing changed*, and
+  the two that are questions — *Two values for one detail* and *A request to
+  forget*. A rearrangement with no name of its own reads
+  *The memory rearranged*, and a row written by a newer engine than this one
+  reads *Something changed* rather than being given a wrong label.
 - **What it says** — one sentence saying what happened, or what is being asked.
   It is written from the note itself, so the page needs no model to explain it
   to you and never calls one.
