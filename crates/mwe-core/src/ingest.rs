@@ -5757,20 +5757,26 @@ async fn apply_plan_closures(
 /// - the speaker **authored** the fact. The vote machinery refuses that case
 ///   on purpose — a person's own contribution is theirs to delete outright —
 ///   and doing it here would make a model's reading of one sentence
-///   irreversible. The agent's `wiki_forget` tool stays the road for it;
+///   irreversible. The agent's `wiki_forget` tool stays the road for it, and
+///   the speaker is TOLD so: the count comes back for the notice channel,
+///   because a person who asked for something to go and is answered with
+///   silence believes it went;
 /// - the speaker is **neither the subject nor its author**, which is not
 ///   theirs to ask about at all.
 ///
 /// The speaker acts as themselves and never as an administrator: `is_admin`
 /// is `false` whoever is speaking, because a turn is a conversation and not
 /// the dashboard.
+///
+/// Returns how many of the facts were the speaker's OWN to remove.
 async fn ask_to_forget_what_was_withdrawn(
     pool: &SqlitePool,
     tree: &WikiTree,
     embedder: &Arc<dyn Embedder>,
     retracted: &[FactId],
     request: &IngestRequest,
-) {
+) -> usize {
+    let mut theirs_to_remove = 0usize;
     for fact_id in retracted {
         match crate::votes::open_forget_request(
             pool,
@@ -5798,6 +5804,15 @@ async fn ask_to_forget_what_was_withdrawn(
                 fact_id = fact_id.as_str(),
                 "ingest: the speaker asked for this to be taken out and nobody else could read                  it — forgotten"
             ),
+            Err(crate::votes::ForgetRequestError::SenderActsDirectly { .. }) => {
+                theirs_to_remove += 1;
+                tracing::info!(
+                    fact_id = fact_id.as_str(),
+                    sender_id = request.sender_id.as_str(),
+                    "ingest: the speaker asked to be rid of something they said themselves — \
+                     nothing removed, and they are told so"
+                );
+            },
             Err(err) => tracing::info!(
                 fact_id = fact_id.as_str(),
                 sender_id = request.sender_id.as_str(),
@@ -5806,6 +5821,7 @@ async fn ask_to_forget_what_was_withdrawn(
             ),
         }
     }
+    theirs_to_remove
 }
 
 /// The act-first paper trail of a closure batch: ONE born-applied
@@ -11317,6 +11333,11 @@ pub async fn wiki_ingest_message(
     // A rule whose subject is somebody other than the speaker: refused for
     // everyone, the admin included, and answered on the notice channel.
     let mut rule_about_other_denied = false;
+    // How many facts the speaker asked to be rid of turned out to be their
+    // OWN. Nothing is removed for them — an irreversible delete on a model's
+    // reading of one sentence is not a thing the engine does — so the turn
+    // owes them a sentence saying so, or they walk away believing it went.
+    let mut own_facts_not_removed = 0usize;
     // A list item the turn could NOT file, because no usable page name reached
     // the write: none was given, the classifier named a reserved page, or the
     // wiki is already at its list limit. Which of the three is what the user
@@ -12629,7 +12650,7 @@ pub async fn wiki_ingest_message(
             )
             .await;
             if plan.erasure {
-                ask_to_forget_what_was_withdrawn(
+                own_facts_not_removed += ask_to_forget_what_was_withdrawn(
                     pool,
                     tree,
                     &embedder,
@@ -12967,7 +12988,7 @@ pub async fn wiki_ingest_message(
             // be GONE, and closing it only says it stopped holding
             // ([`ask_to_forget_what_was_withdrawn`]).
             if plan.erasure {
-                ask_to_forget_what_was_withdrawn(
+                own_facts_not_removed += ask_to_forget_what_was_withdrawn(
                     pool,
                     tree,
                     &embedder,
@@ -13219,6 +13240,16 @@ pub async fn wiki_ingest_message(
              not applied. Tell the user politely that an agent-wide change is \
              reserved to the admin; do not adopt it. A preference that applies \
              only to them you may still honour."
+                .to_owned()
+        }),
+        (own_facts_not_removed > 0).then(|| {
+            "NOTE — the user asked to have something taken OUT of the memory, and what \
+             they named is a thing THEY said themselves. It has been marked as no longer \
+             holding, but it has NOT been removed, and nothing was asked of anybody: a \
+             person's own words are theirs to delete, and deleting them is not something \
+             this turn may do on its own. Tell them plainly that it is still there and \
+             that you can remove it for good if they confirm — and if they do, remove it \
+             with the forget tool. Do not tell them it is gone."
                 .to_owned()
         }),
     ]);
@@ -15791,6 +15822,101 @@ mod tests {
                 .deleted_at
                 .is_none(),
             "the fact stays until the window closes"
+        );
+        drop(dir);
+    }
+
+    /// **Asking to be rid of your OWN words gets an answer, not a silence.**
+    ///
+    /// The vote machinery refuses a request from the person who wrote the
+    /// fact, on purpose: their own contribution is theirs to delete outright.
+    /// The engine will not do that from a turn — an irreversible delete on a
+    /// model's reading of one sentence is not a thing it does — so the whole
+    /// gesture used to end in a log line, and the speaker was told nothing.
+    /// They asked for it to go, nothing went, and nobody said so.
+    #[tokio::test]
+    async fn asking_to_be_rid_of_your_own_words_says_so_out_loud() {
+        let (dir, tree, pool) = setup_workdir().await;
+        let hers = capture::wiki_capture(
+            &tree,
+            &pool,
+            fake_embedder(),
+            CaptureRequest {
+                subject_external: None,
+                slot: None,
+                slot_value: None,
+                authored_refs: Vec::new(),
+                wiki_id: WikiId::parse("alice").unwrap(),
+                page: Some(PathBuf::from("cucina.md")),
+                body: "Alice's interview went badly.".into(),
+                subject: Principal::User("alice".into()),
+                allow: Vec::new(),
+                sender: Some(Principal::User("alice".into())),
+                fact_type: Some("episode".to_owned()),
+                page_description: None,
+                topics: vec!["lavoro".to_owned(), "colloquio".to_owned()],
+                dedup_threshold: Some(1.01),
+                valid_from: Some("2026-05-02T09:15:00Z".to_owned()),
+                valid_to: None,
+                style: None,
+                salience: None,
+            },
+        )
+        .await
+        .expect("plant");
+
+        let json = format!(
+            "{{\"intent\":\"capture\",\"withdrawal\":true,\"erasure\":true,\
+             \"extractions\":[],\"closures\":[{{\"target\":\"{}\",\
+             \"reason\":\"retracted\"}}]}}",
+            hers.fact_id.as_str()
+        );
+        let llm = FakeLlmBackend::new("fake", &json);
+        let resp = wiki_ingest_message(
+            &pool,
+            &tree,
+            fake_embedder(),
+            &llm,
+            None,
+            req(
+                "That thing about the interview. I don't want that in here any more.",
+                "alice",
+            ),
+            &IngestPolicy::default(),
+        )
+        .await
+        .expect("ingest");
+
+        // Nobody was asked: it is hers, and the electorate for a person's own
+        // words is nobody.
+        let proposals: (i64,) =
+            sqlx::query_as("SELECT count(*) FROM structure_proposals WHERE kind = 'fact_forget'")
+                .fetch_one(&pool)
+                .await
+                .expect("count");
+        assert_eq!(proposals.0, 0, "her own words open no vote");
+
+        // The fact is still there — closed, not removed.
+        let row = fact_index::find_by_id(&pool, &hers.fact_id)
+            .await
+            .unwrap()
+            .expect("the row is still there");
+        assert!(row.deleted_at.is_none(), "nothing was deleted");
+        assert!(
+            row.valid_to.is_some(),
+            "the closure still happened: it stopped holding"
+        );
+
+        // And the turn says so, on the channel every other engine refusal
+        // uses.
+        let notice = resp.rules.unwrap_or_default();
+        assert!(
+            notice.contains("has NOT been removed"),
+            "the speaker is told it is still there: {notice}"
+        );
+        assert!(
+            notice.contains("if they confirm"),
+            "and told how to finish it: {notice}"
         );
         drop(dir);
     }
