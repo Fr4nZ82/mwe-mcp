@@ -906,16 +906,32 @@ pub fn build_compilation_plan(
                 );
                 continue;
             }
-            // And that is the only thing the engine decides about a card.
-            // WHAT belongs on one — is this who somebody is? — is a
-            // judgement, and the Cartografo is the pass that makes it: it is
+            // And a card carries WHO SOMEBODY IS. The KIND is the engine's to
+            // hold whoever assigned the fact (founder, 2026-09-12, reading a
+            // card that opened with a sharing rule and «I'm exhausted»): a
+            // claim that is not an identity is not put on one, however well it
+            // was placed.
+            //
+            // Only the kind. WHICH identity facts a card carries is a
+            // judgement, and the Cartografo is the pass that makes it — it is
             // handed the claim and the card together and told what a card is
-            // for. Between 2026-08-25 and 2026-09-05 a mark from the ingest
-            // classifier could veto that answer, which put the judgement of
-            // the pass that never saw the card above the one that did — and
-            // left "Bilbo is a student" — the person is renamed here —
-            // assigned to his own card by the Cartografo and declined
-            // thirty-one nights running.
+            // for. Between 2026-08-25 and 2026-09-05 a SALIENCE mark from the
+            // ingest classifier could veto that answer, which put the
+            // judgement of the pass that never saw the card above the one that
+            // did, and left "Bilbo is a student" — the person is renamed here
+            // — assigned to his own card and declined thirty-one nights
+            // running. That veto is not coming back.
+            if page.is_identity_card()
+                && !fact_index::is_an_identity_kind(fact.fact_type.as_deref())
+            {
+                tracing::debug!(
+                    fact_id = fact.fact_id.as_str(),
+                    slug = %slug,
+                    fact_type = fact.fact_type.as_deref().unwrap_or("none"),
+                    "planner: identity card refused a claim that is not who somebody is"
+                );
+                continue;
+            }
             page.primary_facts.push((*fact).clone());
             assigned.insert(fact.fact_id.as_str().to_owned());
         }
@@ -1196,19 +1212,14 @@ fn resolve_page_wiki(slug: &str, slug_source_wiki: &BTreeMap<String, String>) ->
 /// means "unsorted". So it routes exactly what the classifier RESERVED as
 /// always-on core, `salience: "high"`, and leaves everything else waiting.
 ///
-/// The kinds it will not route are named, rather than the kinds it will, and
-/// that is deliberate: not every writer sets a `fact_type` (a re-derived
-/// fact, an act-first move), and a reserved claim must not be stranded for
-/// want of a mark nobody put on it. So an absent kind passes, and only a kind
-/// that is positively not an identity is refused: a `plan` has not happened,
-/// an `episode` already has, a `preference` is a taste, and `other` is what
-/// fits nothing.
+/// WHAT may sit on a card is one question with one answer
+/// ([`fact_index::belongs_on_an_identity_card`]): a card carries who somebody
+/// is, so `bio` and `high` and nothing else. The kinds are named positively
+/// rather than by exclusion, because a claim with no `fact_type` at all is a
+/// claim nobody said was an identity — and the page a person's profile opens
+/// with is the wrong place to guess.
 fn fact_belongs_on_a_card(f: &FactForPage) -> bool {
-    f.salience.as_deref() == Some("high")
-        && !matches!(
-            f.fact_type.as_deref(),
-            Some("plan" | "episode" | "preference" | "other")
-        )
+    fact_index::belongs_on_an_identity_card(f.fact_type.as_deref(), f.salience.as_deref())
 }
 
 fn identity_card_target(f: &FactForPage, pages: &BTreeMap<String, PagePlan>) -> Option<String> {
@@ -4238,16 +4249,133 @@ mod tests {
         assert_eq!(bp.assignments[0].page_slug, "spesa");
     }
 
-    /// The card takes what the classifier reserved for it, and nothing else.
+    /// **A card carries who somebody is, and nothing else.**
     ///
-    /// A card carries ONE subject, and that is the whole of what the engine
-    /// decides about one.
+    /// Bob's card in the September demo opened with a sharing rule, «I prefer
+    /// a hybrid car», «I'm exhausted», and then, fourth, his birthday. Only
+    /// the last of those is who he is. The rest reached the page because the
+    /// deterministic fallback took anything the classifier had RESERVED unless
+    /// its kind was positively not an identity — and `state`, `rule` and a
+    /// claim with no kind at all all walked through that door.
+    #[test]
+    fn the_identity_fallback_homes_only_who_somebody_is() {
+        let mut foundation = BTreeMap::new();
+        foundation.insert("franz".to_owned(), person("franz"));
+        let reserved = |seed: u8, text: &str, kind: &str| {
+            let mut f = fact(seed, text, "user:franz", "franz");
+            f.fact_type = Some(kind.to_owned());
+            f.salience = Some("high".to_owned());
+            f
+        };
+        let homed = |f: FactForPage| {
+            let (plan, _) = build_compilation_plan(
+                std::slice::from_ref(&f),
+                &foundation,
+                &Blueprint::default(),
+                &ConciliatorResult::default(),
+                &ConceptRegistry::empty("t"),
+                &BTreeMap::new(),
+                &[],
+                "t",
+            );
+            plan.pages["franz"].primary_facts.len()
+        };
+
+        assert_eq!(
+            homed(reserved(1, "Franz's birthday is 2 September.", "bio")),
+            1,
+            "who he is lands, which is what a card is for"
+        );
+        for (kind, text) in [
+            ("state", "Franz is exhausted."),
+            ("rule", "Never tell Zoe about the scan result."),
+            ("preference", "Franz prefers a hybrid car."),
+            ("plan", "Franz will call the garage."),
+            ("episode", "Franz went to the fair."),
+            ("other", "Something that fits nothing."),
+        ] {
+            assert_eq!(
+                homed(reserved(2, text, kind)),
+                0,
+                "a `{kind}` is not who somebody is, whatever the classifier reserved"
+            );
+        }
+
+        // And the door the old rule left open on purpose: a claim NOBODY said
+        // was an identity. «An absent kind passes» is how a sharing rule
+        // reached a card, and the page a person's profile opens with is the
+        // wrong place to guess.
+        let mut untyped = fact(3, "Something nobody classified.", "user:franz", "franz");
+        untyped.fact_type = None;
+        untyped.salience = Some("high".to_owned());
+        assert_eq!(homed(untyped), 0, "an unmarked claim is not an identity");
+    }
+
+    /// **A card already carrying the wrong thing loses it on the next
+    /// compile.**
     ///
-    /// Whether a claim is who somebody IS gets judged by the Cartografo, which
-    /// holds the claim and the card together. What it may not do is put
-    /// somebody else on the card: a fact that names what it is about is about
-    /// that thing, and no answer from any model makes it this person's
-    /// identity.
+    /// The rule is read when the plan is built, not when the fact was written,
+    /// so a card whose contents change is a page whose plan changed — and a
+    /// page whose plan changed is dirty and recompiles. Nothing has to go
+    /// round finding the old cards.
+    #[test]
+    fn a_card_drops_what_it_should_never_have_carried() {
+        let mut foundation = BTreeMap::new();
+        foundation.insert("franz".to_owned(), person("franz"));
+        let mut birthday = fact(1, "Franz's birthday is 2 September.", "user:franz", "franz");
+        birthday.fact_type = Some("bio".to_owned());
+        let mut tired = fact(2, "Franz is exhausted.", "user:franz", "franz");
+        tired.fact_type = Some("state".to_owned());
+
+        // Last night's plan put both on the card, and the Cartografo says the
+        // same again tonight.
+        let blueprint = Blueprint {
+            assignments: vec![
+                Assignment {
+                    fact_id: birthday.fact_id.as_str().to_owned(),
+                    page_slug: "franz".to_owned(),
+                },
+                Assignment {
+                    fact_id: tired.fact_id.as_str().to_owned(),
+                    page_slug: "franz".to_owned(),
+                },
+            ],
+            ..Blueprint::default()
+        };
+        let (plan, _) = build_compilation_plan(
+            &[birthday, tired],
+            &foundation,
+            &blueprint,
+            &ConciliatorResult::default(),
+            &ConceptRegistry::empty("t"),
+            &BTreeMap::new(),
+            &[],
+            "t",
+        );
+        let on_card: Vec<&str> = plan.pages["franz"]
+            .primary_facts
+            .iter()
+            .map(|f| f.text.as_str())
+            .collect();
+        assert_eq!(
+            on_card,
+            vec!["Franz's birthday is 2 September."],
+            "the claim that is not who he is leaves the page, and the plan saying so is what \
+             makes the page recompile"
+        );
+    }
+
+    /// The two things the engine decides about a card, and the one it does
+    /// not.
+    ///
+    /// A card carries ONE subject and carries IDENTITIES. Neither is any
+    /// model's to talk its way past: a fact that names what it is about is
+    /// about that thing, and a claim that is not who somebody is has a page of
+    /// its own or waits for one.
+    ///
+    /// WHICH identity facts a card carries is the third question and it is not
+    /// the engine's: the Cartografo holds the claim and the card together, and
+    /// a mark from a pass that saw neither does not overrule it.
     #[test]
     fn an_identity_card_carries_one_subject_whatever_the_model_said() {
         let mut foundation = BTreeMap::new();
@@ -4301,34 +4429,51 @@ mod tests {
             "a fact about somebody else is refused however the Cartografo named it: {on_card:?}"
         );
 
-        // And the same rule the other way round: what the Cartografo DID
-        // choose lands, whatever marks an earlier pass put on it.
-        let mut vaccination = fact(3, "Franz has had the pertussis jab.", "user:franz", "franz");
-        vaccination.salience = Some("normal".to_owned());
-        vaccination.fact_type = Some("episode".to_owned());
-        let blueprint = Blueprint {
-            assignments: vec![Assignment {
-                fact_id: vaccination.fact_id.as_str().to_owned(),
-                page_slug: "franz".to_owned(),
-            }],
-            ..Blueprint::default()
+        // And the two halves of what the engine holds a card to, driven from
+        // the other side: the KIND is the engine's and the SALIENCE is not.
+        let on_the_card = |mut f: FactForPage| {
+            let blueprint = Blueprint {
+                assignments: vec![Assignment {
+                    fact_id: f.fact_id.as_str().to_owned(),
+                    page_slug: "franz".to_owned(),
+                }],
+                ..Blueprint::default()
+            };
+            f.salience = Some("normal".to_owned());
+            let (plan, _) = build_compilation_plan(
+                std::slice::from_ref(&f),
+                &foundation,
+                &blueprint,
+                &ConciliatorResult::default(),
+                &ConceptRegistry::empty("t"),
+                &BTreeMap::new(),
+                &[],
+                "t",
+            );
+            plan.pages["franz"].primary_facts.len()
         };
-        let (plan, _) = build_compilation_plan(
-            &[vaccination],
-            &foundation,
-            &blueprint,
-            &ConciliatorResult::default(),
-            &ConceptRegistry::empty("t"),
-            &BTreeMap::new(),
-            &[],
-            "t",
-        );
+
+        // A claim that is not who somebody is does not go on their card,
+        // however well the Cartografo placed it.
+        let mut vaccination = fact(3, "Franz has had the pertussis jab.", "user:franz", "franz");
+        vaccination.fact_type = Some("episode".to_owned());
         assert_eq!(
-            plan.pages["franz"].primary_facts.len(),
+            on_the_card(vaccination),
+            0,
+            "an occasion is not an identity, and a card carries identities"
+        );
+
+        // And an identity the ingest pass did NOT reserve still lands, because
+        // WHICH identity facts a card carries is the judgement of the pass
+        // that saw both. A salience veto here once left "Bilbo is a student"
+        // declined thirty-one nights running, and it is not coming back.
+        let mut sister = fact(4, "Franz's sister is called Carol.", "user:franz", "franz");
+        sister.fact_type = Some("bio".to_owned());
+        assert_eq!(
+            on_the_card(sister),
             1,
             "the pass that saw the card and the claim together is the one that \
-             decides: {:?}",
-            plan.pages["franz"].primary_facts
+             decides WHICH identity facts it carries"
         );
     }
 
@@ -4444,7 +4589,7 @@ mod tests {
                 subject_id: "user:alice".parse::<Principal>().unwrap(),
                 allow_ids: Vec::new(),
                 sender_id: None,
-                fact_type: None,
+                fact_type: Some("bio".to_owned()),
                 topics: Vec::new(),
                 valid_from: None,
                 valid_to: None,
@@ -5586,7 +5731,7 @@ mod tests {
                     subject_id: format!("user:{wiki}").parse::<Principal>().unwrap(),
                     allow_ids: Vec::new(),
                     sender_id: None,
-                    fact_type: None,
+                    fact_type: Some("bio".to_owned()),
                     topics: Vec::new(),
                     valid_from: None,
                     valid_to: None,
@@ -5718,8 +5863,9 @@ mod tests {
             salience: Some("high".to_owned()),
             source_ref: None,
         };
-        // A normal content fact (must be homed) ...
-        let content = mk("01", "wikis/alice/appunti_vari.md", "state");
+        // A normal content fact (must be homed — the identity fallback is the
+        // only placement in this plan, so it has to be card material) ...
+        let content = mk("01", "wikis/alice/appunti_vari.md", "bio");
         let content_id = content.fact_id.clone();
         fact_index::insert(&pool, &content).await.unwrap();
         // ... and a behaviour-rule fact on the reserved `@rules.md` (must be spared).
@@ -6311,7 +6457,7 @@ mod tests {
                 subject_id: "user:alice".parse::<Principal>().unwrap(),
                 allow_ids: Vec::new(),
                 sender_id: None,
-                fact_type: None,
+                fact_type: Some("bio".to_owned()),
                 topics: Vec::new(),
                 valid_from: None,
                 valid_to: None,
@@ -6595,7 +6741,7 @@ mod tests {
                     subject_id: subject.parse::<Principal>().unwrap(),
                     allow_ids: Vec::new(),
                     sender_id: None,
-                    fact_type: None,
+                    fact_type: Some("bio".to_owned()),
                     topics: Vec::new(),
                     valid_from: None,
                     valid_to: None,

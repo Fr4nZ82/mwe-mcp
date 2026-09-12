@@ -759,11 +759,11 @@ mod tests {
             subject: "user:alice".parse::<Principal>().unwrap(),
             allow: Vec::new(),
             sender: None,
-            // `high` + a kind a card holds: these drains route through the
-            // identity fallback, which takes what the classifier reserved
-            // (`planner::fact_belongs_on_a_card`). `high` on a `preference`
-            // is a combination the classifier is told never to emit.
-            fact_type: Some("state".to_owned()),
+            // `bio` + `high`: these drains route through the identity
+            // fallback, and a card carries who somebody is
+            // (`planner::fact_belongs_on_a_card`). Any other kind here has no
+            // page at all and stays waiting, which is a different test.
+            fact_type: Some("bio".to_owned()),
             topics: vec!["food".to_owned()],
             dedup_threshold: None,
             valid_from: None,

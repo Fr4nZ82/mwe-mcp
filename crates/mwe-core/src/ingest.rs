@@ -28883,7 +28883,7 @@ mod tests {
         let json = "{\"intent\":\"capture\",\"extractions\":[{\
             \"target_wiki_id\":\"alice\",\"target_page\":\"preferenze.md\",\
             \"subject_id\":\"user:alice\",\"body\":\"Alice beve il caffè amaro.\",\
-            \"fact_type\":\"state\",\"salience\":\"high\"}]}";
+            \"fact_type\":\"bio\",\"salience\":\"high\"}]}";
         // `salience: high` and a kind a card can hold are what make the claim
         // placeable without a Cartografo: the identity card is the only
         // deterministic home since 2026-08-22, and it takes what the

@@ -210,8 +210,40 @@ impl FactIndexRow {
     /// gate on this predicate; the explicit paths do not.
     #[must_use]
     pub fn is_identity_core(&self) -> bool {
-        self.fact_type.as_deref() == Some("bio") && self.salience.as_deref() == Some("high")
+        belongs_on_an_identity_card(self.fact_type.as_deref(), self.salience.as_deref())
     }
+}
+
+/// Whether a claim of this KIND is the kind an identity card carries.
+///
+/// **A card carries who somebody is, and nothing else.** Everything else has a
+/// page of its own or waits for one: «I am exhausted» is a `state` and true of
+/// a Tuesday, a taste is a `preference`, a sharing policy is a directive that
+/// belongs on the rules page. A card that opens with any of them tells the
+/// reader something that is not who the person is, and tells the engine
+/// nothing it can use — the founder, reading one on 2026-09-12: *«nella scheda
+/// solo la riga sul compleanno dovrebbe starci»*.
+///
+/// The KIND is the engine's and is asked here by every road onto a card, so
+/// none of them can drift. WHICH identity facts a given card carries stays a
+/// judgement, and the pass that is handed the claim and the card together is
+/// the one that makes it ([`crate::planner`]).
+#[must_use]
+pub fn is_an_identity_kind(fact_type: Option<&str>) -> bool {
+    fact_type == Some("bio")
+}
+
+/// Whether a claim may be homed on a card **with nobody judging** — the
+/// deterministic fallback's question.
+///
+/// An identity kind that the classifier also RESERVED as always-on
+/// (`salience: "high"`), which is the same pair the identity core is made of,
+/// because that set is exactly what a card written by nobody may hold. A `bio`
+/// fact without the mark is still card material; it just has to be placed by
+/// somebody who looked at it.
+#[must_use]
+pub fn belongs_on_an_identity_card(fact_type: Option<&str>, salience: Option<&str>) -> bool {
+    is_an_identity_kind(fact_type) && salience == Some("high")
 }
 
 /// Insert payload — the subset of [`FactIndexRow`] a fresh capture
