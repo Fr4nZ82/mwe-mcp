@@ -545,7 +545,7 @@ mod tests {
     /// The write-path prune only runs when somebody writes, so the last turn
     /// of the day would otherwise sit in the table until the next one. The
     /// sweep is by the clock, so an idle install holds the outcome for the
-    /// window and no longer.
+    /// window and not a minute more.
     #[tokio::test]
     async fn an_idle_deployment_keeps_nothing_past_the_window() {
         let pool = pool().await;

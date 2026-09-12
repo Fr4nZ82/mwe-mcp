@@ -10235,11 +10235,6 @@ pub async fn wiki_ingest_message(
     // backend ignores it and forces `maxOutputTokens: 65536` (combined
     // thinking+output budget); the temperature 0.1 is likewise clamped to
     // Gemini's mandated 1.0 — both bind only on Ollama/Anthropic.
-    // The plan is many small JSON objects — one per extracted fact — and a
-    // long message can want more than the cap allows. A reply that stops at
-    // the ceiling is unbalanced JSON, which parses as nothing at all; when
-    // that happens the call is made once more with twice the room, because
-    // the alternative is filing nothing and saying so.
     // THE FIRST OF THE TWO CALLS A REPEAT DOES NOT MAKE. What the message
     // means was decided by the delivery that wrote it down, and rides in
     // `repeat`; the plan handed to the rest of the orchestrator states
@@ -10252,6 +10247,11 @@ pub async fn wiki_ingest_message(
             ..LlmIngestPlan::default()
         }
     } else {
+        // The plan is many small JSON objects — one per extracted fact — and a
+        // long message can want more than the cap allows. A reply that stops
+        // at the ceiling is unbalanced JSON, which parses as nothing at all;
+        // when that happens the call is made once more with twice the room,
+        // because the alternative is filing nothing and saying so.
         let mut max_tokens = CLASSIFIER_MAX_TOKENS;
         let llm_resp = loop {
             let attempt = llm
@@ -12296,7 +12296,6 @@ pub async fn wiki_ingest_message(
         notice,
         llm_used: true,
     });
-    let intent = outcome.intent;
     // Behaviour directives ride their own first-level field, kept apart from
     // the recalled memory in `context_snippet`. The notices are the write half
     // and travel with it; the directives in force are a reading of the memory
