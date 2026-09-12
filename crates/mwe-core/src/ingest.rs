@@ -3872,6 +3872,20 @@ struct TurnFact {
     id: FactId,
     /// Its body, capped for the line the reconciler is shown.
     body: String,
+    /// Who or what the extraction is ABOUT, as the dispatch resolved it. The
+    /// supersede verb compares it against the target's subject: a claim about
+    /// one subject does not replace a claim about another, whatever the two
+    /// sentences share.
+    subject: Principal,
+    /// Its topics as the classifier wrote them — macrotopic first, then
+    /// microtopic ([`crate::recall::RecallHit::topics`]).
+    topics: Vec<String>,
+    /// The card fact this extraction declared it contradicts
+    /// ([`LlmExtraction::conflicts_with`]), when it named one the parse could
+    /// read. It is the classifier saying in as many words that the two facts
+    /// fill one box, which is the strongest evidence the supersede verb can
+    /// get that a pair is about one thing.
+    conflicts_with: Option<FactId>,
     /// `Some(stored)` when write-time dedup found the claim already in the
     /// memory as `stored` and wrote nothing under [`id`]; `None` when a row
     /// exists under it — in `fact_index` (written this turn) or in
@@ -3888,22 +3902,37 @@ struct TurnFact {
 
 impl TurnFact {
     /// An extraction with a row behind it: the successor verb may weld to it.
-    const fn filed(id: FactId, body: String) -> Self {
+    const fn filed(id: FactId, body: String, subject: Principal) -> Self {
         Self {
             id,
             body,
+            subject,
+            topics: Vec::new(),
+            conflicts_with: None,
             already_stored_as: None,
         }
     }
 
     /// An extraction whose claim the memory already held, as `stored`: the id
     /// exists, the row does not.
-    const fn already_stored(id: FactId, body: String, stored: FactId) -> Self {
+    const fn already_stored(id: FactId, body: String, subject: Principal, stored: FactId) -> Self {
         Self {
             id,
             body,
+            subject,
+            topics: Vec::new(),
+            conflicts_with: None,
             already_stored_as: Some(stored),
         }
+    }
+
+    /// Stamp what the classifier said this extraction is about, beyond its
+    /// subject: the topics it carries and the card fact it declared a
+    /// conflict with.
+    fn about(mut self, topics: Vec<String>, conflicts_with: Option<FactId>) -> Self {
+        self.topics = topics;
+        self.conflicts_with = conflicts_with;
+        self
     }
 
     /// Whether a row exists under this id.
@@ -3939,6 +3968,13 @@ enum SupersedeRefusal {
     SuccessorAlreadyStored,
     /// The successor is not a fact this turn filed.
     SuccessorNotThisTurn,
+    /// The two facts are not about the same thing, so one cannot be read as
+    /// the other's replacement.
+    NotAboutTheSameThing,
+    /// The replacement is about SOMEBODY ELSE and nothing in the message said
+    /// the old fact was about the wrong person. A supersede would change whose
+    /// the fact is, which is a correction and has to be stated to be made.
+    ReassignsTheSubjectUnasked,
     /// The pair is sound, and the sender is not entitled to rewrite the
     /// target: the question went to whoever is.
     NotTheSendersToRewrite,
@@ -3960,6 +3996,8 @@ impl SupersedeRefusal {
             Self::SuccessorIsTheTargetRestated => "successor_is_the_target_restated",
             Self::SuccessorAlreadyStored => "successor_already_stored",
             Self::SuccessorNotThisTurn => "successor_not_this_turn",
+            Self::NotAboutTheSameThing => "not_about_the_same_thing",
+            Self::ReassignsTheSubjectUnasked => "reassigns_the_subject_unasked",
             Self::NotTheSendersToRewrite => "not_the_senders_to_rewrite",
             Self::WeldFailed => "weld_failed",
         }
@@ -3984,8 +4022,30 @@ struct LlmSupersede {
     /// none. The prompt already asks the model to run that test in its head;
     /// this is the answer written down, which is the difference between a
     /// test that is performed and one that is read past.
+    ///
+    /// And the answer is then read: the words of the slot have to appear in
+    /// BOTH bodies ([`speaks_of_the_same_thing`]). A slot that shows up in
+    /// only one of them is the successor's own subject wearing the name of a
+    /// shared box — *«the kitchen design status»* written over a fact that
+    /// says nothing but a number.
     #[serde(default)]
     slot: Option<String>,
+    /// The message itself says the old fact was about THE WRONG PERSON:
+    /// *«veramente dal dentista giovedì ci va Bob»*, *«no, that one was
+    /// Alice's, not mine»*.
+    ///
+    /// It is the one thing that admits a pair whose successor is about
+    /// somebody else, because the words cannot tell such a pair from two facts
+    /// about two people that happen to share a noun — «Alice's number is X»
+    /// and «Bob's number is Y» overlap exactly as much and correct nothing.
+    ///
+    /// Asked HERE, of the pair, and not of the turn: one message can carry
+    /// several supersedes, and a turn-level flag would excuse every one of
+    /// them on the strength of a correction that was made to one. This stage
+    /// is also the only one that sees both facts, so it is the only one that
+    /// can answer honestly.
+    #[serde(default)]
+    reassigns_subject: bool,
 }
 
 /// What [`vet_supersede`] made of one requested supersede.
@@ -4024,9 +4084,158 @@ enum VettedSupersede<'a> {
     Unsound(SupersedeRefusal),
 }
 
+/// Whether every word of `words` appears in `text` as a whole word.
+///
+/// Whole words and not substrings: "budget" must not be answered by
+/// "budgetary", and a pair that matches only on a fragment is exactly the
+/// pair this comparison exists to refuse.
+fn all_words_present(words: &[String], text: &str) -> bool {
+    if words.is_empty() {
+        return false;
+    }
+    let present: std::collections::HashSet<String> = text
+        .split(|c: char| !c.is_alphanumeric())
+        .map(str::to_lowercase)
+        .collect();
+    words.iter().all(|w| present.contains(w))
+}
+
+/// What [`speaks_of_the_same_thing`] made of a pair.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Aboutness {
+    /// The two facts fill one box: the pair may be applied.
+    OneThing,
+    /// Same subject, and nothing says the two facts are about one thing.
+    TwoThings,
+    /// The successor is about SOMEBODY ELSE, and nothing in the message said
+    /// the old fact was about the wrong person.
+    ReassignsTheSubjectUnasked,
+}
+
+/// Whether a supersede's two facts SPEAK OF THE SAME THING.
+///
+/// A supersede is a sentence about the memory: *this claim replaces that one*.
+/// Said of two claims that are not about one thing, it is not a weak judgement
+/// but a false statement — the retired fact is left pointing at a successor
+/// that never mentions it, and its history becomes unreadable. «The kitchen
+/// budget is £14,000» retired by «the kitchen design is finalised, the project
+/// moves to trades and scheduling» is the shape: the design being settled may
+/// well end the budget's life, but a sentence about the calendar does not
+/// REPLACE a sentence about money. What that turn deserves is a closure with
+/// reason `completed`, which leaves the fact readable as history with an end
+/// date, and that verb is untouched by any of this.
+///
+/// **The subject decides which question is asked; it is not a condition of its
+/// own.** Two facts about one subject are ordinary work, and the pair is
+/// admitted when something says they fill one box:
+///
+/// - the **slot the verdict names** is made of words that appear in BOTH
+///   bodies. The prompt asks for the one thing both facts state; when it is
+///   really there, both sentences say it, and «the kitchen design status»
+///   against a body that never says *design* is the model naming the
+///   successor's own subject rather than the pair's shared box;
+/// - the two facts share a **microtopic**. Deliberately not the macrotopic,
+///   which is the first entry and is the whole wiki's bucket: every fact in a
+///   renovation wiki is tagged `renovation`, so reading the macrotopic as
+///   aboutness would let the kitchen pair straight through;
+/// - the model **declared the conflict**, naming this very target. That is a
+///   model that looked at both values and said they fill one box, which is a
+///   stronger statement than anything derivable from the words.
+///
+/// **A pair that moves the fact to somebody else is a different act**, and
+/// exactly one thing admits it: the message SAYING SO. «Veramente dal dentista
+/// giovedì ci va Bob» corrects who the appointment was about, and the old fact
+/// has to go — leaving it puts two people at the dentist on Thursday, which is
+/// the very thing this verb exists to prevent. But «Alice's number is X»
+/// beside «Bob's number is Y» corrects nothing: both hold, they merely share
+/// the word *number*, and superseding either deletes a phone number nobody
+/// withdrew. No amount of overlap tells those two apart and the message tells
+/// them apart at once, so the declaration decides and the words do not get a
+/// vote ([`LlmSupersede::reassigns_subject`]).
+fn speaks_of_the_same_thing(
+    slot: &str,
+    prev: &RecallHit,
+    successor: &TurnFact,
+    reassigns_subject: bool,
+) -> Aboutness {
+    let declared_conflict = successor
+        .conflicts_with
+        .as_ref()
+        .is_some_and(|declared| *declared == prev.fact_id);
+    if prev.subject_id != successor.subject {
+        return if reassigns_subject || declared_conflict {
+            Aboutness::OneThing
+        } else {
+            Aboutness::ReassignsTheSubjectUnasked
+        };
+    }
+    if declared_conflict {
+        return Aboutness::OneThing;
+    }
+    let slot_words = content_words(slot);
+    if all_words_present(&slot_words, &prev.text) && all_words_present(&slot_words, &successor.body)
+    {
+        return Aboutness::OneThing;
+    }
+    let micro: std::collections::HashSet<String> = prev
+        .topics
+        .iter()
+        .skip(1)
+        .map(|t| t.to_lowercase())
+        .collect();
+    if successor
+        .topics
+        .iter()
+        .skip(1)
+        .any(|t| micro.contains(&t.to_lowercase()))
+    {
+        return Aboutness::OneThing;
+    }
+    Aboutness::TwoThings
+}
+
+/// Ask [`speaks_of_the_same_thing`] of one pair and say, in the log, which
+/// way it failed — or `None` when the pair may be applied.
+///
+/// The two failures are different mistakes and read differently in the trace:
+/// one is a pair with no common box, the other a pair that would move a fact
+/// to somebody else on nobody's word.
+fn aboutness_refusal(
+    s: &LlmSupersede,
+    prev: &RecallHit,
+    successor: &TurnFact,
+) -> Option<SupersedeRefusal> {
+    let slot = s.slot.as_deref().unwrap_or_default();
+    match speaks_of_the_same_thing(slot, prev, successor, s.reassigns_subject) {
+        Aboutness::OneThing => None,
+        Aboutness::TwoThings => {
+            tracing::warn!(
+                target = s.target.as_deref().unwrap_or_default(),
+                successor = s.successor.as_deref().unwrap_or_default(),
+                slot,
+                subject = %prev.subject_id,
+                "ingest: reconcile supersede pairs two facts that are not about the same thing \
+                 — refused (a claim replaces only a claim that fills its own slot)"
+            );
+            Some(SupersedeRefusal::NotAboutTheSameThing)
+        },
+        Aboutness::ReassignsTheSubjectUnasked => {
+            tracing::warn!(
+                target = s.target.as_deref().unwrap_or_default(),
+                successor = s.successor.as_deref().unwrap_or_default(),
+                subject = %prev.subject_id,
+                new_subject = %successor.subject,
+                "ingest: reconcile supersede would change WHOSE the fact is and the message \
+                 never said so — refused"
+            );
+            Some(SupersedeRefusal::ReassignsTheSubjectUnasked)
+        },
+    }
+}
+
 /// Vet one requested supersede, refusing rather than guessing.
 ///
-/// Five guards, and each one answers a different way of being wrong:
+/// Six guards, and each one answers a different way of being wrong:
 /// - the pair must name the **slot** both facts fill. A supersede is one slot
 ///   holding a new value, so the old and the new cannot both hold; two claims
 ///   that are true together are two facts, and superseding either deletes
@@ -4035,7 +4244,9 @@ enum VettedSupersede<'a> {
 ///   memory with it. The prompt asks for that test in prose and the field is
 ///   where the answer is written: a rule the model reads and a field the
 ///   model has to fill are not the same instrument, and the pairs that get
-///   through are the ones that look right;
+///   through are the ones that look right. The answer is then checked against
+///   the two bodies, because a field that is never read is a field that gets
+///   filled with whatever fits;
 /// - the **target** must be one of the candidates the stage was shown, so a
 ///   hallucinated id retires nothing;
 /// - the **successor** must be one of the facts this turn actually FILED, so a
@@ -4053,6 +4264,13 @@ enum VettedSupersede<'a> {
 ///   — so no successor this verb may name could be one, and every supersede
 ///   reaching a rule is therefore a rule replaced by an ordinary claim. A rule
 ///   is replaced by naming it from another rule, which is a different road;
+/// - the two facts must be **about the same thing**
+///   ([`speaks_of_the_same_thing`]). A supersede is a claim about the memory —
+///   *this sentence stands in for that one* — and made of two sentences that
+///   fill no common box it is simply false, leaving the retired fact pointing
+///   at a successor that never mentions it. Where the successor is about
+///   somebody ELSE the bar is different and higher: only the message saying
+///   the old fact was about the wrong person admits it;
 /// - the sender must be entitled to **rewrite** the target, through
 ///   [`crate::acl::sender_may_rewrite`] — its subject, or whoever said it,
 ///   with a group answered for by its members. Reading a fact is not authority
@@ -4063,10 +4281,13 @@ enum VettedSupersede<'a> {
 ///   while an ACL change discloses the subject's data and stays with the
 ///   subject alone ([`crate::acl::sender_is_subject`]).
 ///
-/// The first four drop the entry. The last does not: the pair is real and
+/// The first five drop the entry. The last does not: the pair is real and
 /// only the speaker is wrong for it, so it comes back as
 /// [`VettedSupersede::NotTheirs`] and the caller puts it to somebody who can
-/// answer.
+/// answer. The aboutness guard stands AHEAD of it deliberately: a pair that is
+/// not about one thing is not a disagreement between two people either, and
+/// putting it to the target's owner would ask them to settle a question nobody
+/// asked.
 fn vet_supersede<'a>(
     s: &LlmSupersede,
     candidates: &'a [RecallHit],
@@ -4165,6 +4386,16 @@ fn vet_supersede<'a>(
             "ingest: reconcile supersede successor was never written — the memory already held \
              that claim, so nothing replaces anything"
         );
+        return VettedSupersede::Unsound(refusal);
+    }
+    // Same slot, same thing — or no replacement happened. A supersede SAYS
+    // that one claim stands in for another, so a pair that is not about one
+    // thing makes the memory tell a story nobody can read: the retired fact
+    // points at a successor that never mentions it. The turn that ends a
+    // constraint by finishing it has its own verb, a closure with reason
+    // `completed`, and that road is deliberately left wide open
+    // ([`speaks_of_the_same_thing`]).
+    if let Some(refusal) = aboutness_refusal(s, prev, successor) {
         return VettedSupersede::Unsound(refusal);
     }
     if !crate::acl::sender_may_rewrite(
@@ -12030,6 +12261,17 @@ pub async fn wiki_ingest_message(
                 // path: the reconciler is shown what this turn wrote, so it
                 // can name a successor without being handed an id alone.
                 let this_body = truncate(&cap_req.body, 160);
+                // The same snapshot, for the same reason, of what the claim is
+                // ABOUT: the supersede verb has to decide whether a pair of
+                // facts speaks of one thing, and after the write path has
+                // consumed `cap_req` there is nothing left to ask.
+                let this_subject = cap_req.subject.clone();
+                let this_topics = cap_req.topics.clone();
+                let this_conflict = unit
+                    .conflicts_with
+                    .map(str::trim)
+                    .filter(|raw| !raw.is_empty())
+                    .and_then(|raw| FactId::parse(raw).ok());
                 let this_id: FactId = if route_to_buffer {
                     // Staged with the claim: the vector (computed once here
                     // instead of on every later read AND again at promotion)
@@ -12237,10 +12479,18 @@ pub async fn wiki_ingest_message(
                 // Keep every extraction with what became of it — the
                 // supersede verb has to know which ids a row was written
                 // under — and surface the first as the turn's anchor id.
-                turn_facts.push(match already_stored_as {
-                    Some(stored) => TurnFact::already_stored(this_id.clone(), this_body, stored),
-                    None => TurnFact::filed(this_id.clone(), this_body),
-                });
+                turn_facts.push(
+                    match already_stored_as {
+                        Some(stored) => TurnFact::already_stored(
+                            this_id.clone(),
+                            this_body,
+                            this_subject,
+                            stored,
+                        ),
+                        None => TurnFact::filed(this_id.clone(), this_body, this_subject),
+                    }
+                    .about(this_topics, this_conflict),
+                );
                 if capture_id.is_none() {
                     capture_id = Some(this_id);
                 }
@@ -14610,6 +14860,7 @@ mod tests {
             allow_ids: Vec::new(),
             sender_id: None,
             fact_type: Some("preference".into()),
+            topics: vec!["preferences".into(), "coffee".into()],
             created_at: "2026-05-21".into(),
             valid_from: None,
             valid_to: None,
@@ -14618,6 +14869,18 @@ mod tests {
             seat: None,
             link_key_win: false,
         }
+    }
+
+    /// A fact this turn filed ABOUT ALICE, tagged the way the fixture hit is:
+    /// the ordinary shape, where the pair plainly speaks of one thing and the
+    /// guard under test is some other one.
+    fn turn_fact(id: &str, body: &str) -> TurnFact {
+        TurnFact::filed(
+            FactId::parse(id).unwrap(),
+            body.to_owned(),
+            Principal::User("alice".into()),
+        )
+        .about(vec!["preferences".to_owned(), "coffee".to_owned()], None)
     }
 
     /// Nothing replaces itself, and the judge is allowed to think it does.
@@ -14634,16 +14897,17 @@ mod tests {
         let id = "0190f3c2-7a4e-7c31-9b02-2f6a1c8e5d77";
         let hit = sample_recall_hit(id);
         let same = LlmSupersede {
-            slot: Some("the slot both name".to_owned()),
+            slot: Some("how alice takes her coffee".to_owned()),
             target: Some(id.to_owned()),
             successor: Some(id.to_owned()),
+            reassigns_subject: false,
         };
         assert!(
             matches!(
                 vet_supersede(
                     &same,
                     std::slice::from_ref(&hit),
-                    &[TurnFact::filed(FactId::parse(id).unwrap(), String::new())],
+                    &[turn_fact(id, "alice prefers coffee with milk")],
                     "alice",
                     &[],
                 ),
@@ -14655,25 +14919,165 @@ mod tests {
         // Two different facts still supersede normally.
         let other = "0190f3c2-7a4e-7c31-9b02-2f6a1c8e5d78";
         let pair = LlmSupersede {
-            slot: Some("the slot both name".to_owned()),
+            slot: Some("how alice takes her coffee".to_owned()),
             target: Some(id.to_owned()),
             successor: Some(other.to_owned()),
+            reassigns_subject: false,
         };
         assert!(
             matches!(
                 vet_supersede(
                     &pair,
                     std::slice::from_ref(&hit),
-                    &[TurnFact::filed(
-                        FactId::parse(other).unwrap(),
-                        String::new()
-                    )],
+                    &[turn_fact(other, "alice prefers coffee with milk")],
                     "alice",
                     &[],
                 ),
                 VettedSupersede::Sound { .. }
             ),
             "a genuine replacement is untouched"
+        );
+    }
+
+    /// **A supersede says one claim stands in for another, and that has to be
+    /// true.** Four pairs, from the September demo and from the case the
+    /// engine already handled.
+    ///
+    /// 1. THE KITCHEN, refused. «The ceiling budget for the kitchen
+    ///    renovation is £14,000» was retired by «the kitchen design is
+    ///    finalised; the project now moves to trades and scheduling», under
+    ///    the slot *the kitchen design status*. The design being settled may
+    ///    well end the budget's life — but by FINISHING it, which is a closure
+    ///    with reason `completed` and leaves the fact readable as history. A
+    ///    sentence about the calendar does not REPLACE a sentence about money,
+    ///    and the memory was left with a budget pointing at a successor that
+    ///    never mentions one.
+    /// 2. THE BUDGET, applied. The same fact against «the kitchen budget has
+    ///    risen to £16,000» is what a supersede is for.
+    /// 3. THE DENTIST, applied. «Veramente dal dentista giovedì ci va Bob»
+    ///    moves the fact to another person, and it must: leaving it puts two
+    ///    people at the dentist on Thursday.
+    /// 4. THE TWO NUMBERS, refused. «Alice's number is X» beside «Bob's number
+    ///    is Y» moves the fact to another person too, and must not — both
+    ///    hold, and they share nothing but the word *number*.
+    ///
+    /// Three and four are the same shape in every respect the words can see.
+    /// What tells them apart is that the dentist turn SAYS it is a correction
+    /// and the numbers turn says nothing of the kind.
+    #[test]
+    fn a_supersede_must_be_about_one_thing_and_a_reassignment_must_be_stated() {
+        let hit = |id: &str, text: &str, subject: Principal, topics: &[&str]| {
+            let mut h = sample_recall_hit(id);
+            h.text = text.to_owned();
+            h.subject_id = subject;
+            h.topics = topics.iter().map(|t| (*t).to_owned()).collect();
+            h
+        };
+        let filed = |id: &str, body: &str, subject: Principal, topics: &[&str]| {
+            TurnFact::filed(FactId::parse(id).unwrap(), body.to_owned(), subject)
+                .about(topics.iter().map(|t| (*t).to_owned()).collect(), None)
+        };
+        let verdict = |slot: &str, target: &RecallHit, successor: &TurnFact, reassigns: bool| {
+            let pair = LlmSupersede {
+                slot: Some(slot.to_owned()),
+                target: Some(target.fact_id.as_str().to_owned()),
+                successor: Some(successor.id.as_str().to_owned()),
+                reassigns_subject: reassigns,
+            };
+            // Alice speaks for the household, so the authority gate — which
+            // runs AFTER this one — never decides any of the four.
+            match vet_supersede(
+                &pair,
+                std::slice::from_ref(target),
+                std::slice::from_ref(successor),
+                "alice",
+                &["parents".to_owned()],
+            ) {
+                VettedSupersede::Sound { .. } => "applied".to_owned(),
+                VettedSupersede::NotTheirs { .. } => "asked".to_owned(),
+                VettedSupersede::Unsound(r) => r.as_str().to_owned(),
+            }
+        };
+
+        // 1 — the kitchen. Same subject here, which is the harder half of the
+        // case: even inside one subject the pair has to name a box both facts
+        // fill, and «the kitchen design status» is not one the budget fills.
+        let budget = hit(
+            "0190f3c2-7a4e-7c31-9b02-2f6a1c8e5e01",
+            "The ceiling budget for the kitchen renovation is £14,000.",
+            Principal::Group("parents".into()),
+            &["renovation", "budget"],
+        );
+        let design = filed(
+            "0190f3c2-7a4e-7c31-9b02-2f6a1c8e5e02",
+            "The kitchen design is finalised. All choices are made; the project now moves to \
+             trades and scheduling.",
+            Principal::Group("parents".into()),
+            &["renovation", "kitchen"],
+        );
+        assert_eq!(
+            verdict("the kitchen design status", &budget, &design, false),
+            "not_about_the_same_thing",
+            "the macrotopic they share is the whole wiki's, and the slot's words are not in \
+             the budget's body"
+        );
+
+        // 2 — the budget, said again with a new number.
+        let raised = filed(
+            "0190f3c2-7a4e-7c31-9b02-2f6a1c8e5e03",
+            "The ceiling budget for the kitchen renovation has risen to £16,000.",
+            Principal::Group("parents".into()),
+            &["renovation", "budget"],
+        );
+        assert_eq!(
+            verdict("the kitchen budget", &budget, &raised, false),
+            "applied",
+            "one slot, a new value — the pair the verb exists for"
+        );
+
+        // 3 — the dentist: the fact moves to another person, and the turn says so.
+        let alices = hit(
+            "0190f3c2-7a4e-7c31-9b02-2f6a1c8e5e04",
+            "alice ha il dentista giovedì",
+            Principal::User("alice".into()),
+            &["salute", "appuntamenti"],
+        );
+        let bobs = filed(
+            "0190f3c2-7a4e-7c31-9b02-2f6a1c8e5e05",
+            "bob ha il dentista giovedì",
+            Principal::User("bob".into()),
+            &["salute", "appuntamenti"],
+        );
+        assert_eq!(
+            verdict("chi va dal dentista giovedì", &alices, &bobs, true),
+            "applied",
+            "leaving both would put two people at the dentist on Thursday"
+        );
+        assert_eq!(
+            verdict("chi va dal dentista giovedì", &alices, &bobs, false),
+            "reassigns_the_subject_unasked",
+            "and with nobody saying it was a correction, the same pair is refused — the words \
+             alone cannot tell it from case 4"
+        );
+
+        // 4 — two people's phone numbers. Same shape as 3 to every test the
+        // words can run, and nothing was corrected.
+        let alices_number = hit(
+            "0190f3c2-7a4e-7c31-9b02-2f6a1c8e5e06",
+            "Alice's mobile number is 07700 900275.",
+            Principal::User("alice".into()),
+            &["contact", "phone"],
+        );
+        let bobs_number = filed(
+            "0190f3c2-7a4e-7c31-9b02-2f6a1c8e5e07",
+            "Bob's mobile number is 07700 900311.",
+            Principal::User("bob".into()),
+            &["contact", "phone"],
+        );
+        assert_eq!(
+            verdict("the mobile number", &alices_number, &bobs_number, false),
+            "reassigns_the_subject_unasked",
+            "both numbers hold; superseding either deletes a phone number nobody withdrew"
         );
     }
 
@@ -14696,14 +15100,12 @@ mod tests {
             slot: Some("how alice takes her coffee".to_owned()),
             target: Some(target.to_owned()),
             successor: Some(successor.to_owned()),
+            reassigns_subject: false,
         };
         let verdict = vet_supersede(
             &pair,
             std::slice::from_ref(&hit),
-            &[TurnFact::filed(
-                FactId::parse(successor).unwrap(),
-                "alice takes it with milk".to_owned(),
-            )],
+            &[turn_fact(successor, "alice takes her coffee with milk")],
             "bob",
             &[],
         );
@@ -14721,10 +15123,7 @@ mod tests {
                 vet_supersede(
                     &pair,
                     std::slice::from_ref(&hit),
-                    &[TurnFact::filed(
-                        FactId::parse(successor).unwrap(),
-                        String::new()
-                    )],
+                    &[turn_fact(successor, "alice takes her coffee with milk")],
                     "alice",
                     &[],
                 ),
@@ -14760,6 +15159,7 @@ mod tests {
             slot: Some("how alice takes her coffee".to_owned()),
             target: Some(target.to_owned()),
             successor: Some(minted.to_owned()),
+            reassigns_subject: false,
         };
 
         // The message restated the target itself: the memory is already what
@@ -14767,6 +15167,7 @@ mod tests {
         let restated = [TurnFact::already_stored(
             FactId::parse(minted).unwrap(),
             "alice prefers coffee black".to_owned(),
+            Principal::User("alice".into()),
             FactId::parse(target).unwrap(),
         )];
         assert!(
@@ -14782,6 +15183,7 @@ mod tests {
         let stored_elsewhere = [TurnFact::already_stored(
             FactId::parse(minted).unwrap(),
             "alice prefers coffee black".to_owned(),
+            Principal::User("alice".into()),
             FactId::parse(elsewhere).unwrap(),
         )];
         assert!(
@@ -14800,10 +15202,7 @@ mod tests {
 
         // And the same pair with a fact actually filed behind the id applies,
         // so what is being refused is the missing row and not the pairing.
-        let filed = [TurnFact::filed(
-            FactId::parse(minted).unwrap(),
-            "alice takes it with milk".to_owned(),
-        )];
+        let filed = [turn_fact(minted, "alice takes her coffee with milk")];
         assert!(
             matches!(
                 vet_supersede(&pair, std::slice::from_ref(&hit), &filed, "alice", &[]),
@@ -16922,6 +17321,7 @@ mod tests {
             allow_ids: Vec::new(),
             sender_id: None,
             fact_type: None,
+            topics: Vec::new(),
             created_at: "2026-05-18".into(),
             valid_from: None,
             valid_to: None,
@@ -17114,6 +17514,7 @@ mod tests {
             allow_ids: Vec::new(),
             sender_id: None,
             fact_type: None,
+            topics: Vec::new(),
             created_at: "2026-05-18".into(),
             valid_from: None,
             valid_to: None,
@@ -17257,6 +17658,7 @@ mod tests {
                 allow_ids: Vec::new(),
                 sender_id: None,
                 fact_type: None,
+                topics: Vec::new(),
                 created_at: "2026-05-18".into(),
                 valid_from: None,
                 valid_to: None,
@@ -17276,6 +17678,7 @@ mod tests {
                 allow_ids: Vec::new(),
                 sender_id: None,
                 fact_type: None,
+                topics: Vec::new(),
                 created_at: "2026-05-18".into(),
                 valid_from: None,
                 valid_to: None,
@@ -17295,6 +17698,7 @@ mod tests {
                 allow_ids: Vec::new(),
                 sender_id: None,
                 fact_type: None,
+                topics: Vec::new(),
                 created_at: "2026-06-02".into(),
                 valid_from: None,
                 valid_to: None,
@@ -26232,9 +26636,13 @@ mod tests {
         };
         // The profile fact alice declared public at enrolment, and a health
         // fact the classifier deliberately kept inside the household.
-        let old = plant("alice is a mother", vec![Principal::global()]).await;
+        let old = plant(
+            "alice's due date is 12 September",
+            vec![Principal::global()],
+        )
+        .await;
         let new = plant(
-            "alice is 29 weeks pregnant",
+            "alice's due date is 20 September",
             vec![Principal::Group("famiglia".into())],
         )
         .await;
@@ -26248,19 +26656,21 @@ mod tests {
         )];
         let turn_facts = vec![TurnFact::filed(
             new.fact_id.clone(),
-            "alice is 29 weeks pregnant".to_owned(),
+            "alice's due date is 20 September".to_owned(),
+            Principal::User("alice".into()),
         )];
 
         let applied = apply_reconciled_supersedes(
             &pool,
             &[LlmSupersede {
-                slot: Some("the slot both name".to_owned()),
+                slot: Some("the due date".to_owned()),
                 target: Some(old.fact_id.as_str().to_owned()),
                 successor: Some(new.fact_id.as_str().to_owned()),
+                reassigns_subject: false,
             }],
             &candidates,
             &turn_facts,
-            &req("alice is 29 weeks pregnant", "alice"),
+            &req("the due date moved to the 20th", "alice"),
         )
         .await;
         assert_eq!(applied.applied, 1, "the supersede still applied");
@@ -26342,14 +26752,16 @@ mod tests {
         let turn_facts = vec![TurnFact::filed(
             new.fact_id.clone(),
             "alice lavora alla Initech".to_owned(),
+            Principal::User("alice".into()),
         )];
 
         let applied = apply_reconciled_supersedes(
             &pool,
             &[LlmSupersede {
-                slot: Some("the slot both name".to_owned()),
+                slot: Some("dove lavora alice".to_owned()),
                 target: Some(old.fact_id.as_str().to_owned()),
                 successor: Some(new.fact_id.as_str().to_owned()),
+                reassigns_subject: false,
             }],
             &candidates,
             &turn_facts,
@@ -26617,6 +27029,7 @@ mod tests {
             &[TurnFact::filed(
                 this_turn.clone(),
                 "alice ha comprato il latte".to_owned(),
+                Principal::User("alice".into()),
             )],
         )
         .await;
@@ -26892,14 +27305,16 @@ mod tests {
         let applied = apply_reconciled_supersedes(
             &pool,
             &[LlmSupersede {
-                slot: Some("the slot both name".to_owned()),
+                slot: Some("quando apre la casa al mare".to_owned()),
                 target: Some(old.fact_id.as_str().to_owned()),
                 successor: Some(new.fact_id.as_str().to_owned()),
+                reassigns_subject: false,
             }],
             &candidates,
             &[TurnFact::filed(
                 new.fact_id.clone(),
                 "la casa al mare si apre a luglio".to_owned(),
+                Principal::Group("famiglia".into()),
             )],
             &req("la casa al mare quest'anno si apre a luglio", "alice"),
         )
@@ -26988,14 +27403,19 @@ mod tests {
         let applied = apply_reconciled_supersedes(
             &pool,
             &[LlmSupersede {
-                slot: Some("the slot both name".to_owned()),
+                slot: Some("chi va dal dentista giovedì".to_owned()),
                 target: Some(old.fact_id.as_str().to_owned()),
                 successor: Some(new.fact_id.as_str().to_owned()),
+                // The turn says it: «veramente ci va bob». Without that the
+                // pair moves the fact to another person on nobody's word, and
+                // the guard refuses it.
+                reassigns_subject: true,
             }],
             &candidates,
             &[TurnFact::filed(
                 new.fact_id.clone(),
                 "bob ha il dentista giovedì".to_owned(),
+                Principal::User("bob".into()),
             )],
             &req("veramente dal dentista giovedì ci va bob", "alice"),
         )
@@ -27042,6 +27462,10 @@ mod tests {
     /// target the sender does not own, and a pair that cannot name the slot
     /// both facts fill. Reading a fact is not authority over it.
     #[tokio::test]
+    #[allow(
+        clippy::too_many_lines,
+        reason = "one table of four refusals: splitting it hides that they are the same call answering four different ways"
+    )]
     async fn supersede_refuses_a_stranger_target_a_stranger_successor_and_a_foreign_subject() {
         let (dir, tree, pool) = setup_workdir().await;
         let bobs = capture::wiki_capture(
@@ -27079,10 +27503,11 @@ mod tests {
         let mine = FactId::parse("0190f3c2-7a4e-7c31-9b02-2f6a1c8e5d01").unwrap();
         let request = req("bob adesso lavora alla Initech", "alice");
 
-        let named = || Some("the slot both name".to_owned());
+        let named = || Some("dove lavora bob".to_owned());
         let mine_wrote = [TurnFact::filed(
             mine.clone(),
             "bob lavora alla Initech".to_owned(),
+            Principal::User("bob".into()),
         )];
         let refusals: [Refusal<'_>; 4] = [
             (
@@ -27093,6 +27518,7 @@ mod tests {
                     slot: named(),
                     target: Some(bobs.fact_id.as_str().to_owned()),
                     successor: Some(mine.as_str().to_owned()),
+                    reassigns_subject: false,
                 },
                 &mine_wrote,
             ),
@@ -27102,6 +27528,7 @@ mod tests {
                     slot: named(),
                     target: Some("0190f3c2-7a4e-7c31-9b02-2f6a1c8e5d99".to_owned()),
                     successor: Some(mine.as_str().to_owned()),
+                    reassigns_subject: false,
                 },
                 &mine_wrote,
             ),
@@ -27111,6 +27538,7 @@ mod tests {
                     slot: named(),
                     target: Some(bobs.fact_id.as_str().to_owned()),
                     successor: Some("0190f3c2-7a4e-7c31-9b02-2f6a1c8e5d98".to_owned()),
+                    reassigns_subject: false,
                 },
                 &[],
             ),
@@ -27120,6 +27548,7 @@ mod tests {
                     slot: None,
                     target: Some(bobs.fact_id.as_str().to_owned()),
                     successor: Some(mine.as_str().to_owned()),
+                    reassigns_subject: false,
                 },
                 &mine_wrote,
             ),
@@ -27197,14 +27626,16 @@ mod tests {
         let out = apply_reconciled_supersedes(
             &pool,
             &[LlmSupersede {
-                slot: Some("what the shopping list needs".to_owned()),
+                slot: Some("l'aceto di vino bianco".to_owned()),
                 target: Some(hers.fact_id.as_str().to_owned()),
                 successor: Some(ghost.as_str().to_owned()),
+                reassigns_subject: false,
             }],
             &candidates,
             &[TurnFact::filed(
                 ghost.clone(),
                 "serve l'aceto di vino bianco".to_owned(),
+                Principal::User("alice".into()),
             )],
             &req("serve l'aceto di vino bianco", "alice"),
         )

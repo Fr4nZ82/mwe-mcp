@@ -1,8 +1,8 @@
 ---
 name: ingest-reconcile
 description: Reconciler — after the memory has been read, decide what this turn closes, replaces, re-dates or re-shares among the facts the turn actually saw; strict JSON out; change nothing rather than the wrong thing
-version: 1.15
-default_version_at_bootstrap: v1.15
+version: 1.16
+default_version_at_bootstrap: v1.16
 ---
 
 # Prompt: ingest-reconcile
@@ -104,6 +104,10 @@ Four verbs, and each one has to be plainly stated by the message:
 
    The contrast to hold it against is the case just above: a COUNT measured from a fixed point ages and IS superseded by the point itself. A count moves with the calendar; a measurement does not move at all.
 
+   **A PAIR THAT MOVES THE FACT TO SOMEBODY ELSE NEEDS THE MESSAGE TO SAY SO.** Set `reassigns_subject: true` when the message itself corrects WHO the old fact was about — «veramente dal dentista giovedì ci va Bob», «no, that one was Alice's, not mine», «era il mio, non il suo». That pair MUST be named: leaving both puts two people at the dentist on Thursday, which is the contradiction this verb exists to end. Outside that, a supersede keeps the fact with the person it was already about. «Alice's number is 07700 900275» and «Bob's number is 07700 900311» look exactly alike to every test you can run on the words — one slot, one kind of value, the same wording — and they are two facts about two people, both true. Nobody corrected anything: name no pair. The engine refuses a pair that changes whose the fact is unless you declared it, and the refusal is written to the trace.
+
+   **THE COUNTEREXAMPLE TO READ TWICE.** «The ceiling budget for the kitchen renovation is £14,000» against «the kitchen design is finalised; all choices are made, the project now moves to trades and scheduling». The design being settled probably does end the budget's life — by FINISHING it, which is verb 1 with reason `completed`, and which leaves the budget readable with the day it stopped. It does not REPLACE it: a sentence about the calendar is not a new value for a sentence about money, and the slot you would have to write down («the kitchen design status») is one the budget's body never mentions. Superseding it left a budget pointing at a successor that says nothing about budgets, and the history unreadable. **When the slot you are about to write appears in only ONE of the two bodies, you have not found a slot — you have found the successor's subject.**
+
 3. `validity_edits` — the fact stays true, its DATES were wrong. A correction, not a completion: "the milk expires on the 20th, not the 25th", "the appointment was always at 6, not 5". Set `valid_from` and/or `valid_to`; leave a field null to keep it. If the fact itself changed, that is a closure, not a date correction.
 
 4. `acl_changes` — WHO MAY READ the fact changes, and the message says so: "make that visible to everyone", "share it with the family", "keep that one private". `allow_ids` REPLACES the current audience list, so restate it in full: copy the audience shown on the candidate line and add to or remove from it. An empty array means "subject only".
@@ -141,5 +145,5 @@ CANDIDATES — facts that existed BEFORE this turn (fact_id · validity · audie
 {candidates}
 
 Output ONE strict JSON object, nothing else:
-{"closures": [ { "target": "<fact_id>", "reason": "completed" | "retracted" | "contradicted", "valid_to": "<ISO-8601 Z>" | null } ], "supersedes": [ { "slot": "<the ONE thing both facts state, in your own words>", "target": "<fact_id from CANDIDATES>", "successor": "<fact_id from FACTS THIS TURN WROTE>" } ], "validity_edits": [ { "target": "<fact_id>", "valid_from": "<ISO-8601 Z>" | null, "valid_to": "<ISO-8601 Z>" | null } ], "acl_changes": [ { "target": "<fact_id>", "allow_ids": ["user:<id>" | "group:<id>", ...] } ]}
+{"closures": [ { "target": "<fact_id>", "reason": "completed" | "retracted" | "contradicted", "valid_to": "<ISO-8601 Z>" | null } ], "supersedes": [ { "slot": "<the ONE thing both facts state, in your own words — it must appear in BOTH bodies>", "target": "<fact_id from CANDIDATES>", "successor": "<fact_id from FACTS THIS TURN WROTE>", "reassigns_subject": false | true } ], "validity_edits": [ { "target": "<fact_id>", "valid_from": "<ISO-8601 Z>" | null, "valid_to": "<ISO-8601 Z>" | null } ], "acl_changes": [ { "target": "<fact_id>", "allow_ids": ["user:<id>" | "group:<id>", ...] } ]}
 ```

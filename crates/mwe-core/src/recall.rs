@@ -693,6 +693,13 @@ pub struct RecallHit {
     pub sender_id: Option<Principal>,
     /// Optional fact type tag.
     pub fact_type: Option<String>,
+    /// The fact's topics as the classifier wrote them: the macrotopic first,
+    /// then the microtopic. Carried so a caller that must decide whether two
+    /// facts are ABOUT THE SAME THING can ask the index instead of the words
+    /// — see [`crate::ingest`]'s supersede vetting, where the macrotopic is
+    /// deliberately not enough (every fact in a renovation wiki carries
+    /// `renovation`).
+    pub topics: Vec<String>,
     /// Wall-clock of creation.
     pub created_at: String,
     /// Start of the validity interval (ISO 8601) when known; `None` =
@@ -777,6 +784,7 @@ impl RecallHit {
             allow_ids: row.allow_ids,
             sender_id: row.sender_id,
             fact_type: row.fact_type,
+            topics: row.topics,
             created_at: row.created_at,
             valid_from: row.valid_from,
             valid_to: row.valid_to,
@@ -815,6 +823,7 @@ impl RecallHit {
             allow_ids: cap.allow,
             sender_id: cap.sender,
             fact_type: cap.fact_type,
+            topics: cap.topics,
             created_at: cap.captured_at,
             valid_from: cap.valid_from,
             valid_to: cap.valid_to,
