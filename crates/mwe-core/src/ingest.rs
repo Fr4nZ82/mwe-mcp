@@ -17187,11 +17187,121 @@ mod tests {
         );
     }
 
-    /// The prompt has to carry both halves of the cat, because one without
-    /// the other changes nothing: a request nobody wrote down cannot be
-    /// closed, and an errand with no end is read as a standing state for ever.
+    /// **A request is written down, and it falls to whoever it was put to.**
+    ///
+    /// «Can somebody feed the cat» produced nothing at all on the sixth run:
+    /// the memory held no record that anyone had been asked, so the answer
+    /// closed nothing. A request is a todo, and the three shapes differ only
+    /// in who it falls to.
     #[test]
-    fn bundled_prompts_write_down_the_errand_and_the_request() {
+    fn bundled_ingest_prompt_writes_down_a_request() {
+        for needle in [
+            "**A REQUEST IS A TODO, AND IT IS THE ONE PEOPLE MAKE MOST.**",
+            // To the house, to a person, to the assistant — in both languages.
+            "«can somebody feed the cat»",
+            "«qualcuno passa a prendere il pane?»",
+            "«Bob, can you pick up the parcel?»",
+            "«Alice, ricordati di chiamare il dentista»",
+            "«ricordami di chiamare il dentista»",
+            "«remind me to move the car»",
+            // Whose it is, which is the whole of what separates them.
+            "`subject_id` is THAT PERSON, not the speaker",
+            "`subject_id` is the SPEAKER: it is their errand",
+            // A fact about somebody is not a rule for them.
+            "It is a fact ABOUT them and never a rule FOR them",
+            "leave `behaviour_about` unset",
+            // And a request keeps for a day.
+            "**A request keeps for a day unless it says otherwise.**",
+        ] {
+            assert!(
+                BUNDLED_INGEST_PROMPT_MD.contains(needle),
+                "the bundled classifier prompt does not say: {needle}"
+            );
+        }
+    }
+
+    /// **A request put to another person is filed as theirs, and the fence
+    /// against setting rules about other people does not touch it.**
+    ///
+    /// That fence exists so nobody changes how the assistant TREATS somebody
+    /// else by talking to it. «Bob, can you pick up the parcel?» changes
+    /// nothing about how Bob is treated: it is a claim about Bob, of the kind
+    /// the memory is made of, and he is told about it on the reverse channel
+    /// like any other fact minted about him.
+    #[tokio::test]
+    async fn a_request_put_to_another_person_is_filed_as_theirs() {
+        let (dir, tree, pool) = setup_workdir().await;
+        sqlx::query(
+            "INSERT OR IGNORE INTO enrollment_users (user_id, aliases, is_admin) \
+             VALUES ('alice','[]',0), ('bob','[]',0)",
+        )
+        .execute(&pool)
+        .await
+        .unwrap();
+        let json = "{\"intent\":\"capture\",\"extractions\":[{\
+            \"target_wiki_id\":\"alice\",\"target_page\":\"cucina.md\",\
+            \"subject_id\":\"user:bob\",\"allow_ids\":[\"user:alice\"],\
+            \"body\":\"Bob is to pick up the parcel.\",\"fact_type\":\"plan\",\
+            \"valid_to\":\"2026-09-13T23:59:59Z\",\"requested_container\":true}]}";
+        let llm = FakeLlmBackend::new("fake", json);
+        let resp = wiki_ingest_message(
+            &pool,
+            &tree,
+            fake_embedder(),
+            &llm,
+            None,
+            req("Bob, can you pick up the parcel?", "alice"),
+            &IngestPolicy::default(),
+        )
+        .await
+        .expect("ingest");
+
+        assert!(
+            !resp
+                .rules
+                .unwrap_or_default()
+                .contains("rule about how you treat SOMEBODY ELSE"),
+            "a request put to Bob is a fact about Bob, not a rule about him"
+        );
+        let filed = fact_index::find_active_in_wiki(&pool, "alice")
+            .await
+            .expect("read back");
+        let parcel = filed
+            .iter()
+            .find(|r| r.text.contains("parcel"))
+            .expect("the request is written down");
+        assert_eq!(
+            parcel.subject_id,
+            Principal::User("bob".into()),
+            "it falls to Bob, so it is his"
+        );
+        assert_eq!(
+            parcel.valid_to.as_deref(),
+            Some("2026-09-13T23:59:59Z"),
+            "and it keeps for the day"
+        );
+
+        // And Bob is told: a fact minted about somebody who is not the
+        // speaker is news to them, on the channel their bridge drains.
+        let waiting: Vec<(String, String)> =
+            sqlx::query_as("SELECT kind, payload FROM wiki_events")
+                .fetch_all(&pool)
+                .await
+                .expect("events");
+        assert!(
+            waiting
+                .iter()
+                .any(|(kind, payload)| kind == "fact_minted_for_you" && payload.contains("parcel")),
+            "the person it falls to hears about it, with the words: {waiting:?}"
+        );
+        drop(dir);
+    }
+
+    /// The errand's half of the cat: with no end it is read as a standing
+    /// state for ever, and the page says «She has been fed» in September about
+    /// a meal in March. The request's half is the test below.
+    #[test]
+    fn bundled_prompts_give_an_errand_the_day_it_was_done_on() {
         for needle in [
             // The errand carries the day it was done on, in both languages.
             "**an ERRAND carries the day it was done on.**",
@@ -17203,11 +17313,6 @@ mod tests {
             "an event with CONSEQUENCES stays open",
             "«Ho firmato il contratto»",
             "Feeding a cat leaves nothing; signing a contract leaves a contract",
-            // The request that was never written down at all.
-            "**A REQUEST TO SOMEBODY ELSE IS A TODO**",
-            "«can somebody feed the cat»",
-            "«qualcuno porti fuori i bidoni»",
-            "Dropped, the request exists nowhere and the answer closes nothing",
         ] {
             assert!(
                 BUNDLED_INGEST_PROMPT_MD.contains(needle),
