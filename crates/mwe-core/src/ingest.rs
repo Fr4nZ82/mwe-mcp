@@ -5454,8 +5454,10 @@ fn candidate_validity(h: &RecallHit, now: &chrono::DateTime<chrono::Utc>) -> Str
 ///
 /// A turn may have opened several pages, and all of them go into one prompt.
 /// A page is normally a few paragraphs; this is the guard against the one that
-/// is not. What falls past the cut has no marker, so nothing can be said about
-/// it — the same as a fact the reader may not see.
+/// is not. It cuts the PROSE and not the facts: a fact whose sentence fell
+/// past the cut is listed under its own marker like one the compile has not
+/// woven in yet, so everything on the page stays nameable and the verbs lose
+/// nothing.
 const RECONCILE_PAGE_CEILING_BYTES: usize = 4_000;
 
 /// The pages a turn read, as the reconciliation stage reads them, and the

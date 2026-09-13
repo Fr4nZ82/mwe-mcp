@@ -2,11 +2,10 @@
 //! A page of the memory, rendered so a model can name the facts on it.
 //!
 //! **The prose is the thing that ties a page's facts together, and it is what
-//! a person would read to judge them.** Every stage that asks a model about
-//! stored facts used to hand it a list of lines — one fact per row, in
-//! whatever order a ranking put them — which is the memory with the joins
-//! taken out. This is the other rendering: the page as the Cronista wrote it,
-//! with each fact wrapped in a marker the model answers by.
+//! a person would read to judge them.** A list of rows — one fact per line, in
+//! whatever order a ranking puts them — is the memory with the joins taken
+//! out. This is the other rendering: the page as the Cronista wrote it, with
+//! each fact wrapped in a marker the model answers by.
 //!
 //! **Markers, not identifiers.** A model asked to copy a `fact_id` copies it
 //! wrongly often enough to matter; asked for `f3` it says `f3`. The caller
@@ -61,9 +60,13 @@ pub struct MarkedPage {
 ///
 /// `ids` are the caller's facts, in the caller's order; the returned
 /// [`MarkedPage::order`] indexes back into it. `ceiling_bytes` bounds the
-/// prose: a page is normally a few paragraphs, and this is the guard against
-/// the one that is not, because the whole of it goes into a prompt. What falls
-/// past the cut simply has no marker, so nothing can be said about it.
+/// PROSE: a page is normally a few paragraphs, and this is the guard against
+/// the one that is not, because the whole of it goes into a prompt. It does
+/// not bound the facts — every one of the caller's gets a marker, and the ones
+/// whose prose fell past the cut come back after the woven ones for the caller
+/// to list, exactly like a fact the compile has not woven in yet. So a page
+/// that is too long to show whole is still a page whose facts can all be
+/// named.
 ///
 /// `first_marker` is where this page's numbering starts. One page to a call
 /// starts at 1; a caller showing several pages in one prompt carries the count
@@ -235,6 +238,39 @@ mod tests {
         assert_eq!(marked.woven, 3, "three are on the page");
         assert_eq!(marked.order.len(), 4, "and the fourth is still nameable");
         assert_eq!(marked.order[3], 3);
+    }
+
+    /// **The ceiling cuts the prose, never the facts.**
+    ///
+    /// A page too long to show whole still has to be a page whose facts can be
+    /// named: a verb that cannot name a fact cannot close it, and a fact
+    /// nobody can close stays open for ever. So what falls past the cut is
+    /// handed back for the caller to list, exactly like a fact the compile has
+    /// not woven in yet.
+    #[test]
+    fn the_ceiling_cuts_the_prose_and_still_names_every_fact() {
+        let long = format!(
+            "{}{{{{f={A}}}}}Alice ha comprato il latte.{{{{/}}}} {{{{f={B}}}}}Alice deve \
+             chiamare l'idraulico.{{{{/}}}}\n",
+            "parole di riempimento ".repeat(40),
+        );
+        let marked = mark_up(&long, &[A, B], UnknownRegions::Keep, 120, 1);
+        assert_eq!(
+            marked.order.len(),
+            2,
+            "both facts are nameable, whatever the ceiling did to the prose"
+        );
+        assert!(
+            marked.woven < 2,
+            "and at least one of them did not fit in the prose: {} woven",
+            marked.woven
+        );
+        assert!(
+            marked.prose.len() < long.len(),
+            "the prose was cut: {} bytes of {}",
+            marked.prose.len(),
+            long.len()
+        );
     }
 
     /// **A prompt that shows several pages numbers them once, across the
