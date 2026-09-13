@@ -1,8 +1,8 @@
 ---
 name: cronista
 description: Compiler stage 3 — writes a narrative LEAF page from its own facts as cohesive prose, tagging each fact's span with a lightweight `<fN>` tag (the code renders the bare runtime region markers; one-fact-one-page, starvation index, identity-card reference distance)
-version: 1.48
-default_version_at_bootstrap: v1.48
+version: 1.49
+default_version_at_bootstrap: v1.49
 ---
 
 # Prompt: cronista
@@ -255,7 +255,9 @@ FACT TAGS — the load-bearing part (read carefully):
   SBAGLIATO: `<f4>Il mutuo di Zoe scade nel 2031.</f4> Da allora la rata di 640 euro non peserà più sul bilancio di casa.` — la cifra viene da un fatto e sta fuori dal suo marcatore.
   GIUSTO: `<f4>Il mutuo di Zoe scade nel 2031.</f4> Fino ad allora la rata pesa sul bilancio di casa, <f5>che i due rivedono ogni gennaio.</f5>`
 
-  The engine checks this behind you and does not argue: a number or a run of a fact's own words found outside its tag gets you ONE rewrite with the offending words quoted back, and if the second draft does it again the page is written as its facts alone, with no connective prose at all. The thread is worth having and it is not worth a leak.
+  The engine checks this behind you and does not argue: a VALUE of a fact — a number with one of that fact's own words beside it — or a whole clause of a fact copied word for word, found outside its tag, gets you ONE rewrite with the offending words quoted back; and if the second draft does it again the page is written as its facts alone, with its links carried to the foot and no connective prose at all. The thread is worth having and it is not worth a leak.
+
+  Dates are the exception the check makes, and only because a page of dated facts has to organise itself by them: a day, a year or a time may appear in a heading or in the prose. Everything else the rule names is yours to keep out.
 
 VALIDITY WINDOWS — when a fact tells you WHEN it was/is true:
 - Some facts carry a trailing `(validity: …)` hint. Four shapes: `(validity: from <t> until <t>)` (a closed window), `(validity: until <t>)` (a known end), `(validity: from <t>, open-ended)` (a FUTURE onset — it starts on a date still to come), and `(validity: open-ended)` (durable, no meaningful start or end). It is a recall aid: it tells a future reader the window in which the fact holds.

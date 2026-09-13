@@ -22,11 +22,17 @@ semver-governed surface: breaking changes are called out explicitly.
   nothing.
 
   The writer is now told the rule in as many words, with examples in both
-  languages, and the engine checks behind it: a number or a run of a fact's own
-  words found outside that fact's mark costs one rewrite with the offending
-  words quoted back, and a page that does it twice is written as its facts
-  alone, with no connective prose at all. The thread between the facts is worth
-  having and it is not worth a leak.
+  languages, and the engine checks behind it: a value of a fact — a number with
+  one of that fact's own words beside it — or a whole clause of it copied word
+  for word, found outside that fact's mark, costs one rewrite with the
+  offending words quoted back; and a page that does it twice is written as its
+  facts alone, with its links carried to the foot so it stays walkable. The
+  thread between the facts is worth having and it is not worth a leak.
+
+  **Dates are not values.** A page whose facts are dated organises itself by
+  those dates — *«26 March:»*, *«21–23 May:»* — and the day in the heading is
+  the day in the fact. Days, years, times and headings are outside the check,
+  so a page like that keeps its shape.
 
 ### Changed
 

@@ -1029,47 +1029,64 @@ async fn compile_leaf_page(
 /// outside that fact's marker. What is checked here is the part that cannot be
 /// a false positive —
 ///
-/// - a token carrying a DIGIT (a salary, a date, an amount, a number, an
-///   address) that one of the page's facts also carries, and
+/// - a VALUE: a number one of the page's facts carries, in the open, with
+///   another word of that same fact beside it in both places
+///   ([`a_value_in_the_open`]); and
 /// - a run of four or more words shared verbatim with a fact's text.
 ///
-/// A proper name on its own is not caught: a page about Zoe says «Zoe» in its
-/// connective prose as a matter of course, and a net that fired there would
-/// cost the page its prose for writing English. The prompt still forbids the
-/// name; this is the half that can be enforced without guessing.
+/// Everything else the rule forbids is left to the prompt, because a net that
+/// fires on it would cost pages their prose for writing ordinary English:
+///
+/// - a proper name on its own — a page about Zoe says «Zoe» in its connective
+///   prose as a matter of course;
+/// - a DATE, a year or a time, wherever it appears. A page whose facts are
+///   dated is normally organised BY those dates («26 March:», «21–23 May:»),
+///   and the heading a reader needs is the one the fact also carries. A
+///   deployment's own log of household evenings is written exactly so, and a
+///   net that took it would rewrite the page once and then strip it to a list
+///   — losing the organisation that made it readable, to hide a day everybody
+///   on that page can see anyway;
+/// - anything in a HEADING line, for the same reason: a heading names the
+///   section, and naming it is not telling anybody something new.
 fn prose_restates_fact(merged_body: &str, facts: &[FactForPage]) -> Option<String> {
     let outside = prose_outside_markers(merged_body);
     if outside.trim().is_empty() {
         return None;
     }
-    let outside_words: Vec<String> = words_of(&outside);
-    for fact in facts {
-        let fact_words = words_of(&fact.text);
-        // A number from the fact, in the open.
-        for w in &fact_words {
-            if w.chars().any(|c| c.is_ascii_digit())
-                && w.chars().any(char::is_alphanumeric)
-                && outside_words.contains(w)
-            {
+    // A value is judged line by line, because what makes a number safe — a
+    // heading, a date beside it — is a property of the line it sits on.
+    for line in outside.lines() {
+        if line_is_a_heading(line) {
+            continue;
+        }
+        let line_words = words_of(line);
+        for fact in facts {
+            if let Some(value) = a_value_in_the_open(&line_words, &words_of(&fact.text)) {
                 return Some(format!(
-                    "«{w}» is {}'s, and it is outside its marker",
+                    "«{value}» is {}'s, and it is outside its marker",
                     fact.fact_id
                 ));
             }
         }
-        // Or four of its words in a row.
-        if fact_words.len() >= RESTATED_RUN_WORDS {
-            for window in fact_words.windows(RESTATED_RUN_WORDS) {
-                if outside_words
-                    .windows(RESTATED_RUN_WORDS)
-                    .any(|w| w == window)
-                {
-                    return Some(format!(
-                        "«{}» is {}'s, word for word, and it is outside its marker",
-                        window.join(" "),
-                        fact.fact_id
-                    ));
-                }
+    }
+    // A quotation is judged over the whole of it: four of a fact's words in a
+    // row are a quotation wherever the line breaks fall.
+    let outside_words = words_of(&outside);
+    for fact in facts {
+        let fact_words = words_of(&fact.text);
+        if fact_words.len() < RESTATED_RUN_WORDS {
+            continue;
+        }
+        for window in fact_words.windows(RESTATED_RUN_WORDS) {
+            if outside_words
+                .windows(RESTATED_RUN_WORDS)
+                .any(|w| w == window)
+            {
+                return Some(format!(
+                    "«{}» is {}'s, word for word, and it is outside its marker",
+                    window.join(" "),
+                    fact.fact_id
+                ));
             }
         }
     }
@@ -1077,10 +1094,148 @@ fn prose_restates_fact(merged_body: &str, facts: &[FactForPage]) -> Option<Strin
 }
 
 /// How many words in a row make a quotation rather than a coincidence.
-const RESTATED_RUN_WORDS: usize = 4;
+///
+/// **Eight, because four is a noun phrase.** Measured over a deployment's own
+/// 159 written pages: a run of four of a fact's words appears in the
+/// connective prose of 43 of them, and reading those, almost all are ordinary
+/// phrasing the prose shares with the fact because it is ABOUT it — «del
+/// bucato della neonata», «durante il ricovero in». At eight the count is 12,
+/// and every one of those is the prose carrying a whole clause of its fact:
+/// «coordinate bancarie per versare fondi residui del vecchio», «sangue di
+/// … del 25 giugno 2026». The first set costs a rewrite for writing Italian;
+/// the second is the thing this check exists for.
+const RESTATED_RUN_WORDS: usize = 8;
+
+/// How far from a number another of the fact's words counts as being beside
+/// it — in the prose and in the fact alike.
+const COMPANION_DISTANCE: usize = 3;
+
+/// A number of the fact's, written in the open with one of the fact's own
+/// words beside it.
+///
+/// **The companion is what separates a value from a date.** «21,000» beside
+/// «salary» or «year» — words the fact has beside it too — is the fact's value
+/// restated; «26» beside «March» is the day the section is about, and a page
+/// of dated facts says it in every heading. So the pair has to hold in BOTH
+/// places: the number and the word near each other in the prose, and near each
+/// other in the fact.
+fn a_value_in_the_open(prose: &[String], fact: &[String]) -> Option<String> {
+    for (i, word) in prose.iter().enumerate() {
+        if !word.chars().any(|c| c.is_ascii_digit()) || reads_as_a_date(prose, i) {
+            continue;
+        }
+        for (j, same) in fact.iter().enumerate() {
+            if same != word || reads_as_a_date(fact, j) {
+                continue;
+            }
+            let near_in_the_fact = beside(fact, j);
+            if beside(prose, i)
+                .into_iter()
+                .any(|w| is_a_companion(&w) && near_in_the_fact.contains(&w))
+            {
+                return Some(word.clone());
+            }
+        }
+    }
+    None
+}
+
+/// The words within [`COMPANION_DISTANCE`] of position `at`, that one
+/// excluded.
+fn beside(words: &[String], at: usize) -> Vec<String> {
+    let from = at.saturating_sub(COMPANION_DISTANCE);
+    let to = (at + COMPANION_DISTANCE + 1).min(words.len());
+    words[from..to]
+        .iter()
+        .enumerate()
+        .filter(|(k, _)| from + k != at)
+        .map(|(_, w)| w.clone())
+        .collect()
+}
+
+/// A word long enough to carry meaning rather than grammar, and not a number
+/// itself.
+fn is_a_companion(word: &str) -> bool {
+    word.len() >= 3 && !word.chars().any(|c| c.is_ascii_digit())
+}
+
+/// Does this number read as a date, a year or a time?
+///
+/// Those are the numbers a page organises itself by, and the ones a reader of
+/// the page is entitled to: a section called «26 March» tells nobody anything
+/// the section itself does not.
+fn reads_as_a_date(words: &[String], at: usize) -> bool {
+    let word = &words[at];
+    // A year on its own: 2026, 1984.
+    if word.len() == 4 && word.chars().all(|c| c.is_ascii_digit()) {
+        return true;
+    }
+    // A clock time: 19:00, 9.30 — the separator survives `words_of` only when
+    // it is between digits.
+    if word.contains(':') || (word.contains('.') && word.chars().any(|c| c.is_ascii_digit())) {
+        return true;
+    }
+    let short = word.len() <= 2 && word.chars().all(|c| c.is_ascii_digit());
+    if !short {
+        return false;
+    }
+    // A day beside its month, in either order, or an hour after the word that
+    // introduces one.
+    let neighbours = beside(words, at);
+    neighbours.iter().any(|w| MONTHS.contains(&w.as_str()))
+        || (at > 0 && HOUR_MARKERS.contains(&words[at - 1].as_str()))
+}
+
+/// Month names, both languages, as `words_of` leaves them.
+const MONTHS: &[&str] = &[
+    "january",
+    "february",
+    "march",
+    "april",
+    "may",
+    "june",
+    "july",
+    "august",
+    "september",
+    "october",
+    "november",
+    "december",
+    "gennaio",
+    "febbraio",
+    "marzo",
+    "aprile",
+    "maggio",
+    "giugno",
+    "luglio",
+    "agosto",
+    "settembre",
+    "ottobre",
+    "novembre",
+    "dicembre",
+];
+
+/// The words that introduce a clock time.
+const HOUR_MARKERS: &[&str] = &[
+    "alle", "ore", "at", "around", "verso", "dalle", "entro", "by",
+];
+
+/// Is this line a heading rather than a sentence?
+///
+/// A heading names a section, and a page of dated facts names its sections by
+/// their dates. Naming a section is not telling anybody something they could
+/// not read in it.
+fn line_is_a_heading(line: &str) -> bool {
+    let trimmed = line.trim();
+    trimmed.starts_with('#')
+        || trimmed.ends_with(':')
+        || trimmed.ends_with(":**")
+        || trimmed.ends_with(":**_")
+}
 
 /// The page's words with the marked regions taken out — what every reader of
 /// the page gets, whatever the facts' audiences are.
+///
+/// Line breaks are kept: a number is safe or not by the line it sits on.
 fn prose_outside_markers(body: &str) -> String {
     crate::parser::parse(body)
         .events
@@ -1090,11 +1245,11 @@ fn prose_outside_markers(body: &str) -> String {
             _ => None,
         })
         .collect::<Vec<_>>()
-        .join(" ")
+        .concat()
 }
 
-/// Lowercased words, punctuation dropped, so «21,000» and «21,000.» are one
-/// token and «Zoe's» is «zoe».
+/// Lowercased words, punctuation dropped at the edges, so «21,000» and
+/// «21,000.» are one token and «Zoe's» is «zoe».
 fn words_of(text: &str) -> Vec<String> {
     text.split(|c: char| c.is_whitespace())
         .map(|w| {
@@ -1105,14 +1260,22 @@ fn words_of(text: &str) -> Vec<String> {
         .collect()
 }
 
-/// Drop the connective prose and keep the facts, each in its marker.
+/// Drop the connective prose and keep the facts, each in its marker — with the
+/// page's rails carried to the foot of it.
 ///
 /// The declared fallback behind [`prose_restates_fact`]: a page whose writer
 /// will not stop repeating a fact's content in the open is served as its facts
 /// and nothing else. It reads worse than prose and it is the read the memory
 /// can stand behind — the prose that ties a page together is a convenience,
 /// and per-fragment permission is not.
+///
+/// **The links survive the strip.** They are how a reader gets anywhere from
+/// here, and a page with none is reachable only by a search that happens to
+/// hit one of its own facts. A link the prose carried comes back as a bare
+/// rail at the foot of the page: the weaker form of the same thing, and the
+/// only one available once the sentence around it is gone.
 fn keep_only_the_marked_regions(body: &str) -> String {
+    use std::fmt::Write as _;
     let mut out = String::with_capacity(body.len());
     for event in crate::parser::parse(body).events {
         if let crate::parser::ParseEvent::Region { start, end, .. } = event {
@@ -1123,7 +1286,35 @@ fn keep_only_the_marked_regions(body: &str) -> String {
         }
     }
     out.push('\n');
+    let orphaned = rails_lost_with_the_prose(body, &out);
+    if !orphaned.is_empty() {
+        let _ = writeln!(out, "\nSee also: {}", orphaned.join(", "));
+    }
     out
+}
+
+/// The `[[wikilinks]]` the stripped prose was carrying and the kept regions
+/// are not, in the order the page had them.
+fn rails_lost_with_the_prose(body: &str, kept: &str) -> Vec<String> {
+    let still_there: std::collections::BTreeSet<(String, String)> =
+        crate::recall::extract_wikilinks(kept)
+            .iter()
+            .filter_map(link_address)
+            .collect();
+    let mut lost: Vec<String> = Vec::new();
+    for link in crate::recall::extract_wikilinks(body) {
+        let Some((wiki, page)) = link_address(&link) else {
+            continue;
+        };
+        if still_there.contains(&(wiki.clone(), page.clone())) {
+            continue;
+        }
+        let rail = format!("[[{wiki}/{page}]]");
+        if !lost.contains(&rail) {
+            lost.push(rail);
+        }
+    }
+    lost
 }
 
 /// Refresh the wiki's one-line abstract in `_meta` from the page that answers
@@ -3067,6 +3258,115 @@ mod tests {
         drop(dir);
     }
 
+    /// **A page organised by date is not restating anything.**
+    ///
+    /// The body here is a deployment's own log of household evenings, copied
+    /// from a build of the demo corpus: every fact is a dated evening, and the
+    /// page organises itself by those dates — `- **26 March:**` — because
+    /// there is no other way to structure it. The day is in the heading AND in
+    /// the fact, and neither tells a reader of this page anything the page
+    /// does not already show.
+    ///
+    /// A net that took it would have asked for a rewrite, got the same
+    /// headings back (there is no other way), and then stripped the page to a
+    /// list — losing the organisation and, before the links were carried, the
+    /// rails with it. So dates, years, times and headings are out of the net,
+    /// and what stays in it is a VALUE: a number with one of the fact's own
+    /// words beside it, in both places.
+    #[test]
+    fn a_page_organised_by_date_is_left_alone() {
+        let evenings = [
+            (
+                0x41,
+                "With Zoe away until Wednesday 25 March, Alice and Bob dined together at home.",
+            ),
+            (
+                0x42,
+                "Alice and Bob went ahead with dinner on the evening of 26 March 2026 without waiting for Bob.",
+            ),
+            (
+                0x43,
+                "Zoe was out from around 19:00, expected back only late.",
+            ),
+            (
+                0x44,
+                "With Bob away, only Alice and Zoe were expected home through to Friday 23 May.",
+            ),
+        ];
+        let facts: Vec<FactForPage> = evenings.iter().map(|(s, t)| ffp(*s, t)).collect();
+        let body = format!(
+            "A running log of the evenings the household wasn't all home together for dinner.\n\n\
+             - **Late March, Zoe away:** {}\n\
+             - **26 March:** {}\n\
+             - **9 May:** {}\n\
+             - **21–23 May:** {}\n",
+            marked(0x41, evenings[0].1),
+            marked(0x42, evenings[1].1),
+            marked(0x43, evenings[2].1),
+            marked(0x44, evenings[3].1),
+        );
+        assert_eq!(
+            prose_restates_fact(&body, &facts),
+            None,
+            "the dates in the headings are the page's own organisation"
+        );
+    }
+
+    /// A year a fact carries can be written in the prose: it is not a value,
+    /// and a page that cannot say «in 2026» cannot tie its facts to a time at
+    /// all.
+    #[test]
+    fn a_year_in_the_prose_is_not_a_restatement() {
+        let facts = vec![ffp(0x45, "Il mutuo di Zoe scade nel 2031.")];
+        let body = format!(
+            "{} Da quell'anno in poi il bilancio di casa cambia.",
+            marked(0x45, "Il mutuo di Zoe scade nel 2031.")
+        );
+        assert_eq!(prose_restates_fact(&body, &facts), None);
+        let with_the_year = format!(
+            "{} Nel 2031 il bilancio di casa cambia.",
+            marked(0x45, "Il mutuo di Zoe scade nel 2031.")
+        );
+        assert_eq!(
+            prose_restates_fact(&with_the_year, &facts),
+            None,
+            "a year is a date, and the page may say when"
+        );
+    }
+
+    /// **The rails survive the strip.**
+    ///
+    /// A page written as its facts alone has lost the sentences that carried
+    /// its links, and a page with no links is reachable only by a search that
+    /// happens to hit one of its own facts. The links come back as a bare rail
+    /// at the foot: the weaker form of the same thing, and the only one left
+    /// once the sentence around it is gone.
+    #[test]
+    fn stripping_the_prose_keeps_the_page_navigable() {
+        let body = format!(
+            "Il seguito sta in [[alice/spesa]]. {} Se ne parla anche in [[bob/hobbies]].",
+            marked(0x46, "Alice compra il latte il sabato.")
+        );
+        let stripped = keep_only_the_marked_regions(&body);
+        assert!(
+            stripped.contains("Alice compra il latte il sabato."),
+            "the facts are there: {stripped}"
+        );
+        assert!(
+            !stripped.contains("Il seguito sta in"),
+            "and the prose is not: {stripped}"
+        );
+        assert!(
+            stripped.contains("See also: [[alice/spesa]], [[bob/hobbies]]"),
+            "but the rails are, so the page is still walkable: {stripped}"
+        );
+    }
+
+    /// One fact, wrapped in the runtime marker the compiler renders.
+    fn marked(seed: u8, text: &str) -> String {
+        format!("{{{{f=0190f3c2-7a4e-7c31-9b02-2f6a1c8e5d{seed:02x}}}}}{text}{{{{/}}}}")
+    }
+
     /// What the check catches, and what it deliberately does not.
     ///
     /// A number and a run of a fact's own words cannot be a coincidence. A
@@ -3091,8 +3391,17 @@ mod tests {
             "a number from the fact, in the open"
         );
         assert!(
-            prose_restates_fact(&marked("guadagnava 21000 euro l'anno, dice."), &facts).is_some(),
-            "or four of its words in a row"
+            prose_restates_fact(
+                &marked("Lo dice lei: guadagnava 21000 euro l'anno nel lavoro precedente."),
+                &facts
+            )
+            .is_some(),
+            "or a whole clause of it, word for word"
+        );
+        assert!(
+            prose_restates_fact(&marked("Nel lavoro precedente guadagnava meno."), &facts)
+                .is_none(),
+            "a phrase the prose shares with the fact because it is about it is not a quotation"
         );
         assert!(
             prose_restates_fact(&marked("Per questo ha cambiato lavoro."), &facts).is_none(),
