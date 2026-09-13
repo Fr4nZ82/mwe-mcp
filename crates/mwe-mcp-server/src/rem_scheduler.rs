@@ -415,9 +415,18 @@ pub async fn run_light_once(
     embedder: Arc<dyn Embedder>,
     llms: Option<&OwnedRemLlms>,
     policy: &LightPolicy,
+    rem_policy: &RemPolicy,
 ) -> Result<LightOutcome> {
     let llms_borrow = llms.map(OwnedRemLlms::as_borrow);
-    dream::run_light(pool, tree, embedder, llms_borrow.as_ref(), policy).await
+    dream::run_light(
+        pool,
+        tree,
+        embedder,
+        llms_borrow.as_ref(),
+        policy,
+        rem_policy,
+    )
+    .await
 }
 
 /// Spawn the light-dream loop: drains the captures buffer into
@@ -431,12 +440,17 @@ pub async fn run_light_once(
 /// `shutdown` is wired to the same ctrl-c future the HTTP server uses, so the
 /// light dream stops cleanly on SIGINT.
 #[must_use]
+#[allow(
+    clippy::too_many_arguments,
+    reason = "one loop: what to run, on which data, with which models and policies, and when to stop"
+)]
 pub fn spawn_light<S>(
     schedule: RemScheduleConfig,
     pool: SqlitePool,
     tree: WikiTree,
     embedder: Arc<dyn Embedder>,
     llms: Option<Arc<OwnedRemLlms>>,
+    rem_policy: Arc<RwLock<RemPolicy>>,
     gate: Arc<tokio::sync::Mutex<()>>,
     shutdown: S,
 ) -> Option<JoinHandle<()>>
@@ -474,7 +488,15 @@ where
 
         {
             let _running = gate.lock().await;
-            fire_light(&pool, &tree, &embedder, llms.as_deref(), &policy).await;
+            fire_light(
+                &pool,
+                &tree,
+                &embedder,
+                llms.as_deref(),
+                &policy,
+                &snapshot_policy(&rem_policy),
+            )
+            .await;
         }
         let mut last_run = tokio::time::Instant::now();
 
@@ -493,7 +515,15 @@ where
                     let due_threshold = threshold > 0 && backlog_at_least(&pool, threshold).await;
                     if due_timer || due_threshold {
                         let _running = gate.lock().await;
-                        fire_light(&pool, &tree, &embedder, llms.as_deref(), &policy).await;
+                        fire_light(
+                            &pool,
+                            &tree,
+                            &embedder,
+                            llms.as_deref(),
+                            &policy,
+                            &snapshot_policy(&rem_policy),
+                        )
+                        .await;
                         last_run = tokio::time::Instant::now();
                     }
                 }
@@ -519,13 +549,14 @@ async fn fire_light(
     embedder: &Arc<dyn Embedder>,
     llms: Option<&OwnedRemLlms>,
     policy: &LightPolicy,
+    rem_policy: &RemPolicy,
 ) {
     let started = dream_journal::now_rfc3339();
     // Promotion + (when a `cronista` is wired) the incremental compile of the
     // pages the promotion dirtied — one composition, `dream::run_light`, shared
     // with every other caller. Cost-guarded inside it: the compile is skipped
     // entirely when nothing was promoted.
-    match run_light_once(pool, tree, Arc::clone(embedder), llms, policy).await {
+    match run_light_once(pool, tree, Arc::clone(embedder), llms, policy, rem_policy).await {
         Ok(outcome) => {
             // A scheduled light tick that scanned nothing is a no-op the loop
             // runs constantly — journaling it would flood the bounded history
@@ -656,6 +687,7 @@ mod tests {
             tree,
             embedder,
             None,
+            Arc::new(RwLock::new(RemPolicy::default())),
             Arc::new(tokio::sync::Mutex::new(())),
             async move {
                 let _ = rx.await;
@@ -674,7 +706,7 @@ mod tests {
         let tree = WikiTree::open(dir.path()).expect("tree");
         let embedder: Arc<dyn Embedder> = Arc::new(FakeEmbedder::new("fake", 4));
         let policy = LightPolicy::default();
-        let report = run_light_once(&pool, &tree, embedder, None, &policy)
+        let report = run_light_once(&pool, &tree, embedder, None, &policy, &RemPolicy::default())
             .await
             .expect("light cycle must succeed on an empty workdir");
         assert_eq!(report.light.scanned, 0);

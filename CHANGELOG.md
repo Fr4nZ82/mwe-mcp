@@ -9,6 +9,40 @@ From 1.0, the public interface — the MCP tool surface, family by family, as
 the dispatcher in `crates/mwe-mcp-server/src/mcp/` declares it — is a stable,
 semver-governed surface: breaking changes are called out explicitly.
 
+## Unreleased
+
+### Added
+
+- **The memory reads its own pages back, and corrects what they say.** Until
+  now every pass that judged a fact judged it alone, or beside a handful of
+  facts fished out for looking similar. None of them read the page the fact
+  lives on — the prose the memory itself writes to tie a page together. This
+  one does: it hands a model the page, with every fact on it marked, and asks
+  what the page settles.
+
+  Four things it can now see that nothing could see before. An **errand** —
+  «Pepper has been fed», «ho chiuso a chiave» — was true of its day and is
+  written as though it stood for ever, so it is given that day. A **request**
+  somebody answered — «qualcuno dia da mangiare al gatto», then «Pepper has
+  been fed» two lines below — is finished, instead of staying open for weeks
+  and being read back as something still to do. A **passing spell** filed as
+  who somebody is — a mortgage, a secondment, a fortnight covering for
+  somebody — comes off their identity card, with the end it always had. And at
+  night, a claim the page **contradicts** stops being asserted, and the **same
+  claim written twice** becomes one.
+
+  It runs after every hourly round on the pages that round touched, with the
+  first three questions, and again at night over the day's pages with all five.
+  Each correction is made and shown on **Proposals** as *A page read again*,
+  which also lists what the model asked for that the engine refused, and why —
+  a marker that is not on the page, a fact that already ends, a fact on an
+  identity card, which is never retired while everybody is asleep.
+
+  It costs one model call per page that changed, not one per fact. Two
+  ceilings on **REM settings** bound it: 30 pages a night and 5 an hour by
+  default, newest first, and what a ceiling leaves out is read by the next
+  pass.
+
 ## 2.2.0 — 2026-09-12
 
 This release is about the memory reading a **conversation** properly: what a

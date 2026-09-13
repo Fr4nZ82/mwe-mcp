@@ -1090,6 +1090,80 @@ pub(crate) fn window_is_inverted(valid_from: Option<&str>, valid_to: Option<&str
     to < from
 }
 
+/// Snapshot of a fact's KIND and end the moment the page judge corrected
+/// them — the prior state its receipt records.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PrevKind {
+    /// `fact_type` before the correction.
+    pub prev_fact_type: Option<String>,
+    /// `valid_to` before it (`None` = the window was open).
+    pub prev_valid_to: Option<String>,
+}
+
+/// Correct a fact's KIND, and give it an end at the same time.
+///
+/// The third thing the page judge may change, and the narrowest: a claim
+/// filed as who somebody IS that turns out to be a passage of some months —
+/// «involved in the mortgage paperwork», «in cassa integrazione» — is a
+/// `state` with an end, and the identity card lets it go at the next rebuild
+/// because a card carries only identities ([`is_an_identity_kind`]).
+///
+/// `valid_to` is written through the same guard every other end goes through
+/// ([`end_not_before_start`]), so a corrected kind cannot smuggle in a window
+/// that closes before it opens; `None` leaves the fact's end alone, which is
+/// the case where nothing says when the passage ends.
+///
+/// It changes the KIND and the END and nothing else. Not the subject, not the
+/// audience, not the words: those are declared verbs a person asks for, and a
+/// pass that runs while everybody is asleep does not get them.
+///
+/// Returns the previous values for the receipt, or `None` when `fact_id` has
+/// no active row.
+///
+/// # Errors
+///
+/// As [`sqlx::Error`].
+pub async fn set_fact_type(
+    pool: &SqlitePool,
+    fact_id: &FactId,
+    fact_type: &str,
+    valid_to: Option<&str>,
+    when_unstated: chrono::DateTime<chrono::Utc>,
+) -> Result<Option<PrevKind>> {
+    let Some(row) = find_by_id(pool, fact_id).await? else {
+        return Ok(None);
+    };
+    if row.deleted_at.is_some() {
+        return Ok(None);
+    }
+    let prev = PrevKind {
+        prev_fact_type: row.fact_type.clone(),
+        prev_valid_to: row.valid_to.clone(),
+    };
+    let new_to = match valid_to {
+        Some(v) => Some(end_not_before_start(
+            fact_id,
+            row.valid_from.as_deref(),
+            v,
+            when_unstated,
+        )),
+        None => row.valid_to.clone(),
+    };
+    let now = chrono::Utc::now().to_rfc3339();
+    sqlx::query(
+        "UPDATE fact_index
+            SET fact_type = ?, valid_to = ?, updated_at = ?
+          WHERE fact_id = ? AND deleted_at IS NULL",
+    )
+    .bind(fact_type)
+    .bind(&new_to)
+    .bind(&now)
+    .bind(fact_id.as_str())
+    .execute(pool)
+    .await?;
+    Ok(Some(prev))
+}
+
 /// Snapshot of a fact's ACL columns the moment an ACL change overwrote
 /// them — the prior state the act-first `acl_change` receipt records.
 #[derive(Debug, Clone, PartialEq, Eq)]

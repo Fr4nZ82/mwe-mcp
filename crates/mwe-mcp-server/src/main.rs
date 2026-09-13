@@ -967,9 +967,13 @@ async fn cmd_rem_run_light(workdir: &Path, config: &Config) -> Result<()> {
     // Absent config ⇒ `None` ⇒ promotion only.
     let llms = rem_scheduler::build_backends(&config.llm)?;
     let policy = mwe_core::dream_light::LightPolicy::default();
-    let report = rem_scheduler::run_light_once(&pool, &tree, embedder, llms.as_ref(), &policy)
-        .await
-        .context("light dream cycle")?;
+    // The hour reads back the pages it wrote onto, under this deployment's own
+    // ceilings.
+    let rem_policy = config.rem.resolved_policy();
+    let report =
+        rem_scheduler::run_light_once(&pool, &tree, embedder, llms.as_ref(), &policy, &rem_policy)
+            .await
+            .context("light dream cycle")?;
 
     if let Some(stop) = &report.budget_stop {
         println!("light dream    : {stop}");
@@ -1822,6 +1826,10 @@ async fn cmd_serve_http(
     // router assembly consumes `dashboard_state`, so the scheduler below
     // reads a settings save at its next cycle start — no restart.
     let rem_policy = dashboard_state.rem_policy.clone();
+    // The light dream reads the same handle: the pass that reads its pages back
+    // takes its ceiling from the REM policy, so a settings save reaches the
+    // next hour exactly as it reaches the next night.
+    let light_rem_policy = rem_policy.clone();
     // Same for the backup schedule (Backup console ↔ backup scheduler).
     let backup_schedule = dashboard_state.backup_schedule.clone();
 
@@ -2036,6 +2044,7 @@ async fn cmd_serve_http(
             state.tree.clone(),
             state.embedder.clone(),
             llms.clone(),
+            light_rem_policy,
             rem_gate.clone(),
             async move {
                 let _ = light_shutdown_rx.recv().await;

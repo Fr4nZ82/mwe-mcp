@@ -106,6 +106,19 @@ pub mod kind {
     /// — see [`super::apply_slot_conflict`].
     pub const SLOT_CONFLICT: &str = "slot_conflict";
 
+    /// The judge read a page and corrected what the page itself said.
+    ///
+    /// It is handed the page's prose with every fact on it marked, and it may
+    /// give an errand the end of its day, close a request another fact on the
+    /// page had finished, turn a passing role back into a passing state, close
+    /// a claim the page contradicted, or fold two copies of one claim into
+    /// one.
+    ///
+    /// **One receipt per page**, born applied like every other receipt a night
+    /// writes: `applied` carries what changed, `refused` what the judge asked
+    /// for that the engine would not do, and why.
+    pub const PAGE_JUDGED: &str = "page_judged";
+
     /// Every canonical kind.
     pub const ALL: &[&str] = &[
         WIKI_PROMOTE,
@@ -114,6 +127,7 @@ pub mod kind {
         PAGE_CREATE,
         RAIL_ADD,
         SLOT_CONFLICT,
+        PAGE_JUDGED,
     ];
 
     /// `true` when `s` matches one of the canonical kinds.
@@ -2532,23 +2546,26 @@ mod tests {
     // ---- kind constants ----
 
     #[test]
-    fn kind_constants_are_the_six_the_engine_emits() {
+    fn kind_constants_are_the_seven_the_engine_emits() {
         assert_eq!(kind::WIKI_PROMOTE, "wiki_promote");
         assert_eq!(kind::DEDUP_MERGE, "dedup_merge");
         assert_eq!(kind::FACT_FORGET, "fact_forget");
         assert_eq!(kind::PAGE_CREATE, "page_create");
         assert_eq!(kind::RAIL_ADD, "rail_add");
         assert_eq!(kind::SLOT_CONFLICT, "slot_conflict");
-        // Three questionnaire kinds, the fact-forget vote, and two
+        assert_eq!(kind::PAGE_JUDGED, "page_judged");
+        // Three questionnaire kinds, the fact-forget vote, and three
         // receipt-only kinds — never `pending`, emitted born-applied so what
         // the engine decided about the shape of the memory (a page it
-        // invented, a link it required) leaves a record the owner can read.
-        assert_eq!(kind::ALL.len(), 6);
+        // invented, a link it required, a page it read back) leaves a record
+        // the owner can read.
+        assert_eq!(kind::ALL.len(), 7);
         assert!(kind::is_canonical("wiki_promote"));
         assert!(kind::is_canonical("fact_forget"));
         assert!(kind::is_canonical("page_create"));
         assert!(kind::is_canonical("rail_add"));
         assert!(kind::is_canonical("slot_conflict"));
+        assert!(kind::is_canonical("page_judged"));
         // Plausible names that are not kinds: the list above is the whole
         // list, and a canonical check that quietly accepted one of these
         // would let a proposal through with nothing to apply it.

@@ -74,6 +74,10 @@ pub mod kind {
     pub const STRUCTURE: &str = "structure";
     /// Rail writer's one-link-or-none verdict (`rem-rails`).
     pub const RAIL: &str = "rail";
+
+    /// Page judge verdict (`rem-judgement`, `rem-judgement-light`): keyed on
+    /// the page as it stands, so an all-`keep` reading is not re-bought.
+    pub const JUDGEMENT: &str = "judgement";
 }
 
 /// Derive the memo key for one confirmer question.

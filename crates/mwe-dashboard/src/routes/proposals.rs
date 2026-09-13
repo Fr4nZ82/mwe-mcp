@@ -688,6 +688,7 @@ fn label(row: &ProposalRow) -> &'static str {
         kind::PAGE_CREATE => "A page the memory made",
         kind::RAIL_ADD => "A link between pages",
         kind::SLOT_CONFLICT => "Two values for one detail",
+        kind::PAGE_JUDGED => "A page read again",
         // A row written by a newer engine shows as itself rather than
         // being swallowed into a wrong label.
         _ => "Something changed",
@@ -707,6 +708,7 @@ fn headline(row: &ProposalRow) -> String {
         kind::DEDUP_MERGE => {
             "Two facts that said the same thing became one; the other was retired.".to_owned()
         },
+        kind::PAGE_JUDGED => page_judged_headline(c),
         kind::FACT_FORGET => format!(
             "Asked by {who}, who is not the one who said the fact: everybody who can \
              read it is voting. Silence lets the forget through; a majority of no keeps \
@@ -740,6 +742,53 @@ fn headline(row: &ProposalRow) -> String {
 /// The `variant` discriminator inside a `wiki_promote` context.
 ///
 /// Absent means the oldest shape, which is what the apply handler also
+/// What the judge did to one page, in one sentence: how many facts it
+/// corrected, in which words, and whether it asked for anything the engine
+/// would not do.
+///
+/// The verbs are named the way the memory works, not the way the code does:
+/// the reader of this page is whoever the facts are about.
+fn page_judged_headline(c: &Value) -> String {
+    let applied = c.get("applied").and_then(Value::as_array);
+    let refused = c
+        .get("refused")
+        .and_then(Value::as_array)
+        .map_or(0, Vec::len);
+    let verbs: Vec<&str> = applied
+        .map(|rows| {
+            rows.iter()
+                .filter_map(|r| str_at(r, "verb"))
+                .map(|v| match v {
+                    "end" => "an errand was given the day it happened on",
+                    "closes" => "something the page was still waiting for is finished",
+                    "retype" => "a passing spell stopped reading as who somebody is",
+                    "contradicted" => "a claim the page contradicts stopped being asserted",
+                    "duplicate_of" => "the same claim written twice became one",
+                    _ => "a fact was corrected",
+                })
+                .collect()
+        })
+        .unwrap_or_default();
+    let page = str_at(c, "source_path").unwrap_or("a page");
+    let mut out = if verbs.is_empty() {
+        format!("The memory read \u{ab}{page}\u{bb} again.")
+    } else {
+        let mut listed: Vec<&str> = verbs;
+        listed.sort_unstable();
+        listed.dedup();
+        format!("Reading \u{ab}{page}\u{bb} again: {}.", listed.join("; "))
+    };
+    if refused > 0 {
+        use std::fmt::Write as _;
+        let _ = write!(
+            out,
+            " {refused} other change{} was asked for and refused \u{2014} open the row to see why.",
+            if refused == 1 { "" } else { "s" }
+        );
+    }
+    out
+}
+
 /// falls back to (`mwe_core::promote`).
 fn promote_variant(context: &Value) -> &str {
     str_at(context, "variant").unwrap_or(mwe_core::promote::VARIANT_PARAGRAPH_TO_FILE)

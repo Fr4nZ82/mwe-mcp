@@ -22,6 +22,8 @@ in the passes themselves. These are the ceilings.
 | Closing what has been overtaken — facts checked per cycle | 8 | Facts that look like evidence something older is finished. |
 | Facts that contradict each other — starting points per cycle | 8 | Where the contradiction sweep starts from. |
 | Putting dates in order — facts per cycle | 16 | Facts whose wording looks like a date ("last Tuesday"), oldest first. |
+| Reading a page back — pages a night | 30 | Pages written onto during the day that the night reads again, whole. One model call per page, newest first. |
+| Reading a page back — pages an hour | 5 | The same reading, shorter, on the pages the last hour touched. |
 | Repairing where a fact came from — repairs per cycle | 32 | No model call; this one only re-reads. |
 | A new comment is left alone for — seconds | 900 | How long a fresh comment sits untouched before the cycle reads it. |
 | Emptied pages — files removed per cycle | 4 | Page files with nothing live left on them. |

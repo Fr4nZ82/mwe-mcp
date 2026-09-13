@@ -1389,6 +1389,14 @@ pub struct RemPolicyConfig {
     /// date normalizer may send to the LLM per cycle; `0` disables.
     #[serde(default)]
     pub date_normalize_cap: Option<usize>,
+    /// Override `judgement_max_pages_night` (default 30) — pages the judge
+    /// reads in one NIGHT, one model call each.
+    #[serde(default)]
+    pub judgement_max_pages_night: Option<usize>,
+    /// Override `judgement_max_pages_hour` (default 5) — the same cap for the
+    /// HOURLY pass, which comes round twenty-four times as often.
+    #[serde(default)]
+    pub judgement_max_pages_hour: Option<usize>,
     /// Override `provenance_hygiene_cap` (default 32) — trailing
     /// source-pointer facts the provenance-hygiene sweep repairs per
     /// cycle (deterministic, embedder spend only); `0` disables.
@@ -1446,6 +1454,12 @@ impl RemConfig {
         }
         if let Some(c) = self.policy.contradiction_sweep_cap {
             p.contradiction_sweep_cap = c;
+        }
+        if let Some(c) = self.policy.judgement_max_pages_night {
+            p.judgement_max_pages_night = c;
+        }
+        if let Some(c) = self.policy.judgement_max_pages_hour {
+            p.judgement_max_pages_hour = c;
         }
         if let Some(c) = self.policy.date_normalize_cap {
             p.date_normalize_cap = c;

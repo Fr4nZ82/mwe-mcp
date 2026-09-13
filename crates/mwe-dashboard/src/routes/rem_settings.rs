@@ -151,6 +151,29 @@ fn knobs() -> Vec<Knob> {
                 .to_owned(),
         },
         Knob {
+            field: "judgement_max_pages_night",
+            label: "Reading a page back — pages a night",
+            default: def.judgement_max_pages_night.to_string(),
+            help: "Pages written onto during the day that the night reads again, \
+                   whole, to give an errand the day it belongs to, close a request \
+                   something on the page answered, take a passing thing off an \
+                   identity card, close a claim the page contradicts, or fold two \
+                   copies of one claim into one. One model call per page, newest \
+                   first. 0 turns the pass off."
+                .to_owned(),
+        },
+        Knob {
+            field: "judgement_max_pages_hour",
+            label: "Reading a page back — pages an hour",
+            default: def.judgement_max_pages_hour.to_string(),
+            help: "The same reading, shorter — the first three questions — on the \
+                   pages the last hour touched, so a plain mistake is corrected \
+                   while the day is still going. Low, because it comes round every \
+                   hour. What it leaves is read again at night. 0 turns the hourly \
+                   reading off."
+                .to_owned(),
+        },
+        Knob {
             field: "provenance_hygiene_cap",
             label: "Repairing where a fact came from — repairs per cycle",
             default: def.provenance_hygiene_cap.to_string(),
@@ -213,6 +236,8 @@ fn override_value(cfg: &RemPolicyConfig, field: &str) -> String {
         "completion_sweep_cap" => s(cfg.completion_sweep_cap),
         "contradiction_sweep_cap" => s(cfg.contradiction_sweep_cap),
         "date_normalize_cap" => s(cfg.date_normalize_cap),
+        "judgement_max_pages_night" => s(cfg.judgement_max_pages_night),
+        "judgement_max_pages_hour" => s(cfg.judgement_max_pages_hour),
         "provenance_hygiene_cap" => s(cfg.provenance_hygiene_cap),
         "briefing_processor_grace_secs" => s(cfg.briefing_processor_grace_secs),
         "husk_gc_cap" => s(cfg.husk_gc_cap),
@@ -421,6 +446,8 @@ fn parse_form(form: &HashMap<String, String>) -> Result<RemPolicyConfig> {
         completion_sweep_cap: parse_usize(form, "completion_sweep_cap")?,
         contradiction_sweep_cap: parse_usize(form, "contradiction_sweep_cap")?,
         date_normalize_cap: parse_usize(form, "date_normalize_cap")?,
+        judgement_max_pages_night: parse_usize(form, "judgement_max_pages_night")?,
+        judgement_max_pages_hour: parse_usize(form, "judgement_max_pages_hour")?,
         provenance_hygiene_cap: parse_usize(form, "provenance_hygiene_cap")?,
         briefing_processor_grace_secs: parse_u64(form, "briefing_processor_grace_secs")?,
         husk_gc_cap: parse_usize(form, "husk_gc_cap")?,

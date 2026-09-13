@@ -254,6 +254,11 @@ pub const BUNDLED: &[(&str, &str)] = &[
         crate::rem::BUNDLED_REM_RECALL_REPAIR_MD,
     ),
     ("rem-dates", crate::rem::BUNDLED_REM_DATES_MD),
+    ("rem-judgement", crate::rem::BUNDLED_REM_JUDGEMENT_MD),
+    (
+        "rem-judgement-light",
+        crate::rem::BUNDLED_REM_JUDGEMENT_LIGHT_MD,
+    ),
     ("rem-merge", crate::rem::BUNDLED_REM_MERGE_MD),
     ("rem-structure", crate::rem::BUNDLED_REM_STRUCTURE_MD),
     (
@@ -345,6 +350,8 @@ pub const PROSE_REGISTRY: &[(&str, PromptOutput)] = &[
     ("conciliatore", PromptOutput::Prose),
     ("comment-apply", PromptOutput::Prose),
     ("rem-dates", PromptOutput::Prose),
+    ("rem-judgement", PromptOutput::Internal),
+    ("rem-judgement-light", PromptOutput::Internal),
     ("rem-page-grouping", PromptOutput::Prose),
     ("document-classify", PromptOutput::Prose),
     ("document-extract", PromptOutput::Prose),

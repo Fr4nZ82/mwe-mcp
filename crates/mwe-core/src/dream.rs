@@ -15,7 +15,8 @@
 //! - [`run_compile`] — the narrative compile only (Cartografo →
 //!   Conciliatore → Architetto → Cronista → Revisore) over the dirty pages.
 //! - [`run_light`] — the cheap, frequent dream: promote buffered captures into
-//!   `fact_index`, then compile the pages that went dirty.
+//!   `fact_index`, compile the pages that went dirty, then read those pages
+//!   back and correct what they say ([`rem::judge_fresh_pages`]).
 //! - [`run_full`] — the nightly / on-demand dream: a complete [`rem::run_cycle`]
 //!   reorg (dedup, auto-promote, archive, **parked-comment application**),
 //!   then a review of the prose already on disk, then ONE compile pass that
@@ -204,7 +205,10 @@ pub async fn run_compile(
         });
     }
     let placement = placement_for(cadence, llms.apply, llms.auto_promote);
-    compile_with(pool, tree, embedder, llms, cadence, placement, now).await
+    // No judge: this is the narrative compile on its own. The judge belongs to
+    // a round that WRITES facts — the light dream and the night — and it reads
+    // what that round wrote.
+    compile_with(pool, tree, embedder, llms, cadence, placement, now, None).await
 }
 
 /// The last pass of the night: place what every earlier pass declined.
@@ -258,6 +262,8 @@ pub async fn run_closing_pass(
         Cadence::Full,
         planner::NewFactPlacement::ClosingCartografo(strong),
         now,
+        // The night has judged already, in `run_cycle`.
+        None,
     )
     .await?;
     // The one outcome this pass exists to prevent. Not an error — a claim is
@@ -296,6 +302,72 @@ pub async fn run_closing_pass(
     Ok(report)
 }
 
+/// **The hour reads back the pages it just wrote onto.**
+///
+/// The prose exists by the time this runs, so it is the first moment the
+/// claims of the round can be read the way a person would read them: woven
+/// into the page, beside the facts that were already there. That is the whole
+/// of what the classifier could not do, having seen one turn and nothing
+/// around it.
+///
+/// What the judge corrects is corrected in the ROW, within the hour: the
+/// errand carries the day it was true of, the request something on the page
+/// answered is finished, the role that runs out is a state with an end.
+/// Everything that reads validity is then right — what is coming up, a dated
+/// question, the assistant asking again for something already done — instead
+/// of being right tomorrow morning. The PROSE catches up at the next round,
+/// because validity is part of the page fingerprint and a judged page comes
+/// back dirty.
+///
+/// It runs on the `rem_dedup_semantic` slot, the one this round already asks
+/// its other confirmations of, and it asks three of the night's five questions
+/// ([`rem::JudgementDepth`]). What model is in that slot is the operator's to
+/// choose.
+///
+/// Never fatal: the compile is what the hour owes, and a page this pass could
+/// not read is still unjudged, so tonight reads it.
+async fn read_back_what_the_round_wrote(
+    pool: &SqlitePool,
+    tree: &WikiTree,
+    embedder: Arc<dyn Embedder>,
+    llms: &RemLlms<'_>,
+    placed: &[planner::FactForPage],
+    rem_policy: &RemPolicy,
+    now: &str,
+) -> rem::PageJudgementReport {
+    let fresh: Vec<crate::types::FactId> = placed.iter().map(|f| f.fact_id.clone()).collect();
+    match rem::judge_fresh_pages(
+        pool,
+        tree,
+        embedder,
+        llms.revisor,
+        &format!("light-{now}"),
+        rem_policy,
+        &fresh,
+    )
+    .await
+    {
+        Ok(judged) => {
+            tracing::info!(
+                pages = judged.pages_read,
+                changed = judged.changed.len(),
+                refused = judged.refused.len(),
+                left = judged.pages_left,
+                "light dream: the hour read back the pages it wrote onto"
+            );
+            judged
+        },
+        Err(e) => {
+            tracing::warn!(error = %e, "light dream: page judgement skipped");
+            rem::PageJudgementReport::default()
+        },
+    }
+}
+
+#[allow(
+    clippy::too_many_arguments,
+    reason = "one compile: what to place, who places it, at which cadence, and whether the hour judges what it just wrote"
+)]
 async fn compile_with(
     pool: &SqlitePool,
     tree: &WikiTree,
@@ -304,6 +376,7 @@ async fn compile_with(
     cadence: Cadence,
     placement: planner::NewFactPlacement<'_>,
     now: &str,
+    judging: Option<&RemPolicy>,
 ) -> Result<CompileReport> {
     let Some(cronista_strong) = llms.cronista else {
         tracing::debug!("dream: cronista slot unconfigured — skipping narrative compilation");
@@ -363,6 +436,20 @@ async fn compile_with(
         .await
         .context("compiler")?;
     report.queue = queue.report;
+    if cadence == Cadence::Light
+        && let Some(rem_policy) = judging
+    {
+        report.judged = read_back_what_the_round_wrote(
+            pool,
+            tree,
+            embedder,
+            llms,
+            &queue.for_plan,
+            rem_policy,
+            now,
+        )
+        .await;
+    }
     // Deterministic, no-LLM pass that syncs each wiki's
     // `_meta.keywords["topics"]` to the union of its facts' topics, and each
     // page's testata to the topics of the facts on it. The **page** cards are
@@ -600,6 +687,14 @@ async fn review_before_placing(pool: &SqlitePool, tree: &WikiTree, now: &str) {
 /// the promotion runs, so a half-wired install surfaces as pages that never
 /// compile rather than as a panic.
 ///
+/// After the prose, the hour **reads back the pages it wrote onto**
+/// ([`crate::rem::judge_fresh_pages`]): an errand that is spent by bedtime
+/// gets its end, a request another fact on the page finished gets closed, a
+/// role filed as who somebody IS is refiled as what they are doing.
+/// `rem_policy` is where that pass reads its cap, and it is the same handle
+/// the REM settings panel swaps in place, so a change takes effect on the next
+/// hour.
+///
 /// Nothing runs at all while the deployment's daily budget is reached:
 /// the outcome comes back with [`LightOutcome::budget_stop`] set and every
 /// report empty, and the summary says that instead of a quiet tick.
@@ -613,6 +708,7 @@ pub async fn run_light(
     embedder: Arc<dyn Embedder>,
     llms: Option<&RemLlms<'_>>,
     policy: &LightPolicy,
+    rem_policy: &RemPolicy,
 ) -> Result<LightOutcome> {
     // Hygiene first, and before the budget gate: the kept write outcomes of
     // re-delivered turns expire on a clock, and the write path only prunes
@@ -635,17 +731,22 @@ pub async fn run_light(
     // compile, because a claim becomes a fact only once its page is decided.
     let waiting = usize::try_from(capture_buffer::count_buffered(pool).await?).unwrap_or(0);
     let compile = match (waiting > 0, llms) {
-        (true, Some(llms)) => Some(
-            run_compile(
-                pool,
-                tree,
-                embedder.clone(),
-                llms,
-                Cadence::Light,
-                &Utc::now().to_rfc3339(),
+        (true, Some(llms)) => {
+            let placement = placement_for(Cadence::Light, llms.apply, llms.auto_promote);
+            Some(
+                compile_with(
+                    pool,
+                    tree,
+                    embedder.clone(),
+                    llms,
+                    Cadence::Light,
+                    placement,
+                    &Utc::now().to_rfc3339(),
+                    Some(rem_policy),
+                )
+                .await?,
             )
-            .await?,
-        ),
+        },
         _ => None,
     };
     // No prose writer configured: drain the queue anyway, deterministically.
@@ -828,11 +929,12 @@ pub fn summarize_light(out: &LightOutcome) -> String {
         },
         |c| {
             format!(
-                "promoted {} · superseded {} · skip-dup {} · scanned {} — then compiled {} pages ({} lists, {} unchanged){}",
+                "promoted {} · superseded {} · skip-dup {} · scanned {}{} — then compiled {} pages ({} lists, {} unchanged){}",
                 out.light.promoted,
                 out.light.superseded,
                 out.light.skipped_dup,
                 out.light.scanned,
+                judgement_note(&c.judged),
                 c.leaves,
                 c.lists,
                 c.unchanged,
@@ -876,8 +978,9 @@ pub fn summarize_full(out: &FullOutcome) -> String {
     } else {
         format!(" · rails {}", out.cycle.rail_writer.written.len())
     };
+    let judged = judgement_note(&out.cycle.page_judge);
     format!(
-        "cycle {} · dedup {} · auto-promote {} · comments applied {}{husks}{rails} — then compiled {} pages ({} lists){}{}",
+        "cycle {} · dedup {} · auto-promote {} · comments applied {}{husks}{rails}{judged} — then compiled {} pages ({} lists){}{}",
         out.cycle.cycle_id,
         out.cycle.revisor.applied.len(),
         out.cycle.auto_promote.applied.len(),
@@ -890,6 +993,22 @@ pub fn summarize_full(out: &FullOutcome) -> String {
         failure_note(&out.compile),
         closing_note(&out.closing),
     )
+}
+
+/// What the page judge did, for the one-line summary.
+///
+/// Empty on a pass that read its pages and agreed with all of them — the
+/// ordinary outcome, and a zero on the line would bury the passes that decided
+/// something. **The pages the cap left out are always named**, because a page
+/// nobody read is the one thing here a person may want to act on: it stays
+/// unjudged and the next pass (the next hour's, or tonight's) reads it.
+fn judgement_note(report: &rem::PageJudgementReport) -> String {
+    match (report.changed.len(), report.pages_left) {
+        (0, 0) => String::new(),
+        (0, left) => format!(" · {left} pages not read back, oldest first"),
+        (n, 0) => format!(" · judged {n}"),
+        (n, left) => format!(" · judged {n} ({left} pages not read back, oldest first)"),
+    }
 }
 
 /// What the closing pass did, for the one-line summary — empty on the usual
@@ -1169,6 +1288,230 @@ mod tests {
         .capture_id
     }
 
+    /// A backend that answers by what it was asked.
+    ///
+    /// One light round calls the cheap slot for three different jobs — where a
+    /// claim goes, whether its page is a near-synonym of another, and the
+    /// prose — and a test about a FOURTH call has to let those three succeed.
+    /// Each entry is a word the asking prompt contains and the answer to give
+    /// when it does; an unmatched prompt gets the near-synonym check's «no».
+    struct ByPrompt(Vec<(&'static str, String)>);
+
+    #[async_trait::async_trait]
+    impl crate::llm::LlmBackend for ByPrompt {
+        fn model_id(&self) -> &'static str {
+            "by-prompt"
+        }
+
+        async fn complete(
+            &self,
+            request: crate::llm::CompletionRequest,
+        ) -> std::result::Result<crate::llm::CompletionResponse, crate::llm::LlmError> {
+            let asked = format!("{}{}", request.system.unwrap_or_default(), request.prompt);
+            let text = self
+                .0
+                .iter()
+                .find(|(marker, _)| asked.contains(marker))
+                .map_or_else(
+                    || "{\"same\":false}".to_owned(),
+                    |(_, answer)| answer.clone(),
+                );
+            Ok(crate::llm::CompletionResponse {
+                text,
+                finish_reason: crate::llm::FinishReason::EndOfTurn,
+                usage: crate::llm::CompletionUsage::default(),
+            })
+        }
+    }
+
+    /// One claim whose page the turn itself named — the shape the light round
+    /// places without asking anybody.
+    async fn buffer_on_page(pool: &SqlitePool, body: &str, page: &str) -> crate::types::FactId {
+        capture_buffer::buffer_capture(
+            pool,
+            crate::capture::CaptureRequest {
+                subject_external: None,
+                slot: None,
+                slot_value: None,
+                authored_refs: Vec::new(),
+                wiki_id: crate::types::WikiId::parse("alice").unwrap(),
+                page: Some(std::path::PathBuf::from(page)),
+                body: body.to_owned(),
+                subject: "user:alice".parse::<crate::types::Principal>().unwrap(),
+                allow: Vec::new(),
+                sender: None,
+                fact_type: Some("episode".to_owned()),
+                topics: Vec::new(),
+                dedup_threshold: None,
+                valid_from: Some("2026-03-14T18:00:00Z".to_owned()),
+                valid_to: None,
+                style: None,
+                page_description: None,
+                salience: None,
+            },
+            None,
+        )
+        .await
+        .expect("buffer")
+        .capture_id
+    }
+
+    /// A fact from an earlier round, on a page that therefore exists, and
+    /// already carrying the end of its own day.
+    async fn plant_ended_fact(
+        pool: &SqlitePool,
+        tree: &WikiTree,
+        page: &str,
+        body: &str,
+    ) -> crate::types::FactId {
+        crate::capture::wiki_capture(
+            tree,
+            pool,
+            Arc::new(FakeEmbedder::new("fake", 4)),
+            crate::capture::CaptureRequest {
+                subject_external: None,
+                slot: None,
+                slot_value: None,
+                authored_refs: Vec::new(),
+                wiki_id: crate::types::WikiId::parse("alice").unwrap(),
+                page: Some(std::path::PathBuf::from(page)),
+                body: body.to_owned(),
+                subject: "user:alice".parse::<crate::types::Principal>().unwrap(),
+                allow: Vec::new(),
+                sender: None,
+                fact_type: Some("episode".to_owned()),
+                topics: Vec::new(),
+                dedup_threshold: Some(0.999),
+                valid_from: Some("2026-03-01T21:00:00Z".to_owned()),
+                valid_to: Some("2026-03-01T23:59:59Z".to_owned()),
+                style: None,
+                page_description: None,
+                salience: None,
+            },
+        )
+        .await
+        .expect("a fact from an earlier round")
+        .fact_id
+    }
+
+    /// **The hour reads back the page it just wrote onto.**
+    ///
+    /// «Ha annaffiato le piante» is written with no end, because the turn that
+    /// carried it said nothing about one — and a fact with no end is a
+    /// standing state, so the memory goes on treating a watering from March as
+    /// true today. The night would catch it; this is the same reading, run on
+    /// the page the round has just compiled, so the household does not live
+    /// with it until the night.
+    ///
+    /// The page is the unit: the model gets the prose with both facts marked,
+    /// and answers by marker. The older fact here already ends, so the verdict
+    /// asking to end it again is refused BY NAME rather than applied — which
+    /// is what the receipt shows a person who wonders what the judge did.
+    #[tokio::test]
+    async fn the_light_round_reads_back_the_page_it_wrote_onto() {
+        let (_dir, tree, pool) = setup_alice().await;
+        let older = plant_ended_fact(&pool, &tree, "casa.md", "Ha chiuso a chiave").await;
+        let fresh = buffer_on_page(&pool, "Ha annaffiato le piante", "casa.md").await;
+
+        // The cheap slot does the whole light compile — placing, the
+        // near-synonym check, the prose — so it answers by what it was asked.
+        let flash = ByPrompt(vec![
+            (
+                "assignments",
+                // Onto the page the earlier fact already opened: recognising a
+                // home, not inventing one, so no birth floor stands in the way.
+                format!(
+                    "{{\"assignments\":[{{\"fact_id\":\"{fresh}\",\"page_slug\":\"casa\"}}],\"new_pages\":[]}}"
+                ),
+            ),
+            (
+                "mergedBody",
+                "{\"mergedBody\":\"<f1>Ha chiuso a chiave.</f1> <f2>Ha annaffiato le \
+                 piante.</f2>\",\"description\":\"La casa di Alice\"}"
+                    .to_owned(),
+            ),
+        ]);
+        // Both markers are asked to end. One can, one cannot.
+        let judge = FakeLlmBackend::new(
+            "judge",
+            "{\"verdicts\":{\"f1\":{\"verdict\":\"end\",\"valid_to\":\"2026-03-14\"},\
+              \"f2\":{\"verdict\":\"end\",\"valid_to\":\"2026-03-14\"}}}",
+        );
+        // The hour judges on the `rem_dedup_semantic` slot — here the only
+        // handle that is not the cheap one doing the compile, so the test can
+        // tell the judge's call from the round's other three.
+        let llms = RemLlms {
+            revisor: &judge,
+            auto_promote: None,
+            apply: Some(&flash),
+            comment_applier: None,
+            cronista: Some(&flash),
+            navigator: None,
+        };
+
+        let out = run_light(
+            &pool,
+            &tree,
+            Arc::new(FakeEmbedder::new("fake", 4)),
+            Some(&llms),
+            &LightPolicy::default(),
+            &RemPolicy::default(),
+        )
+        .await
+        .expect("light round");
+
+        let compile = out.compile.as_ref().expect("the round compiled");
+        assert_eq!(compile.judged.pages_read, 1, "one page, one call");
+        assert_eq!(
+            compile.judged.changed,
+            vec![format!("{fresh} · end")],
+            "the fresh fact got its day: {:?}",
+            compile.judged
+        );
+        assert!(
+            compile
+                .judged
+                .refused
+                .iter()
+                .any(|r| r.contains("already ends")),
+            "and the one that already ends was refused by name: {:?}",
+            compile.judged.refused
+        );
+        let row = crate::fact_index::find_by_id(&pool, &fresh)
+            .await
+            .unwrap()
+            .expect("the claim became a fact");
+        assert!(
+            row.valid_to
+                .as_deref()
+                .is_some_and(|v| v.starts_with("2026-03-14")),
+            "within the hour, not tomorrow morning: {:?}",
+            row.valid_to
+        );
+        assert_eq!(
+            crate::fact_index::find_by_id(&pool, &older)
+                .await
+                .unwrap()
+                .expect("row")
+                .valid_to
+                .as_deref()
+                .map(|v| v[..10].to_owned()),
+            Some("2026-03-01".to_owned()),
+            "the older fact keeps the end it had"
+        );
+
+        // And the model read a PAGE: prose, with the facts marked.
+        let asked = judge.last_prompt().expect("the judge was asked");
+        assert!(
+            asked.contains("<f1>") && asked.contains("<f2>"),
+            "both facts are nameable: {asked}"
+        );
+        assert!(
+            asked.contains("Ha annaffiato le piante"),
+            "including the one this round wrote: {asked}"
+        );
+    }
+
     /// **The queue ends the night empty**, and a page for a single fact is how
     /// it does.
     ///
@@ -1445,9 +1788,16 @@ mod tests {
     async fn run_light_promotes_nothing_and_skips_compile_on_empty_workdir() {
         let (_dir, tree, pool) = setup().await;
         let embedder: Arc<dyn Embedder> = Arc::new(FakeEmbedder::new("fake", 4));
-        let outcome = run_light(&pool, &tree, embedder, None, &LightPolicy::default())
-            .await
-            .expect("light must succeed on an empty workdir");
+        let outcome = run_light(
+            &pool,
+            &tree,
+            embedder,
+            None,
+            &LightPolicy::default(),
+            &RemPolicy::default(),
+        )
+        .await
+        .expect("light must succeed on an empty workdir");
         assert_eq!(outcome.light.scanned, 0);
         assert!(outcome.compile.is_none());
     }
@@ -1476,9 +1826,16 @@ mod tests {
         .await
         .expect("a turn kept this morning");
 
-        run_light(&pool, &tree, embedder, None, &LightPolicy::default())
-            .await
-            .expect("light round");
+        run_light(
+            &pool,
+            &tree,
+            embedder,
+            None,
+            &LightPolicy::default(),
+            &RemPolicy::default(),
+        )
+        .await
+        .expect("light round");
 
         let left: i64 = sqlx::query_scalar("SELECT count(*) FROM ingest_replies")
             .fetch_one(&pool)

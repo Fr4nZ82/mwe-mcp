@@ -294,6 +294,7 @@ async fn run_dream_core(
                 Arc::clone(&memory.embedder),
                 bag.as_ref(),
                 &LightPolicy::default(),
+                &state.rem_policy_snapshot(),
             )
             .await
             .map_err(|e| format!("dream::run_light: {e}"))?;
@@ -432,6 +433,7 @@ async fn run_dream(
                 Arc::clone(&memory.embedder),
                 bag.as_ref(),
                 &LightPolicy::default(),
+                &state.rem_policy_snapshot(),
             )
             .await
             .map_err(|e| DashboardError::Internal(format!("dream::run_light: {e}")))?;

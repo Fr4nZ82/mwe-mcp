@@ -14,9 +14,10 @@
 //! `run_*` function. The shape
 //! of the cycle: the two proposal sweeps settle overdue
 //! `structure_proposals` first; the consolidation and hygiene sweeps
-//! (dedup, promote, merge, completion, contradiction, refile,
-//! provenance, dates) reorganise the fact set act-first; and the archive
-//! detector and the briefing dispatcher emit proposals / briefing items.
+//! (dedup, promote, merge, completion, contradiction, the page judge,
+//! refile, provenance, dates) reorganise the fact set act-first; and the
+//! archive detector and the briefing dispatcher emit proposals / briefing
+//! items.
 //!
 //! ## Cycle invariants
 //!
@@ -223,6 +224,18 @@ pub struct RemPolicy {
     /// semantic gate — the LLM decides whether each flagged fact really
     /// needs the rewrite. `0` disables the sub-job.
     pub date_normalize_cap: usize,
+    /// How many pages the **page judge** may read in ONE NIGHT
+    /// ([`JudgementDepth::Nightly`]).
+    ///
+    /// This is the budget in model calls, exactly: one page, one call,
+    /// whatever the page holds.
+    pub judgement_max_pages_night: usize,
+    /// The same cap for the HOURLY pass ([`JudgementDepth::Hourly`]).
+    ///
+    /// Far lower, because the hour comes round twenty-four times to the
+    /// night's once and reads what one round touched. What it leaves is not
+    /// lost: the page is still unjudged, and the night reads it.
+    pub judgement_max_pages_hour: usize,
     /// Maximum number of facts the provenance-hygiene sweep repairs per
     /// cycle (oldest first, so a pre-existing backlog drains
     /// deterministically). The sweep is fully deterministic — mechanical
@@ -331,6 +344,8 @@ impl Default for RemPolicy {
             closure_sweep_window: chrono::Duration::hours(48),
             contradiction_sweep_cap: 8,
             date_normalize_cap: 16,
+            judgement_max_pages_night: 30,
+            judgement_max_pages_hour: 5,
             provenance_hygiene_cap: 32,
             archive_cap: 10,
             archive_inactivity: chrono::Duration::days(365),
@@ -386,6 +401,8 @@ pub struct RemCycleReport {
     /// Completion sweep report — the REM safety net of the closure verb
     /// (closes open items whose completion ingest could not see).
     pub completion_sweep: CompletionSweepReport,
+    /// What the page judge read and changed.
+    pub page_judge: PageJudgementReport,
     /// Cross-wiki refile sweep report — moves single facts the revisor
     /// LLM deems misfiled into a different existing wiki (act-first,
     /// smart-skip).
@@ -524,6 +541,25 @@ struct StructureMove {
     to_wiki: String,
     #[serde(default)]
     reason: String,
+}
+
+/// Sub-report for the page judge.
+#[derive(Debug, Clone, Default)]
+pub struct PageJudgementReport {
+    /// Pages the judge actually read — one model call each.
+    pub pages_read: usize,
+    /// Pages the cap left out, oldest first. They are still unjudged, and the
+    /// next pass — the next hour's, or tonight's — reads them.
+    pub pages_left: usize,
+    /// One line per change, `fact_id · verb`.
+    pub changed: Vec<String>,
+    /// One line per verdict the engine would not carry out, with the reason.
+    pub refused: Vec<String>,
+    /// Receipt ids, one per page that changed.
+    pub receipts: Vec<String>,
+    /// Soft failures — a page that did not come back, a write that did not
+    /// land. Never fatal to the cycle.
+    pub errors: Vec<String>,
 }
 
 /// Sub-report for the completion sweep.
@@ -1053,6 +1089,34 @@ pub async fn run_cycle(
         &smart_wiki_index,
     )
     .await?;
+    // The judge reads what the day WROTE, and it reads it after the two
+    // sweeps that close things: a fact those already settled is not offered
+    // for a second opinion, and a request the completion sweep finished is
+    // not closed twice.
+    //
+    // It reads the PAGES the day wrote onto, each as compiled prose with its
+    // facts marked, and asks five questions of each. The pass runs on the
+    // `rem_promotions` slot — the one the night's other judgements use. The
+    // hour has read some of these pages already and asked three of the five
+    // ([`JudgementDepth`]); this is the full reading, and the shorter one does
+    // not settle it.
+    let fresh: Vec<FactId> = day
+        .facts_written
+        .iter()
+        .filter_map(|id| FactId::parse(id).ok())
+        .collect();
+    let page_judge = run_page_judgement(
+        pool,
+        tree,
+        Arc::clone(&embedder),
+        llms.auto_promote,
+        &cycle_id,
+        now,
+        policy,
+        &fresh,
+        JudgementDepth::Nightly,
+    )
+    .await?;
     let refile_sweep = run_refile_sweep(
         pool,
         tree,
@@ -1175,6 +1239,7 @@ pub async fn run_cycle(
         topic_merge,
         structure_review,
         completion_sweep,
+        page_judge,
         refile_sweep,
         contradiction_sweep,
         rail_writer,
@@ -5313,6 +5378,1016 @@ fn completion_recipient(
         .iter()
         .find(|c| c.fact_id == closed.fact_id)
         .and_then(|c| proposals::recipient_from_fact(&c.subject_id, c.sender_id.as_ref()))
+}
+
+// ---------- Page judge sub-job ----------
+
+/// Bundled default for the **page judge** at night, overridable at
+/// `<workdir>/prompts/rem-judgement.md`.
+pub const BUNDLED_REM_JUDGEMENT_MD: &str = include_str!("../prompts/rem-judgement.md");
+
+/// Bundled default for the **hourly** page judge, overridable at
+/// `<workdir>/prompts/rem-judgement-light.md`.
+pub const BUNDLED_REM_JUDGEMENT_LIGHT_MD: &str = include_str!("../prompts/rem-judgement-light.md");
+
+/// Longest page rendering one call carries, in bytes.
+///
+/// A page is normally a few paragraphs; this is the guard against the one that
+/// is not, because the whole page goes into the prompt. A rendering that
+/// reaches it stops at the last whole fact that fits, prose and listed facts
+/// alike, and what is past the cut simply has no marker — so a verdict naming
+/// one is refused by name like any other marker that is not there.
+const JUDGED_PAGE_CEILING_BYTES: usize = 8_000;
+
+/// How deeply one judgement pass reads.
+///
+/// **The same reading, twice over, with a different question.** The hour reads
+/// the pages its own round touched and asks the three things a page can settle
+/// about a fact that just landed on it: is this errand spent with its day,
+/// does it finish something the page was still waiting for, is this «trait»
+/// really a passage. The night reads every page the day touched and asks two
+/// more — is this fact contradicted by one standing beside it, and are two of
+/// these the same claim written twice.
+///
+/// What differs is the question and how many pages each may take. Which model
+/// answers is a matter of which SLOT the pass calls, and that belongs to the
+/// caller: the night asks the `rem_promotions` slot, the hour the
+/// `rem_dedup_semantic` slot it already uses.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum JudgementDepth {
+    /// The light dream's pass, over the pages of the round it just wrote.
+    Hourly,
+    /// The night's pass, over every page the day wrote onto.
+    Nightly,
+}
+
+impl JudgementDepth {
+    /// Name of the prompt this depth renders, and of its operator override in
+    /// `<workdir>/prompts/`.
+    #[must_use]
+    pub const fn prompt_name(self) -> &'static str {
+        match self {
+            Self::Hourly => "rem-judgement-light",
+            Self::Nightly => "rem-judgement",
+        }
+    }
+
+    /// The bundled default behind [`Self::prompt_name`].
+    #[must_use]
+    pub const fn bundled_prompt(self) -> &'static str {
+        match self {
+            Self::Hourly => BUNDLED_REM_JUDGEMENT_LIGHT_MD,
+            Self::Nightly => BUNDLED_REM_JUDGEMENT_MD,
+        }
+    }
+
+    /// How many pages this depth may read in one pass.
+    #[must_use]
+    pub const fn page_cap(self, policy: &RemPolicy) -> usize {
+        match self {
+            Self::Hourly => policy.judgement_max_pages_hour,
+            Self::Nightly => policy.judgement_max_pages_night,
+        }
+    }
+
+    /// Whether this depth may act on the two verbs that compare one fact with
+    /// another standing beside it.
+    ///
+    /// The hour is not asked them ([`Self::prompt_name`] renders the shorter
+    /// prompt), and this is the engine saying the same thing: a verdict the
+    /// hour was not asked for is refused rather than applied, so a model that
+    /// answers from habit cannot retire a fact on the cheap reading.
+    #[must_use]
+    pub const fn weighs_facts_against_each_other(self) -> bool {
+        matches!(self, Self::Nightly)
+    }
+
+    /// Which pass this is, for the memo key and the receipt.
+    ///
+    /// It is part of the memo key because the two passes ask different
+    /// questions: a page the hour found nothing on must still be read tonight.
+    #[must_use]
+    pub const fn label(self) -> &'static str {
+        match self {
+            Self::Hourly => "hour",
+            Self::Nightly => "night",
+        }
+    }
+}
+
+/// One page the judge reads, rendered the way the model sees it.
+struct JudgedPage {
+    wiki_id: String,
+    source_path: String,
+    /// The live facts of the page **in marker order**: `facts[i]` is `f{i+1}`.
+    facts: Vec<FactIndexRow>,
+    /// The page as the model reads it: its prose with the `<fN>` markers, the
+    /// facts that are not woven into it yet, and the subject's identity core.
+    block: String,
+    /// Who the page is about, for the receipt's recipient.
+    subject: Option<crate::types::Principal>,
+    sender: Option<crate::types::Principal>,
+}
+
+impl JudgedPage {
+    /// The fact a marker names, when the marker is one of this page's.
+    fn fact_at(&self, marker: usize) -> Option<&FactIndexRow> {
+        marker
+            .checked_sub(1)
+            .and_then(|i| self.facts.get(i))
+            .filter(|row| row.deleted_at.is_none())
+    }
+
+    /// What the MEMO is keyed on: the page as it stands, at this depth.
+    ///
+    /// Not the rendered prompt — the prose around a fact is rewritten by every
+    /// compile that touches the page, and a «nothing to do here» must not be
+    /// re-bought because the Cronista chose a different adjective. What the
+    /// judge actually reasons about is the facts: which ones, saying what, of
+    /// what kind, true until when.
+    fn memo_subject(&self, depth: JudgementDepth) -> String {
+        use std::fmt::Write as _;
+        let mut out = format!("{}|{}", depth.label(), self.source_path);
+        for f in &self.facts {
+            let _ = write!(
+                out,
+                "|{}:{}:{}:{}",
+                f.fact_id.as_str(),
+                f.fact_type.as_deref().unwrap_or(""),
+                f.valid_to.as_deref().unwrap_or(""),
+                f.text,
+            );
+        }
+        out
+    }
+}
+
+/// One verdict the judge returned about one marker.
+#[derive(Debug, Default, serde::Deserialize)]
+struct LlmPageVerdict {
+    #[serde(default)]
+    verdict: String,
+    /// `end` and `retype`: when the fact stops being true.
+    #[serde(default)]
+    valid_to: Option<String>,
+    /// `closes` and `duplicate_of`: the other marker.
+    #[serde(default)]
+    target: Option<String>,
+    /// `contradicted`: the marker that makes this one false.
+    #[serde(default)]
+    by: Option<String>,
+    /// `closes`: `completed` (it was done) or `retracted` (it was called off).
+    #[serde(default)]
+    reason: Option<String>,
+    /// `retype`: the kind the fact should have carried.
+    #[serde(default)]
+    fact_type: Option<String>,
+}
+
+/// The judge's answer about one page: one entry per marker it is changing
+/// something about.
+#[derive(Debug, Default, serde::Deserialize)]
+struct PageDecision {
+    #[serde(default)]
+    verdicts: std::collections::BTreeMap<String, LlmPageVerdict>,
+}
+
+/// What one verdict did, or why it did nothing.
+enum VerdictOutcome {
+    /// `(fact_id, verb, detail)`.
+    Applied(String, &'static str, String),
+    /// Why the engine would not do what the model asked.
+    Refused(&'static str),
+    /// The model looked and left the fact alone.
+    Kept,
+}
+
+/// Read the pages a round wrote onto, and correct what the page itself says.
+///
+/// **Why the page and not the fact.** Every other pass here judges a fact
+/// against a handful of candidates fished out by vector distance: the
+/// reconciler sees a list of lines, the dedup a pair, the completion and
+/// contradiction sweeps a fact plus its nearest neighbours. None of them reads
+/// the prose that ties the facts of a page together — which is the thing the
+/// Cronista writes and the thing a person would read to answer exactly these
+/// questions. This pass reads it: the compiled page, with every live fact
+/// marked `<fN>`, and the model answers by marker.
+///
+/// **What it may change**: a fact's END, a fact's VALIDITY, a fact's KIND, and
+/// — at night — which of two identical claims survives. It never deletes,
+/// never moves a fact to another subject, never changes who may read it and
+/// never rewrites what it says: those are declared verbs a person asks for.
+///
+/// **Newest first.** The cap chooses when a day wrote onto more pages than it
+/// can read, and the page written on an hour ago is the one still being talked
+/// about. What the cap leaves out stays unjudged, and the next pass — the next
+/// hour's, or tomorrow's — reads it; the count says how many.
+///
+/// Every change lands act-first, with one receipt per page saying what was
+/// applied and what was refused.
+///
+/// # Errors
+///
+/// Surfaces infrastructure failures. A model that answers badly is counted in
+/// [`PageJudgementReport::errors`], never returned as one.
+#[allow(
+    clippy::too_many_arguments,
+    reason = "one pass: which facts are fresh, read how deeply, by whom, under which policy, at which instant"
+)]
+async fn run_page_judgement(
+    pool: &SqlitePool,
+    tree: &WikiTree,
+    embedder: Arc<dyn Embedder>,
+    llm: Option<&dyn LlmBackend>,
+    cycle_id: &str,
+    now: DateTime<Utc>,
+    policy: &RemPolicy,
+    fresh: &[FactId],
+    depth: JudgementDepth,
+) -> Result<PageJudgementReport> {
+    let mut report = PageJudgementReport::default();
+    let Some(llm) = llm else {
+        return Ok(report);
+    };
+    let cap = depth.page_cap(policy);
+    if cap == 0 || fresh.is_empty() {
+        return Ok(report);
+    }
+
+    // Which pages this round wrote onto, and when the newest of those writes
+    // landed. A fact that vanished between the perimeter and here is simply
+    // not read; a channel page is nobody's prose and is not judged.
+    let mut touched: std::collections::BTreeMap<String, String> = std::collections::BTreeMap::new();
+    for id in fresh {
+        if let Ok(Some(row)) = fact_index::find_by_id(pool, id).await
+            && row.deleted_at.is_none()
+            && row.superseded_at.is_none()
+            && !crate::wiki::is_channel_page(&row.source_path)
+        {
+            let at = touched.entry(row.source_path.clone()).or_default();
+            if row.created_at > *at {
+                at.clone_from(&row.created_at);
+            }
+        }
+    }
+    let mut pages: Vec<(String, String)> = touched.into_iter().collect();
+    pages.sort_by(|a, b| b.1.cmp(&a.1));
+    if pages.len() > cap {
+        report.pages_left = pages.len() - cap;
+        pages.truncate(cap);
+    }
+
+    let mut consecutive_failures = 0usize;
+    for (source_path, _newest) in pages {
+        let page = match gather_page(pool, tree, &source_path).await {
+            Ok(Some(p)) => p,
+            // A page with no live facts left has nothing to judge.
+            Ok(None) => continue,
+            Err(e) => {
+                report.errors.push(format!("{source_path}: {e}"));
+                continue;
+            },
+        };
+        let key = rem_verdicts::key(llm.model_id(), &page.memo_subject(depth));
+        if rem_verdicts::is_settled(pool, rem_verdicts::kind::JUDGEMENT, &key).await? {
+            continue;
+        }
+        report.pages_read += 1;
+        let decision = match ask_the_judge(tree, llm, &page, now, depth).await? {
+            Ok(d) => {
+                consecutive_failures = 0;
+                d
+            },
+            Err(e) => {
+                // One bad reply costs its page and nothing more; a backend
+                // that is down stops the pass with what it has.
+                if note_llm_failure(
+                    &mut report.errors,
+                    &mut consecutive_failures,
+                    format!("{source_path}: {e}"),
+                ) {
+                    return Ok(report);
+                }
+                continue;
+            },
+        };
+        let (applied, refused) = apply_page_decision(
+            pool,
+            tree,
+            &embedder,
+            &page,
+            &decision,
+            cycle_id,
+            now,
+            depth,
+            &mut report,
+        )
+        .await?;
+        if applied.is_empty() {
+            // Nothing was done to this page, so the same question about the
+            // same facts is not worth asking again until something changes.
+            rem_verdicts::record_negative(
+                pool,
+                rem_verdicts::kind::JUDGEMENT,
+                &key,
+                &page.source_path,
+            )
+            .await?;
+            continue;
+        }
+        match emit_page_receipt(pool, &page, depth, &applied, &refused).await {
+            Ok(receipt) => report.receipts.push(receipt),
+            Err(e) => report.errors.push(format!("{source_path} receipt: {e}")),
+        }
+    }
+    Ok(report)
+}
+
+/// Judge the pages an HOUR just wrote onto, from inside the light dream.
+///
+/// The night reads every page the day touched and asks five questions of each;
+/// this reads the pages of the round that has just finished compiling and asks
+/// the three a page can settle on its own ([`JudgementDepth`]). Same
+/// rendering, same guards, same receipts.
+///
+/// It runs on the slot the caller hands it — the light round's own
+/// `rem_dedup_semantic` — because the operator decides what model that is.
+///
+/// # Errors
+///
+/// As [`run_page_judgement`].
+pub async fn judge_fresh_pages(
+    pool: &SqlitePool,
+    tree: &WikiTree,
+    embedder: Arc<dyn Embedder>,
+    llm: &dyn LlmBackend,
+    cycle_id: &str,
+    policy: &RemPolicy,
+    fresh: &[FactId],
+) -> Result<PageJudgementReport> {
+    let now = policy.now.unwrap_or_else(Utc::now);
+    run_page_judgement(
+        pool,
+        tree,
+        embedder,
+        Some(llm),
+        cycle_id,
+        now,
+        policy,
+        fresh,
+        JudgementDepth::Hourly,
+    )
+    .await
+}
+
+/// Build one page's reading: its live facts in marker order, the prose that
+/// ties them together, and the identity core of whoever the page is about.
+///
+/// `None` when the page has no live fact left — there is nothing to judge and
+/// nothing to pay for.
+async fn gather_page(
+    pool: &SqlitePool,
+    tree: &WikiTree,
+    source_path: &str,
+) -> Result<Option<JudgedPage>> {
+    let live: Vec<FactIndexRow> = fact_index::find_active_by_source_path(pool, source_path)
+        .await
+        .unwrap_or_default();
+    if live.is_empty() {
+        return Ok(None);
+    }
+    // The page's subject: the one most of its facts are about. A page holds
+    // one subject in the ordinary case, and the identity core that answers
+    // «is this really a trait» is that person's.
+    let mut tally: std::collections::BTreeMap<String, usize> = std::collections::BTreeMap::new();
+    for f in &live {
+        *tally.entry(f.subject_id.to_string()).or_default() += 1;
+    }
+    let subject = tally
+        .into_iter()
+        .max_by_key(|(_, n)| *n)
+        .and_then(|(s, _)| s.parse::<crate::types::Principal>().ok());
+    let card: Vec<FactIndexRow> = match &subject {
+        Some(s) => fact_index::find_active_by_subject(pool, s)
+            .await
+            .unwrap_or_default()
+            .into_iter()
+            .filter(FactIndexRow::is_identity_core)
+            .collect(),
+        None => Vec::new(),
+    };
+
+    let raw = std::fs::read_to_string(tree.workdir().join(source_path)).unwrap_or_default();
+    let body = crate::wiki::MarkdownDoc::parse(&raw).map_or_else(|| raw.clone(), |doc| doc.body);
+    let (prose, facts) = render_page_with_markers(&body, live);
+    let sender = facts.first().and_then(|f| f.sender_id.clone());
+    let wiki_id = facts.first().map(|f| f.wiki_id.clone()).unwrap_or_default();
+
+    let mut block = prose;
+    if !card.is_empty() {
+        block.push_str("\n\nWHO THIS PAGE IS ABOUT — their identity card:\n");
+        for f in &card {
+            block.push_str("- ");
+            block.push_str(&one_line_capped(&f.text, 160));
+            block.push('\n');
+        }
+    }
+    Ok(Some(JudgedPage {
+        wiki_id,
+        source_path: source_path.to_owned(),
+        facts,
+        block,
+        subject,
+        sender,
+    }))
+}
+
+/// Render a page the way the judge reads it: the Cronista's prose with each
+/// live fact wrapped in `<fN>`, and then the facts that are not in the prose
+/// yet, one per line under their own heading.
+///
+/// The numbering IS the naming: the model answers `f3`, never a `fact_id` it
+/// would have to copy character by character, and the engine maps back. The
+/// same trick the Cronista is written around, in the other direction.
+///
+/// **The second half is the declared fallback.** A fact reaches its page's
+/// prose only at the compile that follows its writing, and a page compiled
+/// after this pass — or one whose compile failed — would otherwise hide its
+/// newest facts from the only pass that reads them. So every live fact gets a
+/// marker: the woven ones in place, the rest listed. A page with no prose at
+/// all degrades to the list, which is exactly the old fact-by-fact reading.
+///
+/// Returns the rendering and the facts in marker order.
+fn render_page_with_markers(body: &str, live: Vec<FactIndexRow>) -> (String, Vec<FactIndexRow>) {
+    use std::fmt::Write as _;
+    let mut by_id: std::collections::BTreeMap<&str, usize> = std::collections::BTreeMap::new();
+    for (i, f) in live.iter().enumerate() {
+        by_id.insert(f.fact_id.as_str(), i);
+    }
+    let mut ordered: Vec<usize> = Vec::with_capacity(live.len());
+    let mut taken = vec![false; live.len()];
+    let mut prose = String::with_capacity(body.len() + 64);
+    for event in crate::parser::parse(body).events {
+        match event {
+            crate::parser::ParseEvent::Prose { text, .. } => prose.push_str(&text),
+            crate::parser::ParseEvent::Region { attrs, body, .. } => {
+                let idx = attrs
+                    .fact_id
+                    .as_ref()
+                    .and_then(|id| by_id.get(id.as_str()).copied())
+                    .filter(|i| !taken[*i]);
+                if let Some(i) = idx {
+                    taken[i] = true;
+                    ordered.push(i);
+                    let _ = write!(
+                        prose,
+                        "<f{}>{}</f{}>",
+                        ordered.len(),
+                        body.trim(),
+                        ordered.len()
+                    );
+                } else {
+                    // A region whose fact is retired, or one the page carries
+                    // twice: the words stay as the scaffolding they are, with
+                    // no marker, so nothing can be said about them.
+                    prose.push_str(&body);
+                }
+            },
+            // A media embed is a pointer, not a claim: the judge has nothing
+            // to say about it and it costs prompt to carry.
+            crate::parser::ParseEvent::Embed { .. } => {},
+        }
+        if prose.len() > JUDGED_PAGE_CEILING_BYTES {
+            break;
+        }
+    }
+    let woven = ordered.len();
+    let mut loose = String::new();
+    for (i, _) in live.iter().enumerate() {
+        if taken[i] || prose.len() + loose.len() > JUDGED_PAGE_CEILING_BYTES {
+            continue;
+        }
+        ordered.push(i);
+        let f = &live[i];
+        let _ = writeln!(
+            loose,
+            "<f{}>{}</f{}> · {} · until {}",
+            ordered.len(),
+            one_line_capped(&f.text, 300),
+            ordered.len(),
+            f.fact_type.as_deref().unwrap_or("(no kind)"),
+            f.valid_to.as_deref().unwrap_or("(no end)"),
+        );
+    }
+    let mut out = String::new();
+    if woven > 0 {
+        out.push_str("THE PAGE:\n");
+        out.push_str(prose.trim());
+        out.push('\n');
+    }
+    if !loose.is_empty() {
+        out.push_str("\nON THIS PAGE, NOT WOVEN INTO THE PROSE YET:\n");
+        out.push_str(&loose);
+    }
+    // The facts in the order their markers were handed out.
+    let facts = {
+        let mut slots: Vec<Option<FactIndexRow>> = live.into_iter().map(Some).collect();
+        ordered
+            .into_iter()
+            .filter_map(|i| slots[i].take())
+            .collect()
+    };
+    (out, facts)
+}
+
+/// Ask the judge about one page.
+async fn ask_the_judge(
+    tree: &WikiTree,
+    llm: &dyn LlmBackend,
+    page: &JudgedPage,
+    now: DateTime<Utc>,
+    depth: JudgementDepth,
+) -> Result<std::result::Result<PageDecision, String>> {
+    // No language directive: the answer is markers and enum words, never
+    // anything a person reads, so steering its language is tokens paid for
+    // nothing (`prompts::PromptOutput::Internal`).
+    let prompt = prompts::render(
+        depth.prompt_name(),
+        tree.workdir(),
+        depth.bundled_prompt(),
+        &[
+            ("now", fact_index::bound_from_instant(now).as_str()),
+            ("page", page.block.as_str()),
+        ],
+    )?;
+    let resp = match llm
+        .complete(
+            CompletionRequest::new(prompt)
+                .with_temperature(0.1)
+                .with_max_tokens(2048),
+        )
+        .await
+    {
+        Ok(r) => r,
+        Err(e) => return Ok(Err(format!("{e}"))),
+    };
+    let Some(raw) = first_json_object(&resp.text) else {
+        return Ok(Err("no JSON object in the answer".to_owned()));
+    };
+    Ok(serde_json::from_value(raw).map_err(|e| format!("answer shape: {e}")))
+}
+
+/// Apply one page's verdicts in marker order, act-first.
+#[allow(
+    clippy::too_many_arguments,
+    reason = "one page's verdicts: what was decided, about which page, by whom, when, how deeply"
+)]
+async fn apply_page_decision(
+    pool: &SqlitePool,
+    tree: &WikiTree,
+    embedder: &Arc<dyn Embedder>,
+    page: &JudgedPage,
+    decision: &PageDecision,
+    cycle_id: &str,
+    now: DateTime<Utc>,
+    depth: JudgementDepth,
+    report: &mut PageJudgementReport,
+) -> Result<(Vec<serde_json::Value>, Vec<serde_json::Value>)> {
+    let mut applied: Vec<serde_json::Value> = Vec::new();
+    let mut refused: Vec<serde_json::Value> = Vec::new();
+    let mut ordered: Vec<(usize, &String, &LlmPageVerdict)> = decision
+        .verdicts
+        .iter()
+        .filter_map(|(marker, v)| marker_number(marker).map(|n| (n, marker, v)))
+        .collect();
+    ordered.sort_by_key(|(n, _, _)| *n);
+    // One fact, one decision per reading. The verdicts are applied against the
+    // page as it was READ, so a second verdict reaching the same fact — two
+    // markers both closing `f1`, a fact merged and then ended — would be
+    // deciding from a picture that is already out of date. The engine takes
+    // the first and says so about the rest.
+    let mut decided: std::collections::BTreeSet<String> = std::collections::BTreeSet::new();
+    for (marker, spelling, verdict) in ordered {
+        let outcome = match page.fact_at(marker) {
+            None => VerdictOutcome::Refused("no such marker on this page"),
+            Some(row) if touches_a_decided_fact(page, verdict, row, &decided) => {
+                VerdictOutcome::Refused("that fact was already decided in this reading")
+            },
+            Some(row) => {
+                apply_one_page_verdict(
+                    pool, tree, embedder, page, row, verdict, cycle_id, now, depth,
+                )
+                .await?
+            },
+        };
+        match outcome {
+            VerdictOutcome::Applied(fact_id, verb, detail) => {
+                decided.insert(fact_id.clone());
+                report.changed.push(format!("{fact_id} · {verb}"));
+                applied.push(serde_json::json!({
+                    "marker": spelling,
+                    "fact_id": fact_id,
+                    "verb": verb,
+                    "detail": detail,
+                }));
+            },
+            VerdictOutcome::Refused(why) => {
+                report
+                    .refused
+                    .push(format!("{}:{spelling} · {why}", page.source_path));
+                tracing::info!(
+                    page = page.source_path,
+                    marker = spelling,
+                    verdict = verdict.verdict,
+                    reason = why,
+                    "page judge: verdict refused"
+                );
+                refused.push(serde_json::json!({
+                    "marker": spelling,
+                    "verdict": verdict.verdict,
+                    "reason": why,
+                }));
+            },
+            VerdictOutcome::Kept => {},
+        }
+    }
+    Ok((applied, refused))
+}
+
+/// Whether this verdict would act on a fact an earlier verdict of the same
+/// reading already changed — the judged fact itself, or the other fact it
+/// names.
+fn touches_a_decided_fact(
+    page: &JudgedPage,
+    verdict: &LlmPageVerdict,
+    row: &FactIndexRow,
+    decided: &std::collections::BTreeSet<String>,
+) -> bool {
+    if decided.contains(row.fact_id.as_str()) {
+        return true;
+    }
+    [verdict.target.as_deref(), verdict.by.as_deref()]
+        .into_iter()
+        .flatten()
+        .filter_map(marker_number)
+        .filter_map(|n| page.fact_at(n))
+        .any(|other| decided.contains(other.fact_id.as_str()))
+}
+
+/// Apply ONE verdict about one marker.
+///
+/// Every arm ends the same way: the engine does what the model asked only when
+/// what it asked is possible, and says by name why not when it is not. The
+/// refusals are the interesting half — they are what a person reads on the
+/// receipt when the judge was wrong.
+#[allow(
+    clippy::too_many_arguments,
+    reason = "one verdict: what, about which fact, on which page, by whom, when, how deeply"
+)]
+#[allow(
+    clippy::too_many_lines,
+    reason = "one arm per verb, in the order the prompt asks them: splitting them hides that this is the whole list"
+)]
+async fn apply_one_page_verdict(
+    pool: &SqlitePool,
+    tree: &WikiTree,
+    embedder: &Arc<dyn Embedder>,
+    page: &JudgedPage,
+    row: &FactIndexRow,
+    verdict: &LlmPageVerdict,
+    cycle_id: &str,
+    now: DateTime<Utc>,
+    depth: JudgementDepth,
+) -> Result<VerdictOutcome> {
+    // The instant a judgement acts on is the FACT's own, not the clock the
+    // pass runs on: a night catching up on a backlog is not the day the errand
+    // happened ([`fact_index::end_not_before_start`]).
+    let said_at = fact_index::instant_of(&row.created_at).unwrap_or(now);
+    match verdict.verdict.trim() {
+        "keep" | "" => Ok(VerdictOutcome::Kept),
+
+        // 1 — an errand, true of its day and of no other.
+        "end" => {
+            if row.valid_to.is_some() {
+                return Ok(VerdictOutcome::Refused("it already ends"));
+            }
+            if fact_index::is_an_identity_kind(row.fact_type.as_deref()) {
+                return Ok(VerdictOutcome::Refused(
+                    "a fact on the identity card is retyped, never ended",
+                ));
+            }
+            let day = fact_index::instant_of(
+                row.valid_from.as_deref().unwrap_or(row.created_at.as_str()),
+            )
+            .unwrap_or(said_at);
+            let end = verdict
+                .valid_to
+                .as_deref()
+                .and_then(|raw| fact_index::canonical_bound(raw, fact_index::DayEdge::End))
+                .unwrap_or_else(|| {
+                    fact_index::canonical_bound(
+                        &day.format("%Y-%m-%d").to_string(),
+                        fact_index::DayEdge::End,
+                    )
+                    .unwrap_or_else(|| fact_index::bound_from_instant(day))
+                });
+            let op = wal::begin_rem_op(
+                pool,
+                cycle_id,
+                "judgement_end",
+                Some(page.wiki_id.as_str()),
+                None,
+            )
+            .await?;
+            let written =
+                fact_index::set_validity(pool, &row.fact_id, None, Some(end.as_str())).await?;
+            wal::complete_rem_op(pool, op).await?;
+            match written {
+                fact_index::ValidityEdit::Applied(_) => Ok(VerdictOutcome::Applied(
+                    row.fact_id.as_str().to_owned(),
+                    "end",
+                    end,
+                )),
+                fact_index::ValidityEdit::EndBeforeStart => Ok(VerdictOutcome::Refused(
+                    "that end comes before the fact began",
+                )),
+                fact_index::ValidityEdit::NoSuchRow => {
+                    Ok(VerdictOutcome::Refused("the fact is gone"))
+                },
+            }
+        },
+
+        // 2 — this fact finishes something the page was still waiting for.
+        "closes" => {
+            let Some(target) = verdict.target.as_deref().and_then(marker_number) else {
+                return Ok(VerdictOutcome::Refused("no marker to close"));
+            };
+            let Some(open) = page.fact_at(target) else {
+                return Ok(VerdictOutcome::Refused("no such marker on this page"));
+            };
+            if open.fact_id == row.fact_id {
+                return Ok(VerdictOutcome::Refused("a fact does not close itself"));
+            }
+            if open.valid_to.is_some() {
+                return Ok(VerdictOutcome::Refused("it is already closed"));
+            }
+            let reason = match verdict.reason.as_deref() {
+                Some("retracted") => fact_index::decay::RETRACTED,
+                _ => fact_index::decay::COMPLETED,
+            };
+            let op = wal::begin_rem_op(
+                pool,
+                cycle_id,
+                "judgement_closes",
+                Some(open.wiki_id.as_str()),
+                None,
+            )
+            .await?;
+            let closed = fact_index::close_validity(
+                pool,
+                &open.fact_id,
+                &fact_index::bound_from_instant(said_at),
+                reason,
+                Some(&row.fact_id),
+                said_at,
+            )
+            .await?;
+            wal::complete_rem_op(pool, op).await?;
+            match closed {
+                Some(prev) => Ok(VerdictOutcome::Applied(
+                    open.fact_id.as_str().to_owned(),
+                    "closes",
+                    format!("{reason} at {}", prev.written_valid_to),
+                )),
+                None => Ok(VerdictOutcome::Refused("the fact is gone")),
+            }
+        },
+
+        // 3 — a passage wearing the clothes of a trait.
+        "retype" => {
+            if !fact_index::is_an_identity_kind(row.fact_type.as_deref()) {
+                return Ok(VerdictOutcome::Refused(
+                    "only a fact filed as who somebody IS is retyped",
+                ));
+            }
+            if verdict.fact_type.as_deref() != Some("state") {
+                return Ok(VerdictOutcome::Refused(
+                    "the judge files a passage as `state`, and writes no other kind",
+                ));
+            }
+            let end = verdict
+                .valid_to
+                .as_deref()
+                .and_then(|raw| fact_index::canonical_bound(raw, fact_index::DayEdge::End));
+            let op = wal::begin_rem_op(
+                pool,
+                cycle_id,
+                "judgement_retype",
+                Some(page.wiki_id.as_str()),
+                None,
+            )
+            .await?;
+            let changed =
+                fact_index::set_fact_type(pool, &row.fact_id, "state", end.as_deref(), said_at)
+                    .await?;
+            wal::complete_rem_op(pool, op).await?;
+            let Some(prev) = changed else {
+                return Ok(VerdictOutcome::Refused("the fact is gone"));
+            };
+            // What the receipt says happened, in the two things that changed.
+            let prev_kind = prev.prev_fact_type.as_deref().unwrap_or("(no kind)");
+            let detail = match (&end, prev.prev_valid_to.as_deref()) {
+                (Some(ends), Some(replaced)) if ends != replaced => {
+                    format!("{prev_kind} → state, until {ends} (replacing {replaced})")
+                },
+                (Some(ends), _) => format!("{prev_kind} → state, until {ends}"),
+                (None, _) => format!("{prev_kind} → state, no end stated"),
+            };
+            Ok(VerdictOutcome::Applied(
+                row.fact_id.as_str().to_owned(),
+                "retype",
+                detail,
+            ))
+        },
+
+        // 4 — something standing on the page makes it false.
+        "contradicted" => {
+            if !depth.weighs_facts_against_each_other() {
+                return Ok(VerdictOutcome::Refused(
+                    "this pass was not asked to weigh two facts against each other",
+                ));
+            }
+            let Some(by) = verdict.by.as_deref().and_then(marker_number) else {
+                return Ok(VerdictOutcome::Refused(
+                    "no marker said what makes it false",
+                ));
+            };
+            let Some(against) = page.fact_at(by) else {
+                return Ok(VerdictOutcome::Refused("no such marker on this page"));
+            };
+            if against.fact_id == row.fact_id {
+                return Ok(VerdictOutcome::Refused("a fact does not contradict itself"));
+            }
+            if row.valid_to.is_some() {
+                return Ok(VerdictOutcome::Refused("it is already closed"));
+            }
+            // The contradiction happened when the CONTRARY fact did, when that
+            // is the later of the two; never at the clock this pass runs on.
+            let when = fact_index::instant_of(
+                against
+                    .valid_from
+                    .as_deref()
+                    .unwrap_or(against.created_at.as_str()),
+            )
+            .unwrap_or(said_at);
+            let op = wal::begin_rem_op(
+                pool,
+                cycle_id,
+                "judgement_contradicted",
+                Some(page.wiki_id.as_str()),
+                None,
+            )
+            .await?;
+            let closed = fact_index::close_validity(
+                pool,
+                &row.fact_id,
+                &fact_index::bound_from_instant(when),
+                fact_index::decay::CONTRADICTED,
+                Some(&against.fact_id),
+                when,
+            )
+            .await?;
+            wal::complete_rem_op(pool, op).await?;
+            match closed {
+                Some(prev) => Ok(VerdictOutcome::Applied(
+                    row.fact_id.as_str().to_owned(),
+                    "contradicted",
+                    prev.written_valid_to,
+                )),
+                None => Ok(VerdictOutcome::Refused("the fact is gone")),
+            }
+        },
+
+        // 5 — the same claim, written twice on one page.
+        "duplicate_of" => {
+            if !depth.weighs_facts_against_each_other() {
+                return Ok(VerdictOutcome::Refused(
+                    "this pass was not asked to weigh two facts against each other",
+                ));
+            }
+            let Some(target) = verdict.target.as_deref().and_then(marker_number) else {
+                return Ok(VerdictOutcome::Refused("no marker to merge with"));
+            };
+            let Some(twin) = page.fact_at(target) else {
+                return Ok(VerdictOutcome::Refused("no such marker on this page"));
+            };
+            if twin.fact_id == row.fact_id {
+                return Ok(VerdictOutcome::Refused("a fact is not its own duplicate"));
+            }
+            // Which survives is not the model's to choose, and never has been:
+            // the newer copy wins, as in the dedup revisor, because it carries
+            // whatever the later turn added.
+            let (winner, loser) = if row.created_at >= twin.created_at {
+                (row, twin)
+            } else {
+                (twin, row)
+            };
+            if loser.is_identity_core() {
+                return Ok(VerdictOutcome::Refused(
+                    "a fact on somebody's identity core is never retired in the background",
+                ));
+            }
+            let op = wal::begin_rem_op(
+                pool,
+                cycle_id,
+                "judgement_duplicate",
+                Some(page.wiki_id.as_str()),
+                None,
+            )
+            .await?;
+            let hints = dedup::DedupMergeHints {
+                jaccard: None,
+                source_wiki_id: Some(winner.wiki_id.clone()),
+                reason: Some(format!(
+                    "rem page judge: the same claim twice on {}",
+                    page.source_path
+                )),
+            };
+            let merged = dedup::apply_dedup_merge_direct(
+                pool,
+                tree,
+                Arc::clone(embedder),
+                &winner.fact_id,
+                &loser.fact_id,
+                &hints,
+                proposals::recipient_from_fact(&loser.subject_id, loser.sender_id.as_ref()),
+            )
+            .await;
+            match merged {
+                Ok(receipt) => {
+                    wal::complete_rem_op(pool, op).await?;
+                    Ok(VerdictOutcome::Applied(
+                        loser.fact_id.as_str().to_owned(),
+                        "duplicate_of",
+                        format!("merged into {} ({})", winner.fact_id, receipt.proposal_id),
+                    ))
+                },
+                Err(e) => {
+                    wal::fail_rem_op(pool, op, &format!("{e}")).await?;
+                    Ok(VerdictOutcome::Refused("the merge did not apply"))
+                },
+            }
+        },
+
+        _ => Ok(VerdictOutcome::Refused("no such verdict")),
+    }
+}
+
+/// The `f7` the model answers with, as the number 7.
+///
+/// Generous about the spelling — `f7`, `F7`, `<f7>`, `7` — because the marker
+/// is the model's only way to name a fact and a bracket it copied from the
+/// page is not a reason to drop a true verdict.
+fn marker_number(raw: &str) -> Option<usize> {
+    let cleaned: String = raw
+        .trim()
+        .trim_start_matches('<')
+        .trim_end_matches('>')
+        .trim_start_matches(['f', 'F'])
+        .chars()
+        .take_while(char::is_ascii_digit)
+        .collect();
+    cleaned.parse().ok().filter(|n| *n > 0)
+}
+
+/// One receipt per page, born applied: what the judge changed, and what it
+/// asked for that the engine would not do.
+async fn emit_page_receipt(
+    pool: &SqlitePool,
+    page: &JudgedPage,
+    depth: JudgementDepth,
+    applied: &[serde_json::Value],
+    refused: &[serde_json::Value],
+) -> Result<String> {
+    let context = serde_json::json!({
+        "source_path": page.source_path,
+        "wiki_id": page.wiki_id,
+        "pass": depth.label(),
+        "applied": applied,
+        "refused": refused,
+    });
+    let recipient = page
+        .subject
+        .as_ref()
+        .and_then(|s| proposals::recipient_from_fact(s, page.sender.as_ref()));
+    let params = proposals::EmitParams::new(
+        proposals::kind::PAGE_JUDGED,
+        context.clone(),
+        serde_json::json!([]),
+    )
+    .with_recipient(recipient);
+    let emitted = proposals::emit_applied_proposal(pool, params, context, Some("rem")).await?;
+    Ok(emitted.proposal_id)
 }
 
 // ---------- Cross-wiki refile sweep sub-job ----------
@@ -12185,6 +13260,895 @@ mod tests {
         );
         let _ = misfiled;
         drop(dir);
+    }
+
+    /// Plant one fact onto a page with its KIND and the day it began spelled
+    /// out. The judge reasons about what a fact IS and when it was true, so
+    /// its tests have to set both — and it reads PAGES, so they all land on
+    /// one.
+    async fn plant_on_page_of_kind(
+        tree: &WikiTree,
+        pool: &SqlitePool,
+        wiki: &str,
+        page: &str,
+        body: &str,
+        subject: &str,
+        fact_type: &str,
+        valid_from: Option<String>,
+    ) -> FactId {
+        let req = CaptureRequest {
+            subject_external: None,
+            slot: None,
+            slot_value: None,
+            authored_refs: Vec::new(),
+            wiki_id: WikiId::parse(wiki).unwrap(),
+            page: Some(PathBuf::from(page)),
+            body: body.to_owned(),
+            subject: Principal::User(subject.to_owned()),
+            allow: Vec::new(),
+            sender: None,
+            fact_type: Some(fact_type.to_owned()),
+            topics: Vec::new(),
+            dedup_threshold: Some(0.999),
+            valid_from,
+            valid_to: None,
+            style: None,
+            page_description: None,
+            salience: None,
+        };
+        capture::wiki_capture(tree, pool, fake_embedder(), req)
+            .await
+            .expect("plant")
+            .fact_id
+    }
+
+    /// Back-date a planted fact, so a test about "the newest first" says
+    /// which one is newest instead of hoping two writes land a millisecond
+    /// apart.
+    async fn written_at(pool: &SqlitePool, fact_id: &FactId, created_at: &str) {
+        sqlx::query("UPDATE fact_index SET created_at = ? WHERE fact_id = ?")
+            .bind(created_at)
+            .bind(fact_id.as_str())
+            .execute(pool)
+            .await
+            .expect("back-date");
+    }
+
+    /// Run the judge over the page these facts live on.
+    async fn judge_the_page(
+        pool: &SqlitePool,
+        tree: &WikiTree,
+        llm: &dyn LlmBackend,
+        fresh: &[FactId],
+        depth: JudgementDepth,
+        policy: &RemPolicy,
+    ) -> PageJudgementReport {
+        run_page_judgement(
+            pool,
+            tree,
+            fake_embedder(),
+            Some(llm),
+            "cycle-test",
+            Utc::now(),
+            policy,
+            fresh,
+            depth,
+        )
+        .await
+        .expect("page judgement")
+    }
+
+    /// **The page arrives as prose, and every fact on it can be named.**
+    ///
+    /// This is the whole mechanism: the words the Cronista wrote, with each
+    /// live fact wrapped in the marker the model answers by, and the facts
+    /// that have not reached the prose yet listed after it so nothing on the
+    /// page is unnameable. The numbering follows the READING order, because
+    /// that is the order the model sees.
+    #[test]
+    fn a_page_is_rendered_as_prose_with_every_fact_named() {
+        let older = FactId::parse("018f1234-5678-7abc-9def-000000000001").unwrap();
+        let newer = FactId::parse("018f1234-5678-7abc-9def-000000000002").unwrap();
+        let unwoven = FactId::parse("018f1234-5678-7abc-9def-000000000003").unwrap();
+        let row = |id: &FactId, text: &str| FactIndexRow {
+            subject_external: None,
+            slot: None,
+            slot_value: None,
+            authored_refs: Vec::new(),
+            fact_id: id.clone(),
+            wiki_id: "bob".to_owned(),
+            source_path: "wikis/bob/casa.md".to_owned(),
+            region_start: None,
+            region_end: None,
+            text: text.to_owned(),
+            embedding: vec![0.1, 0.2, 0.3, 0.4],
+            subject_id: "user:bob".parse().unwrap(),
+            allow_ids: Vec::new(),
+            sender_id: None,
+            fact_type: Some("episode".to_owned()),
+            topics: Vec::new(),
+            created_at: "2026-03-14T18:00:00Z".to_owned(),
+            updated_at: "2026-03-14T18:00:00Z".to_owned(),
+            superseded_at: None,
+            superseded_by: None,
+            successor_fact_id: None,
+            deleted_at: None,
+            deleted_reason: None,
+            last_recall_at: None,
+            recall_count_30d: 0,
+            valid_from: None,
+            valid_to: None,
+            decay_reason: None,
+            target_page: None,
+            style: None,
+            salience: None,
+            source_ref: None,
+        };
+        // The prose carries the two woven facts in the other order: the
+        // markers must follow the page, not the database.
+        let body = "Pepper is the household cat. {{f=018f1234-5678-7abc-9def-000000000002}}She \
+                    has been fed.{{/}} {{f=018f1234-5678-7abc-9def-000000000001}}Alice asked \
+                    somebody to feed the cat.{{/}}\n";
+        let (rendered, ordered) = render_page_with_markers(
+            body,
+            vec![
+                row(&older, "Alice asked somebody to feed the cat."),
+                row(&newer, "She has been fed."),
+                row(&unwoven, "The vet is on Tuesday."),
+            ],
+        );
+
+        assert!(
+            rendered.contains("Pepper is the household cat."),
+            "the prose between the facts is what makes them readable: {rendered}"
+        );
+        assert!(
+            rendered.contains("<f1>She has been fed.</f1>"),
+            "first in the PAGE is f1: {rendered}"
+        );
+        assert!(
+            rendered.contains("<f2>Alice asked somebody to feed the cat.</f2>"),
+            "{rendered}"
+        );
+        assert!(
+            rendered.contains("<f3>The vet is on Tuesday.</f3>"),
+            "a fact the prose has not taken yet is listed, never hidden: {rendered}"
+        );
+        assert!(
+            !rendered.contains("{{f="),
+            "the runtime markers never reach the model: {rendered}"
+        );
+        assert_eq!(
+            ordered
+                .iter()
+                .map(|f| f.fact_id.as_str())
+                .collect::<Vec<_>>(),
+            vec![newer.as_str(), older.as_str(), unwoven.as_str()],
+            "the engine maps f1, f2, f3 back in that order"
+        );
+    }
+
+    /// **An errand is true of its day and of no other.**
+    ///
+    /// The classifier sees one turn. «Pepper has been fed» arrives with no
+    /// end, and a fact with no end is a STANDING state: the page goes on
+    /// saying in September that the cat has been fed, about a meal in March,
+    /// and recall keeps offering it as news. The judge reads the page and
+    /// gives the fact the day it belongs to.
+    ///
+    /// It gives it a DAY, not a death: nothing here decayed, the fact was only
+    /// ever true of one day, so `decay_reason` stays empty. That is what
+    /// separates this verb from the closure in the test below, where somebody
+    /// really did finish something.
+    #[tokio::test]
+    async fn the_judge_ends_an_errand_on_the_day_it_happened() {
+        let (dir, tree, pool) = setup_workdir().await;
+        write_wiki(&tree, "bob", "Bob", "wiki-user");
+        let errand = plant_on_page_of_kind(
+            &tree,
+            &pool,
+            "bob",
+            "casa.md",
+            "Pepper has been fed",
+            "bob",
+            "episode",
+            Some("2026-03-14T18:00:00Z".to_owned()),
+        )
+        .await;
+
+        let llm = FakeLlmBackend::new(
+            "judge",
+            "{\"verdicts\":{\"f1\":{\"verdict\":\"end\",\"valid_to\":\"2026-03-14\"}}}",
+        );
+        let report = judge_the_page(
+            &pool,
+            &tree,
+            &llm,
+            std::slice::from_ref(&errand),
+            JudgementDepth::Hourly,
+            &RemPolicy::default(),
+        )
+        .await;
+
+        assert_eq!(report.pages_read, 1);
+        assert_eq!(report.changed, vec![format!("{} · end", errand.as_str())]);
+        assert_eq!(report.receipts.len(), 1, "one receipt for the page");
+        let row = fact_index::find_by_id(&pool, &errand)
+            .await
+            .unwrap()
+            .expect("row");
+        assert!(
+            row.valid_to
+                .as_deref()
+                .is_some_and(|v| v.starts_with("2026-03-14")),
+            "the day the errand happened, not the day it was read: {:?}",
+            row.valid_to
+        );
+        assert!(
+            row.decay_reason.is_none(),
+            "nothing closed this fact — it was only ever true of its day"
+        );
+        assert!(
+            row.deleted_at.is_none() && row.superseded_at.is_none(),
+            "the judge ends a window, it never erases a fact"
+        );
+        let (status, kind): (String, String) =
+            sqlx::query_as("SELECT status, kind FROM structure_proposals WHERE proposal_id = ?")
+                .bind(&report.receipts[0])
+                .fetch_one(&pool)
+                .await
+                .expect("receipt");
+        assert_eq!(status, "applied", "act first, receipt after");
+        assert_eq!(kind, proposals::kind::PAGE_JUDGED);
+        drop(dir);
+    }
+
+    /// **One fact on a page finishes another.**
+    ///
+    /// Somebody asked for the cat to be fed and somebody else, an hour later,
+    /// said it was done. The two turns never met: the classifier that read the
+    /// answer had no idea a request existed, so the request stayed open and
+    /// the household's memory went on saying the cat needed feeding. On the
+    /// page they are two sentences one after the other, and that is all it
+    /// takes.
+    ///
+    /// The answer itself stays open: it is the evidence, not the thing that
+    /// ended. A pass that closed both would be closing a fact nobody said
+    /// anything about.
+    #[tokio::test]
+    async fn one_fact_on_the_page_closes_another() {
+        let (dir, tree, pool) = setup_workdir().await;
+        write_wiki(&tree, "bob", "Bob", "wiki-user");
+        let request = plant_on_page_of_kind(
+            &tree,
+            &pool,
+            "bob",
+            "casa.md",
+            "Qualcuno deve dare da mangiare a Pepper",
+            "bob",
+            "plan",
+            None,
+        )
+        .await;
+        let answer = plant_on_page_of_kind(
+            &tree,
+            &pool,
+            "bob",
+            "casa.md",
+            "Pepper has been fed",
+            "bob",
+            "episode",
+            None,
+        )
+        .await;
+
+        let llm = FakeLlmBackend::new(
+            "judge",
+            "{\"verdicts\":{\"f2\":{\"verdict\":\"closes\",\"target\":\"f1\",\"reason\":\"completed\"}}}",
+        );
+        let report = judge_the_page(
+            &pool,
+            &tree,
+            &llm,
+            std::slice::from_ref(&answer),
+            JudgementDepth::Hourly,
+            &RemPolicy::default(),
+        )
+        .await;
+
+        assert_eq!(
+            report.changed,
+            vec![format!("{} · closes", request.as_str())]
+        );
+        let closed = fact_index::find_by_id(&pool, &request)
+            .await
+            .unwrap()
+            .expect("request row");
+        assert!(closed.valid_to.is_some(), "the request is finished");
+        assert_eq!(
+            closed.decay_reason.as_deref(),
+            Some(fact_index::decay::COMPLETED)
+        );
+        assert_eq!(
+            closed.successor_fact_id.as_ref().map(FactId::as_str),
+            Some(answer.as_str()),
+            "the page can say what finished it"
+        );
+        let evidence = fact_index::find_by_id(&pool, &answer)
+            .await
+            .unwrap()
+            .expect("answer row");
+        assert!(
+            evidence.valid_to.is_none(),
+            "the answer closed the request, not itself"
+        );
+        drop(dir);
+    }
+
+    /// **A role that runs out is not who somebody is.**
+    ///
+    /// Filed as `bio`, a fact is always-on: it rides on the identity card, it
+    /// is offered on every turn, and it never ends. A mortgage, a course, a
+    /// job for the season all read like traits when the classifier meets them
+    /// in one sentence, and each one of them is a thing that finishes. The
+    /// judge files the fact as `state` and gives it the end it has — one
+    /// verdict, two corrections, because either alone leaves the fact wrong.
+    #[tokio::test]
+    async fn a_role_that_runs_out_is_refiled_as_a_passing_state() {
+        let (dir, tree, pool) = setup_workdir().await;
+        write_wiki(&tree, "zoe", "Zoe", "wiki-user");
+        let mortgage = plant_on_page_of_kind(
+            &tree,
+            &pool,
+            "zoe",
+            "casa.md",
+            "Zoe paga il mutuo fino ad aprile 2031",
+            "zoe",
+            "bio",
+            Some("2026-04-01T00:00:00Z".to_owned()),
+        )
+        .await;
+
+        let llm = FakeLlmBackend::new(
+            "judge",
+            "{\"verdicts\":{\"f1\":{\"verdict\":\"retype\",\"fact_type\":\"state\",\"valid_to\":\"2031-04-30\"}}}",
+        );
+        let report = judge_the_page(
+            &pool,
+            &tree,
+            &llm,
+            std::slice::from_ref(&mortgage),
+            JudgementDepth::Hourly,
+            &RemPolicy::default(),
+        )
+        .await;
+
+        assert_eq!(
+            report.changed,
+            vec![format!("{} · retype", mortgage.as_str())]
+        );
+        let row = fact_index::find_by_id(&pool, &mortgage)
+            .await
+            .unwrap()
+            .expect("row");
+        assert_eq!(
+            row.fact_type.as_deref(),
+            Some("state"),
+            "what somebody is doing, not who they are"
+        );
+        assert!(
+            !fact_index::is_an_identity_kind(row.fact_type.as_deref()),
+            "it is off the identity card from now on"
+        );
+        assert!(
+            row.valid_to
+                .as_deref()
+                .is_some_and(|v| v.starts_with("2031-04-30")),
+            "with the end it was always going to have: {:?}",
+            row.valid_to
+        );
+        drop(dir);
+    }
+
+    /// **A page the judge agrees with is not bought twice — and the night
+    /// reads it anyway.**
+    ///
+    /// «Ha la fobia dei ragni» is `bio` and stays `bio`: it is exactly what an
+    /// identity card is for. What costs money is asking again, and this pass
+    /// runs every hour and again at night over pages nothing happened to — so
+    /// a page that came back all-`keep` is remembered as it stands.
+    ///
+    /// Remembered per PASS, though. The night asks five questions where the
+    /// hour asked three, and a smaller «no» must not answer for a bigger
+    /// question.
+    #[tokio::test]
+    async fn a_page_the_judge_agrees_with_is_not_bought_twice() {
+        let (dir, tree, pool) = setup_workdir().await;
+        write_wiki(&tree, "alice", "Alice", "wiki-user");
+        let trait_fact = plant_on_page_of_kind(
+            &tree,
+            &pool,
+            "alice",
+            "profilo.md",
+            "Ha la fobia dei ragni",
+            "alice",
+            "bio",
+            None,
+        )
+        .await;
+
+        let llm = FakeLlmBackend::new("judge", "{\"verdicts\":{}}");
+        let first = judge_the_page(
+            &pool,
+            &tree,
+            &llm,
+            std::slice::from_ref(&trait_fact),
+            JudgementDepth::Hourly,
+            &RemPolicy::default(),
+        )
+        .await;
+        assert_eq!(first.pages_read, 1);
+        assert!(first.changed.is_empty(), "{:?}", first.changed);
+        assert!(
+            first.receipts.is_empty(),
+            "nothing happened, nothing to show"
+        );
+
+        let second = judge_the_page(
+            &pool,
+            &tree,
+            &llm,
+            std::slice::from_ref(&trait_fact),
+            JudgementDepth::Hourly,
+            &RemPolicy::default(),
+        )
+        .await;
+        assert_eq!(
+            second.pages_read, 0,
+            "the same question about the same page is not asked twice"
+        );
+        assert_eq!(llm.max_tokens_seen().len(), 1, "one call, not one per hour");
+
+        let tonight = judge_the_page(
+            &pool,
+            &tree,
+            &llm,
+            std::slice::from_ref(&trait_fact),
+            JudgementDepth::Nightly,
+            &RemPolicy::default(),
+        )
+        .await;
+        assert_eq!(
+            tonight.pages_read, 1,
+            "the night asks two more questions of the same page"
+        );
+
+        let row = fact_index::find_by_id(&pool, &trait_fact)
+            .await
+            .unwrap()
+            .expect("row");
+        assert_eq!(row.fact_type.as_deref(), Some("bio"));
+        assert!(row.valid_to.is_none(), "a phobia does not end at bedtime");
+        drop(dir);
+    }
+
+    /// **The markers on the page are the whole world for one call.**
+    ///
+    /// A verdict about `f9` on a page with two facts is a model reaching into
+    /// the corpus from memory, and acting on it would let one invented marker
+    /// close somebody's commitment. It is refused BY NAME — and the refusal
+    /// rides on the same receipt as the change that did land, so a person
+    /// reading the page's row sees both what was done and what was asked for
+    /// and denied.
+    #[tokio::test]
+    async fn a_verdict_naming_a_marker_that_is_not_there_is_refused() {
+        let (dir, tree, pool) = setup_workdir().await;
+        write_wiki(&tree, "alice", "Alice", "wiki-user");
+        let watered = plant_on_page_of_kind(
+            &tree,
+            &pool,
+            "alice",
+            "casa.md",
+            "Ha annaffiato le piante",
+            "alice",
+            "episode",
+            Some("2026-03-14T09:00:00Z".to_owned()),
+        )
+        .await;
+
+        let llm = FakeLlmBackend::new(
+            "judge",
+            "{\"verdicts\":{\"f1\":{\"verdict\":\"end\",\"valid_to\":\"2026-03-14\"},\
+              \"f9\":{\"verdict\":\"end\",\"valid_to\":\"2026-03-14\"}}}",
+        );
+        let report = judge_the_page(
+            &pool,
+            &tree,
+            &llm,
+            std::slice::from_ref(&watered),
+            JudgementDepth::Hourly,
+            &RemPolicy::default(),
+        )
+        .await;
+
+        assert_eq!(report.changed, vec![format!("{} · end", watered.as_str())]);
+        assert_eq!(report.refused.len(), 1, "{:?}", report.refused);
+        assert!(
+            report.refused[0].contains("no such marker"),
+            "{:?}",
+            report.refused
+        );
+        let (context,): (String,) =
+            sqlx::query_as("SELECT context FROM structure_proposals WHERE proposal_id = ?")
+                .bind(&report.receipts[0])
+                .fetch_one(&pool)
+                .await
+                .expect("receipt");
+        assert!(
+            context.contains("no such marker on this page"),
+            "the receipt says what the judge asked for and did not get: {context}"
+        );
+        drop(dir);
+    }
+
+    /// **The hour is not asked to weigh two facts against each other.**
+    ///
+    /// The shorter prompt asks three questions; this is the engine saying the
+    /// same thing, so a model that answers `contradicted` out of habit on the
+    /// cheap reading cannot retire a fact with it. The night, which asks the
+    /// question, applies it.
+    #[tokio::test]
+    async fn the_hourly_pass_refuses_the_two_verdicts_it_was_not_asked() {
+        let (dir, tree, pool) = setup_workdir().await;
+        write_wiki(&tree, "alice", "Alice", "wiki-user");
+        let at_the_office = plant_on_page_of_kind(
+            &tree,
+            &pool,
+            "alice",
+            "lavoro.md",
+            "Alice è in ufficio oggi",
+            "alice",
+            "state",
+            None,
+        )
+        .await;
+        let from_home = plant_on_page_of_kind(
+            &tree,
+            &pool,
+            "alice",
+            "lavoro.md",
+            "Alice lavora da casa tutta la settimana",
+            "alice",
+            "state",
+            None,
+        )
+        .await;
+
+        let llm = FakeLlmBackend::new(
+            "judge",
+            "{\"verdicts\":{\"f1\":{\"verdict\":\"contradicted\",\"by\":\"f2\"}}}",
+        );
+        let hourly = judge_the_page(
+            &pool,
+            &tree,
+            &llm,
+            std::slice::from_ref(&from_home),
+            JudgementDepth::Hourly,
+            &RemPolicy::default(),
+        )
+        .await;
+        assert!(hourly.changed.is_empty(), "{:?}", hourly.changed);
+        assert!(
+            hourly.refused[0].contains("not asked to weigh"),
+            "{:?}",
+            hourly.refused
+        );
+        assert!(
+            fact_index::find_by_id(&pool, &at_the_office)
+                .await
+                .unwrap()
+                .expect("row")
+                .valid_to
+                .is_none(),
+            "nothing closed on the hourly reading"
+        );
+
+        let nightly = judge_the_page(
+            &pool,
+            &tree,
+            &llm,
+            std::slice::from_ref(&from_home),
+            JudgementDepth::Nightly,
+            &RemPolicy::default(),
+        )
+        .await;
+        assert_eq!(
+            nightly.changed,
+            vec![format!("{} · contradicted", at_the_office.as_str())],
+            "the pass that asks the question is the pass that may act on it"
+        );
+        let closed = fact_index::find_by_id(&pool, &at_the_office)
+            .await
+            .unwrap()
+            .expect("row");
+        assert_eq!(
+            closed.decay_reason.as_deref(),
+            Some(fact_index::decay::CONTRADICTED)
+        );
+        drop(dir);
+    }
+
+    /// **The same claim written twice becomes one.**
+    ///
+    /// Two turns said the same thing and the page carries it twice. The judge
+    /// sees both in one reading — which is the whole difference from the dedup
+    /// revisor, that fishes for pairs by vector distance — and the newer copy
+    /// survives, whichever way round the model names them.
+    #[tokio::test]
+    async fn two_copies_of_one_claim_become_one() {
+        let (dir, tree, pool) = setup_workdir().await;
+        write_wiki(&tree, "alice", "Alice", "wiki-user");
+        let older = plant_on_page_of_kind(
+            &tree,
+            &pool,
+            "alice",
+            "salute.md",
+            "Alice è allergica alle arachidi",
+            "alice",
+            "state",
+            None,
+        )
+        .await;
+        let newer = plant_on_page_of_kind(
+            &tree,
+            &pool,
+            "alice",
+            "salute.md",
+            "Alice è allergica alle arachidi e porta sempre l'autoiniettore",
+            "alice",
+            "state",
+            None,
+        )
+        .await;
+        written_at(&pool, &older, "2026-09-11T08:00:00Z").await;
+        written_at(&pool, &newer, "2026-09-12T08:00:00Z").await;
+
+        // Named the other way round on purpose: which copy survives is the
+        // engine's rule, not the model's.
+        let llm = FakeLlmBackend::new(
+            "judge",
+            "{\"verdicts\":{\"f2\":{\"verdict\":\"duplicate_of\",\"target\":\"f1\"}}}",
+        );
+        let report = judge_the_page(
+            &pool,
+            &tree,
+            &llm,
+            std::slice::from_ref(&newer),
+            JudgementDepth::Nightly,
+            &RemPolicy::default(),
+        )
+        .await;
+        assert_eq!(
+            report.changed,
+            vec![format!("{} · duplicate_of", older.as_str())],
+            "the older copy is the one retired: {report:?}"
+        );
+        let retired = fact_index::find_by_id(&pool, &older)
+            .await
+            .unwrap()
+            .expect("row");
+        assert!(retired.superseded_at.is_some(), "folded into the newer one");
+        assert!(
+            fact_index::find_by_id(&pool, &newer)
+                .await
+                .unwrap()
+                .expect("row")
+                .superseded_at
+                .is_none(),
+            "the survivor stays"
+        );
+
+        drop(dir);
+    }
+
+    /// **…but never on somebody's identity card.**
+    ///
+    /// The other half of the test above, and the same rule the dedup revisor
+    /// holds to: nothing on a person's identity core is retired while
+    /// everybody is asleep. A relationship, an allergy, a name changes on an
+    /// explicit correction or not at all.
+    #[tokio::test]
+    async fn a_duplicate_on_the_identity_core_is_refused() {
+        let (dir, tree, pool) = setup_workdir().await;
+        write_wiki(&tree, "alice", "Alice", "wiki-user");
+        let core_old = plant_on_page_of_kind(
+            &tree,
+            &pool,
+            "alice",
+            "profilo.md",
+            "Carol è la sorella di Alice",
+            "alice",
+            "bio",
+            None,
+        )
+        .await;
+        let core_new = plant_on_page_of_kind(
+            &tree,
+            &pool,
+            "alice",
+            "profilo.md",
+            "Carol è la sorella di Alice e vive a Bologna",
+            "alice",
+            "bio",
+            None,
+        )
+        .await;
+        sqlx::query("UPDATE fact_index SET salience = 'high' WHERE fact_id IN (?, ?)")
+            .bind(core_old.as_str())
+            .bind(core_new.as_str())
+            .execute(&pool)
+            .await
+            .expect("mark identity core");
+        written_at(&pool, &core_old, "2026-09-11T08:00:00Z").await;
+        written_at(&pool, &core_new, "2026-09-12T08:00:00Z").await;
+
+        let llm = FakeLlmBackend::new(
+            "judge",
+            "{\"verdicts\":{\"f2\":{\"verdict\":\"duplicate_of\",\"target\":\"f1\"}}}",
+        );
+        let refused = judge_the_page(
+            &pool,
+            &tree,
+            &llm,
+            std::slice::from_ref(&core_new),
+            JudgementDepth::Nightly,
+            &RemPolicy::default(),
+        )
+        .await;
+        assert!(refused.changed.is_empty(), "{:?}", refused.changed);
+        assert!(
+            refused.refused[0].contains("identity core"),
+            "{:?}",
+            refused.refused
+        );
+        assert!(
+            fact_index::find_by_id(&pool, &core_old)
+                .await
+                .unwrap()
+                .expect("row")
+                .superseded_at
+                .is_none(),
+            "a fact on the card is never retired while everybody is asleep"
+        );
+        drop(dir);
+    }
+
+    /// **The cap counts pages, and it takes the newest.**
+    ///
+    /// One page is one model call, so the cap IS the budget. A day that wrote
+    /// onto more pages than the pass may read has to choose, and the page
+    /// somebody was writing on an hour ago is the one still being talked
+    /// about. What it leaves is not lost and not judged: the page stays
+    /// unjudged, the count says how many, and the next pass reads it.
+    #[tokio::test]
+    async fn the_cap_counts_pages_and_takes_the_newest() {
+        let (dir, tree, pool) = setup_workdir().await;
+        write_wiki(&tree, "alice", "Alice", "wiki-user");
+        let oldest = plant_on_page_of_kind(
+            &tree,
+            &pool,
+            "alice",
+            "casa.md",
+            "Ha chiuso a chiave",
+            "alice",
+            "episode",
+            None,
+        )
+        .await;
+        let middle = plant_on_page_of_kind(
+            &tree,
+            &pool,
+            "alice",
+            "bucato.md",
+            "Ha steso il bucato",
+            "alice",
+            "episode",
+            None,
+        )
+        .await;
+        let newest = plant_on_page_of_kind(
+            &tree,
+            &pool,
+            "alice",
+            "rifiuti.md",
+            "Ha portato fuori i bidoni",
+            "alice",
+            "episode",
+            None,
+        )
+        .await;
+        written_at(&pool, &oldest, "2026-09-11T08:00:00Z").await;
+        written_at(&pool, &middle, "2026-09-12T08:00:00Z").await;
+        written_at(&pool, &newest, "2026-09-13T08:00:00Z").await;
+
+        let llm = FakeLlmBackend::new("judge", "{\"verdicts\":{}}");
+        // The hour has its own cap, far below the night's: a pass that read
+        // the wrong one would judge all three pages here.
+        let policy = RemPolicy {
+            judgement_max_pages_hour: 1,
+            judgement_max_pages_night: 30,
+            ..RemPolicy::default()
+        };
+        let report = judge_the_page(
+            &pool,
+            &tree,
+            &llm,
+            &[oldest.clone(), middle.clone(), newest.clone()],
+            JudgementDepth::Hourly,
+            &policy,
+        )
+        .await;
+
+        assert_eq!(report.pages_read, 1);
+        assert_eq!(report.pages_left, 2, "and they are still unjudged");
+        let asked = llm.last_prompt().expect("the judge was asked");
+        assert!(
+            asked.contains("Ha portato fuori i bidoni"),
+            "the newest page got the seat: {asked}"
+        );
+        assert!(
+            !asked.contains("Ha chiuso a chiave"),
+            "the two older pages wait for the next pass: {asked}"
+        );
+        drop(dir);
+    }
+
+    /// **Two depths, one pass.** The hour and the night differ in which prompt
+    /// asks the questions, how many pages each may take, and whether the two
+    /// verdicts that weigh one fact against another may be acted on — and in
+    /// nothing else. This is that table, pinned, because every one of the four
+    /// is read far from where it is set.
+    #[test]
+    fn the_two_depths_read_what_they_say_they_read() {
+        let policy = RemPolicy {
+            judgement_max_pages_night: 30,
+            judgement_max_pages_hour: 5,
+            ..RemPolicy::default()
+        };
+        assert_eq!(JudgementDepth::Hourly.page_cap(&policy), 5);
+        assert_eq!(JudgementDepth::Nightly.page_cap(&policy), 30);
+        assert!(
+            !JudgementDepth::Hourly.weighs_facts_against_each_other(),
+            "the hour asks what a page says about a fact of its own"
+        );
+        assert!(JudgementDepth::Nightly.weighs_facts_against_each_other());
+        assert_eq!(JudgementDepth::Hourly.prompt_name(), "rem-judgement-light");
+        assert_eq!(JudgementDepth::Nightly.prompt_name(), "rem-judgement");
+        assert_ne!(
+            JudgementDepth::Hourly.label(),
+            JudgementDepth::Nightly.label(),
+            "the memo key tells the two readings apart"
+        );
+        // The shorter prompt asks three questions and never the other two: a
+        // verdict the model is not shown is one it does not return.
+        assert!(!BUNDLED_REM_JUDGEMENT_LIGHT_MD.contains("duplicate_of\": {"));
+        assert!(BUNDLED_REM_JUDGEMENT_MD.contains("IS THE SAME CLAIM WRITTEN TWICE"));
+        assert!(!BUNDLED_REM_JUDGEMENT_LIGHT_MD.contains("IS THE SAME CLAIM WRITTEN TWICE"));
+    }
+
+    /// The spellings a model reaches for when it names a marker. All of them
+    /// mean the same fact, and a bracket copied off the page is not a reason
+    /// to drop a true verdict.
+    #[test]
+    fn a_marker_is_read_however_the_model_spells_it() {
+        assert_eq!(marker_number("f7"), Some(7));
+        assert_eq!(marker_number("F7"), Some(7));
+        assert_eq!(marker_number("<f7>"), Some(7));
+        assert_eq!(marker_number(" f7 "), Some(7));
+        assert_eq!(marker_number("7"), Some(7));
+        assert_eq!(marker_number("f0"), None, "the markers start at one");
+        assert_eq!(marker_number("the cat"), None);
+        assert_eq!(marker_number(""), None);
     }
 
     /// **What the day wrote is judged first.**

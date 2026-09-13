@@ -22,6 +22,7 @@ use mwe_core::dream;
 use mwe_core::dream_light::LightPolicy;
 use mwe_core::embedder::{Embedder, FakeEmbedder};
 use mwe_core::llm::FakeLlmBackend;
+use mwe_core::rem::RemPolicy;
 use mwe_core::wiki::WikiTree;
 use sqlx::SqlitePool;
 use tempfile::TempDir;
@@ -103,6 +104,7 @@ async fn a_reached_spend_cap_skips_the_nightly_work_and_says_so() {
         Arc::clone(&embedder),
         Some(&llms),
         &LightPolicy::default(),
+        &RemPolicy::default(),
     )
     .await
     .expect("a daily budget is not an infrastructure failure");

@@ -152,6 +152,11 @@ pub struct CompileReport {
     /// compile ran without a queue (a test calling `compile_dirty_pages`
     /// directly).
     pub queue: crate::dream_light::LightCycleReport,
+    /// What the **page judge** read and corrected on the pages this round
+    /// touched ([`crate::rem::judge_fresh_pages`]). Filled by the light dream,
+    /// which judges the pages of the hour it just compiled; default on a
+    /// compile that wrote no fresh facts of its own.
+    pub judged: crate::rem::PageJudgementReport,
     /// Leaf pages (re)written as prose by Il Cronista (`prosa` / `prosa-tecnica`).
     pub leaves: usize,
     /// `lista`-style leaf pages rendered as atomic records, bypassing the

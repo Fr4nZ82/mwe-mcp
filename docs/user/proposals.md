@@ -19,8 +19,8 @@ Above the table, four tabs: **All** (where the page opens), **Pending**,
 - **What** — the kind of change, in a couple of words: *A page the memory
   made*, *A link between pages*, *A page of its own*, *A fact moved*, *Two
   pages merged*, *A wiki of their own*, *Pages filed away*, *Pages moved wiki*,
-  *Two facts merged*, *Facts closed*, *Dates corrected*, *Sharing changed*, and
-  the two that are questions — *Two values for one detail* and *A request to
+  *Two facts merged*, *Facts closed*, *Dates corrected*, *Sharing changed*,
+  *A page read again*, and the two that are questions — *Two values for one detail* and *A request to
   forget*. A rearrangement with no name of its own reads
   *The memory rearranged*, and a row written by a newer engine than this one
   reads *Something changed* rather than being given a wrong label.
