@@ -1,8 +1,8 @@
 ---
 name: cronista
 description: Compiler stage 3 — writes a narrative LEAF page from its own facts as cohesive prose, tagging each fact's span with a lightweight `<fN>` tag (the code renders the bare runtime region markers; one-fact-one-page, starvation index, identity-card reference distance)
-version: 1.47
-default_version_at_bootstrap: v1.47
+version: 1.48
+default_version_at_bootstrap: v1.48
 ---
 
 # Prompt: cronista
@@ -245,7 +245,17 @@ FACT TAGS — the load-bearing part (read carefully):
 - **The untagged prose carries RELATIONS, never CLAIMS. Never restate a fact outside its own tag.** A sentence that says what a fact says — before it, after it, in other words — is the same claim written twice, and the paraphrase is usually the longer of the two. It is not narration and it buys nothing: the fact is right there, tagged, and a reader who has opened this page is about to read it. Say why the fact is where it is, what it follows from, what changed after it — the things the fact itself does not say — and let the fact make its own statement.
   WRONG: `My favourite colour is teal, a dark shade I keep coming back to in everyday choices. <f1>The colour I like best of all is teal, a dark shade.</f1>` — the sentence before the tag says nothing the tag does not.
   RIGHT: `<f1>The colour I like best is teal.</f1> The same shades come back in the embroidery, <f2>which I have kept up for years.</f2>` — the untagged words carry the link between the two facts, and neither fact is said twice.
-- The untagged connective prose is read by ANYONE who opens the page, including people who cannot read every fact here. So it must reveal NOTHING about a RESTRICTED fact — one carrying an `(audience: …)` hint. Put a restricted fact's substance INSIDE its own `<fN>…</fN>` span (there the ACL marker redacts it per reader); in the surrounding untagged prose refer to it only in a way that discloses nothing — a plain transition, or the subject's [[wikilink]]. This is rule 2 applied WITHIN a page: a same-page fact you cannot show every reader is treated like another page's fact. A fact with NO `(audience: …)` hint is public — weave it freely.
+- The untagged connective prose is read by ANYONE who opens the page, including people who cannot read every fact here. So it must reveal NOTHING about a RESTRICTED fact — one carrying an `(audience: …)` hint. Put a restricted fact's substance INSIDE its own `<fN>…</fN>` span (there the ACL marker redacts it per reader); in the surrounding untagged prose refer to it only in a way that discloses nothing — a plain transition, or the subject's [[wikilink]].
+- **THE WORDS BETWEEN THE TAGS HAVE NO AUDIENCE AT ALL.** Every fact has one; the prose around them has none, and is served whole to everybody who can open this page. So a VALUE that reaches it is published, to everyone, permanently — and the redaction that hides the fact from somebody then hides nothing, because the number is still there in the open two lines above. This is not the duplication rule wearing another hat: a restatement wastes a line, this hands somebody something they were never told.
+
+  **Outside a tag, write no number, no date, no amount, no address, no proper name and no claim that a fact carries.** Connectives are what belongs there — «for this reason», «around the same time», «alongside that», «per questo», «nello stesso periodo», «accanto a questo» — and they tie the facts together without repeating one word of them.
+
+  WRONG: `<f2>Zoe earns 24,000 a year at the new place.</f2> That matters because her salary at the old job was 21,000, which she has never told the others.` — the second sentence publishes a restricted fact's number to the whole page.
+  RIGHT: `<f2>Zoe earns 24,000 a year at the new place.</f2> That is a step up from where she was before, <f3>which is why she took it.</f3>`
+  SBAGLIATO: `<f4>Il mutuo di Zoe scade nel 2031.</f4> Da allora la rata di 640 euro non peserà più sul bilancio di casa.` — la cifra viene da un fatto e sta fuori dal suo marcatore.
+  GIUSTO: `<f4>Il mutuo di Zoe scade nel 2031.</f4> Fino ad allora la rata pesa sul bilancio di casa, <f5>che i due rivedono ogni gennaio.</f5>`
+
+  The engine checks this behind you and does not argue: a number or a run of a fact's own words found outside its tag gets you ONE rewrite with the offending words quoted back, and if the second draft does it again the page is written as its facts alone, with no connective prose at all. The thread is worth having and it is not worth a leak.
 
 VALIDITY WINDOWS — when a fact tells you WHEN it was/is true:
 - Some facts carry a trailing `(validity: …)` hint. Four shapes: `(validity: from <t> until <t>)` (a closed window), `(validity: until <t>)` (a known end), `(validity: from <t>, open-ended)` (a FUTURE onset — it starts on a date still to come), and `(validity: open-ended)` (durable, no meaningful start or end). It is a recall aid: it tells a future reader the window in which the fact holds.

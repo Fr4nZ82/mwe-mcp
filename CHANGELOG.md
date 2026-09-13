@@ -11,6 +11,23 @@ semver-governed surface: breaking changes are called out explicitly.
 
 ## Unreleased
 
+### Fixed
+
+- **The words between the facts stop repeating them.** A page is written as
+  prose with each fact marked, and only the marked parts carry a permission:
+  what is written between them is served to everybody who can open the page.
+  So a sentence that said *«that matters because her salary at the old job was
+  21,000»* published the number to the whole page, while the fact it came from
+  was correctly hidden from the people who may not see it — the hiding hid
+  nothing.
+
+  The writer is now told the rule in as many words, with examples in both
+  languages, and the engine checks behind it: a number or a run of a fact's own
+  words found outside that fact's mark costs one rewrite with the offending
+  words quoted back, and a page that does it twice is written as its facts
+  alone, with no connective prose at all. The thread between the facts is worth
+  having and it is not worth a leak.
+
 ### Changed
 
 - **The memory now reads a page where it used to read a list.** When a message

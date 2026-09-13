@@ -190,6 +190,13 @@ pub struct CompileReport {
     /// weave that neighbour into the thread, which is a **prompt** signal:
     /// a rail carrying no *why* is the weaker form of the same link.
     pub rails_appended: Vec<String>,
+    /// Pages whose connective prose repeated a fact's content after being
+    /// asked twice not to (`"<slug>: <what it repeated>"`), and which are
+    /// therefore served as their facts alone
+    /// ([`keep_only_the_marked_regions`]). A **prompt** signal like the rail
+    /// one, and a louder one: what is outside a marker has no ACL, so a page
+    /// that lands here was publishing something.
+    pub prose_restated: Vec<String>,
 }
 
 impl CompileReport {
@@ -203,6 +210,9 @@ impl CompileReport {
         if !notes.rails_appended.is_empty() {
             self.rails_appended
                 .push(format!("{slug}: {}", notes.rails_appended.join(", ")));
+        }
+        if let Some(evidence) = &notes.prose_restated {
+            self.prose_restated.push(format!("{slug}: {evidence}"));
         }
     }
 
@@ -539,6 +549,10 @@ struct PageNotes {
     /// Recommended rails the writer left out of the prose, appended to the
     /// page deterministically ([`append_missing_rails`]).
     rails_appended: Vec<String>,
+    /// What the connective prose repeated from a fact after being asked twice
+    /// not to ([`prose_restates_fact`]). Set means the page was served as its
+    /// facts alone.
+    prose_restated: Option<String>,
 }
 
 /// Pre-point every dirty-page fact whose `fact_index` row still lives on a
@@ -925,6 +939,15 @@ async fn compile_leaf_page(
     // mode of LLM-written markers.
     let mut merged_body = expand_and_complete_fact_markers(&body.merged_body, page);
 
+    // **The prose LINKS the facts; it does not repeat them.** What is outside
+    // a marker is served to every reader of the page, whatever each fact's
+    // audience is, so a sentence that carries a fact's number into the open
+    // has published it — and the redaction that hides the fact then hides
+    // nothing. One rewrite with the rule spelled out, then the page is served
+    // as its facts alone ([`keep_only_the_marked_regions`]).
+    let prose_restated =
+        stop_the_prose_restating(llm, &prompt, page, max_tokens, &mut merged_body).await;
+
     // Every assigned fact must end up wrapped in a marker on the page.
     let known: std::collections::BTreeSet<&str> = page
         .primary_facts
@@ -986,7 +1009,121 @@ async fn compile_leaf_page(
     Ok(PageOutcome::Leaf(PageNotes {
         over_budget_chars: card_over_budget(page, &contents),
         rails_appended,
+        prose_restated,
     }))
+}
+
+/// What the connective prose repeated from a fact instead of merely linking
+/// it, if anything.
+///
+/// **The prose between the markers carries no ACL, and it never will.** A
+/// marked region is served to whoever the fact's audience is; the words
+/// AROUND it are the scaffolding every reader gets, which is what makes a
+/// page readable at all. So a Cronista that writes «that matters because her
+/// salary at the old job was 21,000 a year» outside the marker has published
+/// the number to the whole page's audience, and the redaction that hides the
+/// fact hides nothing.
+///
+/// **The net is narrower than the rule on purpose.** The rule the prompt sets
+/// is «link, never restate»: no value, name, number, date or claim of a fact
+/// outside that fact's marker. What is checked here is the part that cannot be
+/// a false positive —
+///
+/// - a token carrying a DIGIT (a salary, a date, an amount, a number, an
+///   address) that one of the page's facts also carries, and
+/// - a run of four or more words shared verbatim with a fact's text.
+///
+/// A proper name on its own is not caught: a page about Zoe says «Zoe» in its
+/// connective prose as a matter of course, and a net that fired there would
+/// cost the page its prose for writing English. The prompt still forbids the
+/// name; this is the half that can be enforced without guessing.
+fn prose_restates_fact(merged_body: &str, facts: &[FactForPage]) -> Option<String> {
+    let outside = prose_outside_markers(merged_body);
+    if outside.trim().is_empty() {
+        return None;
+    }
+    let outside_words: Vec<String> = words_of(&outside);
+    for fact in facts {
+        let fact_words = words_of(&fact.text);
+        // A number from the fact, in the open.
+        for w in &fact_words {
+            if w.chars().any(|c| c.is_ascii_digit())
+                && w.chars().any(char::is_alphanumeric)
+                && outside_words.contains(w)
+            {
+                return Some(format!(
+                    "«{w}» is {}'s, and it is outside its marker",
+                    fact.fact_id
+                ));
+            }
+        }
+        // Or four of its words in a row.
+        if fact_words.len() >= RESTATED_RUN_WORDS {
+            for window in fact_words.windows(RESTATED_RUN_WORDS) {
+                if outside_words
+                    .windows(RESTATED_RUN_WORDS)
+                    .any(|w| w == window)
+                {
+                    return Some(format!(
+                        "«{}» is {}'s, word for word, and it is outside its marker",
+                        window.join(" "),
+                        fact.fact_id
+                    ));
+                }
+            }
+        }
+    }
+    None
+}
+
+/// How many words in a row make a quotation rather than a coincidence.
+const RESTATED_RUN_WORDS: usize = 4;
+
+/// The page's words with the marked regions taken out — what every reader of
+/// the page gets, whatever the facts' audiences are.
+fn prose_outside_markers(body: &str) -> String {
+    crate::parser::parse(body)
+        .events
+        .into_iter()
+        .filter_map(|e| match e {
+            crate::parser::ParseEvent::Prose { text, .. } => Some(text),
+            _ => None,
+        })
+        .collect::<Vec<_>>()
+        .join(" ")
+}
+
+/// Lowercased words, punctuation dropped, so «21,000» and «21,000.» are one
+/// token and «Zoe's» is «zoe».
+fn words_of(text: &str) -> Vec<String> {
+    text.split(|c: char| c.is_whitespace())
+        .map(|w| {
+            w.trim_matches(|c: char| !c.is_alphanumeric())
+                .to_lowercase()
+        })
+        .filter(|w| !w.is_empty())
+        .collect()
+}
+
+/// Drop the connective prose and keep the facts, each in its marker.
+///
+/// The declared fallback behind [`prose_restates_fact`]: a page whose writer
+/// will not stop repeating a fact's content in the open is served as its facts
+/// and nothing else. It reads worse than prose and it is the read the memory
+/// can stand behind — the prose that ties a page together is a convenience,
+/// and per-fragment permission is not.
+fn keep_only_the_marked_regions(body: &str) -> String {
+    let mut out = String::with_capacity(body.len());
+    for event in crate::parser::parse(body).events {
+        if let crate::parser::ParseEvent::Region { start, end, .. } = event {
+            if !out.is_empty() {
+                out.push_str("\n\n");
+            }
+            out.push_str(&body[start..end]);
+        }
+    }
+    out.push('\n');
+    out
 }
 
 /// Refresh the wiki's one-line abstract in `_meta` from the page that answers
@@ -1200,6 +1337,81 @@ async fn cronista_with_retry(
                     second.message()
                 )),
             }
+        },
+    }
+}
+
+/// Hold the page to «link, never restate»: check, ask again once, and fall
+/// back to the facts alone.
+///
+/// Returns what the prose was still repeating after both attempts — `None` on
+/// the ordinary page, which costs nothing but the check.
+async fn stop_the_prose_restating(
+    llm: &dyn LlmBackend,
+    prompt: &str,
+    page: &PagePlan,
+    max_tokens: u32,
+    merged_body: &mut String,
+) -> Option<String> {
+    let evidence = prose_restates_fact(merged_body, &page.primary_facts)?;
+    tracing::warn!(
+        slug = %page.slug,
+        evidence,
+        "compiler: the connective prose restates a fact — asking again"
+    );
+    let mut still = Some(evidence.clone());
+    if let Some(second) =
+        cronista_without_restating(llm, prompt, &page.slug, max_tokens, &evidence).await
+    {
+        let second_body = expand_and_complete_fact_markers(&second.merged_body, page);
+        still = prose_restates_fact(&second_body, &page.primary_facts);
+        *merged_body = second_body;
+    }
+    if let Some(again) = &still {
+        tracing::warn!(
+            slug = %page.slug,
+            evidence = again,
+            "compiler: it restates a fact again — serving the page as its facts alone"
+        );
+        *merged_body = keep_only_the_marked_regions(merged_body);
+    }
+    still
+}
+
+/// One rewrite that says what the draft repeated and asks for it to be linked
+/// instead.
+///
+/// The same shape as the rail guard's rewrite beside it: one extra call, the
+/// draft kept when the second answer cannot be used, and the decision about
+/// what to do with a second failure left to the caller — here, the page served
+/// as its facts alone.
+async fn cronista_without_restating(
+    llm: &dyn LlmBackend,
+    prompt: &str,
+    slug: &str,
+    max_tokens: u32,
+    evidence: &str,
+) -> Option<CronistaOutput> {
+    let (system, task) = split_cronista_prompt(prompt);
+    let msg = format!(
+        "Your draft repeats a fact's content in the prose OUTSIDE its <fN> tag: {evidence}. \
+         Everything outside a tag is read by everybody who can open this page, whatever \
+         each fact's own audience is, so a value written there is published. Write the page \
+         again, complete: the words between the tags may LINK the facts — «for this \
+         reason», «around the same time», «alongside that» — and may not carry any value, \
+         name, number, date or claim that belongs to a fact. Everything else about the page \
+         is unchanged: same facts, same <fN> tags, same completeness rules. Return the JSON \
+         object only."
+    );
+    match cronista_attempt(llm, system, task, &msg, max_tokens).await {
+        Ok(second) => Some(second),
+        Err(e) => {
+            tracing::warn!(
+                slug,
+                error = e.message(),
+                "compiler: the rewrite that should stop restating was unusable"
+            );
+            None
         },
     }
 }
@@ -2735,6 +2947,161 @@ mod tests {
         std::fs::write(wikis.join("alice/cucina.md"), "# alice\n").unwrap();
         let tree = WikiTree::open(dir.path()).expect("tree");
         (dir, tree, pool)
+    }
+
+    /// **What is outside a marker has no audience, so it may carry no fact's
+    /// content.**
+    ///
+    /// The adversary's page: Zoe's old salary is a restricted fact, and the
+    /// Cronista writes the number into the connective prose as well. The
+    /// region is redacted for a reader who may not see it; the sentence beside
+    /// it is not, because the words between the markers are the scaffolding
+    /// every reader gets. The number travelled.
+    ///
+    /// The check is deterministic and the remedy is two-step: one rewrite with
+    /// the offending words quoted back, and — when the second draft does it
+    /// again — the page written as its facts alone. This drives a writer that
+    /// will not stop, which is the case the fallback exists for.
+    #[tokio::test]
+    async fn a_number_from_a_fact_never_reaches_the_prose_around_it() {
+        let (dir, tree, pool) = setup().await;
+        let salary = ffp(
+            0x21,
+            "Zoe guadagnava 21000 euro l'anno nel lavoro precedente.",
+        );
+        let plan = concept_leaf_plan(salary, "lavoro", None);
+        // A writer that puts the number in the open, twice.
+        let stubborn = FakeLlmBackend::new(
+            "cronista",
+            "{\"mergedBody\":\"<f1>Zoe guadagnava 21000 euro l'anno nel lavoro \
+             precedente.</f1> Conta perché 21000 euro erano la sua base di partenza.\",\
+             \"description\":\"Il lavoro di Zoe\",\"style\":\"prosa\"}",
+        );
+        let report = compile_dirty_pages(
+            &pool,
+            &tree,
+            &plan,
+            &stubborn,
+            Cadence::Light,
+            "2026-09-13T10:00:00Z",
+        )
+        .await
+        .expect("compile");
+
+        assert_eq!(report.prose_restated.len(), 1, "{report:?}");
+        assert!(
+            report.prose_restated[0].contains("21000"),
+            "the receipt says what was repeated: {:?}",
+            report.prose_restated
+        );
+        let written = std::fs::read_to_string(dir.path().join("wikis/alice/lavoro.md"))
+            .expect("the page was written");
+        let outside = prose_outside_markers(&written);
+        assert!(
+            !outside.contains("21000"),
+            "the number is only inside the marker: {outside}"
+        );
+        assert!(
+            written.contains("21000"),
+            "and the fact itself is still on the page: {written}"
+        );
+
+        // And the read path, which is where it matters: a reader who may not
+        // see the fact sees no number anywhere on the page.
+        let mut acl = crate::acl::FactAclMap::new();
+        acl.insert(
+            FactId::parse("0190f3c2-7a4e-7c31-9b02-2f6a1c8e5d21").unwrap(),
+            crate::acl::RegionAcl {
+                subject: "user:zoe".parse::<Principal>().unwrap(),
+                allow: Vec::new(),
+                sender: None,
+            },
+        );
+        let served = crate::render::render_for_sender(&written, &acl, "alice", &[]).text;
+        assert!(
+            !served.contains("21000"),
+            "the page Alice is served carries no part of Zoe's number: {served}"
+        );
+        drop(dir);
+    }
+
+    /// The ordinary case costs nothing: a writer that links instead of
+    /// repeating is written as it stands, with one call and no finding.
+    #[tokio::test]
+    async fn prose_that_links_instead_of_repeating_is_left_alone() {
+        let (dir, tree, pool) = setup().await;
+        let salary = ffp(
+            0x22,
+            "Zoe guadagnava 21000 euro l'anno nel lavoro precedente.",
+        );
+        let plan = concept_leaf_plan(salary, "lavoro", None);
+        let careful = FakeLlmBackend::new(
+            "cronista",
+            "{\"mergedBody\":\"<f1>Zoe guadagnava 21000 euro l'anno nel lavoro \
+             precedente.</f1> Per questo ha accettato il posto nuovo.\",\
+             \"description\":\"Il lavoro di Zoe\",\"style\":\"prosa\"}",
+        );
+        let report = compile_dirty_pages(
+            &pool,
+            &tree,
+            &plan,
+            &careful,
+            Cadence::Light,
+            "2026-09-13T10:00:00Z",
+        )
+        .await
+        .expect("compile");
+
+        assert!(report.prose_restated.is_empty(), "{report:?}");
+        assert_eq!(
+            careful.max_tokens_seen().len(),
+            1,
+            "and it cost one call: the check is free when the prose is clean"
+        );
+        let written =
+            std::fs::read_to_string(dir.path().join("wikis/alice/lavoro.md")).expect("page");
+        assert!(
+            written.contains("Per questo ha accettato il posto nuovo."),
+            "the thread between the facts stays: {written}"
+        );
+        drop(dir);
+    }
+
+    /// What the check catches, and what it deliberately does not.
+    ///
+    /// A number and a run of a fact's own words cannot be a coincidence. A
+    /// proper name can: a page about Zoe says «Zoe» in its connective prose as
+    /// a matter of course, and a net that fired there would cost the page its
+    /// prose for writing ordinary Italian. The prompt still forbids the name;
+    /// this is the half that can be enforced without guessing.
+    #[test]
+    fn the_restatement_check_catches_values_and_quotations() {
+        let facts = vec![ffp(
+            0x31,
+            "Zoe guadagnava 21000 euro l'anno nel lavoro precedente.",
+        )];
+        let marked = |prose: &str| {
+            format!(
+                "{{{{f=0190f3c2-7a4e-7c31-9b02-2f6a1c8e5d31}}}}Zoe guadagnava 21000 euro \
+                 l'anno nel lavoro precedente.{{{{/}}}} {prose}"
+            )
+        };
+        assert!(
+            prose_restates_fact(&marked("Conta perché erano 21000 euro."), &facts).is_some(),
+            "a number from the fact, in the open"
+        );
+        assert!(
+            prose_restates_fact(&marked("guadagnava 21000 euro l'anno, dice."), &facts).is_some(),
+            "or four of its words in a row"
+        );
+        assert!(
+            prose_restates_fact(&marked("Per questo ha cambiato lavoro."), &facts).is_none(),
+            "a connective says nothing the fact says"
+        );
+        assert!(
+            prose_restates_fact(&marked("Zoe ci pensa da tempo."), &facts).is_none(),
+            "and the subject's own name is not the net's business"
+        );
     }
 
     /// An agent's own wiki gets the autobiography voice, and it wins over the
