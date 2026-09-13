@@ -3953,6 +3953,12 @@ fn same_word(a: &str, b: &str) -> bool {
 /// one of the two, and it ticked them off a shopping list. Words are matched
 /// as words and not as strings, so a plural finishes a singular.
 ///
+/// **THE NAME OF WHAT A FACT IS ABOUT COUNTS AS SAYING IT.** «somebody feed
+/// the cat» and «Pepper has been fed» share no noun and no verb — `feed` and
+/// `fed` are two tokens — and they are about the same animal, which the plan
+/// records as its `subject_external`. A turn that says that name is speaking
+/// of the fact whatever else it says.
+///
 /// **A SENTENCE HAS NO NAME TO SAY**, so one content word is the bar. It is
 /// written in the THIRD person while the turn speaks in the first, the
 /// subject's name is never repeated and the verb arrives inflected: «ho
@@ -3974,6 +3980,13 @@ fn spoken_of_in(hit: &RecallHit, texts: &[String]) -> bool {
                 name.iter()
                     .all(|w| said.iter().any(|spoken| same_word(w, spoken)))
             });
+    }
+    if hit
+        .subject_external
+        .as_deref()
+        .is_some_and(|name| word_overlap(name, texts).0 > 0)
+    {
+        return true;
     }
     word_overlap(&hit.text, texts).0 > 0
 }
@@ -11909,6 +11922,21 @@ pub async fn wiki_ingest_message(
                     "ingest: fact validity + style deduced (placement signal)"
                 );
 
+                // An EPISODE with no end reads as a standing state: the page
+                // says «She has been fed» for ever and recall keeps offering
+                // it as news. Some episodes earn that — the ones that leave
+                // the world different afterwards — and an errand does not.
+                // The engine cannot tell them apart from the words, and it
+                // will not write a date nobody stated, so it says so and
+                // leaves the judgement where it was made.
+                if unit.fact_type == Some("episode") && unit.valid_to.is_none() {
+                    tracing::info!(
+                        body = unit.body.unwrap_or(""),
+                        "ingest: an episode with no end will be read as a standing state — \
+                         intended only where the event leaves something behind"
+                    );
+                }
+
                 // The window is what the turn is read AGAINST, never what it
                 // says ([`lifted_from_the_window`]). A claim whose substance
                 // is in one of the earlier messages and nowhere in this one
@@ -15393,6 +15421,7 @@ mod tests {
             region_end: None,
             text: "alice prefers coffee black".into(),
             subject_id: Principal::User("alice".into()),
+            subject_external: None,
             allow_ids: Vec::new(),
             sender_id: None,
             fact_type: Some("preference".into()),
@@ -17099,6 +17128,105 @@ mod tests {
         );
     }
 
+    /// **«Pepper has been fed» closes «somebody feed the cat».**
+    ///
+    /// The two sentences share no noun and no verb: `feed` and `fed` are two
+    /// tokens, and the animal is `the cat` when somebody asks and `Pepper`
+    /// when somebody answers. What ties them is the name the plan records as
+    /// what it is ABOUT, and a turn that says that name is speaking of the
+    /// fact whatever else it says. Without this the guard that keeps a turn
+    /// from closing what it never mentioned would refuse the one closure the
+    /// household actually wanted.
+    #[test]
+    fn the_name_of_what_a_fact_is_about_counts_as_speaking_of_it() {
+        let mut plan = sample_recall_hit("018f1234-5678-7abc-9def-01234567892a");
+        plan.text = "Somebody is to feed the cat this evening.".to_owned();
+        plan.subject_external = Some("Pepper".to_owned());
+        plan.style = Some(crate::wiki::PageStyle::Prosa);
+        let closes = |hit: &RecallHit, text: &str| {
+            let closure = LlmClosure {
+                target: Some(hit.fact_id.as_str().to_owned()),
+                reason: Some("completed".to_owned()),
+                valid_to: None,
+            };
+            validate_closure(
+                &closure,
+                std::slice::from_ref(hit),
+                &[],
+                "alice",
+                &[],
+                &TurnWords::of(&req(text, "alice"), None, false),
+            )
+            .map_or_else(|e| e.as_token().to_owned(), |_| "closed".to_owned())
+        };
+
+        assert_eq!(
+            closes(&plan, "Pepper has been fed, before anybody asks me twice."),
+            "closed",
+            "the answer names the animal the plan is about, and finishes it"
+        );
+        // And the same plan with no name recorded: the words alone share
+        // nothing, so the guard refuses — which is what the name is for.
+        let mut nameless = plan.clone();
+        nameless.subject_external = None;
+        assert_eq!(
+            closes(
+                &nameless,
+                "Pepper has been fed, before anybody asks me twice."
+            ),
+            "the_message_says_nothing_of_it",
+            "`feed` and `fed` are two tokens, and `the cat` is not `Pepper`"
+        );
+        // A turn about something else does not reach it either way.
+        assert_eq!(
+            closes(
+                &plan,
+                "We're out of coffee, and the boiler man is coming Thursday."
+            ),
+            "the_message_says_nothing_of_it"
+        );
+    }
+
+    /// The prompt has to carry both halves of the cat, because one without
+    /// the other changes nothing: a request nobody wrote down cannot be
+    /// closed, and an errand with no end is read as a standing state for ever.
+    #[test]
+    fn bundled_prompts_write_down_the_errand_and_the_request() {
+        for needle in [
+            // The errand carries the day it was done on, in both languages.
+            "**an ERRAND carries the day it was done on.**",
+            "«Pepper has been fed»",
+            "«ho chiuso a chiave»",
+            "«ho annaffiato le piante»",
+            "`valid_to` to the end of the local day",
+            // And the counter-test, which is not about the tense of the verb.
+            "an event with CONSEQUENCES stays open",
+            "«Ho firmato il contratto»",
+            "Feeding a cat leaves nothing; signing a contract leaves a contract",
+            // The request that was never written down at all.
+            "**A REQUEST TO SOMEBODY ELSE IS A TODO**",
+            "«can somebody feed the cat»",
+            "«qualcuno porti fuori i bidoni»",
+            "Dropped, the request exists nowhere and the answer closes nothing",
+        ] {
+            assert!(
+                BUNDLED_INGEST_PROMPT_MD.contains(needle),
+                "the bundled classifier prompt does not say: {needle}"
+            );
+        }
+        for needle in [
+            "«X IS DONE» CLOSES «X IS TO BE DONE», IN PROSE AS ON A LIST",
+            "«somebody feed the cat» is closed by «Pepper has been fed»",
+            "«qualcuno chiami l'idraulico» by «ho chiamato l'idraulico»",
+            "`the cat` when somebody asks and `Pepper` when somebody answers",
+        ] {
+            assert!(
+                BUNDLED_INGEST_RECONCILE_MD.contains(needle),
+                "the bundled reconciler prompt does not say: {needle}"
+            );
+        }
+    }
+
     /// **The plural, and the letter that may not be any letter.**
     ///
     /// A list is written in whichever number the speaker reached for, so
@@ -18520,6 +18648,7 @@ mod tests {
             region_end: None,
             text: "franz lives in Bologna".into(),
             subject_id: Principal::User("franz".into()),
+            subject_external: None,
             allow_ids: Vec::new(),
             sender_id: None,
             fact_type: None,
@@ -18714,6 +18843,7 @@ mod tests {
             region_end: None,
             text: text.into(),
             subject_id: Principal::User("alice".into()),
+            subject_external: None,
             allow_ids: Vec::new(),
             sender_id: None,
             fact_type: None,
@@ -18859,6 +18989,7 @@ mod tests {
                 region_end: None,
                 text: "alice likes coffee".into(),
                 subject_id: Principal::User("alice".into()),
+                subject_external: None,
                 allow_ids: Vec::new(),
                 sender_id: None,
                 fact_type: None,
@@ -18880,6 +19011,7 @@ mod tests {
                 region_end: None,
                 text: "bob likes tea".into(),
                 subject_id: Principal::User("bob".into()),
+                subject_external: None,
                 allow_ids: Vec::new(),
                 sender_id: None,
                 fact_type: None,
@@ -18901,6 +19033,7 @@ mod tests {
                 region_end: None,
                 text: "alice just joined a gym".into(),
                 subject_id: Principal::User("alice".into()),
+                subject_external: None,
                 allow_ids: Vec::new(),
                 sender_id: None,
                 fact_type: None,

@@ -1,8 +1,8 @@
 ---
 name: ingest
 description: Classifier driving `wiki_ingest_message` — one JSON object per turn (intent + an `extractions[]` array of atomic facts, the SOLE fact container; every fact is prose except a `lista` entry, which is the bare item with its values; each carrying a per-fact validity interval `valid_from`/`valid_to`, a per-fact `style` (and, for `lista` material or a requested container, a `target_page` + `page_description`), a `requested_container` live-write flag, a per-fact `salience`, and an `engine_rule` flag routing a standing governance directive to `@rules.md` instead of `fact_index`, a `behaviour_rule` flag (with a `behaviour_scope` of `per-user`/`agent-wide`/`user-global`, read from the addressee) routing a how-an-agent-converses-or-operates directive to the calling consumer's own wiki — or, user-global, to the sender's identity wiki for every assistant serving them — and an `attachments` claim list linking the turn's media to the fact that describes them; plus three turn-level fields for a turn that TAKES SOMETHING BACK — `withdrawal`, `erasure` when the speaker asks for it to be taken OUT of the memory rather than merely ended, and, when what it takes back is a standing rule, `withdraw_target` naming that rule from the block of directives in force); targets the strong-model tier
-version: 3.4
-default_version_at_bootstrap: v3.4
+version: 3.5
+default_version_at_bootstrap: v3.5
 source_of_truth: crates/mwe-core/src/ingest.rs (fn wiki_ingest_message)
 ---
 
@@ -215,7 +215,12 @@ Every captured fact also carries a VALIDITY INTERVAL — `valid_from` and `valid
 - `valid_from` — when the fact starts holding. For a fact that is true as of this turn, set it to `current_time` (a date-only fact → midnight, `...T00:00:00Z`). For a fact that starts in the future ("from Monday I am changing office"), set it to that resolved date.
 - `valid_to` — when the fact stops holding, or `null` for an OPEN horizon ("true now, no known end"). Use `null`, NEVER a sentinel date like 9999. Set a concrete `valid_to` ONLY when the fact carries a KNOWN end:
   - a dated commitment or deadline ends at its own time: "Thursday at 5pm at the dentist" → `valid_to` = that resolved datetime (once past, recall deprioritises it);
-  - a fact stated as transient carries a short horizon: "in Berlin this week" → `valid_to` = the end of that week.
+  - a fact stated as transient carries a short horizon: "in Berlin this week" → `valid_to` = the end of that week;
+  - **an ERRAND carries the day it was done on.** A domestic gesture, carried out and with nothing following from it — «Pepper has been fed», «ho chiuso a chiave», «I've turned the oven off», «ho annaffiato le piante», «the bins are out», «ho steso il bucato» — is true of ITS DAY and of no other. Set `valid_to` to the end of the local day (`…T23:59:59Z` for that date). One rule and one horizon for all of them: how long the milk keeps a cat quiet is not something a memory can know, and a table of durations per errand is a table nobody can maintain.
+
+    Why it matters more than it looks: with `valid_to: null` the errand reads as a STANDING state. The page then says «Pepper is the household cat. She has been fed.» for ever, which is the memory telling the household about a meal from March, and recall keeps offering it as though it were news.
+
+    **The counter-test — an event with CONSEQUENCES stays open.** «Ho firmato il contratto», «she has given birth», «we've moved in», «I've handed in my notice»: each happened once and each leaves the world different afterwards, so there is no horizon to give them. The question is not whether the verb is in the past — both kinds are — but whether anything is DIFFERENT tomorrow because of it. Feeding a cat leaves nothing; signing a contract leaves a contract.
 
 THE BERLIN-vs-LISBON TEST — the judgement that matters most. A transient state and a durable profile look alike but decay oppositely; do not confuse them:
 
@@ -693,7 +698,7 @@ Pick the best match from this CLOSED list (no other values) for each fact:
 - `state` — a condition that WILL END: mood, a passing illness, where somebody is today — and equally the long ones, "sono incinta", "sono in cassa integrazione", "sono in convalescenza". "sono esausto", "ho il raffreddore", "oggi sono a casa", "Bob now works at AcmeCorp". The test against `bio` is not how long it lasts but whether it has an end: a headache and a pregnancy both do, coeliac disease does not. Set `valid_to` when the end is known — Part 3 — and leave it null when it is not.
 - `preference` — a taste about a THING: which one they like better, what they enjoy, what they would rather have. "preferisco il tè al caffè", "I'd take the hybrid over the electric one", "I hate Monday meetings". Not a condition of the person: a standing dietary rule, an allergy or a phobia is `bio` however much it sounds like a dislike — the difference is that somebody helping them has to work around it. A taste whose object is the ASSISTANT'S OWN CONDUCT is not one of these — "I prefer to get the summary as an audio message" is a standing directive (Part 7). Filed here it becomes knowledge ABOUT the speaker instead of a rule FOR you: the rules channel never carries it, and neither a revision nor a withdrawal can ever reach it.
 - `rule` — decision, policy, architectural choice, commitment that should bind future behaviour: "we chose Postgres over SQLite for scaling", "no smoking in the house".
-- `plan` — future intention, todo, scheduled action, shopping-list item: `detergent 2 bottles` (a list entry, and written as one — Part 2), "remind me on Tuesday at 9 to call the dentist", "I want to read Dune this summer".
+- `plan` — future intention, todo, scheduled action, shopping-list item. **A REQUEST TO SOMEBODY ELSE IS A TODO**, and the commonest one a household makes: «can somebody feed the cat», «qualcuno porti fuori i bidoni», «someone needs to call the plumber». The speaker is not going to do it and names nobody who will, and that is exactly why it has to be written down — it is the only record that anyone was asked. Filed as a `plan` about the household, it can be answered later: «Pepper has been fed» then closes it. Dropped, the request exists nowhere and the answer closes nothing. Examples: `detergent 2 bottles` (a list entry, and written as one — Part 2), "remind me on Tuesday at 9 to call the dentist", "I want to read Dune this summer".
 - `episode` — discrete past event worth remembering: meeting, trip, incident, conversation, a completed errand. "I met Bob today, he told me that…", "I bought the milk".
 - `other` — fallback when nothing above fits. Prefer one of the above when plausible; use `other` sparingly.
 

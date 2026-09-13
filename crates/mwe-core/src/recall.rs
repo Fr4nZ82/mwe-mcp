@@ -684,6 +684,12 @@ pub struct RecallHit {
     pub text: String,
     /// The fact's SUBJECT principal.
     pub subject_id: Principal,
+    /// The NAME of what the fact is about when that is not a principal — a
+    /// relative, an animal, a car ([`crate::fact_index::FactIndexRow::subject_external`]).
+    /// Carried because it is the one word a turn is sure to reuse: «Pepper has
+    /// been fed» and «somebody feed the cat» share no verb and no noun, and
+    /// they are about the same animal.
+    pub subject_external: Option<String>,
     /// Read-extension list (the visibility axis, additive to subject+sender).
     /// Surfaced so the classifier can SEE a recalled fact's current
     /// audience and faithfully reproduce it on a REPLACE-semantics
@@ -787,6 +793,7 @@ impl RecallHit {
             region_end: row.region_end,
             text: row.text,
             subject_id: row.subject_id,
+            subject_external: row.subject_external,
             allow_ids: row.allow_ids,
             sender_id: row.sender_id,
             fact_type: row.fact_type,
@@ -827,6 +834,7 @@ impl RecallHit {
             region_end: None,
             text: cap.body,
             subject_id: cap.subject,
+            subject_external: cap.subject_external,
             allow_ids: cap.allow,
             sender_id: cap.sender,
             fact_type: cap.fact_type,

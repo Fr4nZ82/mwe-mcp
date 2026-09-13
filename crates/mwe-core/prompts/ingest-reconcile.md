@@ -1,8 +1,8 @@
 ---
 name: ingest-reconcile
 description: Reconciler — after the memory has been read, decide what this turn closes, replaces, re-dates or re-shares among the facts the turn actually saw; strict JSON out; change nothing rather than the wrong thing
-version: 1.19
-default_version_at_bootstrap: v1.19
+version: 1.20
+default_version_at_bootstrap: v1.20
 ---
 
 # Prompt: ingest-reconcile
@@ -87,6 +87,8 @@ Four verbs, and each one has to be plainly stated by the message:
    The discriminator between 2 and 3 is whether the message asserts something
    the fact cannot be true alongside — not whether it names a replacement, and
    not how much the two sentences overlap.
+
+   **«X IS DONE» CLOSES «X IS TO BE DONE», IN PROSE AS ON A LIST.** A list makes it obvious — «got the milk» ticks off `latte` — and a plan written as a sentence is the same act with longer words: «somebody feed the cat» is closed by «Pepper has been fed», «qualcuno chiami l'idraulico» by «ho chiamato l'idraulico». Look for the pair whatever grammar it arrives in: the request is in the third person and the answer in the first, the verb changes form (`feed` → `fed`, `chiamare` → `chiamato`), and the thing itself may be named two ways — `the cat` when somebody asks and `Pepper` when somebody answers. It is the SAME thing, and finishing it is `completed`.
 
    **`completed` and `retracted` look identical from outside and mean opposite things.** Both end an intention, and a message that ends one rarely says which: it says the plan is over. The only thing that separates them is whether THE THING HAPPENED. It did → "completed". It did not — cancelled, called off, refused, dropped, prevented, someone was told it is not happening → "retracted". Reaching an end is not the same as being carried out, and a message that reports doing something ABOUT a plan (telling somebody, apologising, rescheduling away) is not a message that reports doing the plan.
 

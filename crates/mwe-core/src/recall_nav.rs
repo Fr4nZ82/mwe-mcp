@@ -2245,6 +2245,7 @@ mod tests {
             region_end: None,
             text: "claim".to_owned(),
             subject_id: Principal::global(),
+            subject_external: None,
             allow_ids: Vec::new(),
             sender_id: None,
             fact_type: None,
