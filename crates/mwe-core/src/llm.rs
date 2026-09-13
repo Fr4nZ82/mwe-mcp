@@ -5302,10 +5302,19 @@ mod tests {
 
         assert_eq!(answers.len(), 8, "every caller is answered");
         assert!(answers.iter().all(std::result::Result::is_ok));
-        assert_eq!(
-            counting.peak.load(Ordering::SeqCst),
-            4,
-            "and never more than the deployment's four were in flight"
+        // A ceiling and a floor, because only the ceiling is a promise: how
+        // many of the eight really overlap is the runtime's to decide, and on
+        // a loaded machine it is fewer than the limit allows. The floor is
+        // what makes this a test — a backend that answered one caller at a
+        // time would satisfy the ceiling and nothing else.
+        let peak = counting.peak.load(Ordering::SeqCst);
+        assert!(
+            peak <= 4,
+            "never more than the deployment's four were in flight, and {peak} were"
+        );
+        assert!(
+            peak >= 2,
+            "and they really did travel together, not one by one"
         );
     }
 
