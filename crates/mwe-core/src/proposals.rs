@@ -451,7 +451,7 @@ type ListTuple = (
 ///
 /// - [`ProposalsError::Db`] for any SQL failure.
 /// - [`ProposalsError::Json`] when a stored `questions` / `context`
-///   blob is no longer valid JSON.
+///   blob does not parse as JSON.
 pub async fn list(pool: &SqlitePool, filters: &ListFilters) -> Result<Vec<ProposalRow>> {
     let limit = filters
         .top_k
@@ -510,7 +510,7 @@ pub async fn list(pool: &SqlitePool, filters: &ListFilters) -> Result<Vec<Propos
 ///
 /// - [`ProposalsError::Db`] for any SQL failure.
 /// - [`ProposalsError::Json`] when the stored `questions` / `context`
-///   blob is no longer valid JSON.
+///   blob does not parse as JSON.
 pub async fn get(
     pool: &SqlitePool,
     proposal_id: &str,

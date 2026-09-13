@@ -2007,7 +2007,7 @@ async fn run_revisor_jaccard(
                 // which tombstones a marker-less active row), so it arrives
                 // here like any other. Paired against a rule in force it can
                 // retire one that IS being obeyed, on the strength of words
-                // nobody follows any more.
+                // nobody obeys.
                 if on_channel_page[new_idx] && (window_is_shut[new_idx] || window_is_shut[old_idx])
                 {
                     continue;
@@ -5330,7 +5330,7 @@ pub const BUNDLED_REM_REFILE_MD: &str = include_str!("../prompts/rem-refile.md")
 /// never nominated.
 const REFILE_COSINE_MARGIN: f32 = 0.05;
 
-/// Per-wiki view used to score + present refile candidates: the
+/// Per-wiki view that scores and presents refile candidates: the
 /// discovered wiki plus its active facts (the home pool to beat).
 struct RefileWikiView<'a> {
     d: &'a wiki::DiscoveredWiki,
@@ -10967,7 +10967,7 @@ mod tests {
             "and no second wiki was founded for an argument that has one",
         );
         // A page of another subject makes it a real question again: those
-        // three are no longer everything the wiki holds.
+        // three stop being everything the wiki holds.
         plant_off_topic_page(&tree, &pool, "giardino", "alice").await;
         let report = run_cycle(&pool, &tree, fake_embedder(), &llms, &grouping_policy())
             .await
@@ -14559,7 +14559,7 @@ mod tests {
         assert!(dir.path().join("wikis/alice/vetusta.md").exists());
 
         // The removed page's retired row is settled (offsets NULL) so the
-        // retirement sweep never reopens a file that no longer exists.
+        // retirement sweep never reopens a file that has been removed.
         let row = fact_index::find_by_id(&pool, &f1).await.unwrap().unwrap();
         assert!(row.region_start.is_none() && row.region_end.is_none());
 

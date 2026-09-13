@@ -3908,11 +3908,17 @@ fn ruled_out_by(claim: &str, clauses: &[String]) -> bool {
 /// Whether two words are THE SAME WORD, plural included.
 ///
 /// «ho comprato i sacchi» has to finish «il sacco», and a list is written in
-/// whichever number the speaker reached for. The stem is the word without its
-/// final vowel — Italian inflects there — and two stems are the same when one
-/// is the other with at most one letter more, which lets `sacc`/`sacch` and
-/// `bag`/`bags` meet and keeps `sacch` away from `sacchett`. A diminutive is a
-/// different thing from the thing.
+/// whichever number the speaker reached for. Two plurals and nothing else:
+/// English adds `s` or `es`, and Italian inflects the final vowel — `sacco` /
+/// `sacchi`, `amica` / `amiche`, `lago` / `laghi` — sometimes putting an `h`
+/// in to keep the sound. That `h` is the ONLY letter a stem may gain, because
+/// any letter at all makes `pane` and `panna` one word, and «ho preso la
+/// panna» would tick off the bread.
+///
+/// **The limit, declared:** two words whose stems coincide once the final
+/// vowel is gone are taken for one — `pesce` / `pesca`, `sale` / `sala`. It is
+/// the same price that buys `uovo` / `uova`, and the reader who meets a wrong
+/// tick on a short Italian noun is looking at this line.
 fn same_word(a: &str, b: &str) -> bool {
     fn stem(w: &str) -> &str {
         let cut = w.strip_suffix(['a', 'e', 'i', 'o', 'u']).unwrap_or(w);
@@ -3921,9 +3927,18 @@ fn same_word(a: &str, b: &str) -> bool {
     if a == b {
         return true;
     }
+    // English: the plural is a suffix on the whole word.
+    for (one, other) in [(a, b), (b, a)] {
+        if one == format!("{other}s") || one == format!("{other}es") {
+            return true;
+        }
+    }
+    // Italian: the plural moves the final vowel, and may insert an `h`.
     let (x, y) = (stem(a), stem(b));
-    let (short, long) = if x.len() <= y.len() { (x, y) } else { (y, x) };
-    long.len() - short.len() <= 1 && long.starts_with(short) && short.chars().count() >= 3
+    if x.chars().count() < 3 || y.chars().count() < 3 {
+        return false;
+    }
+    x == y || x == format!("{y}h") || y == format!("{x}h")
 }
 
 /// Whether the turn SPOKE OF this claim.
@@ -17084,6 +17099,51 @@ mod tests {
         );
     }
 
+    /// **The plural, and the letter that may not be any letter.**
+    ///
+    /// A list is written in whichever number the speaker reached for, so
+    /// «sacchi» has to finish «sacco». The stem that lets them meet is the
+    /// word without its final vowel, and it once let a stem gain ANY letter —
+    /// which made `pane` and `panna` one word, and «ho preso la panna» would
+    /// have ticked off the bread. Only the `h` an Italian plural puts in to
+    /// keep the sound.
+    #[test]
+    fn a_plural_is_the_same_word_and_a_near_miss_is_not() {
+        for (a, b) in [
+            // Italian, the three shapes of the plural.
+            ("sacchi", "sacco"),
+            ("amiche", "amica"),
+            ("laghi", "lago"),
+            ("uova", "uovo"),
+            // English.
+            ("bags", "bag"),
+            ("filters", "filter"),
+        ] {
+            assert!(same_word(a, b), "{a} and {b} are one word");
+            assert!(same_word(b, a), "and the comparison reads both ways");
+        }
+
+        for (a, b) in [
+            // The letter that is not an `h`.
+            ("panna", "pane"),
+            ("lattina", "latte"),
+            ("sacchetto", "sacco"),
+            ("sacchi", "sacchetto"),
+        ] {
+            assert!(!same_word(a, b), "{a} and {b} are two things");
+            assert!(!same_word(b, a), "and the comparison reads both ways");
+        }
+
+        // The declared limit: two stems that coincide once the final vowel is
+        // gone are taken for one. It is the price of «uova», and this is where
+        // a reader who meets a wrong tick on a short Italian noun ends up.
+        assert!(
+            same_word("pesce", "pesca"),
+            "a declared limit, not an oversight"
+        );
+        assert!(same_word("sale", "sala"));
+    }
+
     /// **A shared noun protects its neighbours, and that is the rule working.**
     ///
     /// Half the content words of a two-word entry is one, so «tranne il latte»
@@ -20117,9 +20177,9 @@ mod tests {
         drop(dir);
     }
 
-    /// The project-documentation slot is a section of the block, and until now
-    /// the record could not account for it: the trace names both halves and
-    /// which one reached for what.
+    /// The project-documentation slot is a section of the block, and the
+    /// record accounts for it: the trace names both halves and which one
+    /// reached for what.
     #[tokio::test]
     async fn the_trace_accounts_for_the_project_docs_slot() {
         let (dir, _, pool) = setup_workdir().await;
@@ -22825,19 +22885,34 @@ mod tests {
         );
     }
 
-    /// **Nothing in this file narrates what the code once did.**
+    /// **Nothing in this crate's core narrates what the code once did.**
     ///
     /// «Write what is, never what was» binds every comment and every test
-    /// message, and this file is where it keeps escaping: four times in one
-    /// week an assertion said what a rule ONCE did instead of what it does,
-    /// which is a sentence the next reader believes and cannot check. The two
-    /// phrasings that carry almost all of it are named in the body below, and
-    /// are simply not available here.
+    /// message, and it keeps escaping here: four times in one week an
+    /// assertion said what a rule ONCE did instead of what it does, which is a
+    /// sentence the next reader believes and cannot check. The phrasings that
+    /// carry almost all of it are named in the body below and are simply not
+    /// available in the files it reads — the six that hold the write path.
     ///
     /// A failure message does not need them. «the reconciler STOPPED answering
     /// the no-successor case» says what has gone wrong without narrating a
     /// history, and a guarantee is stated in the present: «a standing dietary
     /// rule is NEVER offered as an example of a taste».
+    ///
+    /// **Three things are deliberately NOT banned**, and the reasons are the
+    /// rule's own:
+    ///
+    /// - what the PRODUCT writes for a person to read. The line a superseded
+    ///   fact carries to its successor is one sentence and it is quoted in two
+    ///   modules; it is listed below by its words, so the exception moves with
+    ///   the text and not with a line number;
+    /// - somebody's own words, which this repo quotes in «guillemets». «I
+    ///   don't want that in here any more» is a person speaking, and a rule
+    ///   about how the ENGINE describes itself has nothing to say about it;
+    /// - `legacy`, which here is the NAME of an input shape the engine still
+    ///   accepts — the single-fact plan an older prompt emits. A name is not a
+    ///   narration, and renaming a supported shape to satisfy a word list
+    ///   would be the tail wagging the dog.
     ///
     /// Whole words, because `refused to` and `caused to` end in one of them.
     /// The scan skips this function's own body and nothing else, since it has
@@ -22845,39 +22920,78 @@ mod tests {
     /// exemption `read_only.rs` gives itself in the dashboard crate.
     #[test]
     fn this_file_never_says_what_the_code_once_did() {
-        // This function's own body is the one place the phrasings are
-        // allowed, because it has to write them down to look for them: the
-        // scan skips from its signature to the line that closes it.
+        // Everything from the signature to the line that closes it is this
+        // test naming the phrasings in order to look for them.
         const OWN_BODY_OPENS: &str = "fn this_file_never_says_what_the_code_once_did";
         const OWN_BODY_CLOSES: &str = "    }";
-        let banned: [[&str; 2]; 2] = [["used", "to"], ["no", "longer"]];
+        // The sentence the product writes on a superseded fact's page, quoted
+        // in `planner` and in `fact_index` because both render it.
+        const THE_PRODUCTS_OWN_WORDS: &[&str] = &["no longer current"];
+        let banned: [[&str; 2]; 4] = [
+            ["used", "to"],
+            ["no", "longer"],
+            ["until", "now"],
+            ["previously", ""],
+        ];
+        let sources: [(&str, &str); 6] = [
+            ("ingest.rs", include_str!("ingest.rs")),
+            ("capture.rs", include_str!("capture.rs")),
+            ("proposals.rs", include_str!("proposals.rs")),
+            ("planner.rs", include_str!("planner.rs")),
+            ("fact_index.rs", include_str!("fact_index.rs")),
+            ("rem.rs", include_str!("rem.rs")),
+        ];
+
         let mut caught: Vec<String> = Vec::new();
-        let mut inside_own_body = false;
-        for (n, line) in include_str!("ingest.rs").lines().enumerate() {
-            if inside_own_body {
-                inside_own_body = line != OWN_BODY_CLOSES;
-                continue;
-            }
-            if line.contains(OWN_BODY_OPENS) {
-                inside_own_body = true;
-                continue;
-            }
-            let words: Vec<String> = line
-                .split(|c: char| !c.is_alphanumeric())
-                .filter(|w| !w.is_empty())
-                .map(str::to_lowercase)
-                .collect();
-            if banned
-                .iter()
-                .any(|p| words.windows(2).any(|w| w[0] == p[0] && w[1] == p[1]))
-            {
-                caught.push(format!("{}: {}", n + 1, line.trim()));
+        for (name, source) in sources {
+            let mut inside_own_body = false;
+            for (n, line) in source.lines().enumerate() {
+                if inside_own_body {
+                    inside_own_body = line != OWN_BODY_CLOSES;
+                    continue;
+                }
+                if line.contains(OWN_BODY_OPENS) {
+                    inside_own_body = true;
+                    continue;
+                }
+                if THE_PRODUCTS_OWN_WORDS.iter().any(|q| line.contains(q)) {
+                    continue;
+                }
+                // Somebody's own words, as this repo quotes them.
+                let outside_quotes: String = {
+                    let mut out = String::with_capacity(line.len());
+                    let mut quoted = false;
+                    for c in line.chars() {
+                        match c {
+                            '«' => quoted = true,
+                            '»' => quoted = false,
+                            _ if !quoted => out.push(c),
+                            _ => {},
+                        }
+                    }
+                    out
+                };
+                let words: Vec<String> = outside_quotes
+                    .split(|c: char| !c.is_alphanumeric())
+                    .filter(|w| !w.is_empty())
+                    .map(str::to_lowercase)
+                    .collect();
+                let says = banned.iter().any(|p| {
+                    if p[1].is_empty() {
+                        words.iter().any(|w| w == p[0])
+                    } else {
+                        words.windows(2).any(|w| w[0] == p[0] && w[1] == p[1])
+                    }
+                });
+                if says {
+                    caught.push(format!("{name}:{}: {}", n + 1, line.trim()));
+                }
             }
         }
         assert!(
             caught.is_empty(),
-            "this file narrates what the code once did. Write what it does — «stopped X-ing» \
-             for a failure, the present tense for a guarantee:\n{}",
+            "these narrate what the code once did. Write what it does — «stopped X-ing» for a \
+             failure, the present tense for a guarantee:\n{}",
             caught.join("\n")
         );
     }
