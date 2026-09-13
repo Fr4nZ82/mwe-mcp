@@ -78,7 +78,8 @@ line sits on and that line looks like a passage rather than a trait, **nothing
 is changed** and you are asked: keep it on your card, or move it off with the
 end it appears to have. Moving it off does not delete it — the fact stays, and
 what changes is whether it is read back as part of who you are. **You have 24
-hours**, and silence keeps it on your card.
+hours**, and silence keeps it on your card. Either way you are asked once: a
+line you have kept is not raised again unless you say it again in other words.
 
 **A request to forget a fact.** When somebody asks for a fact to be forgotten
 and they are not the one who said it, everybody who can read that fact is asked

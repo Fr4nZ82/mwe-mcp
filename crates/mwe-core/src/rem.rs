@@ -6276,7 +6276,7 @@ async fn apply_one_page_verdict(
                 };
                 return Ok(proposals::emit_card_retype(pool, &asking).await?.map_or(
                     VerdictOutcome::Refused(
-                        "the card's owner is already being asked about this line",
+                        "the card's owner has already been asked about this line",
                     ),
                     |proposal_id| {
                         VerdictOutcome::Asked(row.fact_id.as_str().to_owned(), proposal_id)
@@ -14292,7 +14292,8 @@ mod tests {
     /// asked, the memory is left as it stands, and silence keeps the card.
     ///
     /// The question goes to whoever the card belongs to, not to whoever
-    /// happened to say the line.
+    /// happened to say the line — and once they have answered it, that line is
+    /// never put to them again.
     #[tokio::test]
     async fn a_retype_on_the_identity_core_is_put_to_its_owner() {
         let (dir, tree, pool) = setup_workdir().await;
@@ -14354,7 +14355,73 @@ mod tests {
         assert_eq!(status, "pending");
         assert_eq!(recipient.as_deref(), Some("user:zoe"));
 
-        // And read again, the same page does not ask a second time.
+        drop(dir);
+    }
+
+    /// **An answer is an answer for good.**
+    ///
+    /// The judge's own memo goes with the PAGE, and a card page changes
+    /// whenever anything is written about its owner — so without a second
+    /// memory, somebody who answered «keep it» would be asked again the next
+    /// time an unrelated fact landed on their card. What closes the question
+    /// for good is the answer, remembered against the line itself.
+    #[tokio::test]
+    async fn a_card_line_kept_is_never_put_to_its_owner_again() {
+        let (dir, tree, pool) = setup_workdir().await;
+        write_wiki(&tree, "zoe", "Zoe", "wiki-user");
+        let core = plant_on_page_of_kind(
+            &tree,
+            &pool,
+            "zoe",
+            crate::wiki::PROFILE_FILENAME,
+            "Zoe paga il mutuo fino ad aprile 2031",
+            "zoe",
+            "bio",
+            None,
+        )
+        .await;
+        sqlx::query("UPDATE fact_index SET salience = 'high' WHERE fact_id = ?")
+            .bind(core.as_str())
+            .execute(&pool)
+            .await
+            .expect("always-on card material");
+        let verdict = "{\"verdicts\":{\"f1\":{\"verdict\":\"retype\",\"fact_type\":\"state\",\"valid_to\":\"2031-04-30\"}}}";
+        let llm = FakeLlmBackend::new("judge", verdict);
+        let asked = judge_the_page(
+            &pool,
+            &tree,
+            &llm,
+            std::slice::from_ref(&core),
+            JudgementDepth::Nightly,
+            &RemPolicy::default(),
+        )
+        .await;
+        assert_eq!(asked.asked.len(), 1, "{asked:?}");
+        let proposal_id: String = sqlx::query_scalar(
+            "SELECT proposal_id FROM structure_proposals \
+             WHERE json_extract(context, '$.fact_id') = ?",
+        )
+        .bind(core.as_str())
+        .fetch_one(&pool)
+        .await
+        .expect("the question exists");
+
+        // Zoe answers that it stays on her card.
+        proposals::apply_proposal(
+            &pool,
+            &tree,
+            &proposal_id,
+            &serde_json::json!({"verdict": "keep"}),
+            // The caller is the bare sender id, as the chat passes it.
+            Some("zoe"),
+            false,
+        )
+        .await
+        .expect("answered");
+
+        // And read again — the page's own memo is no help here, because a page
+        // changes under it all the time — the judge does not put the same line
+        // to her a second time.
         let llm2 = FakeLlmBackend::new(
             "judge-again",
             "{\"verdicts\":{\"f1\":{\"verdict\":\"retype\",\"fact_type\":\"state\",\"valid_to\":\"2031-04-30\"}}}",
@@ -14373,17 +14440,25 @@ mod tests {
             again
                 .refused
                 .iter()
-                .any(|r| r.contains("already being asked")),
+                .any(|r| r.contains("has already been asked")),
             "{again:?}"
         );
-        let open_questions: i64 = sqlx::query_scalar(
-            "SELECT count(*) FROM structure_proposals WHERE kind = ? AND status = 'pending'",
-        )
-        .bind(proposals::kind::CARD_RETYPE)
-        .fetch_one(&pool)
-        .await
-        .unwrap();
-        assert_eq!(open_questions, 1, "one line, one question");
+        let questions: i64 =
+            sqlx::query_scalar("SELECT count(*) FROM structure_proposals WHERE kind = ?")
+                .bind(proposals::kind::CARD_RETYPE)
+                .fetch_one(&pool)
+                .await
+                .unwrap();
+        assert_eq!(questions, 1, "one line, one question — asked once, ever");
+        let row = fact_index::find_by_id(&pool, &core)
+            .await
+            .unwrap()
+            .expect("row");
+        assert_eq!(
+            row.fact_type.as_deref(),
+            Some("bio"),
+            "and «keep» left the card exactly as it was"
+        );
         drop(dir);
     }
 

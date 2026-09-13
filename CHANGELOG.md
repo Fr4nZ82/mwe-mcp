@@ -36,8 +36,10 @@ semver-governed surface: breaking changes are called out explicitly.
   into another copy are refused by name, wherever the fact lives. The single
   correction a card can need — this reads as who you are and is really
   something you are doing for a while — is put to **you**, on the Proposals
-  page, and nothing is written: silence keeps the card as it is. Off the card,
-  the same correction is made straight away, as it always was.
+  page, and nothing is written: silence keeps the card as it is. **An answer is
+  an answer for good** — say «keep it» and that line is never put to you again,
+  unless you re-state it in different words. Off the card, the same correction
+  is made straight away, as it always was.
 
   And two copies told to different people are never merged into one: that would
   retire one person's memory and leave the survivor addressed to the other's

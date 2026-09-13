@@ -1022,34 +1022,51 @@ impl CardRetype {
     }
 }
 
-/// Is the card's owner already being asked about this line?
+/// Has this line already been put to the card's owner — and is it still, or
+/// has it been settled in favour of the card?
 ///
-/// The judge reads a page again whenever anything on it changes, so without
-/// this the same line would be put to the same person once a night for as long
-/// as the question went unanswered.
+/// **An answer is an answer for good.** The judge reads a page again whenever
+/// anything on it moves, and its memo goes with the page, so without this the
+/// person who said «keep it» would be asked the same thing the next time
+/// somebody wrote an unrelated fact onto their card. A question waiting, a
+/// question answered `keep`, and a question that ran out of time (which is the
+/// same as `keep`: nothing was written) all mean the same here — do not ask
+/// again.
+///
+/// **The key is the fact AND the words it says**, so a line re-stated in
+/// different words is a different line and may be asked about. A fact that was
+/// answered `move` is a `state` by then and never reaches this road again.
 ///
 /// # Errors
 ///
 /// - [`ProposalsError::Db`] for any SQL failure.
-pub async fn pending_card_retype(
+pub async fn already_asked_about_this_line(
     pool: &SqlitePool,
     fact_id: &crate::types::FactId,
+    text: &str,
 ) -> Result<Option<String>> {
     let found: Option<(String,)> = sqlx::query_as(
         "SELECT proposal_id FROM structure_proposals
-          WHERE kind = ? AND status = 'pending'
+          WHERE kind = ?
             AND json_extract(context, '$.fact_id') = ?
+            AND json_extract(context, '$.text') = ?
+            AND (status = 'pending'
+                 OR status = 'expired'
+                 OR json_extract(spec, '$.verdict') = ?)
           LIMIT 1",
     )
     .bind(kind::CARD_RETYPE)
     .bind(fact_id.as_str())
+    .bind(text)
+    .bind(CARD_RETYPE_KEEP)
     .fetch_optional(pool)
     .await?;
     Ok(found.map(|(id,)| id))
 }
 
 /// Put the card line to its owner as a pending question, and return its
-/// `proposal_id` — or `None` when they are already being asked about it.
+/// `proposal_id` — or `None` when they have already been asked about this
+/// line ([`already_asked_about_this_line`]).
 ///
 /// Addressed to the SUBJECT of the card ([`recipient_of_the_card`]), like every
 /// other question about what a card carries. **`keep` is the recommended
@@ -1062,7 +1079,10 @@ pub async fn pending_card_retype(
 /// - [`ProposalsError::Json`] when the context or questions cannot be
 ///   serialised.
 pub async fn emit_card_retype(pool: &SqlitePool, c: &CardRetype) -> Result<Option<String>> {
-    if pending_card_retype(pool, &c.fact_id).await?.is_some() {
+    if already_asked_about_this_line(pool, &c.fact_id, &c.text)
+        .await?
+        .is_some()
+    {
         return Ok(None);
     }
     let move_text = c.ends.as_deref().map_or_else(
@@ -2799,10 +2819,17 @@ mod tests {
         assert!(row.deleted_at.is_none(), "the line is never deleted");
     }
 
-    /// One line, one question: the judge reads a page again whenever anything
-    /// on it moves, and the card's owner is not asked the same thing nightly.
+    /// **One line, one question — and an answer is an answer for good.**
+    ///
+    /// The judge reads a page again whenever anything on it moves, so the
+    /// person who said «keep it» would otherwise be asked the same thing the
+    /// next time somebody wrote an unrelated fact onto their card. A question
+    /// waiting and a question answered `keep` both mean: do not ask again.
+    ///
+    /// What re-opens it is the LINE changing — the same fact, said in
+    /// different words, is a different thing to judge.
     #[tokio::test]
-    async fn a_card_line_is_only_asked_about_once() {
+    async fn a_card_line_answered_keep_is_never_asked_about_again() {
         let (_workdir, pool) = fresh_pool().await;
         let fact_id = seed_fact(&pool, KEPT_ID, "user:zoe", Some("user:zoe")).await;
         let asking = CardRetype {
@@ -2813,16 +2840,47 @@ mod tests {
             source_path: "wikis/bob/@profile.md".to_owned(),
             wiki_id: "bob".to_owned(),
         };
-        let first = emit_card_retype(&pool, &asking).await.expect("emitted");
-        assert!(first.is_some());
-        let second = emit_card_retype(&pool, &asking).await.expect("no error");
-        assert!(second.is_none(), "the second reading asks nothing");
-        assert_eq!(
-            pending_card_retype(&pool, &fact_id)
+        let first = emit_card_retype(&pool, &asking)
+            .await
+            .expect("emitted")
+            .expect("a question");
+        assert!(
+            emit_card_retype(&pool, &asking)
                 .await
-                .expect("lookup")
-                .as_deref(),
-            first.as_deref(),
+                .expect("no error")
+                .is_none(),
+            "while it waits, nothing asks again"
+        );
+
+        // Zoe says it stays on her card.
+        mark_applied(
+            &pool,
+            &first,
+            Some("user:zoe"),
+            &json!({"verdict": "keep"}),
+            Some(&json!({"variant": kind::CARD_RETYPE, "verdict": "keep"})),
+        )
+        .await
+        .expect("answered");
+        assert!(
+            emit_card_retype(&pool, &asking)
+                .await
+                .expect("no error")
+                .is_none(),
+            "and once answered, it is never asked again"
+        );
+
+        // Unless the line itself changes.
+        let restated = CardRetype {
+            text: "Zoe sta pagando il mutuo ancora per cinque anni".to_owned(),
+            ..asking
+        };
+        assert!(
+            emit_card_retype(&pool, &restated)
+                .await
+                .expect("no error")
+                .is_some(),
+            "a line re-stated in other words is a different line"
         );
     }
 
