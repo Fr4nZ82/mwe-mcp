@@ -13,7 +13,7 @@ in the passes themselves. These are the ceilings.
 
 | Setting | Default | What it bounds |
 |---|---|---|
-| Split a prose page — facts it must hold first | 8 | The size floor below which the split pass does not even look at a page. |
+| Split a prose page — facts it must hold first | 8 | The size floor below which a page is never considered for splitting. |
 | Split a technical-prose page — facts it must hold first | 32 | The same floor for a page read point by point. A list page is never split on size. |
 | Found a new wiki — pages on one subject it takes | 9 | Pages on one subject needed before a new wiki is founded. Birth only. |
 | Splitting and founding — changes per cycle | 5 | Changes to the shape of the memory per cycle; splitting and founding share it. |
@@ -22,7 +22,7 @@ in the passes themselves. These are the ceilings.
 | Closing what has been overtaken — facts checked per cycle | 8 | Facts that look like evidence something older is finished. |
 | Facts that contradict each other — starting points per cycle | 8 | Where the contradiction sweep starts from. |
 | Putting dates in order — facts per cycle | 16 | Facts whose wording looks like a date ("last Tuesday"), oldest first. |
-| Reading a page back — pages a night | 30 | Pages written onto during the day that the night reads again, whole. One model call per page, newest first. |
+| Reading a page back — pages a night | 30 | Pages written onto during the day that the night reads again, whole: what each fact on it still says, whether it has grown a second subject, and where it should lead. One model call per page, newest first. |
 | Reading a page back — pages an hour | 5 | The same reading, shorter, on the pages the last hour touched. |
 | Repairing where a fact came from — repairs per cycle | 32 | No model call; this one only re-reads. |
 | A new comment is left alone for — seconds | 900 | How long a fresh comment sits untouched before the cycle reads it. |

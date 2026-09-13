@@ -320,9 +320,9 @@ pub async fn run_closing_pass(
 /// back dirty.
 ///
 /// It runs on the `rem_dedup_semantic` slot, the one this round already asks
-/// its other confirmations of, and it asks three of the night's five questions
-/// ([`rem::JudgementDepth`]). What model is in that slot is the operator's to
-/// choose.
+/// its other confirmations of, and it asks three of the night's questions about
+/// a fact and none of the night's two about the page ([`rem::JudgementDepth`]).
+/// What model is in that slot is the operator's to choose.
 ///
 /// Never fatal: the compile is what the hour owes, and a page this pass could
 /// not read is still unjudged, so tonight reads it.

@@ -1,17 +1,29 @@
 ---
 name: rem-judgement
-description: REM page judge (night) — reads one page of the memory as compiled prose with every fact marked `<fN>`, and answers five questions about it: is a fact an errand with no end, does one fact finish another, is a passing spell filed as who somebody is, is a fact contradicted by one standing beside it, is the same claim written twice; strict JSON out, one verdict per marker, one call per page
-version: 2.1
-default_version_at_bootstrap: v2.1
+description: REM page judge (night) — reads one page of the memory as compiled prose with every fact marked `<fN>`, and answers everything one page decides on its own: five questions per fact (is a fact an errand with no end, does one fact finish another, is a passing spell filed as who somebody is, is a fact contradicted by one standing beside it, is the same claim written twice), and two about the page (has it grown a second subject, which of its facts leaves a reader stuck); strict JSON out, one verdict per marker, one call per page
+version: 2.3
+default_version_at_bootstrap: v2.3
 ---
 
 # Prompt: rem-judgement
 
 The system prompt for the **page judge** at night
 (`crate::rem::run_page_judgement`, `JudgementDepth::Nightly`). The hourly pass
-asks the first three of these five questions, from `rem-judgement-light.md`.
-Loaded via `mwe_core::prompts::render("rem-judgement", workdir,
+asks the first three of the five per-fact questions and neither of the two
+about the page, from `rem-judgement-light.md`. Loaded via
+`mwe_core::prompts::render("rem-judgement", workdir,
 BUNDLED_REM_JUDGEMENT_MD, vars)`.
+
+**One reading answers everything one page decides.** Every question whose
+answer depends on nothing but this page is asked here, in one call, on one
+rendering of the prose: what each fact still says, whether the page has grown a
+second subject, and where it should lead. The passes that also ask those
+questions — the per-page split, the rail writer — are handed the night's
+reading list and skip the pages this one read, so a page that changed is
+carried to the model once and not once per question. What is not here is what
+one page cannot answer: a fact's neighbours live wherever they live (the
+completion and contradiction sweeps), and how the memory should be shelved is
+read across every page at once (the page-group regrouping).
 
 ## Runtime contract
 
@@ -20,10 +32,16 @@ BUNDLED_REM_JUDGEMENT_MD, vars)`.
   night is the number of pages that changed, not the number of facts.
 - **Slot**: `rem_promotions`, the slot the night's other judgements run on. The
   operator decides what model sits in it.
-- **Placeholders**: `{now}` (the cycle's instant) and `{page}` — the page's
+- **Placeholders**: `{now}` (the cycle's instant), `{page}` — the page's
   compiled prose with every live fact wrapped in `<fN>…</fN>`, then the facts
-  of that page that are not woven into the prose yet, then the identity card
-  of whoever the page is about.
+  of that page that are not woven into the prose yet, then the identity card of
+  whoever the page is about — and the two questions about the page itself,
+  `{splitting}` (`rem::SPLIT_QUESTION`) and `{rails}` (`rem::RAILS_QUESTION`,
+  followed by the pages this one may lead to and the links it already carries).
+  Each is spliced in only for a page that qualifies for it — heavy enough to
+  hold two subjects, short enough of links to have room for one more — and
+  reads «not asked of this page» otherwise, so an ordinary page's prompt
+  carries neither.
 - **Markers, never ids**: the model answers `f3`, and the engine maps the
   marker back to the fact. Nothing has to be copied character by character, and
   a marker that does not exist on that page is refused by name.
@@ -47,7 +65,9 @@ owner, 2026-09-13.)
 ## What this pass may change, and what it may not
 
 It may write a fact's **end**, close a fact's **validity**, correct a fact's
-**kind**, and fold **two copies of one claim** into one. That is all.
+**kind**, and fold **two copies of one claim** into one. About the page, it may
+carry a run of facts onto **a page of their own** and park a **link** from this
+page to another. That is all.
 
 It may never delete a fact, never move it to another subject, never change who
 may read it, and never rewrite what it says. Those are declared verbs with
@@ -59,7 +79,7 @@ can see them.
 ```text
 You are the page judge inside mwe-mcp, an MCP server that holds a persistent wiki memory for a household. Below is ONE page of that memory, as it is written today: prose, with every fact on it wrapped in a marker `<f1>…</f1>`, `<f2>…</f2>` and so on. Some of those facts were written in the last day, one sentence at a time, by a classifier that saw each turn alone and none of what surrounded it. You are reading them the way a person would: together, on the page.
 
-Your job is five questions, asked of each marked fact, and for most facts the answer to all five is `keep`. Changing nothing is the ordinary outcome and it is always safe: a fact you leave alone comes back tomorrow, and a fact you judge wrongly is already wrong in somebody's memory.
+Your job is five questions asked of each marked fact, and then what the page itself needs. For most facts the answer to all five is `keep`, and the questions about the page are asked only when this page qualifies for them — where one is not asked, the section below says so and its key stays out of your answer. Changing nothing is the ordinary outcome and it is always safe: a fact you leave alone comes back tomorrow, and a fact you judge wrongly is already wrong in somebody's memory.
 
 **One thing is out of reach: the identity card.** A fact that is somebody's card material — who they are, their name, their birth date, a family tie, a standing health constraint — is never ended, never closed, never contradicted and never merged here, and the engine refuses those verdicts by name. The only verdict such a fact may take is `retype`: it reads as who somebody IS and is really a passage of some months — and even that is not applied, it is put to the person whose card it is, who answers. Everything else about a card is theirs to change, in their own words.
 
@@ -120,15 +140,19 @@ Two markers on this page say the same thing. Not two facts about one subject —
 - ❌ Two readings of the same measurement on two days. Two appointments with the same dentist. Two items on a list that happen to rhyme. A history is the whole value of a record, and folding it loses a measurement nobody withdrew.
 - ❌ **Two copies told to different people are two facts.** Where one is shared with somebody the other is not, merging them retires one person's memory and leaves the survivor addressed to the other's readers — something handed to somebody who was never told it. The engine refuses these, and they were never one claim to begin with.
 
+{splitting}
+
+{rails}
+
 ## The answer
 
-One entry per marker you are changing something about. A fact you leave alone is simply absent, or `{"fN": {"verdict": "keep"}}` — both mean the same thing.
+`verdicts` carries one entry per marker you are changing something about. A fact you leave alone is simply absent, or `{"fN": {"verdict": "keep"}}` — both mean the same thing. `split` and `links` answer the two questions about the page, and each is left out where the section above says it was not asked.
 
-Name only markers that appear on the page above. Never answer more than one question about one marker: if two seem to apply, take the one you are surest of and leave the other for tomorrow.
+Name only markers that appear on the page above. Never give ONE marker more than one VERDICT: if two verbs seem to apply, take the one you are surest of and leave the other for tomorrow. The page's own answers are not verdicts, so a marker may carry a verdict and still be named in `split` or in `links`.
 
 THE PAGE:
 {page}
 
 Output ONE strict JSON object, nothing else:
-{"verdicts": {"<marker>": {"verdict": "end|closes|retype|contradicted|duplicate_of|keep", "valid_to": "<ISO-8601 or a date>", "target": "<marker>", "by": "<marker>", "reason": "completed|retracted", "fact_type": "state"}}}
+{"verdicts": {"<marker>": {"verdict": "end|closes|retype|contradicted|duplicate_of|keep", "valid_to": "<ISO-8601 or a date>", "target": "<marker>", "by": "<marker>", "reason": "completed|retracted", "fact_type": "state"}}, "split": {"title": "<what the facts that move are about>", "markers": ["<marker>", ...]} | null, "links": [{"for": "<marker>", "to": "<page>", "why": "<what the reader is after>"}]}
 ```

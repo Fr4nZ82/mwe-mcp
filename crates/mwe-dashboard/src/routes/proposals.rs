@@ -749,9 +749,18 @@ fn headline(row: &ProposalRow) -> String {
 /// The `variant` discriminator inside a `wiki_promote` context.
 ///
 /// Absent means the oldest shape, which is what the apply handler also
-/// What the judge did to one page, in one sentence: how many facts it
-/// corrected, in which words, and whether it asked for anything the engine
-/// would not do.
+/// falls back to (`mwe_core::promote`).
+fn promote_variant(context: &Value) -> &str {
+    str_at(context, "variant").unwrap_or(mwe_core::promote::VARIANT_PARAGRAPH_TO_FILE)
+}
+
+/// What the judge did to one page, in one sentence: what it corrected, in which
+/// words, and whether it asked for anything the engine would not do.
+///
+/// It names what the READING decided, including the two things it decides about
+/// the page itself. Each of those also has a row of its own — the move and the
+/// link are written by the same writers that write them anywhere else — and
+/// this line is the reading's story, not a second announcement of the act.
 ///
 /// The verbs are named the way the memory works, not the way the code does:
 /// the reader of this page is whoever the facts are about.
@@ -771,6 +780,8 @@ fn page_judged_headline(c: &Value) -> String {
                     "retype" => "a passing spell stopped reading as who somebody is",
                     "contradicted" => "a claim the page contradicts stopped being asserted",
                     "duplicate_of" => "the same claim written twice became one",
+                    "split" => "a run of facts moved onto a page of their own",
+                    "rail" => "a link was written to the page a reader would want next",
                     _ => "a fact was corrected",
                 })
                 .collect()
@@ -794,11 +805,6 @@ fn page_judged_headline(c: &Value) -> String {
         );
     }
     out
-}
-
-/// falls back to (`mwe_core::promote`).
-fn promote_variant(context: &Value) -> &str {
-    str_at(context, "variant").unwrap_or(mwe_core::promote::VARIANT_PARAGRAPH_TO_FILE)
 }
 
 fn promote_headline(c: &Value) -> String {

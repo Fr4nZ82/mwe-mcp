@@ -113,7 +113,21 @@ semver-governed surface: breaking changes are called out explicitly.
   a marker that is not on the page, a fact that already ends, a card the verb
   may not touch.
 
-  It costs one model call per page that changed, not one per fact. Two
+  **The same reading also answers what the page itself needs.** A page that has
+  grown a second subject — one person's illness inside a household page, a
+  renovation inside a kitchen page — is divided in two there and then, and a
+  fact that leaves a reader with a question the page cannot answer is given a
+  link to the page that answers it. Both of those used to be readings of their
+  own, each fetching the same page and paying again for the same prose; they
+  now ride with the rest, and the passes that asked them leave the pages this
+  one read alone. Those passes keep what one page cannot answer on its own: the
+  page nobody wrote onto today, which grew heavy over weeks, and how the memory
+  as a whole should be shelved. A page is asked about splitting only once it is
+  over the size floor on **REM settings**, and about links only while it has
+  room for one.
+
+  It costs one model call per page that changed, not one per fact — and that
+  one call is now the whole of what the night asks about that page. Two
   ceilings on **REM settings** bound it: 30 pages a night and 5 an hour by
   default, newest first, and what a ceiling leaves out is read by the next
   pass.
