@@ -3597,16 +3597,170 @@ fn lifted_from_the_window(
 /// words and the copula: a claim made of nothing else says nothing, and the
 /// comparison then finds no words to look for, which is the right answer.
 const STOPWORDS: &[&str] = &[
-    // English
-    "a", "an", "the", "of", "for", "in", "on", "at", "to", "from", "by", "with", "and", "or", "is",
-    "are", "was", "were", "be", "been", "its", "his", "her", "their", "our", "my", "your", "this",
-    "that", "these", "those", "which", "who", "whom", "whose", "where", "when", "what", "how",
-    "she", "he", "it", "they", "them", "i", "you", "we", "one", "thing", // Italian
-    "il", "lo", "la", "i", "gli", "le", "un", "uno", "una", "del", "dello", "della", "dei",
-    "degli", "delle", "di", "da", "dal", "dalla", "nel", "nella", "su", "sul", "sulla", "per",
-    "con", "tra", "fra", "e", "o", "è", "sono", "era", "erano", "essere", "suo", "sua", "suoi",
-    "sue", "loro", "mio", "mia", "questo", "questa", "quello", "quella", "che", "chi", "dove",
-    "quando", "come", "lei", "lui", "cosa",
+    // English — articles, pronouns, prepositions and the copula.
+    "a",
+    "an",
+    "the",
+    "of",
+    "for",
+    "in",
+    "on",
+    "at",
+    "to",
+    "from",
+    "by",
+    "with",
+    "and",
+    "or",
+    "is",
+    "are",
+    "was",
+    "were",
+    "be",
+    "been",
+    "its",
+    "his",
+    "her",
+    "their",
+    "our",
+    "my",
+    "your",
+    "this",
+    "that",
+    "these",
+    "those",
+    "which",
+    "who",
+    "whom",
+    "whose",
+    "where",
+    "when",
+    "what",
+    "how",
+    "she",
+    "he",
+    "it",
+    "they",
+    "them",
+    "i",
+    "you",
+    "we",
+    "one",
+    "thing",
+    // English — the particles and the words for WHEN and WHERE. They attach to
+    // anything, so a claim and a turn share them without sharing a subject:
+    // «Bins out tonight» and «the bin bags were sold OUT» are two sentences
+    // about different things that met on a preposition.
+    "out",
+    "up",
+    "down",
+    "back",
+    "off",
+    "over",
+    "under",
+    "about",
+    "into",
+    "onto",
+    "away",
+    "now",
+    "today",
+    "tonight",
+    "tomorrow",
+    "yesterday",
+    "here",
+    "there",
+    "again",
+    "still",
+    "just",
+    "also",
+    "then",
+    "already",
+    "soon",
+    "later",
+    "ever",
+    "never",
+    "always",
+    // Italian — articles, pronouns, prepositions and the copula.
+    "il",
+    "lo",
+    "la",
+    "i",
+    "gli",
+    "le",
+    "un",
+    "uno",
+    "una",
+    "del",
+    "dello",
+    "della",
+    "dei",
+    "degli",
+    "delle",
+    "di",
+    "da",
+    "dal",
+    "dalla",
+    "nel",
+    "nella",
+    "su",
+    "sul",
+    "sulla",
+    "per",
+    "con",
+    "tra",
+    "fra",
+    "e",
+    "o",
+    "è",
+    "sono",
+    "era",
+    "erano",
+    "essere",
+    "suo",
+    "sua",
+    "suoi",
+    "sue",
+    "loro",
+    "mio",
+    "mia",
+    "questo",
+    "questa",
+    "quello",
+    "quella",
+    "che",
+    "chi",
+    "dove",
+    "quando",
+    "come",
+    "lei",
+    "lui",
+    "cosa",
+    // Italian — the same particles and time-and-place words.
+    "fuori",
+    "dentro",
+    "sopra",
+    "sotto",
+    "dietro",
+    "davanti",
+    "via",
+    "oggi",
+    "stasera",
+    "stamattina",
+    "domani",
+    "ieri",
+    "qui",
+    "qua",
+    "lì",
+    "là",
+    "ancora",
+    "già",
+    "anche",
+    "poi",
+    "adesso",
+    "presto",
+    "tardi",
+    "sempre",
+    "mai",
 ];
 
 /// The words of a phrase worth comparing: lowercased, split on everything that
@@ -3751,25 +3905,62 @@ fn ruled_out_by(claim: &str, clauses: &[String]) -> bool {
     total > 0 && shared >= total.div_ceil(2)
 }
 
-/// Whether the turn SPOKE OF this claim at all — one of the words the claim is
-/// made of.
+/// Whether two words are THE SAME WORD, plural included.
 ///
-/// The opposite direction, and so a much lower bar. A fraction is wrong here
-/// twice over. The stored sentence is often far longer than the mention —
-/// «Big shop done. Coffee, at last, and the bin bags» finishes a fact that
-/// reads «The bin bags were sold out when Alice went shopping on 7 March» —
-/// and it is written in the THIRD person while the turn speaks in the first,
-/// so the subject's name is never repeated and the verb arrives inflected:
-/// «ho comprato il latte» shares exactly one word with «alice deve comprare
-/// il latte», and that one word is the whole of what a person says.
+/// «ho comprato i sacchi» has to finish «il sacco», and a list is written in
+/// whichever number the speaker reached for. The stem is the word without its
+/// final vowel — Italian inflects there — and two stems are the same when one
+/// is the other with at most one letter more, which lets `sacc`/`sacch` and
+/// `bag`/`bags` meet and keeps `sacch` away from `sacchett`. A diminutive is a
+/// different thing from the thing.
+fn same_word(a: &str, b: &str) -> bool {
+    fn stem(w: &str) -> &str {
+        let cut = w.strip_suffix(['a', 'e', 'i', 'o', 'u']).unwrap_or(w);
+        if cut.chars().count() >= 3 { cut } else { w }
+    }
+    if a == b {
+        return true;
+    }
+    let (x, y) = (stem(a), stem(b));
+    let (short, long) = if x.len() <= y.len() { (x, y) } else { (y, x) };
+    long.len() - short.len() <= 1 && long.starts_with(short) && short.chars().count() >= 3
+}
+
+/// Whether the turn SPOKE OF this claim.
 ///
-/// One word is enough because the turns this refuses share NONE. «We're out
-/// of coffee, and the boiler man is coming Thursday» and «Bins out tonight,
-/// they come Tuesday» both closed a shopping list's bin bags, and neither
-/// says `bin` or `bags` — `bins` is a different word, and the resemblance was
-/// the model's, read off a candidate list.
-fn spoken_of_in(claim: &str, texts: &[String]) -> bool {
-    word_overlap(claim, texts).0 > 0
+/// Two questions in one, because a list entry and a sentence are not the same
+/// kind of text and the same rule cannot read both.
+///
+/// **A LIST ENTRY IS THE NAME OF A THING**, so the turn has to say that name —
+/// all of it ([`capture::list_entry_name`], which drops the values and keeps
+/// the name). «Big shop done. Coffee, at last, and the bin bags» says `bin`
+/// and `bags` and finishes them; «Bins out tonight, they come Tuesday» says
+/// one of the two, and it ticked them off a shopping list. Words are matched
+/// as words and not as strings, so a plural finishes a singular.
+///
+/// **A SENTENCE HAS NO NAME TO SAY**, so one content word is the bar. It is
+/// written in the THIRD person while the turn speaks in the first, the
+/// subject's name is never repeated and the verb arrives inflected: «ho
+/// comprato il latte» shares exactly one word with «alice deve comprare il
+/// latte», and that one word is the whole of what a person says. What keeps
+/// the bar honest is [`STOPWORDS`]: the particles and the words for when and
+/// where attach to anything, and «Bins out tonight» met «the bin bags were
+/// sold OUT» on a preposition.
+fn spoken_of_in(hit: &RecallHit, texts: &[String]) -> bool {
+    if hit.style == Some(crate::wiki::PageStyle::Lista) {
+        let name = content_words(&crate::capture::list_entry_name(&hit.text));
+        return !name.is_empty()
+            && texts.iter().any(|text| {
+                let said: Vec<String> = text
+                    .split(|c: char| !c.is_alphanumeric())
+                    .filter(|w| !w.is_empty())
+                    .map(str::to_lowercase)
+                    .collect();
+                name.iter()
+                    .all(|w| said.iter().any(|spoken| same_word(w, spoken)))
+            });
+    }
+    word_overlap(&hit.text, texts).0 > 0
 }
 
 /// The turn's own words, as the closure verb reads them: the message, and the
@@ -3813,14 +4004,23 @@ const TOTALITY_WORDS: &[&str] = &[
 /// that says *everything* is taken at its word and the naming test is waived
 /// for it.
 ///
-/// **What that costs**, said plainly: a turn where the word is incidental —
-/// «I'm in all day today» — waives the test too, and the stage that proposed
-/// the closure is then the only thing between a candidate and a tick. It buys
-/// the case that matters, and the two turns this guard exists for say no such
-/// word: «We're out of coffee, and the boiler man is coming Thursday» and
-/// «Bins out tonight, they come Tuesday» name neither a set nor the thing they
-/// closed.
-fn turn_speaks_of_a_whole_set(texts: &[String]) -> bool {
+/// **It waives the test for LIST ENTRIES and for nothing else.** A list is the
+/// one shape a person finishes wholesale, and «everything» is how they say so.
+/// Anywhere else the word is doing other work — «I'm in all day today» is a
+/// sentence about a day, and it must not stand between a recalled phone number
+/// and the guard that keeps it.
+///
+/// **What it still costs**, said plainly: the engine cannot tell WHICH list a
+/// turn means, so a turn that names no list sweeps whatever list entries the
+/// recall put in front of it. The stage that proposed the closure is then the
+/// only thing between an entry and a tick. It buys the case that matters, and
+/// the two turns this guard exists for say no such word: «We're out of coffee,
+/// and the boiler man is coming Thursday» and «Bins out tonight, they come
+/// Tuesday» name neither a set nor the thing they closed.
+fn turn_speaks_of_a_whole_set(hit: &RecallHit, texts: &[String]) -> bool {
+    if hit.style != Some(crate::wiki::PageStyle::Lista) {
+        return false;
+    }
     texts.iter().any(|text| {
         let present: std::collections::HashSet<String> = text
             .split(|c: char| !c.is_alphanumeric())
@@ -3960,12 +4160,12 @@ fn validate_closure<'a>(
     }
 
     // **A closure is a sentence about ONE fact, so the turn has to be about
-    // it.** «siamo senza caffè, e il tecnico della caldaia viene giovedì» is a
-    // turn about coffee and a boiler, and it closed a shopping list's bin
-    // bags; «i bidoni stasera, passano martedì» is about the refuse
-    // collection, and it closed them again. Neither says a word the entry
-    // says. The reading that a model brings to a candidate list is
-    // association, and association is not what a closure asserts.
+    // it.** «We're out of coffee, and the boiler man is coming Thursday the
+    // nineteenth» is a turn about coffee and a boiler, and it closed a
+    // shopping list's bin bags; «Bins out tonight, they come Tuesday» is about
+    // the refuse collection, and it closed them again. Neither says the name
+    // of the thing it closed. The reading a model brings to a candidate list
+    // is association, and association is not what a closure asserts.
     //
     // Two declarations stand in for the words, and both come from the stage
     // that read the MESSAGE rather than the candidate list: a turn the
@@ -3977,8 +4177,8 @@ fn validate_closure<'a>(
             .iter()
             .any(|f| f.conflicts_with.as_ref() == Some(&fact_id));
     if !declared
-        && !spoken_of_in(&hit.text, &turn.spoken)
-        && !turn_speaks_of_a_whole_set(&turn.spoken)
+        && !spoken_of_in(hit, &turn.spoken)
+        && !turn_speaks_of_a_whole_set(hit, &turn.spoken)
     {
         return Err(ClosurePlanError::TheMessageSaysNothingOfIt(raw.to_owned()));
     }
@@ -15182,6 +15382,7 @@ mod tests {
             sender_id: None,
             fact_type: Some("preference".into()),
             topics: vec!["preferences".into(), "coffee".into()],
+            style: None,
             created_at: "2026-05-21".into(),
             valid_from: None,
             valid_to: None,
@@ -16639,9 +16840,8 @@ mod tests {
         let entry = |n: u8, text: &str| {
             let mut hit = sample_recall_hit(&format!("018f1234-5678-7abc-9def-01234567890{n}"));
             hit.text = text.to_owned();
-            // The list the turn sweeps: naming the page is how a person
-            // addresses its contents without reciting them.
             hit.source_path = "wikis/household/shopping.md".to_owned();
+            hit.style = Some(crate::wiki::PageStyle::Lista);
             hit
         };
         let list = vec![
@@ -16738,18 +16938,26 @@ mod tests {
     /// turns that closed them says a word the entry says. `bins` is not `bin`,
     /// and the resemblance was the model's, read off a candidate list.
     #[test]
+    #[allow(
+        clippy::too_many_lines,
+        reason = "one list's four turns and the three shapes they meet: split apart, nothing says they are one story"
+    )]
     fn a_closure_needs_the_turn_to_speak_of_the_fact() {
         let entry = |n: u8, text: &str| {
             let mut hit = sample_recall_hit(&format!("018f1234-5678-7abc-9def-01234567891{n}"));
             hit.text = text.to_owned();
             hit.source_path = "wikis/household/shopping.md".to_owned();
+            hit.style = Some(crate::wiki::PageStyle::Lista);
             hit
         };
         let bags = entry(1, "bin bags large");
-        let sold_out = entry(
+        // The sentence ABOUT the bags is prose, and prose is read the other
+        // way: one content word, not the whole name of a thing.
+        let mut sold_out = entry(
             2,
             "The bin bags were sold out when Alice went shopping on 7 March.",
         );
+        sold_out.style = Some(crate::wiki::PageStyle::Prosa);
         let closes = |hit: &RecallHit, text: &str, completed: Option<&str>| {
             let closure = LlmClosure {
                 target: Some(hit.fact_id.as_str().to_owned()),
@@ -16795,21 +17003,77 @@ mod tests {
             "the_message_says_nothing_of_it",
             "`bins` is not `bin`: the whole resemblance is the model's"
         );
+        // And the same turn against the SENTENCE about them, which is prose
+        // and so is read on one shared word. The word they share is `out` —
+        // «Bins OUT tonight» and «the bin bags were sold OUT» — and a
+        // preposition is not a subject.
+        assert_eq!(
+            closes(&sold_out, "Bins out tonight, they come Tuesday.", None),
+            "the_message_says_nothing_of_it",
+            "two sentences about different things met on a particle"
+        );
 
-        // 28 March — the shop that really did buy them. Both the list entry
-        // and the longer sentence about them close, and the sentence is much
-        // longer than the mention.
-        for target in [&bags, &sold_out] {
-            assert_eq!(
-                closes(
-                    target,
-                    "Big shop done. Coffee, at last, and the bin bags.",
-                    None
-                ),
-                "closed",
-                "the turn names them, so the closure it asked for happens"
-            );
-        }
+        // 28 March — the shop that really did buy them. The row that day was
+        // `bin bags`: the 2 March entry had been closed on the 11th and the
+        // big shop wrote a fresh one. The turn says both its words.
+        assert_eq!(
+            closes(
+                &entry(3, "bin bags"),
+                "Big shop done. Coffee, at last, and the bin bags.",
+                None
+            ),
+            "closed",
+            "the turn says the entry's name, so the closure it asked for happens"
+        );
+        // And the sentence about them, which is prose and much longer than
+        // the mention.
+        assert_eq!(
+            closes(
+                &sold_out,
+                "Big shop done. Coffee, at last, and the bin bags.",
+                None
+            ),
+            "closed"
+        );
+        // The same turn against the 2 March entry, whose name carries a word
+        // the turn does not say. An entry is closed by its NAME, and half a
+        // name is not it.
+        assert_eq!(
+            closes(
+                &bags,
+                "Big shop done. Coffee, at last, and the bin bags.",
+                None
+            ),
+            "the_message_says_nothing_of_it",
+            "`bin bags large` is not `bin bags`"
+        );
+
+        // A plural finishes a singular: a list is written in whichever number
+        // the speaker reached for.
+        assert_eq!(
+            closes(&entry(4, "sacco"), "ho comprato i sacchi", None),
+            "closed",
+            "«sacchi» is «sacco»"
+        );
+        assert_eq!(
+            closes(&entry(5, "sacchetto"), "ho comprato i sacchi", None),
+            "the_message_says_nothing_of_it",
+            "and a diminutive is a different thing from the thing"
+        );
+
+        // The whole-set waiver is a LIST's and nothing else's: «all day» is a
+        // sentence about a day.
+        let mut number = entry(6, "Zoe's mobile number is 07700 900275.");
+        number.style = Some(crate::wiki::PageStyle::Prosa);
+        assert_eq!(
+            closes(
+                &number,
+                "I'm in all day today if anyone's expecting anybody.",
+                None
+            ),
+            "the_message_says_nothing_of_it",
+            "a turn that happens to say «all» does not sweep a phone number"
+        );
 
         // And the sweep that names no item: «got everything» is a person
         // finishing a list without reciting it.
@@ -18200,6 +18464,7 @@ mod tests {
             sender_id: None,
             fact_type: None,
             topics: Vec::new(),
+            style: None,
             created_at: "2026-05-18".into(),
             valid_from: None,
             valid_to: None,
@@ -18393,6 +18658,7 @@ mod tests {
             sender_id: None,
             fact_type: None,
             topics: Vec::new(),
+            style: None,
             created_at: "2026-05-18".into(),
             valid_from: None,
             valid_to: None,
@@ -18537,6 +18803,7 @@ mod tests {
                 sender_id: None,
                 fact_type: None,
                 topics: Vec::new(),
+                style: None,
                 created_at: "2026-05-18".into(),
                 valid_from: None,
                 valid_to: None,
@@ -18557,6 +18824,7 @@ mod tests {
                 sender_id: None,
                 fact_type: None,
                 topics: Vec::new(),
+                style: None,
                 created_at: "2026-05-18".into(),
                 valid_from: None,
                 valid_to: None,
@@ -18577,6 +18845,7 @@ mod tests {
                 sender_id: None,
                 fact_type: None,
                 topics: Vec::new(),
+                style: None,
                 created_at: "2026-06-02".into(),
                 valid_from: None,
                 valid_to: None,
@@ -27001,6 +27270,7 @@ mod tests {
              \"valid_to\":\"2026-06-10T22:00:00Z\"}},\
              {{\"target\":\"{b}\",\"reason\":\"completed\",\
              \"valid_to\":\"2026-06-10T22:00:00Z\"}}],\
+             \"completed_message\":\"abbiamo visto Jumanji e Casablanca ieri sera\",\
              \"suggested_seed\":\"Segnati come visti.\"}}",
             a = alices.as_str(),
             b = bobs.as_str(),
@@ -27234,7 +27504,9 @@ mod tests {
             authored_refs: Vec::new(),
             wiki_id: WikiId::parse("alice").unwrap(),
             page: Some(PathBuf::from("lista_spesa.md")),
-            body: "manca il latte".into(),
+            // A list entry is the bare item, which is what the prompt asks
+            // for and what a closure has to be able to name.
+            body: "latte".into(),
             subject: Principal::User("alice".into()),
             allow: Vec::new(),
             sender: None,

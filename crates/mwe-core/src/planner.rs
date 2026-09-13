@@ -4361,10 +4361,17 @@ mod tests {
             "his own birthday is who he is"
         );
         for text in [
+            // The demo's own sentence, and the shapes around it.
             "Bob's mother's birthday is on the 15th.",
-            "Il compleanno di mia madre è il 15.",
             "Bob's sister's wedding is in June.",
-            "Il cane del mio vicino abbaia la notte.",
+            "Bob's mother-in-law's address has changed.",
+            "Bob's boss's number is 07700 900275.",
+            // The five the adversary asked for, in Italian.
+            "Il compleanno di mia suocera è il 15.",
+            "Il capo del mio capo va in pensione.",
+            "La casa di mia cugina è in vendita.",
+            "Il numero della mia compagna è cambiato.",
+            "Il cane della mia vicina abbaia la notte.",
         ] {
             assert_eq!(
                 homed(reserved(2, text)),

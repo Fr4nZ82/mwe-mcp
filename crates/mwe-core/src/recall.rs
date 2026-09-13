@@ -617,8 +617,8 @@ pub enum RecallError {
 /// Result alias for the recall pipeline.
 pub type RecallResult<T> = std::result::Result<T, RecallError>;
 
-/// The requesting principal's identity + group membership, used to
-/// project ACL visibility onto candidate facts.
+/// The requesting principal's identity + group membership, which project
+/// ACL visibility onto candidate facts.
 ///
 /// `sender_id` is the bare user id (no `user:` prefix — that prefix is
 /// part of the principal wire format, while ACL evaluation compares
@@ -700,6 +700,12 @@ pub struct RecallHit {
     /// deliberately not enough (every fact in a renovation wiki carries
     /// `renovation`).
     pub topics: Vec<String>,
+    /// The shape of the page the fact lives on, when it has one. Carried so a
+    /// caller can tell a LIST ENTRY — a bare item, whose whole text is the
+    /// name of a thing — from ordinary prose: the two are read differently by
+    /// anything that matches a turn's words against a claim
+    /// ([`crate::ingest`]'s closure verb).
+    pub style: Option<crate::wiki::PageStyle>,
     /// Wall-clock of creation.
     pub created_at: String,
     /// Start of the validity interval (ISO 8601) when known; `None` =
@@ -785,6 +791,7 @@ impl RecallHit {
             sender_id: row.sender_id,
             fact_type: row.fact_type,
             topics: row.topics,
+            style: row.style,
             created_at: row.created_at,
             valid_from: row.valid_from,
             valid_to: row.valid_to,
@@ -824,6 +831,7 @@ impl RecallHit {
             sender_id: cap.sender,
             fact_type: cap.fact_type,
             topics: cap.topics,
+            style: cap.style,
             created_at: cap.captured_at,
             valid_from: cap.valid_from,
             valid_to: cap.valid_to,

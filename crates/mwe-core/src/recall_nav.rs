@@ -2249,6 +2249,7 @@ mod tests {
             sender_id: None,
             fact_type: None,
             topics: Vec::new(),
+            style: None,
             created_at: "2026-06-10T00:00:00Z".to_owned(),
             valid_from: None,
             valid_to: None,
