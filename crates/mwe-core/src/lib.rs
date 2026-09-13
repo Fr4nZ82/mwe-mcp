@@ -52,6 +52,7 @@ pub mod llm;
 pub mod local_embedder;
 pub mod locale;
 pub mod lockfile;
+pub mod marked_page;
 pub mod media;
 pub mod meta_annotate;
 pub mod metrics;

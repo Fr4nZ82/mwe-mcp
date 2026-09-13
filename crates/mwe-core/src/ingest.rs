@@ -32,7 +32,10 @@
 //! strict JSON object encoding both the intent and the operational plan
 //! rather than intent → routing → seed as three round trips, which keeps
 //! latency inside the conversational budget. Step 7 is separate on purpose:
-//! it acts on **what the turn has since read**, which step 3 had not seen.
+//! it acts on **what the turn has since read**, which step 3 had not seen —
+//! and it reads it as the memory holds it, the PAGES with their prose and a
+//! marker on every fact ([`crate::marked_page`]), rather than as a list of
+//! rows with the joins taken out.
 //!
 //! **Step 5 is an operator path, not a phase.** The bundled classifier prompt
 //! emits neither `closures` nor `closure_topics` — reconciling against stored
@@ -5447,8 +5450,187 @@ fn candidate_validity(h: &RecallHit, now: &chrono::DateTime<chrono::Utc>) -> Str
     }
 }
 
-/// Render one candidate as the reconciliation stage's prompt sees it:
-/// `fact_id · validity · audience · text`.
+/// Longest page rendering the reconciler carries, in bytes.
+///
+/// A turn may have opened several pages, and all of them go into one prompt.
+/// A page is normally a few paragraphs; this is the guard against the one that
+/// is not. What falls past the cut has no marker, so nothing can be said about
+/// it — the same as a fact the reader may not see.
+const RECONCILE_PAGE_CEILING_BYTES: usize = 4_000;
+
+/// The pages a turn read, as the reconciliation stage reads them, and the
+/// table that maps every marker back to a fact.
+struct MarkedCandidates {
+    /// The block that goes into the prompt.
+    block: String,
+    /// Marker `N` names `by_marker[N - 1]`.
+    by_marker: Vec<String>,
+}
+
+impl MarkedCandidates {
+    /// The fact a verb named, whether it named a marker or copied an id.
+    ///
+    /// A marker is what the stage hands out and what the prompt asks for. An
+    /// id is tolerated because a model that has one in front of it sometimes
+    /// copies it anyway — and it is safe to tolerate: it resolves only against
+    /// the very same table, so an id nobody was shown resolves to nothing,
+    /// exactly like a marker nobody was shown.
+    fn resolve(&self, raw: &str) -> Option<String> {
+        if let Some(n) = crate::marked_page::marker_number(raw)
+            && let Some(id) = self.by_marker.get(n - 1)
+        {
+            return Some(id.clone());
+        }
+        let folded = raw.trim().to_ascii_lowercase();
+        self.by_marker.iter().find(|id| **id == folded).cloned()
+    }
+}
+
+/// Render the pages the turn read, with every fact the speaker may see wrapped
+/// in the marker the verbs name it by.
+///
+/// **The prose is the point.** A list of candidate lines is the memory with
+/// the joins taken out: *«sacchi per l'umido»* and *«ho messo fuori i
+/// bidoni»* are two rows that share a word, and on the page they are two
+/// sentences a paragraph apart about two different things. The stage that
+/// decides what a message closes reads the page the way a person would.
+///
+/// **Filtered for the speaker, by construction.** `candidates` is already what
+/// this sender may read ([`recall::facts_on_pages`] applies the same
+/// `row_visible_to` the read path does), and the page's own bytes are walked
+/// with [`crate::marked_page::UnknownRegions::Redact`]: a region belonging to
+/// a fact that is not in that list does not appear in the prompt at all. So a
+/// fact somebody cannot see cannot be shown to the model on their behalf, and
+/// — having no marker — cannot be named by the answer either.
+///
+/// The facts this turn has just filed follow the pages under their own
+/// heading, with markers of their own: they are what a supersede welds TO, and
+/// one naming scheme for everything is one fewer way to be wrong.
+fn marked_candidates(
+    tree: &WikiTree,
+    candidates: &[RecallHit],
+    turn_facts: &[TurnFact],
+    now: &chrono::DateTime<chrono::Utc>,
+) -> MarkedCandidates {
+    use std::fmt::Write as _;
+
+    // The pages in the order the candidates arrive — newest fact first, which
+    // is the order `facts_on_pages` chose and the likeliest page to matter.
+    let mut pages: Vec<&str> = Vec::new();
+    for hit in candidates {
+        if !pages.contains(&hit.source_path.as_str()) {
+            pages.push(hit.source_path.as_str());
+        }
+    }
+
+    let mut block = String::new();
+    let mut by_marker: Vec<String> = Vec::new();
+    let mut what_each_is = String::new();
+    block.push_str("THE PAGES THIS TURN READ, as they are written:\n");
+    for path in pages {
+        let on_this_page: Vec<&RecallHit> = candidates
+            .iter()
+            .filter(|h| h.source_path == path)
+            .collect();
+        let ids: Vec<&str> = on_this_page.iter().map(|h| h.fact_id.as_str()).collect();
+        let raw = std::fs::read_to_string(tree.workdir().join(path)).unwrap_or_default();
+        let body = crate::wiki::MarkdownDoc::parse(&raw).map_or(raw, |doc| doc.body);
+        let marked = crate::marked_page::mark_up(
+            &body,
+            &ids,
+            crate::marked_page::UnknownRegions::Redact,
+            RECONCILE_PAGE_CEILING_BYTES,
+            by_marker.len() + 1,
+        );
+        let _ = write!(block, "\n## {path}\n");
+        if marked.woven > 0 {
+            block.push_str(&marked.prose);
+            block.push('\n');
+        }
+        for (position, i) in marked.order.iter().enumerate() {
+            let hit = on_this_page[*i];
+            let n = by_marker.len() + 1;
+            by_marker.push(hit.fact_id.as_str().to_owned());
+            // A fact of this page the prose has not taken yet: it is on the
+            // page as far as the memory is concerned, and the model must be
+            // able to name it, so it is listed here rather than hidden.
+            if position >= marked.woven {
+                let _ = writeln!(block, "<f{n}>{}</f{n}>", truncate(&hit.text, 160));
+            }
+            let _ = writeln!(
+                what_each_is,
+                "f{n} · {}",
+                reconcile_candidate_line(hit, now)
+            );
+        }
+    }
+
+    block.push_str("\nWHAT EACH MARKER IS — validity, who may read it, and the words:\n");
+    block.push_str(&what_each_is);
+
+    block.push_str("\nWHAT THIS TURN JUST FILED — the only things a supersede may weld TO:\n");
+    let mut filed = false;
+    for fact in turn_facts.iter().filter(|f| f.is_filed()) {
+        let n = by_marker.len() + 1;
+        by_marker.push(fact.id.as_str().to_ascii_lowercase());
+        let _ = writeln!(block, "f{n} · {}", fact.body);
+        filed = true;
+    }
+    if !filed {
+        // A gesture turn files nothing, and the model has to SEE that there is
+        // nothing to weld to rather than infer it from a blank.
+        block.push_str("(none)\n");
+    }
+
+    MarkedCandidates { block, by_marker }
+}
+
+/// Turn every marker the verbs named into the fact it names, and drop the
+/// verbs that named nothing.
+///
+/// **A verb that names a marker nobody handed out is refused, not guessed.**
+/// It is the same rule as the hallucinated id it replaces: the table is the
+/// whole world for one call, and what is not in it does not exist. Returns how
+/// many entries were dropped, for the log.
+fn resolve_marked_targets(decision: &mut ReconcileDecision, table: &MarkedCandidates) -> usize {
+    let mut dropped = 0usize;
+    let resolve = |raw: &mut Option<String>| -> bool {
+        raw.as_deref()
+            .and_then(|r| table.resolve(r))
+            .is_some_and(|id| {
+                *raw = Some(id);
+                true
+            })
+    };
+    decision.closures.retain_mut(|c| {
+        let kept = resolve(&mut c.target);
+        dropped += usize::from(!kept);
+        kept
+    });
+    decision.validity_edits.retain_mut(|e| {
+        let kept = resolve(&mut e.target);
+        dropped += usize::from(!kept);
+        kept
+    });
+    decision.acl_changes.retain_mut(|c| {
+        let kept = resolve(&mut c.target);
+        dropped += usize::from(!kept);
+        kept
+    });
+    decision.supersedes.retain_mut(|s| {
+        let kept = resolve(&mut s.target) && resolve(&mut s.successor);
+        dropped += usize::from(!kept);
+        kept
+    });
+    dropped
+}
+
+/// Render what one marker names, as the reconciliation stage's prompt sees it:
+/// `validity · audience · text`.
+///
+/// The marker itself is written by [`marked_candidates`], which hands them
+/// out; this is the rest of the line — what the verbs need to know about the
+/// fact beyond the words the page already shows.
 ///
 /// The audience is rendered because `acl_changes` REPLACES the allow list:
 /// a model asked to add the family to a fact has to be shown who is already
@@ -5466,11 +5648,7 @@ fn reconcile_candidate_line(h: &RecallHit, now: &chrono::DateTime<chrono::Utc>) 
             .join(",");
         format!("subject {} allow [{allow}]", h.subject_id)
     };
-    format!(
-        "{} · {validity} · {audience} · {}",
-        h.fact_id,
-        truncate(&h.text, 160)
-    )
+    format!("{validity} · {audience} · {}", truncate(&h.text, 160))
 }
 
 /// Render one candidate as the closure confirmer's prompt sees it:
@@ -5532,15 +5710,16 @@ fn closure_candidate_line(h: &RecallHit, now: &chrono::DateTime<chrono::Utc>) ->
 /// The opening is narrow and it is the one thing a person legitimately says
 /// about a rule from the conversation: «forget the one about short answers»,
 /// a turn that asserts nothing new and is still a capture. Then the rules
-/// enter, marked in the candidate line, and [`validate_closure`] admits one
-/// verb on them — a `retracted` closure, from somebody entitled to retract.
+/// enter, and [`validate_closure`] admits one verb on them — a `retracted`
+/// closure, from somebody entitled to retract.
 /// A rule REPLACED by another rule is the classifier's road
 /// (`behaviour_supersede_target`) and never comes through here.
 ///
 /// **The facts this turn filed are not candidates.** Their ids seed the
 /// union's dedup set, so whichever leg surfaces one drops it the way it drops
 /// a repeat, and no verb can name it. They reach the stage by the other door,
-/// the `{new_facts}` block, where they are legal only as a `successor`. A verb
+/// the block of what this turn filed, where they carry markers of their own
+/// and are legal only as a `successor`. A verb
 /// allowed to name them would be judging a claim against itself: two atomics
 /// off one message marked as contradicting each other, or an episode archived
 /// as spent in the instant it is born, which the next turn's recall then
@@ -5714,32 +5893,14 @@ async fn reconcile_after_reading(
     if candidates.is_empty() {
         return Reconciliation::default();
     }
-    let lines = candidates
-        .iter()
-        .map(|h| reconcile_candidate_line(h, &turn_now))
-        .collect::<Vec<_>>()
-        .join("\n");
     let turn_time = format!("{} ({})", turn_now.to_rfc3339(), turn_now.format("%A"));
-    // The only legal `successor` values, and every one of them has a row
-    // behind it. An extraction the write path found already stored is left
-    // out: nothing was written under its id, so a supersede naming it would
-    // retire a stored fact in favour of nothing — and a message a consumer
-    // sends twice is nothing BUT such extractions, each one word for word the
-    // candidate it deduped onto. Offering them is inviting the pair.
-    //
-    // `(none)` rather than an empty block: a gesture turn files nothing, and
-    // the model has to see that there is nothing to weld to rather than infer
-    // it from a blank.
-    let weldable = turn_facts
-        .iter()
-        .filter(|f| f.is_filed())
-        .map(|f| format!("{} · {}", f.id, f.body))
-        .collect::<Vec<_>>();
-    let new_facts = if weldable.is_empty() {
-        "(none)".to_owned()
-    } else {
-        weldable.join("\n")
-    };
+    // The pages, and with them the only legal `successor` values — this turn's
+    // own filed facts, each with a row behind it. An extraction the write path
+    // found already stored is left out by `is_filed`: nothing was written
+    // under its id, so a supersede naming it would retire a stored fact in
+    // favour of nothing, and a message a consumer sends twice is nothing BUT
+    // such extractions, each one word for word the candidate it deduped onto.
+    let marked = marked_candidates(tree, candidates, turn_facts, &turn_now);
     let prompt = match prompts::render(
         "ingest-reconcile",
         tree.workdir(),
@@ -5748,8 +5909,7 @@ async fn reconcile_after_reading(
             ("message", request.text.as_str()),
             ("completed_message", completed_message.unwrap_or("(none)")),
             ("current_time", turn_time.as_str()),
-            ("candidates", lines.as_str()),
-            ("new_facts", new_facts.as_str()),
+            ("pages", marked.block.as_str()),
         ],
     ) {
         Ok(p) => p,
@@ -5770,21 +5930,20 @@ async fn reconcile_after_reading(
         ReconcileDecision::default()
     });
     // The reconciler is a second model reading the same wire shape, so its
-    // principals and the ids it copied are folded on the same terms as the
-    // classifier's.
+    // principals are folded on the same terms as the classifier's.
     for c in &mut decision.acl_changes {
         fold_principals_of(&mut c.subject_id, &mut c.allow_ids);
-        fold_fact_id(&mut c.target);
     }
-    for c in &mut decision.closures {
-        fold_fact_id(&mut c.target);
-    }
-    for e in &mut decision.validity_edits {
-        fold_fact_id(&mut e.target);
-    }
-    for sup in &mut decision.supersedes {
-        fold_fact_id(&mut sup.target);
-        fold_fact_id(&mut sup.successor);
+    // And the markers become the facts they name. A verb that named one
+    // nobody handed out is dropped here rather than carried to a guard that
+    // would have to invent a reason for it.
+    let unnameable = resolve_marked_targets(&mut decision, &marked);
+    if unnameable > 0 {
+        tracing::warn!(
+            unnameable,
+            markers = marked.by_marker.len(),
+            "ingest: the reconciler named something it was not shown — those verbs dropped"
+        );
     }
     tracing::info!(
         candidates = candidates.len(),
@@ -18487,9 +18646,11 @@ mod tests {
         plan: &'static str,
         /// What it answers when it is offered nothing to weld to.
         empty_handed: EmptyHanded,
-        /// The `FACTS THIS TURN WROTE` block of each reconcile call, in order.
+        /// The `WHAT THIS TURN JUST FILED` block of each reconcile call, in
+        /// order.
         offered: parking_lot::Mutex<Vec<String>>,
-        /// The `CANDIDATES` block of each, likewise.
+        /// The `WHAT EACH MARKER IS` block of each, likewise — the stored
+        /// facts the turn was weighed against.
         weighed: parking_lot::Mutex<Vec<String>>,
     }
 
@@ -18515,11 +18676,11 @@ mod tests {
         }
     }
 
-    /// The first id on a prompt block, or `None` when it reads `(none)`.
-    fn first_id_in(block: &str) -> Option<String> {
+    /// The first marker on a prompt block, or `None` when it reads `(none)`.
+    fn first_marker_in(block: &str) -> Option<String> {
         let line = block.lines().find(|l| !l.trim().is_empty())?;
-        let id = line.split(' ').next()?;
-        (id != "(none)").then(|| id.to_owned())
+        let marker = line.trim().split(' ').next()?;
+        crate::marked_page::marker_number(marker).map(|_| marker.to_owned())
     }
 
     #[async_trait]
@@ -18531,21 +18692,23 @@ mod tests {
             &self,
             req: CompletionRequest,
         ) -> std::result::Result<crate::llm::CompletionResponse, LlmError> {
-            let text = match req.prompt.split_once(
-                "FACTS THIS TURN WROTE (fact_id · text) — the only legal `successor` values:\n",
-            ) {
+            let text = match req.prompt.split_once("WHAT EACH MARKER IS") {
                 None => self.plan.to_owned(),
                 Some((_, tail)) => {
-                    let (offered, rest) = tail
-                        .split_once("\n\nCANDIDATES — ")
+                    let (weighed, offered) = tail
+                        .split_once("\nWHAT THIS TURN JUST FILED")
                         .expect("the reconcile prompt names both blocks");
-                    let weighed = rest
+                    let weighed = weighed
                         .split_once(":\n")
-                        .expect("the candidates block has a header")
+                        .expect("the marker block has a header")
+                        .1;
+                    let offered = offered
+                        .split_once(":\n")
+                        .expect("the filed block has a header")
                         .1;
                     self.offered.lock().push(offered.to_owned());
                     self.weighed.lock().push(weighed.to_owned());
-                    match (first_id_in(offered), first_id_in(weighed)) {
+                    match (first_marker_in(offered), first_marker_in(weighed)) {
                         (Some(successor), Some(target)) => format!(
                             "{{\"supersedes\":[{{\"slot\":\"the colour she prefers\",\
                              \"target\":\"{target}\",\"successor\":\"{successor}\"}}]}}"
@@ -18632,14 +18795,20 @@ mod tests {
         // empty memory and the stage makes no call without candidates.
         assert_eq!(llm.offered.lock().len(), 1, "the re-delivery reconciled");
         assert!(
-            llm.weighed.lock()[0].contains(fact_id.as_str()),
+            llm.weighed.lock()[0].contains(body),
             "and it was weighed against the fact the first delivery wrote — without \
-             that this test would pass by reconciling nothing"
+             that this test would pass by reconciling nothing. The prompt carries the \
+             fact's WORDS under its marker, never its id: {:?}",
+            llm.weighed.lock()[0]
         );
-        assert_eq!(
-            llm.offered.lock()[0].trim(),
-            "(none)",
-            "a claim the memory already held is not offered as something to weld to"
+        assert!(
+            !llm.weighed.lock()[0].contains(fact_id.as_str()),
+            "and it carries no identifier for the model to copy"
+        );
+        assert!(
+            llm.offered.lock()[0].starts_with("(none)"),
+            "a claim the memory already held is not offered as something to weld to: {:?}",
+            llm.offered.lock()[0]
         );
 
         let after = facts_in_wiki(&pool, "alice").await;
@@ -18705,9 +18874,10 @@ mod tests {
         deliver().await;
 
         assert!(
-            llm.weighed.lock()[0].contains(fact_id.as_str()),
+            llm.weighed.lock()[0].contains("indaco"),
             "the re-delivery was weighed against the fact the first one wrote, and the \
-             scripted model did ask for it to be closed"
+             scripted model did ask for it to be closed: {:?}",
+            llm.weighed.lock()[0]
         );
         let after = fact_index::find_by_id(&pool, &fact_id)
             .await
@@ -25097,11 +25267,12 @@ mod tests {
         );
     }
 
-    /// A rule reaching a stage says it is one, in the line the stage reads.
+    /// A rule reaching the closure confirmer says it is one, in the line that
+    /// stage reads.
     ///
-    /// The candidate line is all either stage gets. Unmarked, a directive
-    /// reads as an ordinary claim about the speaker — which is how one came to
-    /// be closed as contradicted by a remark about dinner.
+    /// That line is all the confirmer gets. Unmarked, a directive reads as an
+    /// ordinary claim about the speaker — which is how one came to be closed
+    /// as contradicted by a remark about dinner.
     #[test]
     fn a_rule_among_the_candidates_is_marked_as_one() {
         let now = now_fixture();
@@ -28709,6 +28880,208 @@ mod tests {
 
     /// The stage judges the completed message, not only the words typed.
     ///
+    /// Write a page with two facts on it, the way a compile leaves it.
+    fn plant_marked_page(tree: &WikiTree, wiki: &str, page: &str, facts: &[(&str, &str)]) {
+        use std::fmt::Write as _;
+        let dir = tree.wikis_dir().join(wiki);
+        std::fs::create_dir_all(&dir).expect("wiki dir");
+        std::fs::write(
+            dir.join("_meta.md"),
+            format!(
+                "---\nwiki_id: {wiki}\nwiki_type: wiki-user\nslug: {wiki}\ntitle: {wiki}\n\
+                 acl_default: 'user:{wiki}'\n---\n"
+            ),
+        )
+        .expect("meta");
+        let mut body = String::from("---\ntitle: La casa\n---\n\nLa casa di Alice. ");
+        for (id, text) in facts {
+            let _ = write!(body, "{{{{f={id}}}}}{text}{{{{/}}}} ");
+        }
+        body.push('\n');
+        std::fs::write(dir.join(page), body).expect("page");
+    }
+
+    /// **The reconciler reads the page, and names what it finds by marker.**
+    ///
+    /// The two facts of this page share a word and nothing else: one is a
+    /// thing to buy, the other a thing done. On a list of rows they looked
+    /// like a pair, and the page says in as many words that they are two
+    /// sentences about two different things.
+    ///
+    /// What this pins is the wiring: the prose reaches the model with markers
+    /// on it, the verbs name a marker, and the engine turns that marker back
+    /// into the fact — with no identifier anywhere in the prompt for a model
+    /// to copy or invent.
+    #[tokio::test]
+    async fn the_reconciler_reads_the_page_and_answers_by_marker() {
+        let (dir, tree, _pool) = setup_workdir().await;
+        let bags = "0190f3c2-7a4e-7c31-9b02-2f6a1c8e5d01";
+        let bins = "0190f3c2-7a4e-7c31-9b02-2f6a1c8e5d02";
+        plant_marked_page(
+            &tree,
+            "alice",
+            "casa.md",
+            &[
+                (bags, "Servono sacchi per l'umido."),
+                (bins, "Ha messo fuori i bidoni, raccolta martedì."),
+            ],
+        );
+        let mut first = sample_recall_hit(bags);
+        first.text = "Servono sacchi per l'umido.".into();
+        first.source_path = "wikis/alice/casa.md".into();
+        let mut second = sample_recall_hit(bins);
+        second.text = "Ha messo fuori i bidoni, raccolta martedì.".into();
+        second.source_path = "wikis/alice/casa.md".into();
+
+        // The model answers about the second marker, which is the fact the
+        // page shows second.
+        let llm = FakeLlmBackend::new(
+            "fake",
+            r#"{"closures":[{"target":"f2","reason":"completed"}]}"#,
+        );
+        let reconciled = reconcile_after_reading(
+            &tree,
+            &llm,
+            &req("i bidoni sono fuori", "alice"),
+            chrono::Utc::now(),
+            &[first, second],
+            &[],
+            None,
+        )
+        .await;
+
+        let prompt = llm.last_prompt().expect("the stage called the model");
+        assert!(
+            prompt.contains("<f1>Servono sacchi per l'umido.</f1>"),
+            "the page reaches the model as prose, with markers: {prompt}"
+        );
+        assert!(
+            prompt.contains("La casa di Alice."),
+            "including the words between the facts, which are what tie them together"
+        );
+        assert!(
+            !prompt.contains(bags) && !prompt.contains(bins),
+            "and carries no identifier for a model to copy: {prompt}"
+        );
+        assert_eq!(
+            reconciled
+                .decision
+                .closures
+                .first()
+                .and_then(|c| c.target.as_deref()),
+            Some(bins),
+            "the marker became the fact it names"
+        );
+        drop(dir);
+    }
+
+    /// **A fact the speaker cannot read is not on the page they are shown, and
+    /// cannot be named by the answer.**
+    ///
+    /// The candidate set is already filtered for this sender — but the PAGE
+    /// file is not: its bytes carry every fact ever written onto it, other
+    /// people's included. Rendering it raw would hand somebody else's sentence
+    /// to a model acting for this person, which is the one thing the whole
+    /// per-fragment ACL exists to stop.
+    ///
+    /// So the walk drops what the caller did not name, and what is dropped has
+    /// no marker: it cannot be shown, and it cannot be closed.
+    #[tokio::test]
+    async fn a_fact_the_speaker_cannot_read_is_neither_shown_nor_nameable() {
+        let (dir, tree, _pool) = setup_workdir().await;
+        let mine = "0190f3c2-7a4e-7c31-9b02-2f6a1c8e5d03";
+        let theirs = "0190f3c2-7a4e-7c31-9b02-2f6a1c8e5d04";
+        plant_marked_page(
+            &tree,
+            "alice",
+            "casa.md",
+            &[
+                (mine, "Alice deve comprare il latte."),
+                (theirs, "Bob ha pagato la multa in segreto."),
+            ],
+        );
+        // Only the first is readable by this sender, so only the first is a
+        // candidate — which is what `facts_on_pages` hands this stage.
+        let mut readable = sample_recall_hit(mine);
+        readable.text = "Alice deve comprare il latte.".into();
+        readable.source_path = "wikis/alice/casa.md".into();
+
+        // The model reaches for a second marker anyway.
+        let llm = FakeLlmBackend::new(
+            "fake",
+            r#"{"closures":[{"target":"f2","reason":"completed"}]}"#,
+        );
+        let reconciled = reconcile_after_reading(
+            &tree,
+            &llm,
+            &req("ho comprato il latte", "alice"),
+            chrono::Utc::now(),
+            std::slice::from_ref(&readable),
+            &[],
+            None,
+        )
+        .await;
+
+        let prompt = llm.last_prompt().expect("the stage called the model");
+        assert!(
+            prompt.contains("<f1>Alice deve comprare il latte.</f1>"),
+            "what the speaker may read is there: {prompt}"
+        );
+        assert!(
+            !prompt.contains("multa"),
+            "and what they may not read is not on the page they are shown: {prompt}"
+        );
+        assert!(
+            reconciled.decision.closures.is_empty(),
+            "a marker nobody handed out names nothing and is dropped: {:?}",
+            reconciled.decision.closures
+        );
+        drop(dir);
+    }
+
+    /// A page whose facts the compile has not woven in yet still hands them
+    /// out: they are on the page as far as the memory is concerned, and a
+    /// stage that could not name them could not close them.
+    #[tokio::test]
+    async fn a_fact_not_yet_in_the_prose_is_still_named() {
+        let (dir, tree, _pool) = setup_workdir().await;
+        let pending = "0190f3c2-7a4e-7c31-9b02-2f6a1c8e5d05";
+        plant_marked_page(&tree, "alice", "casa.md", &[]);
+        let mut hit = sample_recall_hit(pending);
+        hit.text = "Alice deve chiamare l'idraulico.".into();
+        hit.source_path = "wikis/alice/casa.md".into();
+
+        let llm = FakeLlmBackend::new(
+            "fake",
+            r#"{"closures":[{"target":"f1","reason":"completed"}]}"#,
+        );
+        let reconciled = reconcile_after_reading(
+            &tree,
+            &llm,
+            &req("ho chiamato l'idraulico", "alice"),
+            chrono::Utc::now(),
+            std::slice::from_ref(&hit),
+            &[],
+            None,
+        )
+        .await;
+
+        let prompt = llm.last_prompt().expect("called");
+        assert!(
+            prompt.contains("<f1>Alice deve chiamare l'idraulico.</f1>"),
+            "listed under its own marker: {prompt}"
+        );
+        assert_eq!(
+            reconciled
+                .decision
+                .closures
+                .first()
+                .and_then(|c| c.target.as_deref()),
+            Some(pending),
+        );
+        drop(dir);
+    }
+
     /// *«l'ho comprato»* matches no candidate on its own words — the noun is
     /// in the exchange before it, which this stage never sees. The classifier
     /// does see it, and wrote the sentence out in full inside the call it was

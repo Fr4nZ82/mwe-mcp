@@ -11,6 +11,23 @@ semver-governed surface: breaking changes are called out explicitly.
 
 ## Unreleased
 
+### Changed
+
+- **The memory now reads a page where it used to read a list.** When a message
+  closes, replaces, re-dates or re-shares something already stored, the stage
+  that decides is shown the PAGES the turn opened, written as they stand, with
+  every fact on them marked — instead of the facts as a list of rows with the
+  joins taken out. The prose between them is what says whether two sentences
+  that share a word are about the same thing: *«servono sacchi per l'umido»*
+  and *«ho messo fuori i bidoni»* are a paragraph apart on the household's
+  page, and on a list they looked like a pair.
+
+  It names what it decides by **marker** — `f3` — and the engine maps the
+  marker back to the fact, so no identifier is in the prompt to be copied
+  wrongly or invented, and a verb naming a marker nobody handed out is dropped.
+  What a person may not read is not on the page they are shown: a fact outside
+  their reach has no marker and cannot be named on their behalf.
+
 ### Added
 
 - **The night stops waiting one question at a time.** The passes that ask a

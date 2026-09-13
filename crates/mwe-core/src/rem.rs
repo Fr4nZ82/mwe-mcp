@@ -5930,9 +5930,10 @@ async fn gather_page(
 /// live fact wrapped in `<fN>`, and then the facts that are not in the prose
 /// yet, one per line under their own heading.
 ///
-/// The numbering IS the naming: the model answers `f3`, never a `fact_id` it
-/// would have to copy character by character, and the engine maps back. The
-/// same trick the Cronista is written around, in the other direction.
+/// The walk itself is [`crate::marked_page::mark_up`], shared with the turn's
+/// reconciler — the two ask different questions of a page and both ask them of
+/// the same rendering. Here the reader is the ENGINE, so a region whose fact
+/// this pass did not list keeps its words as the scaffolding they are.
 ///
 /// **The second half is the declared fallback.** A fact reaches its page's
 /// prose only at the compile that follows its writing, and a page compiled
@@ -5944,69 +5945,32 @@ async fn gather_page(
 /// Returns the rendering and the facts in marker order.
 fn render_page_with_markers(body: &str, live: Vec<FactIndexRow>) -> (String, Vec<FactIndexRow>) {
     use std::fmt::Write as _;
-    let mut by_id: std::collections::BTreeMap<&str, usize> = std::collections::BTreeMap::new();
-    for (i, f) in live.iter().enumerate() {
-        by_id.insert(f.fact_id.as_str(), i);
-    }
-    let mut ordered: Vec<usize> = Vec::with_capacity(live.len());
-    let mut taken = vec![false; live.len()];
-    let mut prose = String::with_capacity(body.len() + 64);
-    for event in crate::parser::parse(body).events {
-        match event {
-            crate::parser::ParseEvent::Prose { text, .. } => prose.push_str(&text),
-            crate::parser::ParseEvent::Region { attrs, body, .. } => {
-                let idx = attrs
-                    .fact_id
-                    .as_ref()
-                    .and_then(|id| by_id.get(id.as_str()).copied())
-                    .filter(|i| !taken[*i]);
-                if let Some(i) = idx {
-                    taken[i] = true;
-                    ordered.push(i);
-                    let _ = write!(
-                        prose,
-                        "<f{}>{}</f{}>",
-                        ordered.len(),
-                        body.trim(),
-                        ordered.len()
-                    );
-                } else {
-                    // A region whose fact is retired, or one the page carries
-                    // twice: the words stay as the scaffolding they are, with
-                    // no marker, so nothing can be said about them.
-                    prose.push_str(&body);
-                }
-            },
-            // A media embed is a pointer, not a claim: the judge has nothing
-            // to say about it and it costs prompt to carry.
-            crate::parser::ParseEvent::Embed { .. } => {},
-        }
-        if prose.len() > JUDGED_PAGE_CEILING_BYTES {
-            break;
-        }
-    }
-    let woven = ordered.len();
+
+    let ids: Vec<&str> = live.iter().map(|f| f.fact_id.as_str()).collect();
+    let marked = crate::marked_page::mark_up(
+        body,
+        &ids,
+        crate::marked_page::UnknownRegions::Keep,
+        JUDGED_PAGE_CEILING_BYTES,
+        1,
+    );
+
     let mut loose = String::new();
-    for (i, _) in live.iter().enumerate() {
-        if taken[i] || prose.len() + loose.len() > JUDGED_PAGE_CEILING_BYTES {
-            continue;
-        }
-        ordered.push(i);
-        let f = &live[i];
+    for (position, i) in marked.order.iter().enumerate().skip(marked.woven) {
+        let n = position + 1;
+        let f = &live[*i];
         let _ = writeln!(
             loose,
-            "<f{}>{}</f{}> · {} · until {}",
-            ordered.len(),
+            "<f{n}>{}</f{n}> · {} · until {}",
             one_line_capped(&f.text, 300),
-            ordered.len(),
             f.fact_type.as_deref().unwrap_or("(no kind)"),
             f.valid_to.as_deref().unwrap_or("(no end)"),
         );
     }
     let mut out = String::new();
-    if woven > 0 {
+    if marked.woven > 0 {
         out.push_str("THE PAGE:\n");
-        out.push_str(prose.trim());
+        out.push_str(&marked.prose);
         out.push('\n');
     }
     if !loose.is_empty() {
@@ -6016,7 +5980,8 @@ fn render_page_with_markers(body: &str, live: Vec<FactIndexRow>) -> (String, Vec
     // The facts in the order their markers were handed out.
     let facts = {
         let mut slots: Vec<Option<FactIndexRow>> = live.into_iter().map(Some).collect();
-        ordered
+        marked
+            .order
             .into_iter()
             .filter_map(|i| slots[i].take())
             .collect()
@@ -6081,7 +6046,7 @@ async fn apply_page_decision(
     let mut ordered: Vec<(usize, &String, &LlmPageVerdict)> = decision
         .verdicts
         .iter()
-        .filter_map(|(marker, v)| marker_number(marker).map(|n| (n, marker, v)))
+        .filter_map(|(marker, v)| crate::marked_page::marker_number(marker).map(|n| (n, marker, v)))
         .collect();
     ordered.sort_by_key(|(n, _, _)| *n);
     // One fact, one decision per reading. The verdicts are applied against the
@@ -6202,7 +6167,7 @@ fn touches_a_decided_fact(
     [verdict.target.as_deref(), verdict.by.as_deref()]
         .into_iter()
         .flatten()
-        .filter_map(marker_number)
+        .filter_map(crate::marked_page::marker_number)
         .filter_map(|n| page.fact_at(n))
         .any(|other| decided.contains(other.fact_id.as_str()))
 }
@@ -6297,7 +6262,11 @@ async fn apply_one_page_verdict(
 
         // 2 — this fact finishes something the page was still waiting for.
         "closes" => {
-            let Some(target) = verdict.target.as_deref().and_then(marker_number) else {
+            let Some(target) = verdict
+                .target
+                .as_deref()
+                .and_then(crate::marked_page::marker_number)
+            else {
                 return Ok(VerdictOutcome::Refused("no marker to close"));
             };
             let Some(open) = page.fact_at(target) else {
@@ -6430,7 +6399,11 @@ async fn apply_one_page_verdict(
                     "this pass was not asked to weigh two facts against each other",
                 ));
             }
-            let Some(by) = verdict.by.as_deref().and_then(marker_number) else {
+            let Some(by) = verdict
+                .by
+                .as_deref()
+                .and_then(crate::marked_page::marker_number)
+            else {
                 return Ok(VerdictOutcome::Refused(
                     "no marker said what makes it false",
                 ));
@@ -6488,7 +6461,11 @@ async fn apply_one_page_verdict(
                     "this pass was not asked to weigh two facts against each other",
                 ));
             }
-            let Some(target) = verdict.target.as_deref().and_then(marker_number) else {
+            let Some(target) = verdict
+                .target
+                .as_deref()
+                .and_then(crate::marked_page::marker_number)
+            else {
                 return Ok(VerdictOutcome::Refused("no marker to merge with"));
             };
             let Some(twin) = page.fact_at(target) else {
@@ -6567,23 +6544,6 @@ async fn apply_one_page_verdict(
 
         _ => Ok(VerdictOutcome::Refused("no such verdict")),
     }
-}
-
-/// The `f7` the model answers with, as the number 7.
-///
-/// Generous about the spelling — `f7`, `F7`, `<f7>`, `7` — because the marker
-/// is the model's only way to name a fact and a bracket it copied from the
-/// page is not a reason to drop a true verdict.
-fn marker_number(raw: &str) -> Option<usize> {
-    let cleaned: String = raw
-        .trim()
-        .trim_start_matches('<')
-        .trim_end_matches('>')
-        .trim_start_matches(['f', 'F'])
-        .chars()
-        .take_while(char::is_ascii_digit)
-        .collect();
-    cleaned.parse().ok().filter(|n| *n > 0)
 }
 
 /// One receipt per page, born applied: what the judge changed, and what it
@@ -14967,21 +14927,6 @@ mod tests {
         assert!(!BUNDLED_REM_JUDGEMENT_LIGHT_MD.contains("duplicate_of\": {"));
         assert!(BUNDLED_REM_JUDGEMENT_MD.contains("IS THE SAME CLAIM WRITTEN TWICE"));
         assert!(!BUNDLED_REM_JUDGEMENT_LIGHT_MD.contains("IS THE SAME CLAIM WRITTEN TWICE"));
-    }
-
-    /// The spellings a model reaches for when it names a marker. All of them
-    /// mean the same fact, and a bracket copied off the page is not a reason
-    /// to drop a true verdict.
-    #[test]
-    fn a_marker_is_read_however_the_model_spells_it() {
-        assert_eq!(marker_number("f7"), Some(7));
-        assert_eq!(marker_number("F7"), Some(7));
-        assert_eq!(marker_number("<f7>"), Some(7));
-        assert_eq!(marker_number(" f7 "), Some(7));
-        assert_eq!(marker_number("7"), Some(7));
-        assert_eq!(marker_number("f0"), None, "the markers start at one");
-        assert_eq!(marker_number("the cat"), None);
-        assert_eq!(marker_number(""), None);
     }
 
     /// **What the day wrote is judged first.**
