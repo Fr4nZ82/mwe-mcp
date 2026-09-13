@@ -22434,6 +22434,38 @@ mod tests {
         );
     }
 
+    /// **A person said by RELATION is still somebody**, and the prompt has to
+    /// say so or the claim is filed as who the SPEAKER is.
+    ///
+    /// «Mum's birthday is the 15th» became «Bob's mother's birthday is on the
+    /// 15th» on Bob's own identity card, read back to the agent every turn.
+    /// The field that keeps it off is `subject_external`, and a claim said by
+    /// relation is precisely the one that arrives with no name to put there.
+    #[test]
+    fn bundled_ingest_prompt_names_a_person_said_by_relation() {
+        for needle in [
+            "A PERSON SAID BY RELATION IS STILL SOMEBODY, AND STILL GOES HERE",
+            // The demo's own sentence, and its Italian twin.
+            "«Mum's birthday is the 15th»",
+            "«il compleanno di mia madre è il 15»",
+            "«il cane del mio vicino abbaia»",
+            // What it costs, said where the rule is.
+            "told the assistant, every turn, that his birthday was the 15th",
+            // The known name wins over the relation.
+            "The memory already knows them by name → use the name",
+            "`known_entities` lists the named things this memory holds facts about",
+            // And the relation serves as the name when there is none.
+            "It does not → use the relation, as the speaker said it",
+            // Naming her does not move who answers for the claim.
+            "Naming the mother does not give her an account",
+        ] {
+            assert!(
+                BUNDLED_INGEST_PROMPT_MD.contains(needle),
+                "the bundled prompt does not say: {needle}"
+            );
+        }
+    }
+
     /// **An identity card is WHO SOMEBODY IS, which is more than a record.**
     ///
     /// The engine holds a card to one kind, `bio`, and what `bio` MEANS is the

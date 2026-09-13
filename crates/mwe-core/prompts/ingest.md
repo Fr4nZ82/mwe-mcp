@@ -1,8 +1,8 @@
 ---
 name: ingest
 description: Classifier driving `wiki_ingest_message` — one JSON object per turn (intent + an `extractions[]` array of atomic facts, the SOLE fact container; every fact is prose except a `lista` entry, which is the bare item with its values; each carrying a per-fact validity interval `valid_from`/`valid_to`, a per-fact `style` (and, for `lista` material or a requested container, a `target_page` + `page_description`), a `requested_container` live-write flag, a per-fact `salience`, and an `engine_rule` flag routing a standing governance directive to `@rules.md` instead of `fact_index`, a `behaviour_rule` flag (with a `behaviour_scope` of `per-user`/`agent-wide`/`user-global`, read from the addressee) routing a how-an-agent-converses-or-operates directive to the calling consumer's own wiki — or, user-global, to the sender's identity wiki for every assistant serving them — and an `attachments` claim list linking the turn's media to the fact that describes them; plus three turn-level fields for a turn that TAKES SOMETHING BACK — `withdrawal`, `erasure` when the speaker asks for it to be taken OUT of the memory rather than merely ended, and, when what it takes back is a standing rule, `withdraw_target` naming that rule from the block of directives in force); targets the strong-model tier
-version: 3.3
-default_version_at_bootstrap: v3.3
+version: 3.4
+default_version_at_bootstrap: v3.4
 source_of_truth: crates/mwe-core/src/ingest.rs (fn wiki_ingest_message)
 ---
 
@@ -603,6 +603,12 @@ A sentence that states a fact AND carries a public cue is a `capture`, never `sk
 `subject_id` can only ever be a user or a group, because it is what GRANTS things: read access, the right to amend, the wiki a page is born in. Most of what a memory holds is about people and groups, and for those this field is **absent** — the ordinary case, and the one you should assume.
 
 But a memory also holds facts about things that have a name and no account: **a relative who does not use the product, a friend, a colleague, a doctor; an animal; a car, a house, a plot of land, a tree; a company, a school, a band.** For those, `subject_external` is the name.
+
+**A PERSON SAID BY RELATION IS STILL SOMEBODY, AND STILL GOES HERE.** «Mum's birthday is the 15th», «my sister is moving to Turin», «il compleanno di mia madre è il 15», «il cane del mio vicino abbaia» — none of them writes a name, and every one of them is about somebody who is not the speaker. Leaving `subject_external` out files the claim as WHO THE SPEAKER IS: «Bob's mother's birthday is on the 15th» went onto Bob's identity card and told the assistant, every turn, that his birthday was the 15th.
+
+- **The memory already knows them by name → use the name.** `known_entities` lists the named things this memory holds facts about. If the mother you are hearing about is the `Nora` in that list, write `subject_external: "Nora"`, so her facts gather in one place instead of splitting between a name and a relation.
+- **It does not → use the relation, as the speaker said it.** `subject_external: "Bob's mother"`, `"mia sorella"`, `"il vicino"`. A relation is a poor name and it is a name: the next turn that says «Mum» reaches the same thing, and the claim is off the card either way.
+- **`subject_id` does not move.** It stays the enrolled person the tie hangs off — the speaker — because they are who answers for the fact and who may read it. Naming the mother does not give her an account.
 
 **A name that only resembles a roster id belongs here.** A colleague called Roberto Sackville is not the enrolled `bob`, and nothing in the roster makes him one: `subject_external: "Roberto Sackville"`. The roster is short and the world is not — most of the people a memory hears about are outside it.
 

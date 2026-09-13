@@ -922,13 +922,14 @@ pub fn build_compilation_plan(
             // — assigned to his own card and declined thirty-one nights
             // running. That veto is not coming back.
             if page.is_identity_card()
-                && !fact_index::is_an_identity_kind(fact.fact_type.as_deref())
+                && (!fact_index::is_an_identity_kind(fact.fact_type.as_deref())
+                    || fact_index::attributes_to_another_person(&fact.text))
             {
                 tracing::debug!(
                     fact_id = fact.fact_id.as_str(),
                     slug = %slug,
                     fact_type = fact.fact_type.as_deref().unwrap_or("none"),
-                    "planner: identity card refused a claim that is not who somebody is"
+                    "planner: identity card refused a claim that is not who THIS person is"
                 );
                 continue;
             }
@@ -1225,6 +1226,7 @@ fn resolve_page_wiki(slug: &str, slug_source_wiki: &BTreeMap<String, String>) ->
 /// page a person's profile opens with is the wrong place to guess.
 fn fact_belongs_on_a_card(f: &FactForPage) -> bool {
     fact_index::belongs_on_an_identity_card(f.fact_type.as_deref(), f.salience.as_deref())
+        && !fact_index::attributes_to_another_person(&f.text)
 }
 
 fn identity_card_target(f: &FactForPage, pages: &BTreeMap<String, PagePlan>) -> Option<String> {
@@ -4314,6 +4316,88 @@ mod tests {
         untyped.fact_type = None;
         untyped.salience = Some("high".to_owned());
         assert_eq!(homed(untyped), 0, "an unmarked claim is not an identity");
+    }
+
+    /// **A relative's birthday is not the card owner's.**
+    ///
+    /// `bob/@profile.md` in the sixth run opened with «Bob's mother's birthday
+    /// is on the 15th» — a fact about a woman with no account, filed as who
+    /// Bob is and read back to the agent every turn. The field that keeps such
+    /// a claim off a card is `subject_external`, the NAME of what it is about,
+    /// and a claim said by RELATION is exactly the one that arrives without a
+    /// name to put there.
+    ///
+    /// The engine cannot supply the name. What it can do is refuse the card,
+    /// which leaves an ordinary fact waiting for a page — and «Bob's mother's
+    /// birthday» on a page of Bob's is a true sentence, where the same
+    /// sentence on his card is a false one about him.
+    #[test]
+    fn a_card_refuses_a_claim_about_somebody_elses_relative() {
+        let mut foundation = BTreeMap::new();
+        foundation.insert("bob".to_owned(), person("bob"));
+        let reserved = |seed: u8, text: &str| {
+            let mut f = fact(seed, text, "user:bob", "bob");
+            f.fact_type = Some("bio".to_owned());
+            f.salience = Some("high".to_owned());
+            f
+        };
+        let homed = |f: FactForPage| {
+            let (plan, _) = build_compilation_plan(
+                std::slice::from_ref(&f),
+                &foundation,
+                &Blueprint::default(),
+                &ConciliatorResult::default(),
+                &ConceptRegistry::empty("t"),
+                &BTreeMap::new(),
+                &[],
+                "t",
+            );
+            plan.pages["bob"].primary_facts.len()
+        };
+
+        assert_eq!(
+            homed(reserved(1, "Bob's birthday is on 2 September.")),
+            1,
+            "his own birthday is who he is"
+        );
+        for text in [
+            "Bob's mother's birthday is on the 15th.",
+            "Il compleanno di mia madre è il 15.",
+            "Bob's sister's wedding is in June.",
+            "Il cane del mio vicino abbaia la notte.",
+        ] {
+            assert_eq!(
+                homed(reserved(2, text)),
+                0,
+                "a claim about somebody else's is not who this person is: {text}"
+            );
+        }
+
+        // And the Cartografo cannot place one either: a card is one person's,
+        // and no answer from any model makes a relative's birthday theirs.
+        let mothers = reserved(3, "Bob's mother's birthday is on the 15th.");
+        let blueprint = Blueprint {
+            assignments: vec![Assignment {
+                fact_id: mothers.fact_id.as_str().to_owned(),
+                page_slug: "bob".to_owned(),
+            }],
+            ..Blueprint::default()
+        };
+        let (plan, _) = build_compilation_plan(
+            std::slice::from_ref(&mothers),
+            &foundation,
+            &blueprint,
+            &ConciliatorResult::default(),
+            &ConceptRegistry::empty("t"),
+            &BTreeMap::new(),
+            &[],
+            "t",
+        );
+        assert_eq!(
+            plan.pages["bob"].primary_facts.len(),
+            0,
+            "placed by the pass that saw the card, and still refused"
+        );
     }
 
     /// **A card already carrying the wrong thing loses it on the next

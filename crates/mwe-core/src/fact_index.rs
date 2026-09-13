@@ -237,6 +237,76 @@ pub fn is_an_identity_kind(fact_type: Option<&str>) -> bool {
     fact_type == Some("bio")
 }
 
+/// Possessive phrasings that hand a claim to SOMEBODY ELSE — a relative, a
+/// neighbour, an animal — without ever naming them.
+///
+/// Listed here because the list IS the rule, and in both languages the product
+/// is spoken in. Only relations, never names: `Bob's` is the card's own person
+/// and `Bob's mother's` is not.
+const ANOTHER_PERSONS: &[&str] = &[
+    // English, in the possessive that gives it away.
+    "mother's",
+    "mum's",
+    "mom's",
+    "father's",
+    "dad's",
+    "sister's",
+    "brother's",
+    "wife's",
+    "husband's",
+    "partner's",
+    "son's",
+    "daughter's",
+    "aunt's",
+    "uncle's",
+    "cousin's",
+    "grandmother's",
+    "grandfather's",
+    "granny's",
+    "neighbour's",
+    "neighbor's",
+    "boss's",
+    "dog's",
+    "cat's",
+    // Italian, where the possession is spelled out in front.
+    "di mia madre",
+    "di mio padre",
+    "di mia sorella",
+    "di mio fratello",
+    "di mia moglie",
+    "di mio marito",
+    "di mio figlio",
+    "di mia figlia",
+    "di mia nonna",
+    "di mio nonno",
+    "di mia zia",
+    "di mio zio",
+    "del mio cane",
+    "del mio gatto",
+    "del mio vicino",
+    "della mamma",
+    "del papà",
+];
+
+/// Whether the claim's OWN WORDS say it is about somebody else's thing.
+///
+/// A card is one person's, and a fact said by RELATION never names the person
+/// it is about: «Bob's mother's birthday is on the 15th» is about a woman with
+/// no account, and it went onto Bob's card and told the agent, every turn,
+/// that HIS birthday was the 15th. The field that keeps such a claim off a
+/// card is `subject_external` — the name of what it is about — and a claim
+/// said by relation is exactly the one that arrives without it.
+///
+/// This reads the sentence, which is a poor instrument and the only one left
+/// once the name is missing. It is used to keep a claim OFF a card and never
+/// to move one anywhere, so a phrasing the list does not know costs a card
+/// entry that should not have been there and nothing else.
+#[must_use]
+pub fn attributes_to_another_person(text: &str) -> bool {
+    let lower = text.to_lowercase();
+    ANOTHER_PERSONS.iter().any(|p| lower.contains(p))
+}
+
 /// Whether a claim may be homed on a card **with nobody judging** — the
 /// deterministic fallback's question.
 ///
