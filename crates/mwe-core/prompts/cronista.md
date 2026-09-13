@@ -1,8 +1,8 @@
 ---
 name: cronista
 description: Compiler stage 3 — writes a narrative LEAF page from its own facts as cohesive prose, tagging each fact's span with a lightweight `<fN>` tag (the code renders the bare runtime region markers; one-fact-one-page, starvation index, identity-card reference distance)
-version: 1.49
-default_version_at_bootstrap: v1.49
+version: 1.50
+default_version_at_bootstrap: v1.50
 ---
 
 # Prompt: cronista
@@ -257,7 +257,7 @@ FACT TAGS — the load-bearing part (read carefully):
 
   The engine checks this behind you and does not argue: a VALUE of a fact — a number with one of that fact's own words beside it — or a whole clause of a fact copied word for word, found outside its tag, gets you ONE rewrite with the offending words quoted back; and if the second draft does it again the page is written as its facts alone, with its links carried to the foot and no connective prose at all. The thread is worth having and it is not worth a leak.
 
-  Dates are the exception the check makes, and only because a page of dated facts has to organise itself by them: a day, a year or a time may appear in a heading or in the prose. Everything else the rule names is yours to keep out.
+  Two exceptions the check makes, and no more. A DATE — a day, a year, a time, written in words or in figures — may appear in a heading or in the prose, because a page of dated facts has to organise itself by them. And the NAME of a thing that carries a digit — vitamin B12, exemption code E01, the 36ª week — is a name and not a value. An account number, a telephone number, a tax code or an address somebody writes to is never either: one of those outside its tag is taken on its own, with nothing beside it.
 
 VALIDITY WINDOWS — when a fact tells you WHEN it was/is true:
 - Some facts carry a trailing `(validity: …)` hint. Four shapes: `(validity: from <t> until <t>)` (a closed window), `(validity: until <t>)` (a known end), `(validity: from <t>, open-ended)` (a FUTURE onset — it starts on a date still to come), and `(validity: open-ended)` (durable, no meaningful start or end). It is a recall aid: it tells a future reader the window in which the fact holds.

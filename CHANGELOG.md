@@ -29,10 +29,14 @@ semver-governed surface: breaking changes are called out explicitly.
   facts alone, with its links carried to the foot so it stays walkable. The
   thread between the facts is worth having and it is not worth a leak.
 
-  **Dates are not values.** A page whose facts are dated organises itself by
-  those dates — *«26 March:»*, *«21–23 May:»* — and the day in the heading is
-  the day in the fact. Days, years, times and headings are outside the check,
-  so a page like that keeps its shape.
+  **Dates are not values, and an account number is one on its own.** A page
+  whose facts are dated organises itself by those dates — *«26 March:»*,
+  *«21–23 May:»* — so days, years, times (written in words or in figures) and
+  the labels a page uses as headings are outside the check, and so is the name
+  of a thing that carries a digit (vitamin B12, exemption code E01). An
+  account number, a telephone number, a tax code or an address somebody writes
+  to is the opposite case: each is the whole of what somebody could act on, so
+  one of those in the open is taken with nothing else beside it.
 
 ### Changed
 

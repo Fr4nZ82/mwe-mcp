@@ -1108,7 +1108,7 @@ const RESTATED_RUN_WORDS: usize = 8;
 
 /// How far from a number another of the fact's words counts as being beside
 /// it — in the prose and in the fact alike.
-const COMPANION_DISTANCE: usize = 3;
+const COMPANION_DISTANCE: usize = 5;
 
 /// A number of the fact's, written in the open with one of the fact's own
 /// words beside it.
@@ -1119,9 +1119,27 @@ const COMPANION_DISTANCE: usize = 3;
 /// of dated facts says it in every heading. So the pair has to hold in BOTH
 /// places: the number and the word near each other in the prose, and near each
 /// other in the fact.
+///
+/// **An IDENTIFIER needs no companion.** An account number, a tax code, a
+/// telephone number, a plate, an address somebody writes to: each is a value
+/// on its own, it is the whole of what somebody could do something with, and
+/// the word that would name it («conto», «numero») is often the other side of
+/// the sentence. One of those in the open is a leak whatever stands next to
+/// it.
 fn a_value_in_the_open(prose: &[String], fact: &[String]) -> Option<String> {
     for (i, word) in prose.iter().enumerate() {
-        if !word.chars().any(|c| c.is_ascii_digit()) || reads_as_a_date(prose, i) {
+        if !word.chars().any(|c| c.is_ascii_digit()) {
+            continue;
+        }
+        // An identifier, in one word or spread over a few — and in the fact.
+        if let Some(len) = an_identifier_at(prose, i)
+            && fact
+                .windows(len)
+                .any(|w| w == &prose[i..(i + len).min(prose.len())])
+        {
+            return Some(prose[i..(i + len).min(prose.len())].join(" "));
+        }
+        if reads_as_a_date(prose, i) || names_a_thing_rather_than_a_value(word) {
             continue;
         }
         for (j, same) in fact.iter().enumerate() {
@@ -1139,6 +1157,61 @@ fn a_value_in_the_open(prose: &[String], fact: &[String]) -> Option<String> {
     }
     None
 }
+
+/// How many words from `at` are an identifier — a value that is the whole of
+/// what somebody could act on — or `None` when they are not one.
+///
+/// One word covers an account number, a tax code, an address somebody writes
+/// to, a plate; a telephone number is written in groups as often as not, so a
+/// run of digit-words carrying nine digits between them counts as well.
+fn an_identifier_at(words: &[String], at: usize) -> Option<usize> {
+    let word = &words[at];
+    let digits = |w: &str| w.chars().filter(char::is_ascii_digit).count();
+    let alnum = |w: &str| w.chars().all(|c| c.is_ascii_alphanumeric());
+    // Something somebody writes to.
+    if word.contains('@') && word.contains('.') {
+        return Some(1);
+    }
+    // An account number: two letters, then digits and letters, long.
+    if word.len() >= 15
+        && alnum(word)
+        && word.chars().take(2).all(|c| c.is_ascii_alphabetic())
+        && digits(word) >= 4
+    {
+        return Some(1);
+    }
+    // A tax code: sixteen, letters and digits together.
+    if word.len() == 16 && alnum(word) && digits(word) >= 2 && digits(word) < 16 {
+        return Some(1);
+    }
+    // A plate: two letters, three digits, two letters.
+    if word.len() == 7
+        && alnum(word)
+        && word.chars().take(2).all(|c| c.is_ascii_alphabetic())
+        && word.chars().skip(2).take(3).all(|c| c.is_ascii_digit())
+        && word.chars().skip(5).all(|c| c.is_ascii_alphabetic())
+    {
+        return Some(1);
+    }
+    // A number long enough to reach somebody, in one word or a few.
+    let mut carried = 0usize;
+    for len in 1..=IDENTIFIER_RUN_WORDS.min(words.len() - at) {
+        let w = &words[at + len - 1];
+        if !w.chars().all(|c| c.is_ascii_digit() || c == '+') || digits(w) == 0 {
+            break;
+        }
+        carried += digits(w);
+        if carried >= IDENTIFIER_DIGITS {
+            return Some(len);
+        }
+    }
+    None
+}
+
+/// How many digits make a number something somebody can be reached on.
+const IDENTIFIER_DIGITS: usize = 9;
+/// Across how many words those digits may be spread — «347 123 4567».
+const IDENTIFIER_RUN_WORDS: usize = 4;
 
 /// The words within [`COMPANION_DISTANCE`] of position `at`, that one
 /// excluded.
@@ -1159,6 +1232,23 @@ fn is_a_companion(word: &str) -> bool {
     word.len() >= 3 && !word.chars().any(|c| c.is_ascii_digit())
 }
 
+/// Is this the NAME of something rather than a value?
+///
+/// A short token that mixes letters and digits is what somebody calls a thing:
+/// vitamin `B12`, exemption code `E01`, the `36ª` week, paper size `A4`. The
+/// prose naming it is naming the subject of the sentence, which is what prose
+/// does — and none of them is a value anybody could act on. A long mixed token
+/// is the other thing entirely, an account number, and that is an identifier
+/// ([`an_identifier_at`]) rather than a name.
+fn names_a_thing_rather_than_a_value(word: &str) -> bool {
+    word.chars().count() <= NAMED_THING_CHARS
+        && word.chars().any(|c| c.is_ascii_digit())
+        && word.chars().any(char::is_alphabetic)
+}
+
+/// How short a mixed token has to be to read as a name.
+const NAMED_THING_CHARS: usize = 4;
+
 /// Does this number read as a date, a year or a time?
 ///
 /// Those are the numbers a page organises itself by, and the ones a reader of
@@ -1170,9 +1260,18 @@ fn reads_as_a_date(words: &[String], at: usize) -> bool {
     if word.len() == 4 && word.chars().all(|c| c.is_ascii_digit()) {
         return true;
     }
-    // A clock time: 19:00, 9.30 — the separator survives `words_of` only when
-    // it is between digits.
-    if word.contains(':') || (word.contains('.') && word.chars().any(|c| c.is_ascii_digit())) {
+    // A clock time: 19:00, 9.30 — one or two digits, then exactly two. Three
+    // after the separator is a number written the Italian way, and 21.000 is
+    // an amount, not five past nine.
+    if digit_groups(word, &[':', '.'])
+        .is_some_and(|g| g.len() == 2 && (1..=2).contains(&g[0].len()) && g[1].len() == 2)
+    {
+        return true;
+    }
+    // A date written in figures: 26/03, 26/3/2026, 2026-03-26, 03-26.
+    if digit_groups(word, &['/', '-'])
+        .is_some_and(|g| (2..=3).contains(&g.len()) && g.iter().all(|p| (1..=4).contains(&p.len())))
+    {
         return true;
     }
     let short = word.len() <= 2 && word.chars().all(|c| c.is_ascii_digit());
@@ -1184,6 +1283,24 @@ fn reads_as_a_date(words: &[String], at: usize) -> bool {
     let neighbours = beside(words, at);
     neighbours.iter().any(|w| MONTHS.contains(&w.as_str()))
         || (at > 0 && HOUR_MARKERS.contains(&words[at - 1].as_str()))
+}
+
+/// Split a token on any of `separators` when every part is digits, so
+/// `19:00` is `["19", "00"]` and `21.000` is `["21", "000"]` — and a word
+/// carrying a letter is nothing of the kind.
+fn digit_groups(word: &str, separators: &[char]) -> Option<Vec<String>> {
+    if !word.contains(separators) {
+        return None;
+    }
+    let parts: Vec<String> = word
+        .split(|c| separators.contains(&c))
+        .map(str::to_owned)
+        .collect();
+    (parts.len() > 1
+        && parts
+            .iter()
+            .all(|p| !p.is_empty() && p.chars().all(|c| c.is_ascii_digit())))
+    .then_some(parts)
 }
 
 /// Month names, both languages, as `words_of` leaves them.
@@ -1226,11 +1343,28 @@ const HOUR_MARKERS: &[&str] = &[
 /// not read in it.
 fn line_is_a_heading(line: &str) -> bool {
     let trimmed = line.trim();
-    trimmed.starts_with('#')
-        || trimmed.ends_with(':')
-        || trimmed.ends_with(":**")
-        || trimmed.ends_with(":**_")
+    if trimmed.starts_with('#') {
+        return true;
+    }
+    // A label in bold, on its own or opening a list entry: `**26 March:**`,
+    // `- **Late March, Zoe away:**`. The bullet is one character and a space —
+    // stripping every leading star would eat the bold itself.
+    let label = match trimmed.split_once(' ') {
+        Some(("-" | "*" | "+", rest)) => rest.trim_start(),
+        _ => trimmed,
+    };
+    if label.starts_with("**") && (label.ends_with(":**") || label.ends_with(":**_")) {
+        return true;
+    }
+    // A short line ending in a colon is a heading somebody wrote without the
+    // markup. A long one is a SENTENCE with a colon in it, and a sentence is
+    // exactly where a value would be hiding.
+    trimmed.ends_with(':') && trimmed.split_whitespace().count() <= HEADING_WORDS
 }
+
+/// How many words a line may carry and still be read as a heading rather than
+/// a sentence.
+const HEADING_WORDS: usize = 8;
 
 /// The page's words with the marked regions taken out — what every reader of
 /// the page gets, whatever the facts' audiences are.
@@ -3258,6 +3392,144 @@ mod tests {
         drop(dir);
     }
 
+    /// **An amount written the Italian way is not five past nine.**
+    ///
+    /// `21.000` is twenty-one thousand and `9.30` is half past nine, and the
+    /// difference is how many digits follow the separator: two is a clock,
+    /// three is a thousands group. Reading every dotted number as a time let
+    /// every Italian amount out of the net.
+    #[test]
+    fn a_thousands_separator_is_not_a_clock() {
+        let facts = vec![ffp(
+            0x51,
+            "Zoe guadagnava 21.000 euro l'anno nel lavoro precedente.",
+        )];
+        let body = |prose: &str| {
+            format!(
+                "{} {prose}",
+                marked(
+                    0x51,
+                    "Zoe guadagnava 21.000 euro l'anno nel lavoro precedente."
+                )
+            )
+        };
+        assert!(
+            prose_restates_fact(&body("Conta perché 21.000 euro erano la base."), &facts).is_some(),
+            "an amount with the fact's own word beside it is a value"
+        );
+
+        let hours = vec![ffp(0x52, "Zoe esce di casa alle 9.30 ogni mattina.")];
+        let with_the_hour = format!(
+            "{} Alle 9.30 la casa è già vuota.",
+            marked(0x52, "Zoe esce di casa alle 9.30 ogni mattina.")
+        );
+        assert_eq!(
+            prose_restates_fact(&with_the_hour, &hours),
+            None,
+            "a clock time is a date, and the page may say when"
+        );
+    }
+
+    /// A date in figures is still a date, whichever way round it is written.
+    #[test]
+    fn a_date_in_figures_is_a_date() {
+        // The prose carries one of the fact's own words beside the date, so
+        // without the exclusion the companion rule would take it.
+        for (fact, prose) in [
+            (
+                "Alice ha l'appuntamento dal dentista il 26/03.",
+                "L'appuntamento del 26/03 regge ancora.",
+            ),
+            (
+                "Alice ha l'appuntamento dal dentista il 26/3/2026.",
+                "L'appuntamento del 26/3/2026 regge ancora.",
+            ),
+            (
+                "Alice ha l'appuntamento dal dentista il 2026-03-26.",
+                "L'appuntamento del 2026-03-26 regge ancora.",
+            ),
+        ] {
+            let facts = vec![ffp(0x53, fact)];
+            assert_eq!(
+                prose_restates_fact(&format!("{} {prose}", marked(0x53, fact)), &facts),
+                None,
+                "«{prose}» carries only a date"
+            );
+        }
+    }
+
+    /// **An identifier is a value on its own.**
+    ///
+    /// An account number, a telephone number, a tax code: each is the whole of
+    /// what somebody could act on, and the word that would name it — «conto»,
+    /// «numero» — is usually the other side of the sentence, out of reach of
+    /// the companion rule. One of those in the open is a leak whatever stands
+    /// next to it.
+    #[test]
+    fn an_identifier_in_the_open_needs_no_companion() {
+        let iban = vec![ffp(
+            0x54,
+            "Il conto corrente di Zoe per gli accrediti è IT60X0542811101000000123456.",
+        )];
+        let with_iban = format!(
+            "{} Il bonifico va su IT60X0542811101000000123456.",
+            marked(
+                0x54,
+                "Il conto corrente di Zoe per gli accrediti è IT60X0542811101000000123456."
+            )
+        );
+        assert!(
+            prose_restates_fact(&with_iban, &iban).is_some(),
+            "the account number is out in the open"
+        );
+
+        let phone = vec![ffp(0x55, "Il numero del dentista di Alice è 347 123 4567.")];
+        let with_phone = format!(
+            "{} Si prenota chiamando 347 123 4567.",
+            marked(0x55, "Il numero del dentista di Alice è 347 123 4567.")
+        );
+        assert!(
+            prose_restates_fact(&with_phone, &phone).is_some(),
+            "and so is the telephone number, written in groups"
+        );
+    }
+
+    /// **A sentence with a colon is not a heading.**
+    ///
+    /// The exemption is for the labels a page organises itself by — `#`, a
+    /// bold label, a list entry — and for a short line somebody wrote as a
+    /// heading without the markup. A long sentence that happens to carry a
+    /// colon is a sentence, and a sentence is exactly where a value would be
+    /// hiding.
+    #[test]
+    fn a_long_sentence_with_a_colon_is_not_exempt() {
+        assert!(line_is_a_heading("## Maggio"));
+        assert!(line_is_a_heading("- **26 March:**"));
+        assert!(line_is_a_heading("Esami del sangue:"));
+        assert!(
+            !line_is_a_heading(
+                "Quello che conta davvero, leggendo il referto di quel giorno, è questo:"
+            ),
+            "a sentence long enough to hide a value in is not a label"
+        );
+
+        let facts = vec![ffp(
+            0x56,
+            "Zoe guadagnava 21000 euro l'anno nel lavoro precedente.",
+        )];
+        let hidden = format!(
+            "{}\nQuello che conta davvero, leggendo la sua busta paga, è questo: 21000 euro.",
+            marked(
+                0x56,
+                "Zoe guadagnava 21000 euro l'anno nel lavoro precedente."
+            )
+        );
+        assert!(
+            prose_restates_fact(&hidden, &facts).is_some(),
+            "a value on a line that ends with a colon is still a value"
+        );
+    }
+
     /// **A page organised by date is not restating anything.**
     ///
     /// The body here is a deployment's own log of household evenings, copied
@@ -3380,36 +3652,61 @@ mod tests {
             0x31,
             "Zoe guadagnava 21000 euro l'anno nel lavoro precedente.",
         )];
-        let marked = |prose: &str| {
+        let salary_page = |prose: &str| {
             format!(
                 "{{{{f=0190f3c2-7a4e-7c31-9b02-2f6a1c8e5d31}}}}Zoe guadagnava 21000 euro \
                  l'anno nel lavoro precedente.{{{{/}}}} {prose}"
             )
         };
         assert!(
-            prose_restates_fact(&marked("Conta perché erano 21000 euro."), &facts).is_some(),
+            prose_restates_fact(&salary_page("Conta perché erano 21000 euro."), &facts).is_some(),
             "a number from the fact, in the open"
         );
         assert!(
             prose_restates_fact(
-                &marked("Lo dice lei: guadagnava 21000 euro l'anno nel lavoro precedente."),
+                &salary_page("Lo dice lei: guadagnava 21000 euro l'anno nel lavoro precedente."),
                 &facts
             )
             .is_some(),
             "or a whole clause of it, word for word"
         );
         assert!(
-            prose_restates_fact(&marked("Nel lavoro precedente guadagnava meno."), &facts)
-                .is_none(),
+            prose_restates_fact(
+                &salary_page("Nel lavoro precedente guadagnava meno."),
+                &facts
+            )
+            .is_none(),
             "a phrase the prose shares with the fact because it is about it is not a quotation"
         );
         assert!(
-            prose_restates_fact(&marked("Per questo ha cambiato lavoro."), &facts).is_none(),
+            prose_restates_fact(&salary_page("Per questo ha cambiato lavoro."), &facts).is_none(),
             "a connective says nothing the fact says"
         );
         assert!(
-            prose_restates_fact(&marked("Zoe ci pensa da tempo."), &facts).is_none(),
+            prose_restates_fact(&salary_page("Zoe ci pensa da tempo."), &facts).is_none(),
             "and the subject's own name is not the net's business"
+        );
+
+        // Nor is the NAME of a thing that happens to carry a digit: a vitamin,
+        // an exemption code, an ordinal. Naming the subject of the sentence is
+        // what prose does.
+        let vitamin = vec![ffp(
+            0x57,
+            "Bob deve integrare la vitamina B12 dopo l'intervento.",
+        )];
+        assert!(
+            prose_restates_fact(
+                &format!(
+                    "{} La vitamina B12 è il filo che lega i controlli.",
+                    marked(
+                        0x57,
+                        "Bob deve integrare la vitamina B12 dopo l'intervento."
+                    )
+                ),
+                &vitamin
+            )
+            .is_none(),
+            "«B12» is what the thing is called, not a value somebody could act on"
         );
     }
 
