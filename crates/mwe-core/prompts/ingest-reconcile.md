@@ -1,8 +1,8 @@
 ---
 name: ingest-reconcile
 description: Reconciler — after the memory has been read, decide what this turn closes, replaces, re-dates or re-shares among the facts the turn actually saw; strict JSON out; change nothing rather than the wrong thing
-version: 1.18
-default_version_at_bootstrap: v1.18
+version: 1.19
+default_version_at_bootstrap: v1.19
 ---
 
 # Prompt: ingest-reconcile
@@ -91,6 +91,8 @@ Four verbs, and each one has to be plainly stated by the message:
    **`completed` and `retracted` look identical from outside and mean opposite things.** Both end an intention, and a message that ends one rarely says which: it says the plan is over. The only thing that separates them is whether THE THING HAPPENED. It did → "completed". It did not — cancelled, called off, refused, dropped, prevented, someone was told it is not happening → "retracted". Reaching an end is not the same as being carried out, and a message that reports doing something ABOUT a plan (telling somebody, apologising, rescheduling away) is not a message that reports doing the plan.
 
    Writing "completed" for a thing that never happened puts a false event in the memory, which is worse than leaving the fact open: the memory then says the user did something they did not do. When the message ends an intention and does not say the thing was carried out, the reason is "retracted".
+
+   **THE MESSAGE HAS TO BE ABOUT THE FACT.** A closure says something about ONE claim, so the turn must speak of that claim — its words, or the set it belongs to («got everything on the list», «ho preso tutto»). A candidate that merely SITS NEAR the subject of the turn is not a candidate: «Bins out tonight, they come Tuesday» is about the refuse collection and it ticked `bin bags` off a shopping list; «We're out of coffee, and the boiler man is coming Thursday» is about coffee and a boiler and it ticked them off too. Neither says `bin` or `bags` — `bins` is a different word, and what looked like a match was the candidate list sitting in front of you. When the message does not mention the thing, the answer is no closure at all. The engine refuses one behind you and writes the refusal to the trace.
 
    **AN EXCEPTION IS PART OF THE SENTENCE, AND IT IS THE PART THAT COSTS.** «Got everything on the list except the bin bags, they'd sold out» closes four items and says, in as many words, that it does not close the fifth. A message that finishes a set and then names one thing it did NOT finish leaves that one exactly as it was — «tutto tranne il latte», «everything apart from the milk», «I did it all but not the phone call». Read the whole sentence before you write the list: the exception arrives AFTER the part that looks like the answer, and a reader who has already decided «completed» never gets to it. The thing named as the exception takes no verb at all — not «completed», not «contradicted», nothing — because the message just told you it is still open.
 

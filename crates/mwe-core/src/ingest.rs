@@ -3284,6 +3284,11 @@ enum ClosurePlanError {
     /// thing the speaker took the trouble to rule out.
     #[error("closure target `{0}` is what the turn named as the exception")]
     NamedAsTheException(String),
+    /// The message says nothing about this fact. A closure asserts something
+    /// about ONE claim, and a turn that never mentions it is asserting
+    /// nothing — the resemblance is the model's, read off a candidate list.
+    #[error("the message says nothing of closure target `{0}`")]
+    TheMessageSaysNothingOfIt(String),
     /// An extraction of THIS turn restated the target: the message says the
     /// fact again, and saying a thing again does not end it.
     ///
@@ -3310,6 +3315,7 @@ impl ClosurePlanError {
             Self::TargetIsAStandingRule(_) => "target_is_a_rule",
             Self::NotEntitledToRetract { .. } => "not_theirs_to_retract",
             Self::NamedAsTheException(_) => "named_as_the_exception",
+            Self::TheMessageSaysNothingOfIt(_) => "the_message_says_nothing_of_it",
             Self::TargetRestatedThisTurn(_) => "target_restated_this_turn",
         }
     }
@@ -3670,35 +3676,157 @@ fn exception_clauses(text: &str) -> Vec<String> {
     out
 }
 
-/// Whether one of the turn's exception clauses NAMES this claim.
+/// What the turn said, in the two shapes the closure verb weighs a candidate
+/// against.
 ///
-/// Half of the claim's content words, rounded up and never fewer than one:
-/// «bin bags big» against «the bin bags, they'd sold out» matches on two of
-/// its three, and «coffee filters» on the same clause matches on none. A
-/// fraction and not every word, because the entry as stored carries the
-/// qualifiers a speaker drops — nobody says «the big bin bags» twice.
+/// Computed once for a batch, because both questions are about the whole turn
+/// and neither is about one closure: does the message TALK about this fact at
+/// all, and did it rule this fact OUT.
+struct TurnWords {
+    /// The message and the classifier's reading of it — what the turn spoke.
+    spoken: Vec<String>,
+    /// What the turn ruled out: everything after an exception marker, to the
+    /// end of its sentence ([`exception_clauses`]).
+    excepted: Vec<String>,
+    /// The classifier declared this turn a WITHDRAWAL
+    /// ([`LlmIngestPlan::withdrawal`]) — the speaker is taking something back.
+    ///
+    /// Such a turn names nothing on its own words and is not supposed to:
+    /// «Bob was right, it's the 15th. Close mine.» is the whole gesture, and
+    /// WHICH claim it closes is precisely what the stage that reads the memory
+    /// is for. So the words are not asked of it.
+    withdraws: bool,
+}
+
+impl TurnWords {
+    fn of(request: &IngestRequest, completed_message: Option<&str>, withdraws: bool) -> Self {
+        let spoken = words_the_turn_spoke(request, completed_message);
+        let excepted = spoken.iter().flat_map(|t| exception_clauses(t)).collect();
+        Self {
+            spoken,
+            excepted,
+            withdraws,
+        }
+    }
+}
+
+/// How many of a claim's content words the best of `texts` says, and how many
+/// the claim has.
+///
+/// The raw number, because the two questions asked of it want different
+/// thresholds and point in opposite directions — see [`ruled_out_by`] and
+/// [`spoken_of_in`].
+fn word_overlap(claim: &str, texts: &[String]) -> (usize, usize) {
+    let words = content_words(claim);
+    let best = texts
+        .iter()
+        .map(|text| {
+            let present: std::collections::HashSet<String> = text
+                .split(|c: char| !c.is_alphanumeric())
+                .map(str::to_lowercase)
+                .collect();
+            words.iter().filter(|w| present.contains(*w)).count()
+        })
+        .max()
+        .unwrap_or(0);
+    (best, words.len())
+}
+
+/// Whether the turn RULED THIS CLAIM OUT — half its content words, rounded up.
+///
+/// A fraction and not every word, because the entry as stored carries the
+/// qualifiers a speaker drops: nobody says «the big bin bags» twice.
 ///
 /// **On a short entry that fraction is one word, and a shared noun protects
 /// its neighbours.** «tranne il latte» holds back «latte di cocco» as well as
 /// «latte», because half of two words is one. That is the rule working, not
-/// the rule slipping: it errs toward NOT closing, and the two outcomes are
-/// not worth the same. An item left on a list is a tick the speaker adds next
-/// time, or the next turn does. An item ticked off because it shares a noun
-/// with the one thing they took the trouble to rule out is the memory telling
-/// the household they bought something they did not — and nothing downstream
-/// ever asks again.
-fn named_in_an_exception(claim: &str, clauses: &[String]) -> bool {
-    let words = content_words(claim);
-    if words.is_empty() {
-        return false;
-    }
-    let needed = words.len().div_ceil(2);
-    clauses.iter().any(|clause| {
-        let present: std::collections::HashSet<String> = clause
+/// the rule slipping: this question errs toward NOT closing, and the two
+/// outcomes are not worth the same. An item left on a list is a tick the
+/// speaker adds next time, or the next turn does. An item ticked off because
+/// it shares a noun with the one thing they took the trouble to rule out is
+/// the memory telling the household they bought something they did not — and
+/// nothing downstream ever asks again.
+fn ruled_out_by(claim: &str, clauses: &[String]) -> bool {
+    let (shared, total) = word_overlap(claim, clauses);
+    total > 0 && shared >= total.div_ceil(2)
+}
+
+/// Whether the turn SPOKE OF this claim at all — one of the words the claim is
+/// made of.
+///
+/// The opposite direction, and so a much lower bar. A fraction is wrong here
+/// twice over. The stored sentence is often far longer than the mention —
+/// «Big shop done. Coffee, at last, and the bin bags» finishes a fact that
+/// reads «The bin bags were sold out when Alice went shopping on 7 March» —
+/// and it is written in the THIRD person while the turn speaks in the first,
+/// so the subject's name is never repeated and the verb arrives inflected:
+/// «ho comprato il latte» shares exactly one word with «alice deve comprare
+/// il latte», and that one word is the whole of what a person says.
+///
+/// One word is enough because the turns this refuses share NONE. «We're out
+/// of coffee, and the boiler man is coming Thursday» and «Bins out tonight,
+/// they come Tuesday» both closed a shopping list's bin bags, and neither
+/// says `bin` or `bags` — `bins` is a different word, and the resemblance was
+/// the model's, read off a candidate list.
+fn spoken_of_in(claim: &str, texts: &[String]) -> bool {
+    word_overlap(claim, texts).0 > 0
+}
+
+/// The turn's own words, as the closure verb reads them: the message, and the
+/// classifier's reading of it with the implicit part written in.
+///
+/// The completed message belongs here for the reason every other stage reads
+/// it — «l'ho comprato» names nothing on its own words, and the sentence with
+/// the noun in it is the one the engine must match against.
+fn words_the_turn_spoke(request: &IngestRequest, completed_message: Option<&str>) -> Vec<String> {
+    std::iter::once(request.text.clone())
+        .chain(completed_message.map(str::to_owned))
+        .collect()
+}
+
+/// Words that say A WHOLE SET, so a turn can finish a list without reciting
+/// it: «got everything on the shopping list», «ho preso tutto».
+///
+/// Listed beside the only thing that reads them, like [`EXCEPTION_MARKERS`],
+/// and short on purpose — it is only ever asked of a turn that already names
+/// the page.
+const TOTALITY_WORDS: &[&str] = &[
+    "everything",
+    "all",
+    "both",
+    "entrambi",
+    "entrambe",
+    "lot",
+    "whole",
+    "tutto",
+    "tutta",
+    "tutti",
+    "tutte",
+];
+
+/// Whether the turn says it means A WHOLE SET, and so is not reciting it.
+///
+/// «Got everything on the list except the bin bags» finishes six items and
+/// names none of them; «ho preso tutto tranne i sacchi» and «li abbiamo visti
+/// tutti e due ieri sera» are the same gesture. A rule that asked each item to
+/// be named by name would refuse the commonest closure there is, so a turn
+/// that says *everything* is taken at its word and the naming test is waived
+/// for it.
+///
+/// **What that costs**, said plainly: a turn where the word is incidental —
+/// «I'm in all day today» — waives the test too, and the stage that proposed
+/// the closure is then the only thing between a candidate and a tick. It buys
+/// the case that matters, and the two turns this guard exists for say no such
+/// word: «We're out of coffee, and the boiler man is coming Thursday» and
+/// «Bins out tonight, they come Tuesday» name neither a set nor the thing they
+/// closed.
+fn turn_speaks_of_a_whole_set(texts: &[String]) -> bool {
+    texts.iter().any(|text| {
+        let present: std::collections::HashSet<String> = text
             .split(|c: char| !c.is_alphanumeric())
             .map(str::to_lowercase)
             .collect();
-        words.iter().filter(|w| present.contains(*w)).count() >= needed
+        TOTALITY_WORDS.iter().any(|w| present.contains(*w))
     })
 }
 
@@ -3734,7 +3862,7 @@ fn validate_closure<'a>(
     turn_facts: &[TurnFact],
     sender_id: &str,
     sender_groups: &[String],
-    exceptions: &[String],
+    turn: &TurnWords,
 ) -> std::result::Result<(&'a RecallHit, &'static str), ClosurePlanError> {
     let raw = closure
         .target
@@ -3764,7 +3892,7 @@ fn validate_closure<'a>(
     // list, the bin bags among them — because the exception is a clause it has
     // to hold on to while it matches, and the matching is what it is doing.
     // The engine can read the clause and does ([`exception_clauses`]).
-    if named_in_an_exception(&hit.text, exceptions) {
+    if ruled_out_by(&hit.text, &turn.excepted) {
         return Err(ClosurePlanError::NamedAsTheException(raw.to_owned()));
     }
     // Retraction gate: closing a fact's validity withdraws an assertion, so
@@ -3820,6 +3948,30 @@ fn validate_closure<'a>(
     // claims.
     if crate::wiki::is_rules_page(&hit.source_path) {
         return Err(ClosurePlanError::TargetIsAStandingRule(raw.to_owned()));
+    }
+
+    // **A closure is a sentence about ONE fact, so the turn has to be about
+    // it.** «siamo senza caffè, e il tecnico della caldaia viene giovedì» is a
+    // turn about coffee and a boiler, and it closed a shopping list's bin
+    // bags; «i bidoni stasera, passano martedì» is about the refuse
+    // collection, and it closed them again. Neither says a word the entry
+    // says. The reading that a model brings to a candidate list is
+    // association, and association is not what a closure asserts.
+    //
+    // Two declarations stand in for the words, and both come from the stage
+    // that read the MESSAGE rather than the candidate list: a turn the
+    // classifier called a withdrawal is a person taking something back and is
+    // not expected to name it, and a card conflict it declared is about a box
+    // it was shown. Neither is derivable from the text here.
+    let declared = turn.withdraws
+        || turn_facts
+            .iter()
+            .any(|f| f.conflicts_with.as_ref() == Some(&fact_id));
+    if !declared
+        && !spoken_of_in(&hit.text, &turn.spoken)
+        && !turn_speaks_of_a_whole_set(&turn.spoken)
+    {
+        return Err(ClosurePlanError::TheMessageSaysNothingOfIt(raw.to_owned()));
     }
     // The message said this fact again. An extraction of this turn carried the
     // same claim to the write path, which found it already stored and filed
@@ -5619,7 +5771,7 @@ async fn apply_plan_closures(
     recall_hits: &[RecallHit],
     turn_facts: &[TurnFact],
     request: &IngestRequest,
-    completed_message: Option<&str>,
+    turn: &TurnWords,
     turn_now: chrono::DateTime<chrono::Utc>,
 ) -> AppliedChanges {
     // Resolve the sender's groups once so the subject gate can admit a
@@ -5631,10 +5783,6 @@ async fn apply_plan_closures(
     // message is read alongside the raw one for the same reason every other
     // stage reads it: «got everything except the bags» is the sentence with
     // the noun in it, and the raw turn is not always that sentence.
-    let exceptions: Vec<String> = std::iter::once(request.text.as_str())
-        .chain(completed_message)
-        .flat_map(exception_clauses)
-        .collect();
     let mut applied: Vec<promote::AppliedClosure> = Vec::new();
     let mut refused: Vec<crate::recall_trace::TraceRefusedChange> = Vec::new();
     for closure in plan_closures {
@@ -5644,7 +5792,7 @@ async fn apply_plan_closures(
             turn_facts,
             &request.sender_id,
             &sender_groups,
-            &exceptions,
+            turn,
         ) {
             Ok(v) => v,
             Err(err) => {
@@ -11389,6 +11537,10 @@ pub async fn wiki_ingest_message(
         turn_now,
     )
     .await;
+    // What the turn said, for the verbs that weigh a candidate against it.
+    // Read once: both the classifier's closures and the reconciler's are
+    // judged against the same message.
+    let turn_said = TurnWords::of(&request, completed_message, plan.withdrawal);
     let mut capture_id: Option<FactId> = None;
     // Set when a NON-admin asks for an agent-wide behaviour-rule (one that would
     // apply to everyone — admin-only): the rule is NOT filed, and the dedicated
@@ -12710,7 +12862,7 @@ pub async fn wiki_ingest_message(
                 &closure_hits,
                 &turn_facts,
                 &request,
-                completed_message,
+                &turn_said,
                 turn_now,
             )
             .await;
@@ -13051,7 +13203,7 @@ pub async fn wiki_ingest_message(
                 &candidates,
                 &turn_facts,
                 &request,
-                completed_message,
+                &turn_said,
                 turn_now,
             )
             .await;
@@ -15031,6 +15183,16 @@ mod tests {
         }
     }
 
+    /// The words of a turn, for the closure cases: what it said, and what it
+    /// ruled out.
+    fn turn_words(text: &str) -> TurnWords {
+        TurnWords {
+            spoken: vec![text.to_owned()],
+            excepted: exception_clauses(text),
+            withdraws: false,
+        }
+    }
+
     /// A fact this turn filed ABOUT ALICE, tagged the way the fixture hit is:
     /// the ordinary shape, where the pair plainly speaks of one thing and the
     /// guard under test is some other one.
@@ -15614,7 +15776,10 @@ mod tests {
             valid_to: None,
         };
         let hits = vec![sample_recall_hit(id)]; // hit subject = user:alice
-        let err = validate_closure(&closure, &hits, &[], "morgana", &[], &[])
+        // The turn is about the fact — that door is the one under test here,
+        // not whether the message names it.
+        let spoken = turn_words("alice has stopped taking her coffee black");
+        let err = validate_closure(&closure, &hits, &[], "morgana", &[], &spoken)
             .expect_err("cross-subject closure must fail");
         match err {
             ClosurePlanError::NotEntitledToRetract {
@@ -15627,7 +15792,7 @@ mod tests {
             other => panic!("expected NotEntitledToRetract, got {other:?}"),
         }
         // The subject herself can close it.
-        assert!(validate_closure(&closure, &hits, &[], "alice", &[], &[]).is_ok());
+        assert!(validate_closure(&closure, &hits, &[], "alice", &[], &spoken).is_ok());
 
         // And so can the person who said it, about somebody else: the same
         // hit, now carrying carol as its author, is closable by carol.
@@ -15635,11 +15800,11 @@ mod tests {
         authored.sender_id = Some(Principal::User("carol".into()));
         let hits = vec![authored];
         assert!(
-            validate_closure(&closure, &hits, &[], "carol", &[], &[]).is_ok(),
+            validate_closure(&closure, &hits, &[], "carol", &[], &spoken).is_ok(),
             "the author may withdraw what they said, whoever it was about"
         );
         // A third party is still none of the three.
-        assert!(validate_closure(&closure, &hits, &[], "morgana", &[], &[]).is_err());
+        assert!(validate_closure(&closure, &hits, &[], "morgana", &[], &spoken).is_err());
 
         // The audience opens the third door: the same hit, about alice and
         // said by carol, now carries `group:famiglia` in its allow list, and
@@ -15649,12 +15814,20 @@ mod tests {
         shared.allow_ids = vec![Principal::Group("famiglia".into())];
         let hits = vec![shared];
         assert!(
-            validate_closure(&closure, &hits, &[], "dora", &["famiglia".to_owned()], &[]).is_ok(),
+            validate_closure(
+                &closure,
+                &hits,
+                &[],
+                "dora",
+                &["famiglia".to_owned()],
+                &spoken
+            )
+            .is_ok(),
             "a member of the audience the fact was shared with may retire it"
         );
         // Reading it some other way is not being in the audience: morgana is
         // in no group of the allow list and is still refused.
-        assert!(validate_closure(&closure, &hits, &[], "morgana", &[], &[]).is_err());
+        assert!(validate_closure(&closure, &hits, &[], "morgana", &[], &spoken).is_err());
     }
 
     /// The same rule driven through a real turn: **the lifted claim never
@@ -15854,7 +16027,9 @@ mod tests {
             &candidates,
             &[],
             &request,
-            None,
+            // The turn takes something back and names no fact, which is what
+            // a withdrawal is: the stage that reads the memory finds which.
+            &TurnWords::of(&request, None, true),
             request.turn_now(),
         )
         .await;
@@ -16441,12 +16616,23 @@ mod tests {
     /// turn, and the engine reads it.
     #[test]
     fn a_turn_that_excepts_an_item_does_not_close_it() {
-        let turn = "Got everything on the list except the bin bags, they'd sold out.";
-        let exceptions = exception_clauses(turn);
+        // The turn, and the classifier's reading of it — which is the sentence
+        // with the noun in it, exactly as the engine sees it.
+        let turn = TurnWords::of(
+            &req(
+                "Got everything on the list except the bin bags, they'd sold out.",
+                "alice",
+            ),
+            Some("Got everything on the shopping list except the bin bags, they'd sold out."),
+            false,
+        );
 
         let entry = |n: u8, text: &str| {
             let mut hit = sample_recall_hit(&format!("018f1234-5678-7abc-9def-01234567890{n}"));
             hit.text = text.to_owned();
+            // The list the turn sweeps: naming the page is how a person
+            // addresses its contents without reciting them.
+            hit.source_path = "wikis/household/shopping.md".to_owned();
             hit
         };
         let list = vec![
@@ -16465,7 +16651,7 @@ mod tests {
                     reason: Some("completed".to_owned()),
                     valid_to: None,
                 };
-                validate_closure(&closure, &list, &[], "alice", &[], &exceptions).is_ok()
+                validate_closure(&closure, &list, &[], "alice", &[], &turn).is_ok()
             })
             .map(|hit| hit.text.as_str())
             .collect();
@@ -16482,14 +16668,17 @@ mod tests {
             reason: Some("completed".to_owned()),
             valid_to: None,
         };
-        let err = validate_closure(&bags, &list, &[], "alice", &[], &exceptions)
+        let err = validate_closure(&bags, &list, &[], "alice", &[], &turn)
             .expect_err("the excepted item is refused");
         assert_eq!(err.as_token(), "named_as_the_exception");
 
         // With no exception in the turn, all five close: what holds the bags
         // back is the clause, not the item.
-        let plain = exception_clauses("Got everything on the list.");
-        assert!(plain.is_empty());
+        let plain = turn_words(
+            "Got everything on the list: bin bags big, coffee filters, washing-up liquid, \
+             milk and oat milk.",
+        );
+        assert!(plain.excepted.is_empty());
         assert!(
             validate_closure(&bags, &list, &[], "alice", &[], &plain).is_ok(),
             "a turn that excepts nothing closes everything it names"
@@ -16527,6 +16716,101 @@ mod tests {
         );
     }
 
+    /// **A closure is a sentence about ONE fact, so the turn has to be about
+    /// it.** The four turns the sixth run put through a shopping list's bin
+    /// bags, in order.
+    ///
+    /// On 7 March the exception held them back, which was the whole of the
+    /// earlier fix. Then on 11 March «We're out of coffee, and the boiler man
+    /// is coming Thursday the nineteenth» ticked them off; on 28 March the big
+    /// shop wrote a fresh row for them, because the old one had been closed;
+    /// and on 30 March «Bins out tonight, they come Tuesday» — the refuse
+    /// collection, not the bags — closed that one too. Neither of the two
+    /// turns that closed them says a word the entry says. `bins` is not `bin`,
+    /// and the resemblance was the model's, read off a candidate list.
+    #[test]
+    fn a_closure_needs_the_turn_to_speak_of_the_fact() {
+        let entry = |n: u8, text: &str| {
+            let mut hit = sample_recall_hit(&format!("018f1234-5678-7abc-9def-01234567891{n}"));
+            hit.text = text.to_owned();
+            hit.source_path = "wikis/household/shopping.md".to_owned();
+            hit
+        };
+        let bags = entry(1, "bin bags large");
+        let sold_out = entry(
+            2,
+            "The bin bags were sold out when Alice went shopping on 7 March.",
+        );
+        let closes = |hit: &RecallHit, text: &str, completed: Option<&str>| {
+            let closure = LlmClosure {
+                target: Some(hit.fact_id.as_str().to_owned()),
+                reason: Some("completed".to_owned()),
+                valid_to: None,
+            };
+            let turn = TurnWords::of(&req(text, "alice"), completed, false);
+            validate_closure(
+                &closure,
+                std::slice::from_ref(hit),
+                &[],
+                "alice",
+                &[],
+                &turn,
+            )
+            .map_or_else(|e| e.as_token().to_owned(), |_| "closed".to_owned())
+        };
+
+        // 7 March — the exception, which already held.
+        assert_eq!(
+            closes(
+                &bags,
+                "Got everything on the list except the bin bags, they'd sold out.",
+                Some("Got everything on the shopping list except the bin bags, they'd sold out."),
+            ),
+            "named_as_the_exception"
+        );
+
+        // 11 March — a turn about coffee and a boiler.
+        assert_eq!(
+            closes(
+                &bags,
+                "We're out of coffee, and the boiler man is coming Thursday the nineteenth.",
+                None,
+            ),
+            "the_message_says_nothing_of_it",
+            "the turn says neither `bin` nor `bags`, and it ticked them off"
+        );
+
+        // 30 March — the refuse collection, not the bags.
+        assert_eq!(
+            closes(&bags, "Bins out tonight, they come Tuesday.", None),
+            "the_message_says_nothing_of_it",
+            "`bins` is not `bin`: the whole resemblance is the model's"
+        );
+
+        // 28 March — the shop that really did buy them. Both the list entry
+        // and the longer sentence about them close, and the sentence is much
+        // longer than the mention.
+        for target in [&bags, &sold_out] {
+            assert_eq!(
+                closes(
+                    target,
+                    "Big shop done. Coffee, at last, and the bin bags.",
+                    None
+                ),
+                "closed",
+                "the turn names them, so the closure it asked for happens"
+            );
+        }
+
+        // And the sweep that names no item: «got everything» is a person
+        // finishing a list without reciting it.
+        assert_eq!(
+            closes(&bags, "Got everything on the list.", None),
+            "closed",
+            "a turn that says it means the whole set is taken at its word"
+        );
+    }
+
     /// **A shared noun protects its neighbours, and that is the rule working.**
     ///
     /// Half the content words of a two-word entry is one, so «tranne il latte»
@@ -16539,20 +16823,20 @@ mod tests {
     fn a_shared_noun_holds_back_the_neighbour_too() {
         let clauses = exception_clauses("Ho preso tutto tranne il latte, era finito.");
         assert!(
-            named_in_an_exception("latte", &clauses),
+            ruled_out_by("latte", &clauses),
             "the item the speaker ruled out"
         );
         assert!(
-            named_in_an_exception("latte di cocco", &clauses),
+            ruled_out_by("latte di cocco", &clauses),
             "and its neighbour with it: one of its two content words is the ruled-out noun, \
              and a tick nobody earned costs more than a tick that waits"
         );
         assert!(
-            !named_in_an_exception("filtri del caffè", &clauses),
+            !ruled_out_by("filtri del caffè", &clauses),
             "an entry that shares nothing with the clause closes normally"
         );
         assert!(
-            !named_in_an_exception("latte di cocco", &exception_clauses("Ho preso tutto.")),
+            !ruled_out_by("latte di cocco", &exception_clauses("Ho preso tutto.")),
             "and with no exception in the turn, nothing is held back"
         );
     }
@@ -22909,7 +23193,8 @@ mod tests {
             target.as_str()
         );
         let llm = ScriptedLlm::new(&[
-            "{\"intent\":\"capture\",\"extractions\":[],\"suggested_seed\":\"Done.\"}",
+            "{\"intent\":\"capture\",\"withdrawal\":true,\"extractions\":[],\
+             \"suggested_seed\":\"Done.\"}",
             &reconcile,
         ]);
         let resp = wiki_ingest_message(
@@ -24088,7 +24373,7 @@ mod tests {
                 &[],
                 "alice",
                 &groups,
-                &[],
+                &turn_words("drop that rule about short answers"),
             );
             assert!(
                 matches!(got, Err(ClosurePlanError::TargetIsAStandingRule(_))),
@@ -24110,7 +24395,7 @@ mod tests {
                     &[],
                     "alice",
                     &groups,
-                    &[]
+                    &turn_words("alice prefers coffee black, not any more")
                 )
                 .is_ok(),
                 "`{reason}` is refused on an ordinary fact"
@@ -27186,8 +27471,8 @@ mod tests {
             .await
             .expect("plant");
 
-        let classify = "{\"intent\":\"capture\",\"extractions\":[],\"closures\":[],\
-                        \"closure_topics\":[\"serra\"],\
+        let classify = "{\"intent\":\"capture\",\"withdrawal\":true,\"extractions\":[],\
+                        \"closures\":[],\"closure_topics\":[\"serra\"],\
                         \"suggested_seed\":\"Progetto serra dimenticato.\"}";
         let confirm = format!(
             "{{\"closures\":[{{\"target\":\"{}\",\"reason\":\"retracted\",\
