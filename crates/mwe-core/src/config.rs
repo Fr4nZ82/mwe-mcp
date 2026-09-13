@@ -446,16 +446,20 @@ impl LlmFunctionConfig {
         F: FnMut(&str) -> Option<String>,
     {
         let inner = self.build_backend_raw_with_env(function, env)?;
-        // Five decorators, innermost first. The slot defaults go right
+        // Six decorators, innermost first. The slot defaults go right
         // against the provider so every caller that leaves `temperature`
         // or `max_tokens` unset gets this slot's YAML values, not the
         // provider's. The spool and the usage ledger are pure observers:
         // the ledger sits outside the spool so the latency it records is
-        // the one the caller waited, spooling included. The retries go
-        // next so each attempt is its own ledger row — a failed attempt
-        // is a real call the provider saw. The budget gate goes
-        // outermost of all: a call the budget refuses was never made,
-        // so it must not be retried and must not appear in the ledger.
+        // the one the caller waited, spooling included. The concurrency
+        // gate goes over the ledger and under the retries: a call waiting
+        // for a slot has not been made yet, so the wait is not latency the
+        // provider owes, and a call sleeping between two attempts holds no
+        // slot somebody else could use. The retries go next so each attempt
+        // is its own ledger row — a failed attempt is a real call the
+        // provider saw. The budget gate goes outermost of all: a call the
+        // budget refuses was never made, so it must not wait for a slot,
+        // must not be retried and must not appear in the ledger.
         let billing = self.billing();
         let with_defaults: Box<dyn crate::llm::LlmBackend> = Box::new(SlotDefaultsBackend {
             inner,
@@ -464,7 +468,7 @@ impl LlmFunctionConfig {
         let spooled = crate::training_spool::maybe_wrap(with_defaults, function, &self.backend);
         let recorded = crate::usage::maybe_wrap(spooled, function, &self.backend, billing);
         Ok(crate::budget::maybe_gate(
-            crate::llm::with_retries(recorded),
+            crate::llm::with_retries(crate::llm::maybe_limit(recorded)),
             billing,
         ))
     }
@@ -718,6 +722,17 @@ pub struct LlmConfig {
     /// not enforced.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub profile: Option<String>,
+    /// How many model calls this deployment has in flight at once, across
+    /// every slot ([`crate::llm::DEFAULT_MAX_CONCURRENT_REQUESTS`]).
+    ///
+    /// One number for the whole process, not one per slot: what it protects
+    /// is the thing the slots share — the provider's allowance, and a local
+    /// runtime's memory. The night is what spends it, putting several pages to
+    /// the model at once ([`crate::rem::judge_fresh_pages`]); a turn a person
+    /// is waiting for takes a permit like anything else, which is why the
+    /// number is not one.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub max_concurrent_requests: Option<usize>,
     /// `ingest` slot — required when `wiki_ingest_message` is in use.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub ingest: Option<LlmFunctionConfig>,
@@ -738,6 +753,17 @@ pub struct LlmConfig {
     /// `navigator` slot — the per-turn recall navigator.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub navigator: Option<LlmFunctionConfig>,
+}
+
+impl LlmConfig {
+    /// How many model calls this deployment has in flight at once.
+    ///
+    /// The operator's number, or [`crate::llm::DEFAULT_MAX_CONCURRENT_REQUESTS`].
+    #[must_use]
+    pub fn max_in_flight(&self) -> usize {
+        self.max_concurrent_requests
+            .unwrap_or(crate::llm::DEFAULT_MAX_CONCURRENT_REQUESTS)
+    }
 }
 
 /// Profile presets seeded by `mwe-mcp init`.
@@ -827,6 +853,8 @@ impl LlmProfile {
             // cap_promote default (5) stays the same.
             Self::AllLocal => LlmConfig {
                 profile: Some("all-local".into()),
+                // The default; an operator who wants more or fewer says so.
+                max_concurrent_requests: None,
                 ingest: Some(ollama("qwen3.5:9b-q8_0")),
                 // The local workhorse, already in VRAM. Every slot is local
                 // on this profile by definition, so there is no stronger
@@ -845,6 +873,8 @@ impl LlmProfile {
             // don't open a second VRAM tenant just for yes/no.
             Self::Hybrid => LlmConfig {
                 profile: Some("hybrid".into()),
+                // The default; an operator who wants more or fewer says so.
+                max_concurrent_requests: None,
                 ingest: Some(ollama("qwen3.5:9b-q8_0")),
                 // Conversational, so it stays local like `ingest`: the
                 // maintainer's own chat, on the workhorse already loaded.
@@ -865,6 +895,8 @@ impl LlmProfile {
             // single-provider deploys are simpler.
             Self::AllApi => LlmConfig {
                 profile: Some("all-api".into()),
+                // The default; an operator who wants more or fewer says so.
+                max_concurrent_requests: None,
                 ingest: Some(anthropic("claude-sonnet-4-6", "ANTHROPIC_API_KEY")),
                 operator_chat: Some(anthropic("claude-sonnet-4-6", "ANTHROPIC_API_KEY")),
                 rem_promotions: Some(
@@ -880,6 +912,8 @@ impl LlmProfile {
             },
             Self::Custom => LlmConfig {
                 profile: Some("custom".into()),
+                // The default; an operator who wants more or fewer says so.
+                max_concurrent_requests: None,
                 ..LlmConfig::default()
             },
         }

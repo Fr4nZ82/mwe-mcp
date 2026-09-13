@@ -65,6 +65,11 @@ sqlx = { version = "0.8", default-features = false, features = ["sqlite", "runti
 # Async runtime
 tokio = { version = "1", features = ["full"] }
 tokio-util = { version = "0.7", features = ["io"] }
+# Stream combinators — `buffer_unordered` is how a nightly pass asks several
+# questions at once while the deployment's own limit decides how many are
+# really in flight (`mwe_core::llm::install_concurrency_limit`). Already in the
+# graph under the MCP SDK; declared here because the engine calls it directly.
+futures-util = { version = "0.3", default-features = false, features = ["std"] }
 
 # Desktop tray (mwe-mcp-tray only): KDE/freedesktop StatusNotifierItem over
 # DBus (zbus) — no GTK, no OpenSSL. Linux control surface for the systemd

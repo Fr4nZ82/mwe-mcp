@@ -13,6 +13,17 @@ semver-governed surface: breaking changes are called out explicitly.
 
 ### Added
 
+- **The night stops waiting one question at a time.** The passes that ask a
+  model about many things now ask about several at once, bounded by one new
+  setting — `llm.max_concurrent_requests`, 4 by default — which every slot
+  shares because what it protects is shared: the provider's allowance, and a
+  local model's memory. The page reading is the first to use it: eight pages
+  that took eight round trips one after another now take two or three. What the
+  model is asked, and what the engine then does with the answers, is unchanged:
+  the verdicts of a page are still applied in the order they were read, and one
+  page at a time, because two pages written at once would be two writers on one
+  memory.
+
 - **The memory reads its own pages back, and corrects what they say.** Until
   now every pass that judged a fact judged it alone, or beside a handful of
   facts fished out for looking similar. None of them read the page the fact

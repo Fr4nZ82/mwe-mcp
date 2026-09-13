@@ -587,6 +587,66 @@ mod tests {
         assert_eq!(reason.as_deref(), Some("rolled_back_by_startup"));
     }
 
+    /// **A cycle that asked several questions at once leaves several rows
+    /// open, and the boot sweep closes all of them.**
+    ///
+    /// With the passes putting more than one question to a model at a time,
+    /// the window where a crash catches the night has more than one operation
+    /// in it — and they belong to one cycle, so a sweep that stopped at the
+    /// first would leave the rest claiming to be in progress for ever. What
+    /// completed before the crash is left exactly as it is: it happened.
+    #[tokio::test]
+    async fn the_boot_sweep_closes_every_operation_a_crash_left_open() {
+        let (_workdir, pool) = fresh_pool().await;
+        let mut open_ops = Vec::new();
+        for kind in ["judgement_end", "judgement_closes", "judgement_duplicate"] {
+            open_ops.push(
+                begin_rem_op(&pool, "cycle-crash", kind, Some("alice"), None)
+                    .await
+                    .unwrap(),
+            );
+        }
+        let finished = begin_rem_op(
+            &pool,
+            "cycle-crash",
+            "judgement_retype",
+            Some("alice"),
+            None,
+        )
+        .await
+        .unwrap();
+        complete_rem_op(&pool, finished).await.unwrap();
+        let old = (chrono::Utc::now() - chrono::Duration::hours(1)).to_rfc3339();
+        sqlx::query("UPDATE rem_ops_log SET started_at = ? WHERE cycle_id = 'cycle-crash'")
+            .bind(&old)
+            .execute(&pool)
+            .await
+            .unwrap();
+
+        let report = rollback_stale_rems(&pool, Duration::from_secs(60), &NoopInverse)
+            .await
+            .unwrap();
+
+        assert_eq!(report.rolled_back, 3, "every open row, not just the first");
+        assert_eq!(report.failed_rollbacks, 0);
+        for op_id in open_ops {
+            let (status, reason): (String, Option<String>) =
+                sqlx::query_as("SELECT status, error_msg FROM rem_ops_log WHERE op_id = ?")
+                    .bind(op_id)
+                    .fetch_one(&pool)
+                    .await
+                    .unwrap();
+            assert_eq!(status, "failed", "op {op_id} was left open");
+            assert_eq!(reason.as_deref(), Some("rolled_back_by_startup"));
+        }
+        let (status,): (String,) = sqlx::query_as("SELECT status FROM rem_ops_log WHERE op_id = ?")
+            .bind(finished)
+            .fetch_one(&pool)
+            .await
+            .unwrap();
+        assert_eq!(status, "done", "what finished before the crash stands");
+    }
+
     #[tokio::test]
     async fn rem_scan_returns_target_wiki_and_snapshot_path() {
         let (_workdir, pool) = fresh_pool().await;

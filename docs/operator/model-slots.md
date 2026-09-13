@@ -52,6 +52,20 @@ there is no restart. Saving rewrites `mwe-mcp.config.yaml` atomically (keeping
 set here live in memory; the on-disk copy in `mwe-mcp.env` is what survives a
 restart.
 
+## How many calls at once
+
+One number bounds every slot together: `llm.max_concurrent_requests` in
+`mwe-mcp.config.yaml`, **4** when nothing says otherwise. It is not on this
+page — it is a line in the config file, read at start-up — because what it
+protects is shared: the provider's per-minute allowance, and a local runtime's
+memory.
+
+The nightly and hourly passes are what spend it: they put a page to the model,
+then the next page, and with the limit at 4 four of those travel at once while
+the rest queue. A turn somebody is waiting for takes a place in the same queue,
+which is why the number is not 1. Raise it for a provider with room, lower it
+for a local model that swaps when it is asked twice.
+
 ## When something does not answer
 
 The **LLM slots** table on [Health](health.md) dials every slot against the

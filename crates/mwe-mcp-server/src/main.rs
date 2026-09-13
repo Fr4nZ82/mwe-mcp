@@ -746,27 +746,30 @@ async fn cmd_backup(workdir: &Path, out: &Path) -> Result<()> {
     Ok(())
 }
 
-/// Install the process-wide spend accounting over `pool`: the usage
-/// ledger that records what was spent, and the budget guard that reads
-/// it back against the operator's daily budget.
+/// Install the three process-wide policies every model call answers to: the
+/// usage ledger that records what was spent, the budget guard that reads it
+/// back against the operator's daily budget, and the limit on how many calls
+/// are in flight at once.
 ///
-/// Both, always, from one call — they are two halves of one answer, and
-/// a command that counted its calls without honouring the budget (or the
-/// reverse) would be the drift this function exists to prevent. A
-/// hand-run REM cycle spends the same money the server does.
+/// All three, always, from one call — a command that counted its calls without
+/// honouring the budget (or the reverse) would be the drift this function
+/// exists to prevent, and one that asked twenty questions at once because it
+/// forgot the limit would be the same drift with a different bill. A hand-run
+/// REM cycle spends the same money the server does, and is as capable of
+/// flooding the same provider.
 ///
 /// Every backend built after this call records one row per model call
-/// (`mwe_core::usage`) and is refused while the budget is reached
-/// (`mwe_core::budget`), so this must run **before** the first
-/// `build_backend` of the command — the decorators are attached at build
-/// time, not at call time. The same holds for `build_embedder`, whose
-/// over-the-wire backend is recorded the same way.
+/// (`mwe_core::usage`), is refused while the budget is reached
+/// (`mwe_core::budget`) and waits its turn (`mwe_core::llm::maybe_limit`), so
+/// this must run **before** the first `build_backend` of the command — the
+/// decorators are attached at build time, not at call time. The same holds for
+/// `build_embedder`, whose over-the-wire backend is recorded the same way.
 ///
 /// `source` is the clean-month label: it separates the running server's
 /// traffic from an operator's hand-run cycle or evaluation, at the
 /// moment the call is made rather than by guessing afterwards, which is
 /// the thing that could not be done retroactively.
-fn install_spend_accounting(pool: &sqlx::SqlitePool, config: &Config, source: usage::UsageSource) {
+fn install_llm_policy(pool: &sqlx::SqlitePool, config: &Config, source: usage::UsageSource) {
     usage::install_global(Arc::new(usage::UsageLedger::new(
         pool.clone(),
         source,
@@ -777,6 +780,7 @@ fn install_spend_accounting(pool: &sqlx::SqlitePool, config: &Config, source: us
         config.budget.clone(),
         config.llm_pricing.clone(),
     )));
+    mwe_core::llm::install_concurrency_limit(config.llm.max_in_flight());
 }
 
 /// Run one REM cycle synchronously and print a one-line summary. The
@@ -830,7 +834,7 @@ async fn cmd_rem_run_cycle(workdir: &Path, config: &Config) -> Result<()> {
     let pool = db::open_or_init(workdir)
         .await
         .context("opening engine.db")?;
-    install_spend_accounting(&pool, config, usage::UsageSource::RemCli);
+    install_llm_policy(&pool, config, usage::UsageSource::RemCli);
     let tree = WikiTree::open(workdir).context("opening wikis/ tree")?;
     let embedder: Arc<dyn Embedder> = config
         .embedding
@@ -955,7 +959,7 @@ async fn cmd_rem_run_light(workdir: &Path, config: &Config) -> Result<()> {
     let pool = db::open_or_init(workdir)
         .await
         .context("opening engine.db")?;
-    install_spend_accounting(&pool, config, usage::UsageSource::RemCli);
+    install_llm_policy(&pool, config, usage::UsageSource::RemCli);
     let tree = WikiTree::open(workdir).context("opening wikis/ tree")?;
     let embedder: Arc<dyn Embedder> = config
         .embedding
@@ -1015,7 +1019,7 @@ async fn cmd_rem_run_compile(workdir: &Path, config: &Config) -> Result<()> {
     let pool = db::open_or_init(workdir)
         .await
         .context("opening engine.db")?;
-    install_spend_accounting(&pool, config, usage::UsageSource::RemCli);
+    install_llm_policy(&pool, config, usage::UsageSource::RemCli);
     let tree = WikiTree::open(workdir).context("opening wikis/ tree")?;
     let llms = rem_scheduler::build_backends(&config.llm)?.ok_or_else(|| {
         anyhow!(
@@ -1080,7 +1084,7 @@ async fn cmd_recall_eval(
     let pool = db::open_existing(workdir)
         .await
         .context("opening engine.db")?;
-    install_spend_accounting(&pool, config, usage::UsageSource::EvalCli);
+    install_llm_policy(&pool, config, usage::UsageSource::EvalCli);
     let tree = WikiTree::open(workdir).context("opening wikis/ tree")?;
     let embedder: Arc<dyn Embedder> = config
         .embedding
@@ -2531,7 +2535,7 @@ async fn bootstrap_state(workdir: &Path, config: &Config) -> Result<(McpState, D
         .await
         .context("opening engine.db")?;
 
-    install_spend_accounting(&pool, config, usage::UsageSource::Serve);
+    install_llm_policy(&pool, config, usage::UsageSource::Serve);
 
     let secret = ensure_secret(workdir).context("resolving MWE_TOKEN_SECRET")?;
 

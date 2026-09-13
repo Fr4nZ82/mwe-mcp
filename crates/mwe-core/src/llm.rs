@@ -40,8 +40,10 @@
 use async_trait::async_trait;
 use reqwest::Client;
 use serde::{Deserialize, Serialize};
+use std::sync::{Arc, OnceLock};
 use std::time::Duration;
 use thiserror::Error;
+use tokio::sync::Semaphore;
 
 /// Default Ollama base URL ([cf. `crate::embedder::DEFAULT_OLLAMA_URL`]).
 pub const DEFAULT_OLLAMA_URL: &str = "http://localhost:11434";
@@ -1337,6 +1339,123 @@ impl LlmBackend for OllamaBackend {
             )));
         }
         Ok(())
+    }
+}
+
+// ---------------------------------------------------------------------------
+// The concurrency gate — how many calls this deployment has in flight at once
+// ---------------------------------------------------------------------------
+
+/// Calls in flight at once when the operator names no number.
+///
+/// Four is a working default rather than a discovered one: it is enough for a
+/// night to overlap its waiting, and low enough that a provider's per-minute
+/// allowance and a local runtime's memory both survive it. A deployment that
+/// knows better says so in `llm.max_concurrent_requests`.
+pub const DEFAULT_MAX_CONCURRENT_REQUESTS: usize = 4;
+
+/// The process-wide permit pool, installed at boot.
+///
+/// Same idiom as [`crate::budget::install_global`] and for the same reason:
+/// the decorator is built deep inside
+/// [`crate::config::LlmFunctionConfig::build_backend`], where nothing about
+/// the deployment is in scope. Absent — a library caller, a test — every call
+/// goes straight through, which is what the engine did before the passes
+/// learned to ask several questions at once.
+static GLOBAL_LIMIT: OnceLock<Arc<Semaphore>> = OnceLock::new();
+
+/// How wide the installed limit is.
+///
+/// [`Semaphore::available_permits`] answers a different question — how many
+/// are free right now — and a pass sizing its batch needs the ceiling, not the
+/// weather.
+static GLOBAL_LIMIT_WIDTH: OnceLock<usize> = OnceLock::new();
+
+/// Install the process-wide limit (first call wins; idempotent).
+///
+/// `0` is not a limit of none: it would stop the deployment dead, so it is
+/// read as one call at a time.
+pub fn install_concurrency_limit(max_in_flight: usize) {
+    let permits = max_in_flight.max(1);
+    let _ = GLOBAL_LIMIT.set(Arc::new(Semaphore::new(permits)));
+    let _ = GLOBAL_LIMIT_WIDTH.set(permits);
+    tracing::info!(permits, "llm: concurrency limit installed");
+}
+
+/// How many questions a pass may usefully ask at once.
+///
+/// The deployment's own number, so a pass that batches its calls batches them
+/// exactly as wide as the gate will let through — no queue of prompts built
+/// and held in memory waiting for a permit — and a deployment that lowered the
+/// limit lowers both halves with one setting.
+///
+/// With no limit installed this is [`DEFAULT_MAX_CONCURRENT_REQUESTS`], and it
+/// is then the ONLY thing bounding a batch: nothing is gating the calls one by
+/// one. That is the shape of an embedded caller who never installed a policy,
+/// and four at a time is a defensible answer for one.
+#[must_use]
+pub fn in_flight_width() -> usize {
+    GLOBAL_LIMIT_WIDTH
+        .get()
+        .copied()
+        .unwrap_or(DEFAULT_MAX_CONCURRENT_REQUESTS)
+}
+
+/// The installed limit, if [`install_concurrency_limit`] has run.
+#[must_use]
+pub fn concurrency_limit() -> Option<Arc<Semaphore>> {
+    GLOBAL_LIMIT.get().cloned()
+}
+
+/// Wrap `inner` so its calls wait for a permit before they are made.
+///
+/// **Where this sits in the chain matters, and it sits under the retry and
+/// over the ledger.** Under the retry, because a call sleeping between two
+/// attempts is not in flight and must not hold a slot somebody else could
+/// use. Over the ledger, because a call waiting for a slot has not been made
+/// yet: counting the wait as latency would make the usage page report a
+/// provider that is slow when it is the deployment that is busy.
+#[must_use]
+pub fn maybe_limit(inner: Box<dyn LlmBackend>) -> Box<dyn LlmBackend> {
+    match concurrency_limit() {
+        Some(permits) => Box::new(LimitedBackend { inner, permits }),
+        None => inner,
+    }
+}
+
+struct LimitedBackend {
+    inner: Box<dyn LlmBackend>,
+    permits: Arc<Semaphore>,
+}
+
+#[async_trait]
+impl LlmBackend for LimitedBackend {
+    fn model_id(&self) -> &str {
+        self.inner.model_id()
+    }
+
+    async fn complete(&self, request: CompletionRequest) -> Result<CompletionResponse> {
+        // The semaphore is never closed, so the only error this can return
+        // cannot happen; a closed one would mean nothing can be asked
+        // anything, and letting the call through is the safer reading.
+        let _permit = self.permits.acquire().await;
+        self.inner.complete(request).await
+    }
+
+    async fn chat(&self, request: ChatRequest) -> Result<ChatResponse> {
+        let _permit = self.permits.acquire().await;
+        self.inner.chat(request).await
+    }
+
+    fn accepts_images(&self) -> bool {
+        self.inner.accepts_images()
+    }
+
+    async fn health_check(&self, probe: &CompletionRequest) -> Result<()> {
+        // A probe is an operator standing in front of the dashboard waiting
+        // for an answer, and a night in full flight would keep them waiting.
+        // Six probes are not what a provider's allowance is spent on.
+        self.inner.health_check(probe).await
     }
 }
 
@@ -4919,6 +5038,98 @@ mod tests {
     use super::*;
     use wiremock::matchers::{body_json, body_partial_json, method, path};
     use wiremock::{Mock, MockServer, ResponseTemplate};
+
+    /// A backend that takes its time and remembers how many callers were
+    /// inside it at once.
+    struct Counting {
+        inside: std::sync::atomic::AtomicUsize,
+        peak: std::sync::atomic::AtomicUsize,
+        delay: Duration,
+    }
+
+    #[async_trait]
+    impl LlmBackend for Counting {
+        fn model_id(&self) -> &'static str {
+            "counting"
+        }
+
+        async fn complete(&self, _request: CompletionRequest) -> Result<CompletionResponse> {
+            use std::sync::atomic::Ordering;
+            let now_inside = self.inside.fetch_add(1, Ordering::SeqCst) + 1;
+            self.peak.fetch_max(now_inside, Ordering::SeqCst);
+            tokio::time::sleep(self.delay).await;
+            self.inside.fetch_sub(1, Ordering::SeqCst);
+            Ok(CompletionResponse {
+                text: "{}".to_owned(),
+                finish_reason: FinishReason::EndOfTurn,
+                usage: CompletionUsage::default(),
+            })
+        }
+
+        async fn chat(&self, _request: ChatRequest) -> Result<ChatResponse> {
+            Err(LlmError::Invalid("not used".into()))
+        }
+    }
+
+    /// One handle onto the shared counter, so every caller can be given its
+    /// own boxed backend through the real [`maybe_limit`].
+    struct Shared(Arc<Counting>);
+
+    #[async_trait]
+    impl LlmBackend for Shared {
+        fn model_id(&self) -> &'static str {
+            "counting"
+        }
+
+        async fn complete(&self, request: CompletionRequest) -> Result<CompletionResponse> {
+            self.0.complete(request).await
+        }
+
+        async fn chat(&self, request: ChatRequest) -> Result<ChatResponse> {
+            self.0.chat(request).await
+        }
+    }
+
+    /// **The limit is what the provider sees, whatever the callers do.**
+    ///
+    /// A pass that asks eight questions at once is asking the deployment for
+    /// eight calls, and the deployment is the one that knows what its provider
+    /// will take. Eight callers go in; at most the installed number are inside
+    /// the backend at any moment, and all eight are answered.
+    ///
+    /// This test installs the process-wide limit, and it is the only test in
+    /// this binary that does: the `OnceLock` is shared, first call wins, and a
+    /// second test installing a different number would be pinning nothing.
+    #[tokio::test]
+    async fn the_concurrency_gate_holds_the_callers_to_the_installed_number() {
+        use std::sync::atomic::Ordering;
+        install_concurrency_limit(2);
+        assert_eq!(in_flight_width(), 2, "the width a pass batches to");
+
+        let counting = Arc::new(Counting {
+            inside: std::sync::atomic::AtomicUsize::new(0),
+            peak: std::sync::atomic::AtomicUsize::new(0),
+            delay: Duration::from_millis(40),
+        });
+        // Through the real decorator, the way `build_backend` attaches it.
+        let backends: Vec<Box<dyn LlmBackend>> = (0..8)
+            .map(|_| maybe_limit(Box::new(Shared(Arc::clone(&counting)))))
+            .collect();
+        let answers = futures_util::future::join_all(
+            backends
+                .iter()
+                .map(|b| b.complete(CompletionRequest::new("ask"))),
+        )
+        .await;
+
+        assert_eq!(answers.len(), 8, "every caller is answered");
+        assert!(answers.iter().all(std::result::Result::is_ok));
+        assert_eq!(
+            counting.peak.load(Ordering::SeqCst),
+            2,
+            "and never more than two were in flight"
+        );
+    }
 
     #[tokio::test]
     async fn fake_backend_returns_configured_response() {

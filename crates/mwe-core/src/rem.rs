@@ -51,6 +51,7 @@ use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
 use std::sync::Arc;
 
 use chrono::{DateTime, Utc};
+use futures_util::StreamExt as _;
 use serde_json::json;
 use sqlx::SqlitePool;
 use thiserror::Error;
@@ -1097,6 +1098,17 @@ pub async fn run_cycle(
     // sweeps that close things: a fact those already settled is not offered
     // for a second opinion, and a request the completion sweep finished is
     // not closed twice.
+    //
+    // **What runs beside what.** The sub-jobs of a cycle are sequential, and
+    // they stay that way: nearly all of them write `fact_index` rows chosen by
+    // what the rows say — the completion sweep closes a fact, the contradiction
+    // sweep closes the same fact's neighbours, the judge closes both kinds —
+    // so two of them at once would be two passes deciding the fate of one fact
+    // from two readings taken before either wrote. What IS worth overlapping
+    // is the waiting, and that happens inside a pass, where the questions are
+    // known to be about different things: this one asks about several pages at
+    // once and applies the answers one page at a time
+    // ([`ask_about_every_page`]).
     //
     // It reads the PAGES the day wrote onto, each as compiled prose with its
     // facts marked, and asks five questions of each. The pass runs on the
@@ -5649,7 +5661,12 @@ async fn run_page_judgement(
         pages.truncate(cap);
     }
 
-    let mut consecutive_failures = 0usize;
+    // Gather, in page order: what the model will be asked, and what the memo
+    // says has already been asked about that page as it stands. Reading a page
+    // is filesystem and SQL, so it happens here, once, before anything waits
+    // on a model.
+    let mut asking: Vec<JudgedPage> = Vec::with_capacity(pages.len());
+    let mut keys: Vec<String> = Vec::with_capacity(pages.len());
     for (source_path, _newest) in pages {
         let page = match gather_page(pool, tree, &source_path).await {
             Ok(Some(p)) => p,
@@ -5664,30 +5681,39 @@ async fn run_page_judgement(
         if rem_verdicts::is_settled(pool, rem_verdicts::kind::JUDGEMENT, &key).await? {
             continue;
         }
-        report.pages_read += 1;
-        let decision = match ask_the_judge(tree, llm, &page, now, depth).await? {
-            Ok(d) => {
+        asking.push(page);
+        keys.push(key);
+    }
+    report.pages_read = asking.len();
+
+    let mut by_page = ask_about_every_page(tree, llm, &asking, now, depth).await;
+
+    let mut consecutive_failures = 0usize;
+    for (i, page) in asking.iter().enumerate() {
+        let decision = match by_page[i].take() {
+            Some(Ok(d)) => {
                 consecutive_failures = 0;
                 d
             },
-            Err(e) => {
+            Some(Err(e)) => {
                 // One bad reply costs its page and nothing more; a backend
                 // that is down stops the pass with what it has.
                 if note_llm_failure(
                     &mut report.errors,
                     &mut consecutive_failures,
-                    format!("{source_path}: {e}"),
+                    format!("{}: {e}", page.source_path),
                 ) {
                     return Ok(report);
                 }
                 continue;
             },
+            None => continue,
         };
         let outcomes = apply_page_decision(
             pool,
             tree,
             &embedder,
-            &page,
+            page,
             &decision,
             cycle_id,
             now,
@@ -5702,7 +5728,7 @@ async fn run_page_judgement(
             rem_verdicts::record_negative(
                 pool,
                 rem_verdicts::kind::JUDGEMENT,
-                &key,
+                &keys[i],
                 &page.source_path,
             )
             .await?;
@@ -5710,9 +5736,11 @@ async fn run_page_judgement(
         if !outcomes.worth_a_receipt() {
             continue;
         }
-        match emit_page_receipt(pool, &page, depth, &outcomes).await {
+        match emit_page_receipt(pool, page, depth, &outcomes).await {
             Ok(receipt) => report.receipts.push(receipt),
-            Err(e) => report.errors.push(format!("{source_path} receipt: {e}")),
+            Err(e) => report
+                .errors
+                .push(format!("{} receipt: {e}", page.source_path)),
         }
     }
     Ok(report)
@@ -5753,6 +5781,87 @@ pub async fn judge_fresh_pages(
         JudgementDepth::Hourly,
     )
     .await
+}
+
+/// One page's question, in flight: the answer it will carry, and the borrows
+/// it holds while it waits.
+///
+/// Boxed and spelled out rather than left anonymous, because this pass is
+/// awaited from a web handler and a stream of anonymous futures over elided
+/// lifetimes is the shape the compiler cannot prove `Send` for.
+type OnePageAsked<'a> = std::pin::Pin<
+    Box<
+        dyn std::future::Future<Output = (usize, Result<std::result::Result<PageDecision, String>>)>
+            + Send
+            + 'a,
+    >,
+>;
+
+/// One page's question, carrying the page's place in the pass so the answer
+/// can be put back where it belongs.
+///
+/// A named function rather than an `async` block inside the stream: the future
+/// it returns is one concrete type, which is what lets the whole pass stay
+/// `Send` where it is awaited from a web handler.
+async fn ask_one_page(
+    index: usize,
+    tree: &WikiTree,
+    llm: &dyn LlmBackend,
+    page: &JudgedPage,
+    now: DateTime<Utc>,
+    depth: JudgementDepth,
+) -> (usize, Result<std::result::Result<PageDecision, String>>) {
+    (index, ask_the_judge(tree, llm, page, now, depth).await)
+}
+
+/// Ask the judge about every page of this pass, several at a time, and hand
+/// the answers back **in page order**.
+///
+/// **The asking is what takes the time.** Each page is a separate question
+/// about a separate page, so nothing is lost by putting them to the model
+/// together — and a night that asked thirty pages one after another spent
+/// thirty times one model's latency for no reason. How many really travel at
+/// once is the deployment's own limit, which the client enforces call by call
+/// ([`crate::llm::install_concurrency_limit`]); the width here matches it, so
+/// no prompt is built and then held waiting for a permit.
+///
+/// **The order comes back.** `buffer_unordered` yields whichever page answers
+/// first, and the applying that follows cannot take them that way: the verdicts
+/// of one page are applied in marker order against the page as it was READ
+/// ([`touches_a_decided_fact`]), and two pages applied at once would be two
+/// writers on one `fact_index`. So the answers are put back in the order the
+/// pages were chosen, and what a night decided reads in that order too.
+async fn ask_about_every_page<'a>(
+    tree: &'a WikiTree,
+    llm: &'a (dyn LlmBackend + 'a),
+    asking: &'a [JudgedPage],
+    now: DateTime<Utc>,
+    depth: JudgementDepth,
+) -> Vec<Option<std::result::Result<PageDecision, String>>> {
+    let mut by_page: Vec<Option<std::result::Result<PageDecision, String>>> =
+        (0..asking.len()).map(|_| None).collect();
+    // Boxed, and with the borrows spelled out: the pass is awaited from a web
+    // handler, and a stream of anonymous futures over elided lifetimes is
+    // exactly the shape the compiler cannot prove `Send` for.
+    let pending: Vec<OnePageAsked<'a>> = asking
+        .iter()
+        .enumerate()
+        .map(|(i, page)| Box::pin(ask_one_page(i, tree, llm, page, now, depth)) as OnePageAsked<'a>)
+        .collect();
+    let answers: Vec<(usize, Result<std::result::Result<PageDecision, String>>)> =
+        futures_util::stream::iter(pending)
+            .buffer_unordered(crate::llm::in_flight_width())
+            .collect::<Vec<_>>()
+            .await;
+    for (i, outcome) in answers {
+        by_page[i] = Some(match outcome {
+            Ok(answer) => answer,
+            // A prompt that will not render is the same failure for every page
+            // of this pass, and it is the operator's to fix.
+            Err(e) => Err(format!("{e}")),
+        });
+    }
+    by_page
 }
 
 /// Build one page's reading: its live facts in marker order, the prose that
@@ -14608,6 +14717,221 @@ mod tests {
         assert!(
             !asked.contains("Ha chiuso a chiave"),
             "the two older pages wait for the next pass: {asked}"
+        );
+        drop(dir);
+    }
+
+    /// A judge that takes its time — longer on the page named first — and
+    /// remembers how many questions were in flight at once.
+    struct SlowJudge {
+        /// `(needle, answer, delay)`: the first needle the prompt contains
+        /// decides both the answer and how long it takes to arrive.
+        script: Vec<(&'static str, String, std::time::Duration)>,
+        inside: std::sync::atomic::AtomicUsize,
+        peak: std::sync::atomic::AtomicUsize,
+        answered: parking_lot::Mutex<Vec<&'static str>>,
+    }
+
+    #[async_trait::async_trait]
+    impl LlmBackend for SlowJudge {
+        fn model_id(&self) -> &'static str {
+            "slow-judge"
+        }
+
+        async fn complete(
+            &self,
+            request: CompletionRequest,
+        ) -> std::result::Result<crate::llm::CompletionResponse, crate::llm::LlmError> {
+            use std::sync::atomic::Ordering;
+            let now_inside = self.inside.fetch_add(1, Ordering::SeqCst) + 1;
+            self.peak.fetch_max(now_inside, Ordering::SeqCst);
+            let (needle, answer, delay) = self
+                .script
+                .iter()
+                .find(|(needle, _, _)| request.prompt.contains(needle))
+                .cloned()
+                .unwrap_or_else(|| {
+                    (
+                        "(none)",
+                        "{\"verdicts\":{}}".to_owned(),
+                        std::time::Duration::ZERO,
+                    )
+                });
+            tokio::time::sleep(delay).await;
+            self.inside.fetch_sub(1, Ordering::SeqCst);
+            self.answered.lock().push(needle);
+            eprintln!(
+                "NEEDLE >>> {needle} for prompt containing bidoni={} bucato={}",
+                request.prompt.contains("bidoni"),
+                request.prompt.contains("bucato")
+            );
+            Ok(crate::llm::CompletionResponse {
+                text: answer,
+                finish_reason: crate::llm::FinishReason::EndOfTurn,
+                usage: crate::llm::CompletionUsage::default(),
+            })
+        }
+
+        async fn chat(
+            &self,
+            _request: crate::llm::ChatRequest,
+        ) -> std::result::Result<crate::llm::ChatResponse, crate::llm::LlmError> {
+            Err(crate::llm::LlmError::Invalid("not used".into()))
+        }
+    }
+
+    /// **The pages travel together; their verdicts land in order.**
+    ///
+    /// The asking is what a night waits for, so the pages go to the model at
+    /// once. The applying cannot follow suit: the verdicts of one page are
+    /// applied against the page as it was READ
+    /// ([`touches_a_decided_fact`]), and two pages written at once would be
+    /// two writers on one `fact_index`.
+    ///
+    /// So this drives the two halves apart on purpose. The page the pass
+    /// chooses FIRST is given the SLOWEST answer, so the model replies in the
+    /// opposite order — and the changes still come out in page order.
+    #[tokio::test]
+    async fn the_pages_are_asked_together_and_applied_in_order() {
+        let (dir, tree, pool) = setup_workdir().await;
+        write_wiki(&tree, "alice", "Alice", "wiki-user");
+        let newest = plant_on_page_of_kind(
+            &tree,
+            &pool,
+            "alice",
+            "bici.md",
+            "Ha portato la bici dal meccanico",
+            "alice",
+            "episode",
+            Some("2026-09-13T20:00:00Z".to_owned()),
+        )
+        .await;
+        let oldest = plant_on_page_of_kind(
+            &tree,
+            &pool,
+            "alice",
+            "balcone.md",
+            "Ha innaffiato il basilico sul balcone",
+            "alice",
+            "episode",
+            Some("2026-09-11T09:00:00Z".to_owned()),
+        )
+        .await;
+        written_at(&pool, &newest, "2026-09-13T20:00:00Z").await;
+        written_at(&pool, &oldest, "2026-09-11T09:00:00Z").await;
+
+        // The needles have to be words the PROMPT does not say itself: its own
+        // examples are full of errands — bins and washing included.
+        let llm = SlowJudge {
+            script: vec![
+                (
+                    "bici",
+                    "{\"verdicts\":{\"f1\":{\"verdict\":\"end\",\"valid_to\":\"2026-09-13\"}}}"
+                        .to_owned(),
+                    std::time::Duration::from_millis(120),
+                ),
+                (
+                    "basilico",
+                    "{\"verdicts\":{\"f1\":{\"verdict\":\"end\",\"valid_to\":\"2026-09-11\"}}}"
+                        .to_owned(),
+                    std::time::Duration::from_millis(10),
+                ),
+            ],
+            inside: std::sync::atomic::AtomicUsize::new(0),
+            peak: std::sync::atomic::AtomicUsize::new(0),
+            answered: parking_lot::Mutex::new(Vec::new()),
+        };
+        let report = judge_the_page(
+            &pool,
+            &tree,
+            &llm,
+            &[newest.clone(), oldest.clone()],
+            JudgementDepth::Nightly,
+            &RemPolicy::default(),
+        )
+        .await;
+
+        assert_eq!(
+            llm.peak.load(std::sync::atomic::Ordering::SeqCst),
+            2,
+            "both pages were in flight at once"
+        );
+        assert_eq!(
+            *llm.answered.lock(),
+            vec!["basilico", "bici"],
+            "and the model answered the second page first"
+        );
+        assert_eq!(
+            report.changed,
+            vec![
+                format!("{} · end", newest.as_str()),
+                format!("{} · end", oldest.as_str()),
+            ],
+            "but the verdicts were applied in page order, newest page first"
+        );
+        drop(dir);
+    }
+
+    /// **What the parallel asking buys, measured.**
+    ///
+    /// Eight pages, a fifth of a second of model latency each: asked one after
+    /// another that is 1.6 s of waiting, and the whole point of the change is
+    /// that a night does not spend it. The bound is deliberately loose — this
+    /// runs on whatever machine CI gives it — but serial cannot pass it.
+    #[tokio::test]
+    async fn asking_the_pages_together_is_worth_the_wait_it_saves() {
+        let (dir, tree, pool) = setup_workdir().await;
+        write_wiki(&tree, "alice", "Alice", "wiki-user");
+        let mut fresh = Vec::new();
+        for n in 0..8 {
+            let id = plant_on_page_of_kind(
+                &tree,
+                &pool,
+                "alice",
+                &format!("pagina{n}.md"),
+                &format!("Ha fatto la cosa numero {n}"),
+                "alice",
+                "episode",
+                None,
+            )
+            .await;
+            fresh.push(id);
+        }
+        let llm = SlowJudge {
+            script: vec![(
+                "Ha fatto la cosa",
+                "{\"verdicts\":{}}".to_owned(),
+                std::time::Duration::from_millis(200),
+            )],
+            inside: std::sync::atomic::AtomicUsize::new(0),
+            peak: std::sync::atomic::AtomicUsize::new(0),
+            answered: parking_lot::Mutex::new(Vec::new()),
+        };
+        let policy = RemPolicy {
+            judgement_max_pages_night: 8,
+            ..RemPolicy::default()
+        };
+
+        let started = std::time::Instant::now();
+        let report =
+            judge_the_page(&pool, &tree, &llm, &fresh, JudgementDepth::Nightly, &policy).await;
+        let elapsed = started.elapsed();
+
+        assert_eq!(report.pages_read, 8);
+        // The bound is three quarters of serial rather than a half, because how
+        // many really travel at once is the DEPLOYMENT's number and a test
+        // binary shares one: at a width of two, eight pages are four waves and
+        // half of serial is the floor, not a bound. Serial cannot pass this.
+        let serial = std::time::Duration::from_millis(200 * 8);
+        assert!(
+            elapsed < serial * 3 / 4,
+            "eight pages at 200ms each took {elapsed:?}; one after another is {serial:?}, \
+             and this deployment asks {} at a time",
+            crate::llm::in_flight_width(),
+        );
+        assert!(
+            llm.peak.load(std::sync::atomic::Ordering::SeqCst) >= 2,
+            "and they really did travel together"
         );
         drop(dir);
     }
