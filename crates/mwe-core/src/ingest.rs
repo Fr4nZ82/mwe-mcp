@@ -3847,6 +3847,15 @@ fn turn_speaks_of_a_whole_set(texts: &[String]) -> bool {
 /// answer; the clause is in the turn's own words, so the engine reads it
 /// rather than hoping ([`exception_clauses`]).
 ///
+/// **A target the message says nothing of is refused** — see
+/// [`ClosurePlanError::TheMessageSaysNothingOfIt`]. A closure asserts
+/// something about ONE claim, and a turn about coffee and a boiler asserts
+/// nothing about a shopping list's bin bags. Three things answer for the turn
+/// here and they are not interchangeable: its words ([`spoken_of_in`]), a
+/// whole set it says it means ([`turn_speaks_of_a_whole_set`]), and a
+/// declaration from the stage that read the MESSAGE — a withdrawal, or a card
+/// conflict the classifier named.
+///
 /// **A target this same turn restated is refused** — see
 /// [`ClosurePlanError::TargetRestatedThisTurn`], the closure verb's half of
 /// the door a turn delivered twice walks through. Its twin lives in

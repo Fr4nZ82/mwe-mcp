@@ -298,9 +298,9 @@ const ANOTHER_PERSONS: &[&str] = &[
 /// said by relation is exactly the one that arrives without it.
 ///
 /// This reads the sentence, which is a poor instrument and the only one left
-/// once the name is missing. It is used to keep a claim OFF a card and never
-/// to move one anywhere, so a phrasing the list does not know costs a card
-/// entry that should not have been there and nothing else.
+/// once the name is missing. It only ever keeps a claim OFF a card, and never
+/// moves one anywhere, so a phrasing the list does not know costs a card entry
+/// that should not have been there and nothing else.
 #[must_use]
 pub fn attributes_to_another_person(text: &str) -> bool {
     let lower = text.to_lowercase();
