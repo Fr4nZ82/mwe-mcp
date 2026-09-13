@@ -1354,6 +1354,16 @@ impl LlmBackend for OllamaBackend {
 /// knows better says so in `llm.max_concurrent_requests`.
 pub const DEFAULT_MAX_CONCURRENT_REQUESTS: usize = 4;
 
+/// Places the memory's housekeeping never takes, so a turn somebody is waiting
+/// for is never behind it in the queue.
+///
+/// One is enough to make the promise: with the night holding every other
+/// place, a turn still finds one free and starts at once. More than one buys a
+/// second simultaneous turn and costs the night a place — a deployment where
+/// several people talk at the same moment may want it, which is why it is a
+/// number and not a flag.
+pub const DEFAULT_RESERVED_FOR_CONVERSATION: usize = 1;
+
 /// The process-wide permit pool, installed at boot.
 ///
 /// Same idiom as [`crate::budget::install_global`] and for the same reason:
@@ -1362,32 +1372,89 @@ pub const DEFAULT_MAX_CONCURRENT_REQUESTS: usize = 4;
 /// the deployment is in scope. Absent — a library caller, a test — every call
 /// goes straight through, which is what the engine did before the passes
 /// learned to ask several questions at once.
-static GLOBAL_LIMIT: OnceLock<Arc<Semaphore>> = OnceLock::new();
+static GLOBAL_LIMIT: OnceLock<Lanes> = OnceLock::new();
 
-/// How wide the installed limit is.
+/// The two queues one limit is made of.
 ///
-/// [`Semaphore::available_permits`] answers a different question — how many
-/// are free right now — and a pass sizing its batch needs the ceiling, not the
-/// weather.
-static GLOBAL_LIMIT_WIDTH: OnceLock<usize> = OnceLock::new();
-
-/// Install the process-wide limit (first call wins; idempotent).
-///
-/// `0` is not a limit of none: it would stop the deployment dead, so it is
-/// read as one call at a time.
-pub fn install_concurrency_limit(max_in_flight: usize) {
-    let permits = max_in_flight.max(1);
-    let _ = GLOBAL_LIMIT.set(Arc::new(Semaphore::new(permits)));
-    let _ = GLOBAL_LIMIT_WIDTH.set(permits);
-    tracing::info!(permits, "llm: concurrency limit installed");
+/// **Everything acquires `all`, and only the housekeeping acquires
+/// `housekeeping` first.** That is the whole mechanism: `all` holds the
+/// deployment's total, `housekeeping` holds that total minus what is kept for
+/// conversation, so the housekeeping can never occupy the last places — and a
+/// turn, which queues on `all` alone, always finds one.
+#[derive(Debug, Clone)]
+struct Lanes {
+    all: Arc<Semaphore>,
+    housekeeping: Arc<Semaphore>,
+    /// The deployment's total.
+    width: usize,
+    /// What is left for the memory's own passes — the total minus the places
+    /// kept for conversation, and the number a pass batches to.
+    housekeeping_width: usize,
 }
 
-/// How many questions a pass may usefully ask at once.
+/// Install the process-wide limit.
 ///
-/// The deployment's own number, so a pass that batches its calls batches them
-/// exactly as wide as the gate will let through — no queue of prompts built
-/// and held in memory waiting for a permit — and a deployment that lowered the
-/// limit lowers both halves with one setting.
+/// **First call wins, and a second one that disagrees is loud.** The handle is
+/// a process-wide `OnceLock`, so a later call cannot change it — and a caller
+/// who believed it had is running under somebody else's number. Returns the
+/// width actually in force, which is what a caller should read back.
+///
+/// `0` is not a limit of none: it would stop the deployment dead, so it is
+/// read as one call at a time. `reserved` is trimmed so the housekeeping keeps
+/// at least one place of its own.
+pub fn install_concurrency_limit(max_in_flight: usize, reserved: usize) -> usize {
+    let width = max_in_flight.max(1);
+    let kept = reserved.min(width.saturating_sub(1));
+    let installed = GLOBAL_LIMIT.get_or_init(|| Lanes {
+        all: Arc::new(Semaphore::new(width)),
+        housekeeping: Arc::new(Semaphore::new(width - kept)),
+        width,
+        housekeeping_width: width - kept,
+    });
+    if installed.width == width {
+        tracing::info!(
+            width,
+            kept_for_conversation = kept,
+            "llm: concurrency limit installed"
+        );
+    } else {
+        tracing::warn!(
+            asked_for = width,
+            in_force = installed.width,
+            "llm: a concurrency limit was already installed — the first one stands"
+        );
+    }
+    installed.width
+}
+
+/// [`install_concurrency_limit`] for a test, which refuses to be the second
+/// one silently.
+///
+/// The limit is one `OnceLock` for the whole process and a test binary is one
+/// process: two tests installing two numbers would leave the second one
+/// asserting against the first one's, which passes or fails for reasons the
+/// test does not name. This one says so instead.
+///
+/// # Panics
+///
+/// When a different width is already in force.
+#[cfg(any(test, feature = "test-fakes"))]
+pub fn install_concurrency_limit_for_tests(max_in_flight: usize, reserved: usize) {
+    let in_force = install_concurrency_limit(max_in_flight, reserved);
+    assert_eq!(
+        in_force, max_in_flight,
+        "a concurrency limit of {in_force} was already installed in this process, and this \
+         test asked for {max_in_flight}: one test in a binary installs it, and the others \
+         read `in_flight_width()`"
+    );
+}
+
+/// How many questions one of the memory's own passes may usefully ask at once.
+///
+/// **The housekeeping's width, not the deployment's total**: the passes that
+/// batch are the night and the hour, and their queue is the narrower one — the
+/// places kept for conversation are not theirs to fill. Batching to the total
+/// would only build prompts that then wait for a permit.
 ///
 /// With no limit installed this is [`DEFAULT_MAX_CONCURRENT_REQUESTS`], and it
 /// is then the ONLY thing bounding a batch: nothing is gating the calls one by
@@ -1395,16 +1462,11 @@ pub fn install_concurrency_limit(max_in_flight: usize) {
 /// and four at a time is a defensible answer for one.
 #[must_use]
 pub fn in_flight_width() -> usize {
-    GLOBAL_LIMIT_WIDTH
+    GLOBAL_LIMIT
         .get()
-        .copied()
-        .unwrap_or(DEFAULT_MAX_CONCURRENT_REQUESTS)
-}
-
-/// The installed limit, if [`install_concurrency_limit`] has run.
-#[must_use]
-pub fn concurrency_limit() -> Option<Arc<Semaphore>> {
-    GLOBAL_LIMIT.get().cloned()
+        .map_or(DEFAULT_MAX_CONCURRENT_REQUESTS, |lanes| {
+            lanes.housekeeping_width
+        })
 }
 
 /// Wrap `inner` so its calls wait for a permit before they are made.
@@ -1416,16 +1478,58 @@ pub fn concurrency_limit() -> Option<Arc<Semaphore>> {
 /// yet: counting the wait as latency would make the usage page report a
 /// provider that is slow when it is the deployment that is busy.
 #[must_use]
-pub fn maybe_limit(inner: Box<dyn LlmBackend>) -> Box<dyn LlmBackend> {
-    match concurrency_limit() {
-        Some(permits) => Box::new(LimitedBackend { inner, permits }),
+pub fn maybe_limit(
+    inner: Box<dyn LlmBackend>,
+    function: crate::config::LlmFunction,
+) -> Box<dyn LlmBackend> {
+    match GLOBAL_LIMIT.get() {
+        Some(lanes) => Box::new(LimitedBackend {
+            inner,
+            lanes: lanes.clone(),
+            somebody_is_waiting: function.somebody_is_waiting(),
+        }),
         None => inner,
     }
 }
 
 struct LimitedBackend {
     inner: Box<dyn LlmBackend>,
-    permits: Arc<Semaphore>,
+    lanes: Lanes,
+    /// Which queue this backend's calls join — see [`Lanes`].
+    somebody_is_waiting: bool,
+}
+
+impl LimitedBackend {
+    /// Wait for this call's place, and hand back the permits that ARE the
+    /// place: they are held until the caller drops them, which is the whole
+    /// mechanism.
+    ///
+    /// A housekeeping call takes two — one from its own narrower queue, which
+    /// is what keeps it out of the places kept for conversation, and then one
+    /// from the total. A turn takes the total's alone, so the only thing it
+    /// ever waits for is another call actually in flight.
+    ///
+    /// The semaphores are never closed, so an `Err` here cannot happen; a
+    /// closed one would mean nothing can be asked anything, and letting the
+    /// call through is the safer reading.
+    async fn take_a_place(&self) -> Places<'_> {
+        let own_queue = if self.somebody_is_waiting {
+            None
+        } else {
+            self.lanes.housekeeping.acquire().await.ok()
+        };
+        let shared = self.lanes.all.acquire().await.ok();
+        Places {
+            _own_queue: own_queue,
+            _shared: shared,
+        }
+    }
+}
+
+/// One call's place in the queue, held for as long as the call is in flight.
+struct Places<'a> {
+    _own_queue: Option<tokio::sync::SemaphorePermit<'a>>,
+    _shared: Option<tokio::sync::SemaphorePermit<'a>>,
 }
 
 #[async_trait]
@@ -1435,15 +1539,12 @@ impl LlmBackend for LimitedBackend {
     }
 
     async fn complete(&self, request: CompletionRequest) -> Result<CompletionResponse> {
-        // The semaphore is never closed, so the only error this can return
-        // cannot happen; a closed one would mean nothing can be asked
-        // anything, and letting the call through is the safer reading.
-        let _permit = self.permits.acquire().await;
+        let _place = self.take_a_place().await;
         self.inner.complete(request).await
     }
 
     async fn chat(&self, request: ChatRequest) -> Result<ChatResponse> {
-        let _permit = self.permits.acquire().await;
+        let _place = self.take_a_place().await;
         self.inner.chat(request).await
     }
 
@@ -5090,6 +5191,71 @@ mod tests {
         }
     }
 
+    /// **A turn never waits behind the night.**
+    ///
+    /// The limit is one queue for the whole deployment, and the memory's
+    /// housekeeping is what fills it: thirty pages go to the model in a night,
+    /// and a person who says something in the middle of that would be served
+    /// after one of them. Seconds, but seconds a person spends looking at a
+    /// screen.
+    ///
+    /// So the housekeeping has its own narrower queue and the last place is
+    /// never its: with the limit at four and one kept, three nightly calls are
+    /// in flight and the turn starts at once, not after one of them.
+    #[tokio::test]
+    async fn a_turn_is_never_behind_the_nights_calls() {
+        use std::sync::atomic::Ordering;
+        // The same limit the sibling test installs: one `OnceLock` for the
+        // binary, and the installer refuses a second, different one out loud.
+        install_concurrency_limit_for_tests(4, 1);
+
+        let counting = Arc::new(Counting {
+            inside: std::sync::atomic::AtomicUsize::new(0),
+            peak: std::sync::atomic::AtomicUsize::new(0),
+            delay: Duration::from_millis(200),
+        });
+        let nightly: Vec<Box<dyn LlmBackend>> = (0..4)
+            .map(|_| {
+                maybe_limit(
+                    Box::new(Shared(Arc::clone(&counting))),
+                    crate::config::LlmFunction::Cronista,
+                )
+            })
+            .collect();
+        let turn = maybe_limit(
+            Box::new(Shared(Arc::clone(&counting))),
+            crate::config::LlmFunction::Ingest,
+        );
+
+        // Four nightly calls first, then the turn a moment later.
+        let night = futures_util::future::join_all(
+            nightly
+                .iter()
+                .map(|b| b.complete(CompletionRequest::new("page"))),
+        );
+        let asked = async {
+            tokio::time::sleep(Duration::from_millis(20)).await;
+            let started = std::time::Instant::now();
+            let answer = turn
+                .complete(CompletionRequest::new("what did I say"))
+                .await;
+            (started.elapsed(), answer)
+        };
+        let (_night, (waited, answer)) = tokio::join!(night, asked);
+
+        assert!(answer.is_ok());
+        assert!(
+            waited < Duration::from_millis(260),
+            "the turn waited {waited:?} — it should have started at once, not behind a \
+             nightly call ({}ms each)",
+            200,
+        );
+        assert!(
+            counting.peak.load(Ordering::SeqCst) <= 4,
+            "and the deployment's total was still honoured"
+        );
+    }
+
     /// **The limit is what the provider sees, whatever the callers do.**
     ///
     /// A pass that asks eight questions at once is asking the deployment for
@@ -5097,14 +5263,21 @@ mod tests {
     /// will take. Eight callers go in; at most the installed number are inside
     /// the backend at any moment, and all eight are answered.
     ///
+    /// Driven on a conversational slot, which queues on the total alone — the
+    /// narrower queue the memory's own passes join is the sibling test's.
+    ///
     /// This test installs the process-wide limit, and it is the only test in
     /// this binary that does: the `OnceLock` is shared, first call wins, and a
     /// second test installing a different number would be pinning nothing.
     #[tokio::test]
     async fn the_concurrency_gate_holds_the_callers_to_the_installed_number() {
         use std::sync::atomic::Ordering;
-        install_concurrency_limit(2);
-        assert_eq!(in_flight_width(), 2, "the width a pass batches to");
+        install_concurrency_limit_for_tests(4, 1);
+        assert_eq!(
+            in_flight_width(),
+            3,
+            "a pass batches to the housekeeping's width, not the total"
+        );
 
         let counting = Arc::new(Counting {
             inside: std::sync::atomic::AtomicUsize::new(0),
@@ -5113,7 +5286,12 @@ mod tests {
         });
         // Through the real decorator, the way `build_backend` attaches it.
         let backends: Vec<Box<dyn LlmBackend>> = (0..8)
-            .map(|_| maybe_limit(Box::new(Shared(Arc::clone(&counting)))))
+            .map(|_| {
+                maybe_limit(
+                    Box::new(Shared(Arc::clone(&counting))),
+                    crate::config::LlmFunction::Ingest,
+                )
+            })
             .collect();
         let answers = futures_util::future::join_all(
             backends
@@ -5126,8 +5304,8 @@ mod tests {
         assert!(answers.iter().all(std::result::Result::is_ok));
         assert_eq!(
             counting.peak.load(Ordering::SeqCst),
-            2,
-            "and never more than two were in flight"
+            4,
+            "and never more than the deployment's four were in flight"
         );
     }
 

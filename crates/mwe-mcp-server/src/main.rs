@@ -780,7 +780,10 @@ fn install_llm_policy(pool: &sqlx::SqlitePool, config: &Config, source: usage::U
         config.budget.clone(),
         config.llm_pricing.clone(),
     )));
-    mwe_core::llm::install_concurrency_limit(config.llm.max_in_flight());
+    mwe_core::llm::install_concurrency_limit(
+        config.llm.max_in_flight(),
+        config.llm.reserved_in_flight(),
+    );
 }
 
 /// Run one REM cycle synchronously and print a one-line summary. The

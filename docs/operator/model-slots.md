@@ -58,13 +58,19 @@ One number bounds every slot together: `llm.max_concurrent_requests` in
 `mwe-mcp.config.yaml`, **4** when nothing says otherwise. It is not on this
 page — it is a line in the config file, read at start-up — because what it
 protects is shared: the provider's per-minute allowance, and a local runtime's
-memory.
+memory. Raise it for a provider with room, lower it for a local model that
+swaps when it is asked twice.
 
 The nightly and hourly passes are what spend it: they put a page to the model,
-then the next page, and with the limit at 4 four of those travel at once while
-the rest queue. A turn somebody is waiting for takes a place in the same queue,
-which is why the number is not 1. Raise it for a provider with room, lower it
-for a local model that swaps when it is asked twice.
+then the next page, and several of those travel at once while the rest queue.
+
+**A turn never queues behind them.** `llm.reserved_for_conversation`, **1** by
+default, is how many of those places the memory's housekeeping may never take,
+so a message arriving in the middle of a night finds a place free and is
+answered at once. The three slots that count as a turn are `ingest`,
+`navigator` and `operator_chat` — the ones with somebody waiting at the other
+end. Raise it where several people talk at the same moment; each place you keep
+is one the night no longer has.
 
 ## When something does not answer
 

@@ -327,6 +327,21 @@ impl LlmFunction {
     pub fn env_prefix(self) -> String {
         format!("MWE_LLM_{}", self.yaml_key().to_uppercase())
     }
+
+    /// Is somebody sitting in front of this call, waiting for it?
+    ///
+    /// Three of the six are part of a turn: the classifier that reads what was
+    /// just said, the navigator that decides what to open to answer it, and
+    /// the operator's own chat. The other three are the memory's housekeeping
+    /// — they run at night and on the hour, and nobody is watching.
+    ///
+    /// The difference is a **queue** one: when several calls are in flight and
+    /// the deployment's limit is reached, the housekeeping waits and the turn
+    /// does not ([`crate::llm::maybe_limit`]).
+    #[must_use]
+    pub const fn somebody_is_waiting(self) -> bool {
+        matches!(self, Self::Ingest | Self::OperatorChat | Self::Navigator)
+    }
 }
 
 /// One LLM function configuration: which backend to drive and what
@@ -468,7 +483,7 @@ impl LlmFunctionConfig {
         let spooled = crate::training_spool::maybe_wrap(with_defaults, function, &self.backend);
         let recorded = crate::usage::maybe_wrap(spooled, function, &self.backend, billing);
         Ok(crate::budget::maybe_gate(
-            crate::llm::with_retries(crate::llm::maybe_limit(recorded)),
+            crate::llm::with_retries(crate::llm::maybe_limit(recorded, function)),
             billing,
         ))
     }
@@ -722,6 +737,11 @@ pub struct LlmConfig {
     /// not enforced.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub profile: Option<String>,
+    /// How many of those places the memory's housekeeping may never take, so
+    /// a turn somebody is waiting for always has one
+    /// ([`crate::llm::DEFAULT_RESERVED_FOR_CONVERSATION`]).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub reserved_for_conversation: Option<usize>,
     /// How many model calls this deployment has in flight at once, across
     /// every slot ([`crate::llm::DEFAULT_MAX_CONCURRENT_REQUESTS`]).
     ///
@@ -763,6 +783,19 @@ impl LlmConfig {
     pub fn max_in_flight(&self) -> usize {
         self.max_concurrent_requests
             .unwrap_or(crate::llm::DEFAULT_MAX_CONCURRENT_REQUESTS)
+    }
+
+    /// How many of those places are kept for a turn somebody is waiting for.
+    ///
+    /// The operator's number, or
+    /// [`crate::llm::DEFAULT_RESERVED_FOR_CONVERSATION`]. Never so many that
+    /// the housekeeping is left with none: a night that cannot make a call is
+    /// a night that does not happen.
+    #[must_use]
+    pub fn reserved_in_flight(&self) -> usize {
+        self.reserved_for_conversation
+            .unwrap_or(crate::llm::DEFAULT_RESERVED_FOR_CONVERSATION)
+            .min(self.max_in_flight().saturating_sub(1))
     }
 }
 
@@ -853,8 +886,9 @@ impl LlmProfile {
             // cap_promote default (5) stays the same.
             Self::AllLocal => LlmConfig {
                 profile: Some("all-local".into()),
-                // The default; an operator who wants more or fewer says so.
+                // The defaults; an operator who wants other numbers says so.
                 max_concurrent_requests: None,
+                reserved_for_conversation: None,
                 ingest: Some(ollama("qwen3.5:9b-q8_0")),
                 // The local workhorse, already in VRAM. Every slot is local
                 // on this profile by definition, so there is no stronger
@@ -873,8 +907,9 @@ impl LlmProfile {
             // don't open a second VRAM tenant just for yes/no.
             Self::Hybrid => LlmConfig {
                 profile: Some("hybrid".into()),
-                // The default; an operator who wants more or fewer says so.
+                // The defaults; an operator who wants other numbers says so.
                 max_concurrent_requests: None,
+                reserved_for_conversation: None,
                 ingest: Some(ollama("qwen3.5:9b-q8_0")),
                 // Conversational, so it stays local like `ingest`: the
                 // maintainer's own chat, on the workhorse already loaded.
@@ -895,8 +930,9 @@ impl LlmProfile {
             // single-provider deploys are simpler.
             Self::AllApi => LlmConfig {
                 profile: Some("all-api".into()),
-                // The default; an operator who wants more or fewer says so.
+                // The defaults; an operator who wants other numbers says so.
                 max_concurrent_requests: None,
+                reserved_for_conversation: None,
                 ingest: Some(anthropic("claude-sonnet-4-6", "ANTHROPIC_API_KEY")),
                 operator_chat: Some(anthropic("claude-sonnet-4-6", "ANTHROPIC_API_KEY")),
                 rem_promotions: Some(
@@ -912,8 +948,9 @@ impl LlmProfile {
             },
             Self::Custom => LlmConfig {
                 profile: Some("custom".into()),
-                // The default; an operator who wants more or fewer says so.
+                // The defaults; an operator who wants other numbers says so.
                 max_concurrent_requests: None,
+                reserved_for_conversation: None,
                 ..LlmConfig::default()
             },
         }

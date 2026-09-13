@@ -18,7 +18,13 @@ semver-governed surface: breaking changes are called out explicitly.
   setting — `llm.max_concurrent_requests`, 4 by default — which every slot
   shares because what it protects is shared: the provider's allowance, and a
   local model's memory. The page reading is the first to use it: eight pages
-  that took eight round trips one after another now take two or three. What the
+  that took eight round trips one after another now take two or three.
+
+  **And a turn never waits behind the night.** One place in that limit is kept
+  for the three slots with somebody waiting at the other end —
+  `llm.reserved_for_conversation`, 1 by default — so a message arriving while
+  the memory is reading thirty pages is answered at once rather than after the
+  next page comes back. What the
   model is asked, and what the engine then does with the answers, is unchanged:
   the verdicts of a page are still applied in the order they were read, and one
   page at a time, because two pages written at once would be two writers on one
