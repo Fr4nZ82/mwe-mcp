@@ -23,7 +23,9 @@ though it stood for ever, a request another fact on the page has finished, a
 passing spell filed as who somebody is, and at night also a claim the page
 contradicts and the same claim written twice. Each correction is made and shown
 on [Proposals](../user/proposals.md) as **A page read again**, with what the
-model asked for that the engine refused, and why.
+model asked for that the engine refused, and why. The one exception is a line
+on somebody's identity card: there nothing is written and the card's owner is
+asked, as **A line on your card**.
 
 It costs one model call per page that changed — not per fact — and the two
 ceilings are on [REM settings](rem-settings.md).

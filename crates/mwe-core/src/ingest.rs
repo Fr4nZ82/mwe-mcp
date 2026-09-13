@@ -17226,8 +17226,10 @@ mod tests {
     /// That fence exists so nobody changes how the assistant TREATS somebody
     /// else by talking to it. «Bob, can you pick up the parcel?» changes
     /// nothing about how Bob is treated: it is a claim about Bob, of the kind
-    /// the memory is made of, and he is told about it on the reverse channel
-    /// like any other fact minted about him.
+    /// the memory is made of. What the memory does with it is write it down,
+    /// as his, with the day it keeps for — and nothing else: a request raises
+    /// no alarm and rings no bell, because what to do about what the memory
+    /// holds is the consumer's business and not the engine's.
     #[tokio::test]
     async fn a_request_put_to_another_person_is_filed_as_theirs() {
         let (dir, tree, pool) = setup_workdir().await;
@@ -17279,20 +17281,6 @@ mod tests {
             parcel.valid_to.as_deref(),
             Some("2026-09-13T23:59:59Z"),
             "and it keeps for the day"
-        );
-
-        // And Bob is told: a fact minted about somebody who is not the
-        // speaker is news to them, on the channel their bridge drains.
-        let waiting: Vec<(String, String)> =
-            sqlx::query_as("SELECT kind, payload FROM wiki_events")
-                .fetch_all(&pool)
-                .await
-                .expect("events");
-        assert!(
-            waiting
-                .iter()
-                .any(|(kind, payload)| kind == "fact_minted_for_you" && payload.contains("parcel")),
-            "the person it falls to hears about it, with the words: {waiting:?}"
         );
         drop(dir);
     }

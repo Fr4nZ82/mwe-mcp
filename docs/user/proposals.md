@@ -8,8 +8,8 @@ another, merges two facts that said the same thing, closes a fact that stopped
 being true, changes who may read one. **A proposal is the note it leaves each
 time it does one of those**, and this page is the list of them, newest first.
 
-Two of them are not a note but a question, and those wait for an answer. They
-are marked **Pending**.
+Three of them are not a note but a question, and those wait for an answer.
+They are marked **Pending**.
 
 ## What you see
 
@@ -20,8 +20,8 @@ Above the table, four tabs: **All** (where the page opens), **Pending**,
   made*, *A link between pages*, *A page of its own*, *A fact moved*, *Two
   pages merged*, *A wiki of their own*, *Pages filed away*, *Pages moved wiki*,
   *Two facts merged*, *Facts closed*, *Dates corrected*, *Sharing changed*,
-  *A page read again*, and the two that are questions — *Two values for one detail* and *A request to
-  forget*. A rearrangement with no name of its own reads
+  *A page read again*, and the three that are questions — *A line on your
+  card*, *Two values for one detail* and *A request to forget*. A rearrangement with no name of its own reads
   *The memory rearranged*, and a row written by a newer engine than this one
   reads *Something changed* rather than being given a wrong label.
 - **What it says** — one sentence saying what happened, or what is being asked.
@@ -52,7 +52,7 @@ Only a **Pending** row can be answered, and the answer is given in the chat:
 **answer in chat** opens it with the proposal already summarised, and you say
 there what you want. See [The chat](the-chat.md).
 
-Two things arrive as a question.
+Three things arrive as a question.
 
 **Two values for one detail.** Your identity card holds who you are, and a
 handful of those are details you have only one of — when you were born, where
@@ -70,6 +70,15 @@ kinds: on a detail there can only be one of it keeps what was on record, which
 somebody entitled to put it there put there; on a detail a card may carry
 several of it keeps **both**, because throwing away something true costs more
 than carrying a line you can remove.
+
+**A line on your card.** Your card carries who you are, and some of what
+lands there is really something you are doing for a while — a mortgage, a
+secondment, a month covering for somebody. When the memory reads the page a
+line sits on and that line looks like a passage rather than a trait, **nothing
+is changed** and you are asked: keep it on your card, or move it off with the
+end it appears to have. Moving it off does not delete it — the fact stays, and
+what changes is whether it is read back as part of who you are. **You have 24
+hours**, and silence keeps it on your card.
 
 **A request to forget a fact.** When somebody asks for a fact to be forgotten
 and they are not the one who said it, everybody who can read that fact is asked

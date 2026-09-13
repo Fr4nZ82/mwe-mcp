@@ -106,6 +106,15 @@ pub mod kind {
     /// — see [`super::apply_slot_conflict`].
     pub const SLOT_CONFLICT: &str = "slot_conflict";
 
+    /// The page judge read a line of somebody's identity card as a passage
+    /// rather than a trait, and is asking them.
+    ///
+    /// The one verdict of the judge's five that is a QUESTION: the card is the
+    /// small always-on set a person is described by, and «this really was a
+    /// passage» and «the model misread a trait» look the same from the page.
+    /// Silence keeps the card as it is.
+    pub const CARD_RETYPE: &str = "card_retype";
+
     /// The judge read a page and corrected what the page itself said.
     ///
     /// It is handed the page's prose with every fact on it marked, and it may
@@ -128,6 +137,7 @@ pub mod kind {
         RAIL_ADD,
         SLOT_CONFLICT,
         PAGE_JUDGED,
+        CARD_RETYPE,
     ];
 
     /// `true` when `s` matches one of the canonical kinds.
@@ -897,6 +907,10 @@ async fn dispatch_apply_kind(
             let spec = apply_slot_conflict(pool, context, answers).await?;
             Ok(Some(spec))
         },
+        kind::CARD_RETYPE => {
+            let spec = apply_card_retype(pool, context, answers).await?;
+            Ok(Some(spec))
+        },
         // `PAGE_CREATE` is never reachable: it is emitted born-applied, so
         // it is never `pending` and this dispatcher never sees it — a
         // receipt, not a missing handler.
@@ -938,6 +952,195 @@ async fn apply_fact_forget(
         "variant": "fact_forget",
         "fact_id": fact_id_str,
         "tombstoned": touched,
+    }))
+}
+
+// ---------- card retype ----------
+
+/// The answer that leaves the card as it is, and the one silence picks: a line
+/// on somebody's card was put there as who they are, and a night's reading is
+/// not a reason to move it.
+const CARD_RETYPE_KEEP: &str = "keep";
+/// The answer that files the line as the passing state it turned out to be,
+/// with the end the page gave it.
+const CARD_RETYPE_MOVE: &str = "move";
+/// The question id both answers are given under.
+const CARD_RETYPE_QUESTION_ID: &str = "verdict";
+
+/// One line of an identity card the page judge read as a passage rather than a
+/// trait, as the engine hands it to the person whose card it is.
+///
+/// **Why this one is asked and the other four are not.** The judge's other
+/// verdicts act on ordinary material, where being wrong costs a fact that
+/// somebody can restate. This one acts on the small always-on set a person is
+/// described by, and the two cases it cannot tell apart from the page are «this
+/// really was a passage» and «the model misread a trait». The first is worth a
+/// question; the second, applied in the night, is a person's own record quietly
+/// rewritten. So the engine writes nothing and asks.
+#[derive(Debug, Clone)]
+pub struct CardRetype {
+    /// The card's line.
+    pub fact_id: crate::types::FactId,
+    /// Whose card it is — the person the question goes to.
+    pub subject: crate::types::Principal,
+    /// What the line says, for the question's own words.
+    pub text: String,
+    /// The end the judge read off the page, when it read one.
+    pub ends: Option<String>,
+    /// Where the line lives, for the audit trail.
+    pub source_path: String,
+    /// Its wiki, same.
+    pub wiki_id: String,
+}
+
+impl CardRetype {
+    /// The question, in the words the card's owner reads.
+    fn question(&self) -> String {
+        let until = self
+            .ends
+            .as_deref()
+            .map_or_else(String::new, |e| format!(", ending {e}"));
+        format!(
+            "Your card says \u{ab}{text}\u{bb}. Reading the page it is on, that looks like \
+             something you are doing for a while{until} rather than part of who you are. \
+             Keep it on your card, or move it off with an end?",
+            text = self.text,
+        )
+    }
+
+    /// The stored `context` the apply handler reads back.
+    fn context(&self) -> Value {
+        serde_json::json!({
+            "variant": kind::CARD_RETYPE,
+            "fact_id": self.fact_id.as_str(),
+            "subject_id": self.subject.to_string(),
+            "text": self.text,
+            "ends": self.ends,
+            "source_path": self.source_path,
+            "wiki_id": self.wiki_id,
+        })
+    }
+}
+
+/// Is the card's owner already being asked about this line?
+///
+/// The judge reads a page again whenever anything on it changes, so without
+/// this the same line would be put to the same person once a night for as long
+/// as the question went unanswered.
+///
+/// # Errors
+///
+/// - [`ProposalsError::Db`] for any SQL failure.
+pub async fn pending_card_retype(
+    pool: &SqlitePool,
+    fact_id: &crate::types::FactId,
+) -> Result<Option<String>> {
+    let found: Option<(String,)> = sqlx::query_as(
+        "SELECT proposal_id FROM structure_proposals
+          WHERE kind = ? AND status = 'pending'
+            AND json_extract(context, '$.fact_id') = ?
+          LIMIT 1",
+    )
+    .bind(kind::CARD_RETYPE)
+    .bind(fact_id.as_str())
+    .fetch_optional(pool)
+    .await?;
+    Ok(found.map(|(id,)| id))
+}
+
+/// Put the card line to its owner as a pending question, and return its
+/// `proposal_id` — or `None` when they are already being asked about it.
+///
+/// Addressed to the SUBJECT of the card ([`recipient_of_the_card`]), like every
+/// other question about what a card carries. **`keep` is the recommended
+/// answer**, so the timeout sweep leaves the card exactly as it is: silence is
+/// not consent to rewrite somebody's record.
+///
+/// # Errors
+///
+/// - [`ProposalsError::Db`] for any SQL failure.
+/// - [`ProposalsError::Json`] when the context or questions cannot be
+///   serialised.
+pub async fn emit_card_retype(pool: &SqlitePool, c: &CardRetype) -> Result<Option<String>> {
+    if pending_card_retype(pool, &c.fact_id).await?.is_some() {
+        return Ok(None);
+    }
+    let move_text = c.ends.as_deref().map_or_else(
+        || "Move it off my card \u{2014} it is something I am doing for a while.".to_owned(),
+        |e| format!("Move it off my card, ending {e}."),
+    );
+    let questions = serde_json::json!([{
+        "id": CARD_RETYPE_QUESTION_ID,
+        "text": c.question(),
+        "options": [
+            {
+                "id": CARD_RETYPE_KEEP,
+                "value": CARD_RETYPE_KEEP,
+                "text": "Keep it on my card \u{2014} it is part of who I am.",
+                "recommended": true,
+            },
+            {
+                "id": CARD_RETYPE_MOVE,
+                "value": CARD_RETYPE_MOVE,
+                "text": move_text,
+                "recommended": false,
+            },
+        ],
+    }]);
+    emit_proposal(
+        pool,
+        EmitParams::new(kind::CARD_RETYPE, c.context(), questions)
+            .with_recipient(recipient_of_the_card(&c.subject)),
+    )
+    .await
+    .map(Some)
+}
+
+/// Apply a `card_retype` proposal: the card's owner said what the line is.
+///
+/// - `keep` — nothing is written, and this is what silence applies.
+/// - `move` — the line becomes a `state` with the end the question carried, so
+///   the next rebuild of the card lets it go.
+///
+/// The line is never deleted either way: the fact stays, and what changes is
+/// what KIND of thing the memory says it is.
+async fn apply_card_retype(
+    pool: &SqlitePool,
+    context: &Value,
+    answers: &Value,
+) -> std::result::Result<Value, ApplyError> {
+    let fact_raw = context
+        .get("fact_id")
+        .and_then(Value::as_str)
+        .ok_or_else(|| ApplyError::InvalidPayload("card_retype context missing fact_id".into()))?;
+    let fact_id = crate::types::FactId::parse(fact_raw).map_err(|e| {
+        ApplyError::InvalidPayload(format!("card_retype fact_id {fact_raw:?}: {e}"))
+    })?;
+    // An answers object with nothing in it is what an apply with no verdict
+    // sends, and it takes the recommended answer: the card stands.
+    let verdict = answers
+        .get(CARD_RETYPE_QUESTION_ID)
+        .and_then(Value::as_str)
+        .unwrap_or(CARD_RETYPE_KEEP);
+    if verdict != CARD_RETYPE_MOVE {
+        return Ok(serde_json::json!({
+            "variant": kind::CARD_RETYPE,
+            "verdict": CARD_RETYPE_KEEP,
+            "fact_id": fact_raw,
+            "changed": false,
+        }));
+    }
+    let ends = context.get("ends").and_then(Value::as_str);
+    let changed =
+        crate::fact_index::set_fact_type(pool, &fact_id, "state", ends, chrono::Utc::now())
+            .await
+            .map_err(|e| ApplyError::HandlerData(format!("card_retype: {e}")))?;
+    Ok(serde_json::json!({
+        "variant": kind::CARD_RETYPE,
+        "verdict": CARD_RETYPE_MOVE,
+        "fact_id": fact_raw,
+        "ends": ends,
+        "changed": changed.is_some(),
     }))
 }
 
@@ -2543,10 +2746,90 @@ mod tests {
         assert_eq!(bad, Err("nope".to_owned()));
     }
 
+    /// **Answering the card question: `keep` writes nothing, `move` files the
+    /// line as the passing state it turned out to be.**
+    ///
+    /// Silence is `keep` — the timeout sweep applies a proposal with no answer
+    /// at all, which is the path this drives first. Either way the line stays
+    /// a fact: what an answer changes is what KIND of thing the memory says it
+    /// is, and therefore whether the card carries it.
+    #[tokio::test]
+    async fn answering_a_card_retype_moves_the_line_or_leaves_it() {
+        let (_workdir, pool) = fresh_pool().await;
+        let fact_id = seed_fact(&pool, KEPT_ID, "user:zoe", Some("user:zoe")).await;
+        let context = json!({
+            "variant": kind::CARD_RETYPE,
+            "fact_id": fact_id.as_str(),
+            "subject_id": "user:zoe",
+            "text": "Zoe paga il mutuo fino ad aprile 2031",
+            "ends": "2031-04-30T23:59:59Z",
+            "source_path": "wikis/bob/@profile.md",
+            "wiki_id": "bob",
+        });
+
+        // Silence, in the shape the timeout sweep sends it.
+        let spec = apply_card_retype(&pool, &context, &json!({}))
+            .await
+            .expect("keep applies");
+        assert_eq!(spec.get("changed").and_then(Value::as_bool), Some(false));
+        let row = crate::fact_index::find_by_id(&pool, &fact_id)
+            .await
+            .unwrap()
+            .expect("row");
+        assert_eq!(row.fact_type.as_deref(), Some("bio"), "the card stands");
+        assert!(row.valid_to.is_none());
+
+        // And the owner saying it is a passage.
+        let spec = apply_card_retype(&pool, &context, &json!({"verdict": "move"}))
+            .await
+            .expect("move applies");
+        assert_eq!(spec.get("changed").and_then(Value::as_bool), Some(true));
+        let row = crate::fact_index::find_by_id(&pool, &fact_id)
+            .await
+            .unwrap()
+            .expect("row");
+        assert_eq!(row.fact_type.as_deref(), Some("state"));
+        assert!(
+            row.valid_to
+                .as_deref()
+                .is_some_and(|v| v.starts_with("2031-04-30")),
+            "with the end the question carried: {:?}",
+            row.valid_to
+        );
+        assert!(row.deleted_at.is_none(), "the line is never deleted");
+    }
+
+    /// One line, one question: the judge reads a page again whenever anything
+    /// on it moves, and the card's owner is not asked the same thing nightly.
+    #[tokio::test]
+    async fn a_card_line_is_only_asked_about_once() {
+        let (_workdir, pool) = fresh_pool().await;
+        let fact_id = seed_fact(&pool, KEPT_ID, "user:zoe", Some("user:zoe")).await;
+        let asking = CardRetype {
+            fact_id: fact_id.clone(),
+            subject: "user:zoe".parse().unwrap(),
+            text: "Zoe paga il mutuo fino ad aprile 2031".to_owned(),
+            ends: Some("2031-04-30T23:59:59Z".to_owned()),
+            source_path: "wikis/bob/@profile.md".to_owned(),
+            wiki_id: "bob".to_owned(),
+        };
+        let first = emit_card_retype(&pool, &asking).await.expect("emitted");
+        assert!(first.is_some());
+        let second = emit_card_retype(&pool, &asking).await.expect("no error");
+        assert!(second.is_none(), "the second reading asks nothing");
+        assert_eq!(
+            pending_card_retype(&pool, &fact_id)
+                .await
+                .expect("lookup")
+                .as_deref(),
+            first.as_deref(),
+        );
+    }
+
     // ---- kind constants ----
 
     #[test]
-    fn kind_constants_are_the_seven_the_engine_emits() {
+    fn kind_constants_are_the_eight_the_engine_emits() {
         assert_eq!(kind::WIKI_PROMOTE, "wiki_promote");
         assert_eq!(kind::DEDUP_MERGE, "dedup_merge");
         assert_eq!(kind::FACT_FORGET, "fact_forget");
@@ -2554,18 +2837,20 @@ mod tests {
         assert_eq!(kind::RAIL_ADD, "rail_add");
         assert_eq!(kind::SLOT_CONFLICT, "slot_conflict");
         assert_eq!(kind::PAGE_JUDGED, "page_judged");
-        // Three questionnaire kinds, the fact-forget vote, and three
+        assert_eq!(kind::CARD_RETYPE, "card_retype");
+        // Four questionnaire kinds, the fact-forget vote, and three
         // receipt-only kinds — never `pending`, emitted born-applied so what
         // the engine decided about the shape of the memory (a page it
         // invented, a link it required, a page it read back) leaves a record
         // the owner can read.
-        assert_eq!(kind::ALL.len(), 7);
+        assert_eq!(kind::ALL.len(), 8);
         assert!(kind::is_canonical("wiki_promote"));
         assert!(kind::is_canonical("fact_forget"));
         assert!(kind::is_canonical("page_create"));
         assert!(kind::is_canonical("rail_add"));
         assert!(kind::is_canonical("slot_conflict"));
         assert!(kind::is_canonical("page_judged"));
+        assert!(kind::is_canonical("card_retype"));
         // Plausible names that are not kinds: the list above is the whole
         // list, and a canonical check that quietly accepted one of these
         // would let a proposal through with nothing to apply it.

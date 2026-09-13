@@ -553,6 +553,10 @@ pub struct PageJudgementReport {
     pub pages_left: usize,
     /// One line per change, `fact_id · verb`.
     pub changed: Vec<String>,
+    /// One line per verdict the engine put to a person instead of carrying
+    /// out, `fact_id · proposal_id`. Only the identity card's own correction
+    /// goes this way.
+    pub asked: Vec<String>,
     /// One line per verdict the engine would not carry out, with the reason.
     pub refused: Vec<String>,
     /// Receipt ids, one per page that changed.
@@ -5556,6 +5560,9 @@ struct PageDecision {
 enum VerdictOutcome {
     /// `(fact_id, verb, detail)`.
     Applied(String, &'static str, String),
+    /// `(fact_id, proposal_id)` — the engine wrote nothing and put the
+    /// question to the person whose card it is.
+    Asked(String, String),
     /// Why the engine would not do what the model asked.
     Refused(&'static str),
     /// The model looked and left the fact alone.
@@ -5577,9 +5584,11 @@ enum VerdictOutcome {
 /// — at night — which of two identical claims survives. It never deletes,
 /// never moves a fact to another subject, never changes who may read it and
 /// never rewrites what it says: those are declared verbs a person asks for.
-/// And **the identity core is out of reach** but for one verb
-/// ([`the_card_is_out_of_reach`]): a name, a birth date, a relationship
-/// changes when a person says it changed.
+/// And **the identity core is out of reach** ([`the_card_is_out_of_reach`]):
+/// a name, a birth date, a relationship changes when a person says it
+/// changed. The one correction a card can need is not applied either — it is
+/// put to the card's owner as a question
+/// ([`proposals::emit_card_retype`]), and silence keeps the card.
 ///
 /// **Newest first.** The cap chooses when a day wrote onto more pages than it
 /// can read, and the page written on an hour ago is the one still being talked
@@ -5674,7 +5683,7 @@ async fn run_page_judgement(
                 continue;
             },
         };
-        let (applied, refused) = apply_page_decision(
+        let outcomes = apply_page_decision(
             pool,
             tree,
             &embedder,
@@ -5686,9 +5695,10 @@ async fn run_page_judgement(
             &mut report,
         )
         .await?;
-        if applied.is_empty() {
-            // Nothing was done to this page, so the same question about the
-            // same facts is not worth asking again until something changes.
+        if outcomes.applied.is_empty() {
+            // The page's facts stand exactly as they were read — a question
+            // put to somebody is not a change to them — so the same reading of
+            // the same page is not worth buying again until something moves.
             rem_verdicts::record_negative(
                 pool,
                 rem_verdicts::kind::JUDGEMENT,
@@ -5696,9 +5706,11 @@ async fn run_page_judgement(
                 &page.source_path,
             )
             .await?;
+        }
+        if !outcomes.worth_a_receipt() {
             continue;
         }
-        match emit_page_receipt(pool, &page, depth, &applied, &refused).await {
+        match emit_page_receipt(pool, &page, depth, &outcomes).await {
             Ok(receipt) => report.receipts.push(receipt),
             Err(e) => report.errors.push(format!("{source_path} receipt: {e}")),
         }
@@ -5955,9 +5967,8 @@ async fn apply_page_decision(
     now: DateTime<Utc>,
     depth: JudgementDepth,
     report: &mut PageJudgementReport,
-) -> Result<(Vec<serde_json::Value>, Vec<serde_json::Value>)> {
-    let mut applied: Vec<serde_json::Value> = Vec::new();
-    let mut refused: Vec<serde_json::Value> = Vec::new();
+) -> Result<PageOutcomes> {
+    let mut outcomes = PageOutcomes::default();
     let mut ordered: Vec<(usize, &String, &LlmPageVerdict)> = decision
         .verdicts
         .iter()
@@ -5987,11 +5998,23 @@ async fn apply_page_decision(
             VerdictOutcome::Applied(fact_id, verb, detail) => {
                 decided.insert(fact_id.clone());
                 report.changed.push(format!("{fact_id} · {verb}"));
-                applied.push(serde_json::json!({
+                outcomes.applied.push(serde_json::json!({
                     "marker": spelling,
                     "fact_id": fact_id,
                     "verb": verb,
                     "detail": detail,
+                }));
+            },
+            VerdictOutcome::Asked(fact_id, proposal_id) => {
+                // Nothing was written, so the fact is not «decided»: what
+                // stands in the way of a second verdict about it is the
+                // pending question itself.
+                report.asked.push(format!("{fact_id} · {proposal_id}"));
+                outcomes.asked.push(serde_json::json!({
+                    "marker": spelling,
+                    "fact_id": fact_id,
+                    "verb": "retype",
+                    "detail": format!("asked the card's owner ({proposal_id})"),
                 }));
             },
             VerdictOutcome::Refused(why) => {
@@ -6005,7 +6028,7 @@ async fn apply_page_decision(
                     reason = why,
                     "page judge: verdict refused"
                 );
-                refused.push(serde_json::json!({
+                outcomes.refused.push(serde_json::json!({
                     "marker": spelling,
                     "verdict": verdict.verdict,
                     "reason": why,
@@ -6014,7 +6037,26 @@ async fn apply_page_decision(
             VerdictOutcome::Kept => {},
         }
     }
-    Ok((applied, refused))
+    Ok(outcomes)
+}
+
+/// What one page's reading came to: what the engine did, what it put to a
+/// person instead, and what it would not do.
+#[derive(Debug, Default)]
+struct PageOutcomes {
+    applied: Vec<serde_json::Value>,
+    asked: Vec<serde_json::Value>,
+    refused: Vec<serde_json::Value>,
+}
+
+impl PageOutcomes {
+    /// Whether this reading did anything worth a receipt. A page where every
+    /// verdict was `keep` — or where the only answer was one the engine
+    /// refused — leaves no row: the refusal is in the log and the page is
+    /// exactly as it was.
+    const fn worth_a_receipt(&self) -> bool {
+        !self.applied.is_empty() || !self.asked.is_empty()
+    }
 }
 
 /// Whether this pass may do this to a fact of somebody's identity core.
@@ -6025,11 +6067,13 @@ async fn apply_page_decision(
 /// standing health constraint changes when a person says it changed, and never
 /// because a night read a page and thought it saw something.
 ///
-/// The one thing the judge may do to such a fact is take it OFF the card —
-/// `retype`, the verb that says «this reads as who somebody IS and is really a
-/// passage of some months». That is the whole reason the card is offered to
-/// this pass at all, so it is the one exception, and the other four verbs are
-/// refused by name on the receipt.
+/// The one thing the judge may do about such a fact is ASK to take it off the
+/// card — `retype`, the verb that says «this reads as who somebody IS and is
+/// really a passage of some months», which on card material opens a question
+/// to its owner rather than writing anything
+/// ([`proposals::emit_card_retype`]). That is the whole reason the card is
+/// offered to this pass at all, so it is the one exception here, and the other
+/// four verbs are refused by name on the receipt.
 fn the_card_is_out_of_reach(row: &FactIndexRow, verb: &str) -> bool {
     row.is_identity_core() && verb != "retype"
 }
@@ -6212,6 +6256,33 @@ async fn apply_one_page_verdict(
                 .valid_to
                 .as_deref()
                 .and_then(|raw| fact_index::canonical_bound(raw, fact_index::DayEdge::End));
+
+            // **On the identity core this is a question, not an act.** Off the
+            // page, «this really was a passage» and «the model misread a
+            // trait» look the same, and one of them is somebody's own record
+            // rewritten while they slept. So the card's owner is asked, the
+            // engine writes nothing, and silence keeps the card as it is
+            // ([`proposals::emit_card_retype`]). Elsewhere — a `bio` fact that
+            // is not always-on card material — the correction is ordinary and
+            // lands act-first like the rest.
+            if row.is_identity_core() {
+                let asking = proposals::CardRetype {
+                    fact_id: row.fact_id.clone(),
+                    subject: row.subject_id.clone(),
+                    text: one_line_capped(&row.text, 300),
+                    ends: end.clone(),
+                    source_path: row.source_path.clone(),
+                    wiki_id: row.wiki_id.clone(),
+                };
+                return Ok(proposals::emit_card_retype(pool, &asking).await?.map_or(
+                    VerdictOutcome::Refused(
+                        "the card's owner is already being asked about this line",
+                    ),
+                    |proposal_id| {
+                        VerdictOutcome::Asked(row.fact_id.as_str().to_owned(), proposal_id)
+                    },
+                ));
+            }
             let op = wal::begin_rem_op(
                 pool,
                 cycle_id,
@@ -6412,15 +6483,15 @@ async fn emit_page_receipt(
     pool: &SqlitePool,
     page: &JudgedPage,
     depth: JudgementDepth,
-    applied: &[serde_json::Value],
-    refused: &[serde_json::Value],
+    outcomes: &PageOutcomes,
 ) -> Result<String> {
     let context = serde_json::json!({
         "source_path": page.source_path,
         "wiki_id": page.wiki_id,
         "pass": depth.label(),
-        "applied": applied,
-        "refused": refused,
+        "applied": outcomes.applied,
+        "asked": outcomes.asked,
+        "refused": outcomes.refused,
     });
     let recipient = page
         .subject
@@ -14179,7 +14250,9 @@ mod tests {
             );
         }
 
-        // And the one verb the card IS offered to the judge for.
+        // And the one verb the card IS offered to the judge for — here on a
+        // `bio` fact that is NOT always-on card material, which is where the
+        // correction is ordinary and lands act-first.
         let llm = FakeLlmBackend::new(
             "judge-retype",
             "{\"verdicts\":{\"f2\":{\"verdict\":\"retype\",\"fact_type\":\"state\",\"valid_to\":\"2031-04-30\"}}}",
@@ -14207,6 +14280,110 @@ mod tests {
                 .as_deref(),
             Some("state")
         );
+        drop(dir);
+    }
+
+    /// **On the identity core, the judge asks instead of writing.**
+    ///
+    /// A birth date and a secondment are both `bio` and both always-on, and
+    /// from the page «this really was a passage» and «the model misread a
+    /// trait» look exactly alike. One of those, applied in the night, is a
+    /// person's own record rewritten while they slept — so the card's owner is
+    /// asked, the memory is left as it stands, and silence keeps the card.
+    ///
+    /// The question goes to whoever the card belongs to, not to whoever
+    /// happened to say the line.
+    #[tokio::test]
+    async fn a_retype_on_the_identity_core_is_put_to_its_owner() {
+        let (dir, tree, pool) = setup_workdir().await;
+        write_wiki(&tree, "zoe", "Zoe", "wiki-user");
+        let core = plant_on_page_of_kind(
+            &tree,
+            &pool,
+            "zoe",
+            crate::wiki::PROFILE_FILENAME,
+            "Zoe paga il mutuo fino ad aprile 2031",
+            "zoe",
+            "bio",
+            None,
+        )
+        .await;
+        sqlx::query("UPDATE fact_index SET salience = 'high' WHERE fact_id = ?")
+            .bind(core.as_str())
+            .execute(&pool)
+            .await
+            .expect("always-on card material");
+
+        let llm = FakeLlmBackend::new(
+            "judge",
+            "{\"verdicts\":{\"f1\":{\"verdict\":\"retype\",\"fact_type\":\"state\",\"valid_to\":\"2031-04-30\"}}}",
+        );
+        let report = judge_the_page(
+            &pool,
+            &tree,
+            &llm,
+            std::slice::from_ref(&core),
+            JudgementDepth::Nightly,
+            &RemPolicy::default(),
+        )
+        .await;
+
+        assert!(
+            report.changed.is_empty(),
+            "nothing is written on the card: {report:?}"
+        );
+        assert_eq!(report.asked.len(), 1, "{report:?}");
+        let row = fact_index::find_by_id(&pool, &core)
+            .await
+            .unwrap()
+            .expect("row");
+        assert_eq!(row.fact_type.as_deref(), Some("bio"), "still who she is");
+        assert!(row.valid_to.is_none(), "and with no end");
+
+        // The question is pending, addressed to Zoe, and answering «keep» —
+        // which is what silence applies — leaves the card alone.
+        let (kind_of, status, recipient): (String, String, Option<String>) = sqlx::query_as(
+            "SELECT kind, status, recipient_id FROM structure_proposals \
+             WHERE json_extract(context, '$.fact_id') = ?",
+        )
+        .bind(core.as_str())
+        .fetch_one(&pool)
+        .await
+        .expect("the question exists");
+        assert_eq!(kind_of, proposals::kind::CARD_RETYPE);
+        assert_eq!(status, "pending");
+        assert_eq!(recipient.as_deref(), Some("user:zoe"));
+
+        // And read again, the same page does not ask a second time.
+        let llm2 = FakeLlmBackend::new(
+            "judge-again",
+            "{\"verdicts\":{\"f1\":{\"verdict\":\"retype\",\"fact_type\":\"state\",\"valid_to\":\"2031-04-30\"}}}",
+        );
+        let again = judge_the_page(
+            &pool,
+            &tree,
+            &llm2,
+            std::slice::from_ref(&core),
+            JudgementDepth::Nightly,
+            &RemPolicy::default(),
+        )
+        .await;
+        assert!(again.asked.is_empty(), "{again:?}");
+        assert!(
+            again
+                .refused
+                .iter()
+                .any(|r| r.contains("already being asked")),
+            "{again:?}"
+        );
+        let open_questions: i64 = sqlx::query_scalar(
+            "SELECT count(*) FROM structure_proposals WHERE kind = ? AND status = 'pending'",
+        )
+        .bind(proposals::kind::CARD_RETYPE)
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+        assert_eq!(open_questions, 1, "one line, one question");
         drop(dir);
     }
 

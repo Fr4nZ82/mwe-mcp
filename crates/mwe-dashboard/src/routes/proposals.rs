@@ -689,6 +689,7 @@ fn label(row: &ProposalRow) -> &'static str {
         kind::RAIL_ADD => "A link between pages",
         kind::SLOT_CONFLICT => "Two values for one detail",
         kind::PAGE_JUDGED => "A page read again",
+        kind::CARD_RETYPE => "A line on your card",
         // A row written by a newer engine shows as itself rather than
         // being swallowed into a wrong label.
         _ => "Something changed",
@@ -709,6 +710,12 @@ fn headline(row: &ProposalRow) -> String {
             "Two facts that said the same thing became one; the other was retired.".to_owned()
         },
         kind::PAGE_JUDGED => page_judged_headline(c),
+        kind::CARD_RETYPE => format!(
+            "Reading the page it sits on, \u{ab}{what}\u{bb} looks like something you are \
+             doing for a while rather than part of who you are. Nothing was changed: you \
+             are being asked whether it stays on your card.",
+            what = str_at(c, "text").unwrap_or("a line on your card"),
+        ),
         kind::FACT_FORGET => format!(
             "Asked by {who}, who is not the one who said the fact: everybody who can \
              read it is voting. Silence lets the forget through; a majority of no keeps \

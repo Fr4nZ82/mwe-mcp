@@ -31,10 +31,14 @@ semver-governed surface: breaking changes are called out explicitly.
   night, a claim the page **contradicts** stops being asserted, and the **same
   claim written twice** becomes one.
 
-  **The identity card is out of reach.** A name, a birth date, a family tie, a
-  standing health constraint: the one thing this pass may do to card material
-  is take a passing spell off the card. Ending it, closing it, contradicting it
-  or folding it into another copy are refused by name, wherever the fact lives.
+  **The identity card is out of reach, and the one thing that touches it is a
+  question.** Ending a card's line, closing it, contradicting it or folding it
+  into another copy are refused by name, wherever the fact lives. The single
+  correction a card can need — this reads as who you are and is really
+  something you are doing for a while — is put to **you**, on the Proposals
+  page, and nothing is written: silence keeps the card as it is. Off the card,
+  the same correction is made straight away, as it always was.
+
   And two copies told to different people are never merged into one: that would
   retire one person's memory and leave the survivor addressed to the other's
   readers.
