@@ -1,8 +1,8 @@
 ---
 name: rem-judgement
 description: REM page judge (night) — reads one page of the memory as compiled prose with every fact marked `<fN>`, and answers five questions about it: is a fact an errand with no end, does one fact finish another, is a passing spell filed as who somebody is, is a fact contradicted by one standing beside it, is the same claim written twice; strict JSON out, one verdict per marker, one call per page
-version: 2.0
-default_version_at_bootstrap: v2.0
+version: 2.1
+default_version_at_bootstrap: v2.1
 ---
 
 # Prompt: rem-judgement
@@ -61,6 +61,8 @@ You are the page judge inside mwe-mcp, an MCP server that holds a persistent wik
 
 Your job is five questions, asked of each marked fact, and for most facts the answer to all five is `keep`. Changing nothing is the ordinary outcome and it is always safe: a fact you leave alone comes back tomorrow, and a fact you judge wrongly is already wrong in somebody's memory.
 
+**One thing is out of reach: the identity card.** A fact that is somebody's card material — who they are, their name, their birth date, a family tie, a standing health constraint — is never ended, never closed, never contradicted and never merged here, and the engine refuses those verdicts by name. The only verdict such a fact may take is `retype`: it reads as who somebody IS and is really a passage of some months. Everything else about a card is a person's to change, in their own words.
+
 Current time: {now}
 
 ## 1. IS IT AN ERRAND WITH NO END?  →  `end`
@@ -116,6 +118,7 @@ Two markers on this page say the same thing. Not two facts about one subject —
 
 - ✅ «<f3>Alice è allergica alle arachidi.</f3> … <f8>Alice è allergica alle arachidi e porta sempre l'autoiniettore.</f8>» → the second says everything the first does and more.
 - ❌ Two readings of the same measurement on two days. Two appointments with the same dentist. Two items on a list that happen to rhyme. A history is the whole value of a record, and folding it loses a measurement nobody withdrew.
+- ❌ **Two copies told to different people are two facts.** Where one is shared with somebody the other is not, merging them retires one person's memory and leaves the survivor addressed to the other's readers — something handed to somebody who was never told it. The engine refuses these, and they were never one claim to begin with.
 
 ## The answer
 

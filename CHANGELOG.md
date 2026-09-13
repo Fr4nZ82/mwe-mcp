@@ -31,12 +31,20 @@ semver-governed surface: breaking changes are called out explicitly.
   night, a claim the page **contradicts** stops being asserted, and the **same
   claim written twice** becomes one.
 
+  **The identity card is out of reach.** A name, a birth date, a family tie, a
+  standing health constraint: the one thing this pass may do to card material
+  is take a passing spell off the card. Ending it, closing it, contradicting it
+  or folding it into another copy are refused by name, wherever the fact lives.
+  And two copies told to different people are never merged into one: that would
+  retire one person's memory and leave the survivor addressed to the other's
+  readers.
+
   It runs after every hourly round on the pages that round touched, with the
   first three questions, and again at night over the day's pages with all five.
   Each correction is made and shown on **Proposals** as *A page read again*,
   which also lists what the model asked for that the engine refused, and why —
-  a marker that is not on the page, a fact that already ends, a fact on an
-  identity card, which is never retired while everybody is asleep.
+  a marker that is not on the page, a fact that already ends, a card the verb
+  may not touch.
 
   It costs one model call per page that changed, not one per fact. Two
   ceilings on **REM settings** bound it: 30 pages a night and 5 an hour by

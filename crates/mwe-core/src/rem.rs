@@ -5577,6 +5577,9 @@ enum VerdictOutcome {
 /// — at night — which of two identical claims survives. It never deletes,
 /// never moves a fact to another subject, never changes who may read it and
 /// never rewrites what it says: those are declared verbs a person asks for.
+/// And **the identity core is out of reach** but for one verb
+/// ([`the_card_is_out_of_reach`]): a name, a birth date, a relationship
+/// changes when a person says it changed.
 ///
 /// **Newest first.** The cap chooses when a day wrote onto more pages than it
 /// can read, and the page written on an hour ago is the one still being talked
@@ -6014,6 +6017,23 @@ async fn apply_page_decision(
     Ok((applied, refused))
 }
 
+/// Whether this pass may do this to a fact of somebody's identity core.
+///
+/// **Nothing on the identity core is closed, ended or retired while everybody
+/// is asleep.** It is the rule [`FactIndexRow::is_identity_core`] states and
+/// the dedup revisor already holds to: a name, a birth date, a relationship, a
+/// standing health constraint changes when a person says it changed, and never
+/// because a night read a page and thought it saw something.
+///
+/// The one thing the judge may do to such a fact is take it OFF the card —
+/// `retype`, the verb that says «this reads as who somebody IS and is really a
+/// passage of some months». That is the whole reason the card is offered to
+/// this pass at all, so it is the one exception, and the other four verbs are
+/// refused by name on the receipt.
+fn the_card_is_out_of_reach(row: &FactIndexRow, verb: &str) -> bool {
+    row.is_identity_core() && verb != "retype"
+}
+
 /// Whether this verdict would act on a fact an earlier verdict of the same
 /// reading already changed — the judged fact itself, or the other fact it
 /// names.
@@ -6065,6 +6085,11 @@ async fn apply_one_page_verdict(
     let said_at = fact_index::instant_of(&row.created_at).unwrap_or(now);
     match verdict.verdict.trim() {
         "keep" | "" => Ok(VerdictOutcome::Kept),
+
+        // The identity core, before anything else is considered.
+        verb if the_card_is_out_of_reach(row, verb) => Ok(VerdictOutcome::Refused(
+            "a fact on somebody's identity card is only ever RETYPED, never closed",
+        )),
 
         // 1 — an errand, true of its day and of no other.
         "end" => {
@@ -6130,6 +6155,14 @@ async fn apply_one_page_verdict(
             }
             if open.valid_to.is_some() {
                 return Ok(VerdictOutcome::Refused("it is already closed"));
+            }
+            // The same rule as above, asked of the fact this verb actually
+            // closes: here it is the TARGET that would be retired, not the
+            // fact the verdict is about.
+            if the_card_is_out_of_reach(open, "closes") {
+                return Ok(VerdictOutcome::Refused(
+                    "a fact on somebody's identity card is only ever RETYPED, never closed",
+                ));
             }
             let reason = match verdict.reason.as_deref() {
                 Some("retracted") => fact_index::decay::RETRACTED,
@@ -6295,6 +6328,19 @@ async fn apply_one_page_verdict(
             if loser.is_identity_core() {
                 return Ok(VerdictOutcome::Refused(
                     "a fact on somebody's identity core is never retired in the background",
+                ));
+            }
+            // **Same words, two audiences, two facts.** The dedup revisor
+            // refuses such a pair before it ever reaches a model
+            // ([`reader_sets_differ`]); the judge meets the pair on a page
+            // instead of nominating it, so the gate has to stand here too.
+            // Merging them would retire one person's memory and leave the
+            // survivor addressing the other's readers — something handed to
+            // somebody who was never told it, and unrecoverable once the
+            // loser's bytes are off the page.
+            if reader_sets_differ(winner, loser) {
+                return Ok(VerdictOutcome::Refused(
+                    "these two are told to different people, so they are two facts",
                 ));
             }
             let op = wal::begin_rem_op(
@@ -13957,6 +14003,10 @@ mod tests {
     /// holds to: nothing on a person's identity core is retired while
     /// everybody is asleep. A relationship, an allergy, a name changes on an
     /// explicit correction or not at all.
+    ///
+    /// Here the card's copy is the one that would be RETIRED while the fact
+    /// being judged is ordinary material — the case the whole-fact guard above
+    /// does not see and this one does.
     #[tokio::test]
     async fn a_duplicate_on_the_identity_core_is_refused() {
         let (dir, tree, pool) = setup_workdir().await;
@@ -13972,6 +14022,10 @@ mod tests {
             None,
         )
         .await;
+        // The newer copy is ordinary material — so it is the one that would
+        // WIN the merge, and the loser is the card's. That is the case this
+        // guard is for: the fact being judged is touchable, the one it would
+        // retire is not.
         let core_new = plant_on_page_of_kind(
             &tree,
             &pool,
@@ -13979,13 +14033,12 @@ mod tests {
             "profilo.md",
             "Carol è la sorella di Alice e vive a Bologna",
             "alice",
-            "bio",
+            "state",
             None,
         )
         .await;
-        sqlx::query("UPDATE fact_index SET salience = 'high' WHERE fact_id IN (?, ?)")
+        sqlx::query("UPDATE fact_index SET salience = 'high' WHERE fact_id = ?")
             .bind(core_old.as_str())
-            .bind(core_new.as_str())
             .execute(&pool)
             .await
             .expect("mark identity core");
@@ -14020,6 +14073,210 @@ mod tests {
                 .is_none(),
             "a fact on the card is never retired while everybody is asleep"
         );
+        drop(dir);
+    }
+
+    /// **The identity card is only ever RETYPED.**
+    ///
+    /// A birth date is `bio` and reserved for the card, and a night that read
+    /// a page and thought it saw a contradiction could close it — the page
+    /// selection lets `@profile.md` through (it must: the one correction the
+    /// card needs is the mortgage filed as who somebody is), and four of the
+    /// five verbs would have gone straight to `close_validity`.
+    ///
+    /// So the rule is on the FACT, not the page: all four closing verbs are
+    /// refused by name on anything the identity core carries, wherever it
+    /// lives, and `retype` — the verb that takes a fact OFF the card — is the
+    /// one exception.
+    #[tokio::test]
+    #[allow(
+        clippy::too_many_lines,
+        reason = "the five verbs against one card fact are the test: splitting them hides that this is the whole list"
+    )]
+    async fn a_fact_on_the_identity_card_is_only_ever_retyped() {
+        let (dir, tree, pool) = setup_workdir().await;
+        write_wiki(&tree, "alice", "Alice", "wiki-user");
+        let card_fact = plant_on_page_of_kind(
+            &tree,
+            &pool,
+            "alice",
+            crate::wiki::PROFILE_FILENAME,
+            "Alice è nata il 23 maggio 1984",
+            "alice",
+            "bio",
+            None,
+        )
+        .await;
+        let beside_it = plant_on_page_of_kind(
+            &tree,
+            &pool,
+            "alice",
+            crate::wiki::PROFILE_FILENAME,
+            "Alice paga il mutuo fino ad aprile 2031",
+            "alice",
+            "bio",
+            None,
+        )
+        .await;
+        sqlx::query("UPDATE fact_index SET salience = 'high' WHERE fact_id = ?")
+            .bind(card_fact.as_str())
+            .execute(&pool)
+            .await
+            .expect("the birth date is always-on card material");
+
+        // Every verb that would retire it, one pass each.
+        for (answer, what) in [
+            (
+                "{\"verdicts\":{\"f1\":{\"verdict\":\"end\",\"valid_to\":\"2026-09-13\"}}}"
+                    .to_owned(),
+                "end",
+            ),
+            (
+                "{\"verdicts\":{\"f2\":{\"verdict\":\"closes\",\"target\":\"f1\",\"reason\":\"completed\"}}}"
+                    .to_owned(),
+                "closes",
+            ),
+            (
+                "{\"verdicts\":{\"f1\":{\"verdict\":\"contradicted\",\"by\":\"f2\"}}}".to_owned(),
+                "contradicted",
+            ),
+            (
+                "{\"verdicts\":{\"f1\":{\"verdict\":\"duplicate_of\",\"target\":\"f2\"}}}".to_owned(),
+                "duplicate_of",
+            ),
+        ] {
+            // A model id of its own per round: the memo is keyed on it, and
+            // this page comes back unchanged every time, so one name would
+            // mean only the first verb was ever asked.
+            let llm = FakeLlmBackend::new(format!("judge-{what}"), answer);
+            let report = judge_the_page(
+                &pool,
+                &tree,
+                &llm,
+                std::slice::from_ref(&card_fact),
+                JudgementDepth::Nightly,
+                &RemPolicy::default(),
+            )
+            .await;
+            assert!(
+                report.changed.is_empty(),
+                "`{what}` must not touch the card: {report:?}"
+            );
+            assert!(
+                report.refused.iter().any(|r| r.contains("identity card")
+                    || r.contains("identity core")),
+                "`{what}` must be refused BY NAME: {report:?}"
+            );
+            let row = fact_index::find_by_id(&pool, &card_fact)
+                .await
+                .unwrap()
+                .expect("row");
+            assert!(
+                row.valid_to.is_none()
+                    && row.decay_reason.is_none()
+                    && row.superseded_at.is_none(),
+                "`{what}` left a mark on the card: {row:?}"
+            );
+        }
+
+        // And the one verb the card IS offered to the judge for.
+        let llm = FakeLlmBackend::new(
+            "judge-retype",
+            "{\"verdicts\":{\"f2\":{\"verdict\":\"retype\",\"fact_type\":\"state\",\"valid_to\":\"2031-04-30\"}}}",
+        );
+        let report = judge_the_page(
+            &pool,
+            &tree,
+            &llm,
+            std::slice::from_ref(&beside_it),
+            JudgementDepth::Nightly,
+            &RemPolicy::default(),
+        )
+        .await;
+        assert_eq!(
+            report.changed,
+            vec![format!("{} · retype", beside_it.as_str())],
+            "the mortgage comes off the card: {report:?}"
+        );
+        assert_eq!(
+            fact_index::find_by_id(&pool, &beside_it)
+                .await
+                .unwrap()
+                .expect("row")
+                .fact_type
+                .as_deref(),
+            Some("state")
+        );
+        drop(dir);
+    }
+
+    /// **Same words, two audiences, two facts.**
+    ///
+    /// The dedup revisor refuses such a pair before it ever reaches a model,
+    /// because merging them retires one person's memory and leaves the
+    /// survivor addressing the other's readers. The judge does not nominate
+    /// pairs — it meets them already written on a page — so the same gate has
+    /// to stand on this road too, or the rule would hold only where the old
+    /// pass happened to look.
+    #[tokio::test]
+    async fn two_copies_told_to_different_people_are_never_merged() {
+        let (dir, tree, pool) = setup_workdir().await;
+        write_wiki(&tree, "bob", "Bob", "wiki-user");
+        let shared = plant_fact_with_acl(
+            &tree,
+            &pool,
+            "bob",
+            "Bob prende il tè con il latte ogni mattina",
+            "bob",
+            vec![Principal::User("carol".to_owned())],
+            None,
+        )
+        .await;
+        let private = plant_fact_with_acl(
+            &tree,
+            &pool,
+            "bob",
+            "Bob prende il tè con un goccio di latte la mattina",
+            "bob",
+            Vec::new(),
+            None,
+        )
+        .await;
+
+        let llm = FakeLlmBackend::new(
+            "judge",
+            "{\"verdicts\":{\"f2\":{\"verdict\":\"duplicate_of\",\"target\":\"f1\"}}}",
+        );
+        let report = judge_the_page(
+            &pool,
+            &tree,
+            &llm,
+            std::slice::from_ref(&private),
+            JudgementDepth::Nightly,
+            &RemPolicy::default(),
+        )
+        .await;
+
+        assert!(report.changed.is_empty(), "{:?}", report.changed);
+        assert!(
+            report
+                .refused
+                .iter()
+                .any(|r| r.contains("different people")),
+            "refused by name: {:?}",
+            report.refused
+        );
+        for fid in [&shared, &private] {
+            assert!(
+                fact_index::find_by_id(&pool, fid)
+                    .await
+                    .unwrap()
+                    .expect("row")
+                    .superseded_at
+                    .is_none(),
+                "neither side may be retired: {fid}"
+            );
+        }
         drop(dir);
     }
 

@@ -208,10 +208,12 @@ impl FactIndexRow {
     /// true for years (a diet, a night shift, small children). Not a taste
     /// about a thing, not a passing state, not an instruction to the agent.
     /// It is deliberately **stable** — automatic background reorganisation
-    /// (the REM dedup revisor) must never silently retire one of these
-    /// facts; only an explicit correction (a user-driven supersede, or a
-    /// dashboard edit) may change it. Callers on automatic-supersede paths
-    /// gate on this predicate; the explicit paths do not.
+    /// (the REM dedup revisor, the page judge) must never silently retire one
+    /// of these facts; only an explicit correction (a user-driven supersede,
+    /// or a dashboard edit) may change it. Callers on automatic-supersede
+    /// paths gate on this predicate; the explicit paths do not. The page
+    /// judge is allowed one thing on such a fact and nothing else: taking it
+    /// OFF the card, by filing a passing spell as the `state` it is.
     #[must_use]
     pub fn is_identity_core(&self) -> bool {
         belongs_on_an_identity_card(self.fact_type.as_deref(), self.salience.as_deref())
