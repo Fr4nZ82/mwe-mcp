@@ -9282,12 +9282,19 @@ struct MentionedCards {
 /// than a no-op, which is why its test had to become real before this shipped.
 ///
 /// The sender is excluded: `WHO IS SPEAKING` already serves them.
+#[allow(
+    clippy::too_many_arguments,
+    reason = "the reader, the turn in two pieces, the hits and the two gates — none of them a set anybody else holds"
+)]
 async fn people_mentioned_section(
     pool: &SqlitePool,
     tree: &WikiTree,
     sender: &SenderContext,
     turn_text: &str,
+    completed: Option<&str>,
     hits: &[recall::RecallHit],
+    asked_full_recall: bool,
+    intent: IntentKind,
     policy: &IngestPolicy,
 ) -> Option<MentionedCards> {
     if policy.max_mentioned_cards == 0 {
@@ -9300,7 +9307,26 @@ async fn people_mentioned_section(
             return None;
         },
     };
-    let subjects = card_subjects(turn_text, &sender.sender_id, &roster, hits);
+    // THE COMPLETION COUNTS HERE AND NOWHERE ELSE. «Zoe said so» arrives from
+    // the classifier as the sentence the speaker meant, and a person named only
+    // there is named. The identity-core roster cannot read it — it is built
+    // BEFORE the classifier runs — and the asymmetry is safe in exactly this
+    // direction: the completion is the turn's own words made explicit, so a
+    // person it adds is one the classifier saw the turn refer to.
+    let named_in = completed.map_or_else(|| turn_text.to_owned(), |c| format!("{turn_text} {c}"));
+    // AND THIS SLOT NARROWS ON ITS OWN. A fact about somebody, found by the
+    // search, puts their card in front of the consumer only on a turn that
+    // ASKED to be answered from memory. On a turn that stores something, or
+    // one that stores nothing at all, a household's facts mention the
+    // household — and that is how a card arrived for a third person nobody had
+    // named. Narrowing is a reader's to do; widening is not (`card_subjects`).
+    let subjects = card_subjects(
+        &named_in,
+        &sender.sender_id,
+        &roster,
+        hits,
+        asked_full_recall && intent == IntentKind::Recall,
+    );
     let mut section = String::from(HDR_PEOPLE_MENTIONED);
     let mut page_paths = Vec::new();
     let mut served = Vec::new();
@@ -9336,35 +9362,47 @@ async fn people_mentioned_section(
 
 /// Who this turn is about, in the order a card slot serves them.
 ///
-/// **Two gates, in this order, and neither costs a model call.**
+/// **Three ways in, none of which costs a model call.**
 ///
-/// First, **the turn names them** — [`recall::turn_subjects`], a word match
-/// over the enrolled roster. Deliberately coarse: a card is what is worth
-/// knowing about a person *whenever they come up*, so a passing mention is
-/// not a false positive, it is a cheap piece of context. Mention order is
-/// the selection where the list is cut (founder, 2026-08-09), so these lead.
-///
-/// Then, **the search found facts about them**: every hit carries its
-/// subject, so the people the turn is really about arrive even when it names
-/// none of them. *«Cosa può mangiare mia moglie?»* matches the roster nowhere
-/// — and returns her coeliac facts, which say whose they are. This is the
-/// gate that reads a paraphrase, and it is free: the hits are already in hand,
-/// ranked, from the search that ran before the classifier. A group-owned fact
-/// names no person and is skipped.
+/// - **The turn names them** — [`recall::turn_subjects`], a word match over the
+///   enrolled roster, aliases included. Deliberately coarse: a card is what is
+///   worth knowing about a person *whenever they come up*, so a passing mention
+///   is not a false positive, it is a cheap piece of context. Mention order is
+///   the selection where the list is cut (founder, 2026-08-09), so these lead.
+/// - **They are the speaker.** Always, whatever the turn says.
+/// - **The search found facts about them, AND this turn asked for a full
+///   recall** (`from_recalled`). Every hit carries its subject, so the people
+///   the turn is really about arrive even when it names none of them:
+///   *«cosa può mangiare mia moglie?»* matches the roster nowhere and returns
+///   her coeliac facts, which say whose they are. That is the gate that reads a
+///   paraphrase — and, ungated, it is also the gate that carried a third person
+///   into a turn about the printer, because a household's facts mention the
+///   household. A group-owned fact names no person and is skipped.
 ///
 /// Shared by the two readers that must agree on it: the `PEOPLE THIS TURN IS
 /// ABOUT` slot ([`people_mentioned_section`]), which serves these people's
 /// cards to the consumer, and the identity-core roster
-/// ([`identity_core_roster`]) the classifier compares a new claim against. Two
-/// separate notions of "who this turn is about" would put a card in front of
-/// the consumer whose facts the classifier was never shown.
+/// ([`identity_core_roster`]) the classifier compares a new claim against.
+///
+/// **The invariant is containment, not equality**: what reaches the consumer
+/// must be inside what the classifier was shown, or a card arrives in front of
+/// somebody whose facts the classifier never saw. A reader may therefore narrow
+/// on its own — the card slot does — and may never widen.
 fn card_subjects(
     turn_text: &str,
     sender_id: &str,
     roster: &[enrollment::EnrolledUserLite],
     hits: &[RecallHit],
+    from_recalled: bool,
 ) -> Vec<String> {
     let mut subjects = recall::turn_subjects(turn_text, sender_id, roster);
+    let me = sender_id.to_lowercase();
+    if !subjects.contains(&me) {
+        subjects.push(me);
+    }
+    if !from_recalled {
+        return subjects;
+    }
     for hit in hits {
         if let Principal::User(id) = &hit.subject_id {
             let id = id.to_lowercase();
@@ -9838,16 +9876,24 @@ async fn identity_core_roster(
     turn_text: &str,
     hits: &[RecallHit],
     roster: &[enrollment::EnrolledUserLite],
+    asked_full_recall: bool,
     policy: &IngestPolicy,
 ) -> IdentityCore {
     // The speaker leads: their own card is the one served on every turn, so
     // their slots are the ones a turn is likeliest to refill.
-    let mut subjects = vec![sender.sender_id.to_lowercase()];
-    for subject in card_subjects(turn_text, &sender.sender_id, roster, hits) {
-        if !subjects.contains(&subject) {
-            subjects.push(subject);
-        }
-    }
+    let mut subjects: Vec<String> = card_subjects(
+        turn_text,
+        &sender.sender_id,
+        roster,
+        hits,
+        asked_full_recall,
+    );
+    // The speaker LEADS: `card_subjects` guarantees they are in the list, and
+    // here they go first, because their own card is served on every turn and
+    // their slots are the ones a turn is likeliest to refill.
+    let me = sender.sender_id.to_lowercase();
+    subjects.retain(|s| *s != me);
+    subjects.insert(0, me);
     // One seat more than the card slot, because the speaker takes one and the
     // card slot excludes them (`WHO IS SPEAKING` serves theirs).
     subjects.truncate(policy.max_mentioned_cards.saturating_add(1));
@@ -11735,6 +11781,10 @@ pub async fn wiki_ingest_message(
         &request.text,
         &recall_hits,
         &known_users,
+        // The depth the CONSUMER asked for — the one signal both readers of
+        // `card_subjects` have, since this one is built before the classifier
+        // has said anything about the turn.
+        request.metadata.recall == RecallDepth::Full,
         policy,
     )
     .await;
@@ -13466,11 +13516,23 @@ pub async fn wiki_ingest_message(
         .collect();
     // `PEOPLE THIS TURN IS ABOUT` — the same treatment for the third parties
     // the turn is about (founder 2026-08-04). It runs here, beside the
-    // speaker's card and before the walk, for the same three reasons: no
-    // completion, arrives whatever the navigator decides, and the pages it
-    // serves must then be injected nowhere else.
+    // speaker's card and before the walk, for the same reasons: no model call
+    // of its own, it arrives whatever the navigator decides, and the pages it
+    // serves must then be injected nowhere else. Unlike the speaker's card it
+    // reads the classifier's completion, which by here is already in hand.
     let mentioned = if serves_a_block {
-        people_mentioned_section(pool, tree, &sender_ctx, &request.text, &recall_hits, policy).await
+        people_mentioned_section(
+            pool,
+            tree,
+            &sender_ctx,
+            &request.text,
+            completed_message,
+            &recall_hits,
+            request.metadata.recall == RecallDepth::Full,
+            intent,
+            policy,
+        )
+        .await
     } else {
         None
     };
@@ -19468,7 +19530,10 @@ mod tests {
             &tree,
             &SenderContext::user("franz"),
             "cosa cucino stasera per alice?",
+            None,
             &[],
+            true,
+            IntentKind::Recall,
             &IngestPolicy::default(),
         )
         .await
@@ -19530,7 +19595,10 @@ mod tests {
                 &tree,
                 &SenderContext::user("alice"),
                 "cosa mangio stasera?",
+                None,
                 &[],
+                true,
+                IntentKind::Recall,
                 &policy,
             )
             .await
@@ -19543,7 +19611,10 @@ mod tests {
                 &tree,
                 &SenderContext::user("franz"),
                 "ricordami di chiamare l'idraulico",
+                None,
                 &[],
+                true,
+                IntentKind::Recall,
                 &policy,
             )
             .await
@@ -19552,10 +19623,124 @@ mod tests {
         );
     }
 
-    /// The second gate: a turn that names nobody the roster can match still
-    /// gets the card, because the facts the search returned say whose they
-    /// are. This is the paraphrase case — *«mia moglie»* is in no roster —
-    /// and it is the only route left, a card being no link destination.
+    /// **A fact about somebody, found by the search, is not by itself a reason
+    /// to serve their card.**
+    ///
+    /// The turn that found this was about a printer: the search returned the
+    /// household's printing facts, one of them somebody else's, and that
+    /// person's whole identity card went into the block — on a turn that had
+    /// not said their name and was not asking to be answered from memory. A
+    /// household's facts mention the household, so ungated this gate fires
+    /// nearly always: it was serving a card for somebody the turn did not name
+    /// on 866 of 965 cards in the live memory.
+    ///
+    /// It stays open for the paraphrase case it exists for — *«cosa può
+    /// mangiare mia moglie?»*, which names nobody the roster knows and returns
+    /// her facts — and that case is a turn ASKING to be answered from what is
+    /// remembered.
+    #[tokio::test]
+    async fn a_fact_about_somebody_opens_their_card_only_when_the_turn_asks_for_memory() {
+        let (dir, _, pool) = setup_workdir().await;
+        seed_alice_card(&dir, &pool).await;
+        sqlx::query("UPDATE fact_index SET subject_id = 'global' WHERE fact_id = ?")
+            .bind(ALICE_FACT_A)
+            .execute(&pool)
+            .await
+            .expect("publish the town");
+        let file = crate::enrollment::EnrollmentFile {
+            version: 1,
+            users: ["alice", "franz"]
+                .into_iter()
+                .map(|id| crate::enrollment::UserEntry {
+                    id: id.to_owned(),
+                    aliases: Vec::new(),
+                    is_admin: false,
+                    locale: None,
+                    timezone: None,
+                })
+                .collect(),
+            groups: Vec::new(),
+        };
+        crate::enrollment::mirror_to_db(&pool, &file)
+            .await
+            .expect("mirror");
+        let tree = WikiTree::open(dir.path()).expect("reopen tree");
+        let policy = IngestPolicy::default();
+        let printer = "ho mandato in stampa il documento";
+        let hits = vec![sample_recall_hit("01a03e05-65da-7b50-9af4-9e40272e1d21")];
+
+        for intent in [
+            IntentKind::Capture,
+            IntentKind::Skip,
+            IntentKind::Structural,
+        ] {
+            assert!(
+                people_mentioned_section(
+                    &pool,
+                    &tree,
+                    &SenderContext::user("franz"),
+                    printer,
+                    None,
+                    &hits,
+                    true,
+                    intent,
+                    &policy,
+                )
+                .await
+                .is_none(),
+                "a turn that is not asking to be answered from memory carries \
+                 nobody it did not name: {intent:?}"
+            );
+        }
+
+        // The paraphrase the gate exists for: the turn asks, and the facts say
+        // whose they are.
+        let out = people_mentioned_section(
+            &pool,
+            &tree,
+            &SenderContext::user("franz"),
+            "cosa può mangiare mia moglie?",
+            None,
+            &hits,
+            true,
+            IntentKind::Recall,
+            &policy,
+        )
+        .await
+        .expect("the hit's subject opens the gate on a recall turn");
+        assert!(
+            out.section.contains("Alice lives in Bologna."),
+            "{out:?}",
+            out = out.section
+        );
+
+        // And the completion is read: a person named only in the sentence the
+        // classifier wrote out is named.
+        let out = people_mentioned_section(
+            &pool,
+            &tree,
+            &SenderContext::user("franz"),
+            "lei cosa può mangiare?",
+            Some("cosa può mangiare alice?"),
+            &[],
+            false,
+            IntentKind::Capture,
+            &policy,
+        )
+        .await
+        .expect("named by the completion, on a turn that asks for no recall");
+        assert!(
+            out.section.contains("Alice lives in Bologna."),
+            "{out:?}",
+            out = out.section
+        );
+        drop(dir);
+    }
+
+    /// The gate that reads a paraphrase: a turn that names nobody the roster
+    /// can match still gets the card, because the facts the search returned say
+    /// whose they are. *«Mia moglie»* is in no roster, and this is the only
+    /// route left — a card is no link destination.
     #[tokio::test]
     async fn a_card_arrives_from_the_facts_the_search_found_when_the_turn_names_nobody() {
         let (dir, _, pool) = setup_workdir().await;
@@ -19594,7 +19779,10 @@ mod tests {
                 &tree,
                 &SenderContext::user("franz"),
                 turn,
+                None,
                 &[],
+                true,
+                IntentKind::Recall,
                 &policy,
             )
             .await
@@ -19608,7 +19796,10 @@ mod tests {
             &tree,
             &SenderContext::user("franz"),
             turn,
+            None,
             &hits,
+            true,
+            IntentKind::Recall,
             &policy,
         )
         .await
@@ -19656,7 +19847,10 @@ mod tests {
                 &tree,
                 &SenderContext::user("alice"),
                 "cosa mangio stasera?",
+                None,
                 &[group_hit, own_hit],
+                true,
+                IntentKind::Recall,
                 &IngestPolicy::default(),
             )
             .await

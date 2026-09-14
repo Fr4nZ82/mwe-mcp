@@ -13,6 +13,21 @@ semver-governed surface: breaking changes are called out explicitly.
 
 ### Fixed
 
+- **An assistant is told about a third person only when the turn is about
+  them.** What the memory knows about somebody — their whole identity card —
+  was handed to the assistant whenever the search happened to return one of
+  their facts, which in a household is nearly always: a question about the
+  printer brought back the family's printing facts, one of them somebody
+  else's, and their card went along with it. On the live memory that was
+  happening to 866 of the 965 cards served.
+
+  A person's card is served now when the turn names them — the sentence the
+  assistant heard, or the one it wrote out to fill in what was left unsaid —
+  when they are the one speaking, or when the turn is ASKING to be answered
+  from memory and their facts are part of the answer. That last one is what
+  makes *«what can my wife eat?»* work, and it was never meant to cover a turn
+  that was not asking anything.
+
 - **The document road asks the same question about names as the chat does.** A
   document is what writes the most facts from the least supervision, and it was
   still being handed the whole list of everybody enrolled. It gets the
