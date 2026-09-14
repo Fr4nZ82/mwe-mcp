@@ -52,7 +52,27 @@ becomes a fact, and nothing private is ever read out to one.
 Separately from any single fact, you have a page of rules — reached from
 [home](your-home.md) as *Your standing rules*, and first written in the
 [welcome wizard](first-sign-in.md). *Keep anything about my health private.*
-*Never store my address.* They are instructions to the memory rather than
-things it remembers about you, and they apply to everything. That difference is
-why forgetting a person removes their rules along with what they said: handed
-to somebody else, a rule about you would become an instruction about you.
+*Never store my address.* They are instructions rather than things the memory
+remembers about you, and they apply to everything from then on. That difference
+is why forgetting a person removes their rules along with what they said:
+handed to somebody else, a rule about you would become an instruction about
+you.
+
+**A rule is yours, and it reads like every other fact.** Nobody else sees a
+rule you set unless you say so while setting it — *"and this goes for Bob as
+well"* — and then Bob reads it, and the assistant follows it in his
+conversations too, shown to him as your rule.
+
+**How far it reaches depends on who you were talking to.** Tell the assistant
+in front of you — *"don't tell Bob what I buy"* — and it is that assistant's
+rule. Say it as a wish, with no *you* in it — *"when I buy presents I don't
+want Bob to know"* — and it is yours everywhere, in force on every assistant
+you talk to. A rule for **everyone the assistant serves** is the
+administrator's to set; ask for one and it is kept as your own rule with that
+assistant instead, and the assistant tells you so.
+
+**One thing that sounds like a rule is not one.** *"I bought Bob a present, but
+don't tell him"* is about that present and nothing else: it is filed with Bob
+left out of its readers, and no rule is written. A rule speaks of a kind of
+thing — *the presents I buy* — and binds conversations that have not happened
+yet.

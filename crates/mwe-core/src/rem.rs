@@ -7634,7 +7634,7 @@ fn refile_cases<'a>(
     let mut cases: Vec<(bool, &str, RefileCase<'a>)> = Vec::new();
     for home in views {
         for fact in &home.facts {
-            // The reserved policy page is the rules pipeline's perimeter, not
+            // The reserved rules page is the rules pipeline's perimeter, not
             // the refile's: a per-user behaviour rule embeds close to its
             // *user's* wiki by nature (it names how the agent behaves with
             // them), so it is a natural false nominee — and a confirmed move

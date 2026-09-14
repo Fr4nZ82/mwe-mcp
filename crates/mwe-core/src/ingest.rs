@@ -636,12 +636,13 @@ pub struct IngestPolicy {
     /// teaches the classifier *not* to over-share — without letting a
     /// pathological scope blow the prompt budget.
     pub max_group_scope_chars: usize,
-    /// Character cap on the sender's `@rules.md` policy injected into the
-    /// prompt's `sender_rules` section. Bounds a pathological
-    /// hand-edited policy from blowing the prompt budget; a normal policy
-    /// is a short paragraph or two. Also bounds the `YOUR RULES` section
-    /// of the response's `rules` field (whole-bullet fitting there).
-    pub max_sender_rules_chars: usize,
+    /// Character cap on the `YOUR RULES` section of the response's `rules`
+    /// field (whole-bullet fitting). Bounds a pathological set of standing
+    /// directives from swallowing the block a consumer reads; a normal set is
+    /// a handful of sentences. The classifier's own copy of the same
+    /// directives is NOT bounded — it is a set it acts against, so it is shown
+    /// complete ([`push_behaviour_rules_section`]).
+    pub max_rules_chars: usize,
     /// Character cap on the recall block's `WHO YOU ARE` section (the
     /// agent wiki's summary line + the agent's identity self-facts).
     /// A resource cap, not a semantic gate: whole bullets are fitted
@@ -766,7 +767,7 @@ impl Default for IngestPolicy {
             max_recent_message_chars: 280,
             max_list_pages_in_prompt: 32,
             max_group_scope_chars: 1_000,
-            max_sender_rules_chars: 1_500,
+            max_rules_chars: 1_500,
             max_agent_identity_chars: 900,
             max_agent_history_chars: 1_400,
             // 69c's hard ceiling, so the read path's failsafe and the
@@ -848,10 +849,9 @@ pub type Result<T> = std::result::Result<T, IngestError>;
 // orchestrator without asking a model what the message means a second time
 // ([`crate::ingest_replay`]).
 #[derive(Debug, Default, Deserialize)]
-// Four independent boolean flags mirror the LLM's JSON output
-// (requested_container / engine_rule / behaviour_rule / needs_disambig) — each
-// a distinct routing signal the model sets per turn, not a state to model as an
-// enum.
+// Three independent boolean flags mirror the LLM's JSON output
+// (requested_container / behaviour_rule / needs_disambig) — each a distinct
+// routing signal the model sets per turn, not a state to model as an enum.
 #[allow(clippy::struct_excessive_bools)]
 struct LlmIngestPlan {
     intent: String,
@@ -952,17 +952,6 @@ struct LlmIngestPlan {
     /// fallback; the per-fact value lives on [`LlmExtraction`].
     #[serde(default)]
     requested_container: bool,
-    /// The classifier flags an
-    /// **engine-rule**: a standing *governance* directive for the memory engine
-    /// (a privacy/sharing policy, or a do-not-store rule), not a fact about the
-    /// world. An engine-rule is appended as prose to the sender's `@rules.md`
-    /// (read back as `sender_rules`) instead of being filed in `fact_index` —
-    /// it never becomes a fact. The classifier decides; no hard-coded gate. The
-    /// world/household `rule` `fact_type` ("in casa non si fuma") is a normal
-    /// fact and leaves this `false`. Plan-level mirror for the legacy
-    /// single-fact fallback; the per-fact value lives on [`LlmExtraction`].
-    #[serde(default)]
-    engine_rule: bool,
     /// The classifier flags a
     /// **behaviour-rule**: a standing directive about how the CALLING AGENT
     /// should converse (tone, style, length, form of address, the
@@ -1270,10 +1259,6 @@ struct LlmExtraction {
     /// [`LlmIngestPlan::requested_container`].
     #[serde(default)]
     requested_container: bool,
-    /// Engine-rule flag. See
-    /// [`LlmIngestPlan::engine_rule`].
-    #[serde(default)]
-    engine_rule: bool,
     /// Behaviour-rule flag. See
     /// [`LlmIngestPlan::behaviour_rule`].
     #[serde(default)]
@@ -1375,7 +1360,6 @@ const EXTRACTION_FIELDS: &[&str] = &[
     "page_description",
     "salience",
     "requested_container",
-    "engine_rule",
     "behaviour_rule",
     "behaviour_scope",
     "behaviour_about",
@@ -1555,10 +1539,6 @@ struct CaptureUnit<'a> {
     /// (see [`LlmIngestPlan::requested_container`]). `true` → the fact is written
     /// live even into a standard wiki, bypassing the buffer.
     requested_container: bool,
-    /// Engine-rule routing flag (see
-    /// [`LlmIngestPlan::engine_rule`]). `true` → the body is appended to the
-    /// sender's `@rules.md` as prose, never filed as a fact.
-    engine_rule: bool,
     /// Behaviour-rule routing flag (see
     /// [`LlmIngestPlan::behaviour_rule`]). `true` → the body is filed on the
     /// scope's home rules page (the calling agent's wiki, or the sender's
@@ -1667,7 +1647,6 @@ impl LlmIngestPlan {
                     page_description: e.page_description.as_deref(),
                     salience: e.salience.as_deref(),
                     requested_container: e.requested_container,
-                    engine_rule: e.engine_rule,
                     behaviour_rule: e.behaviour_rule,
                     behaviour_scope: e.behaviour_scope.as_deref(),
                     behaviour_about: e.behaviour_about.as_deref(),
@@ -1708,7 +1687,6 @@ impl LlmIngestPlan {
                 page_description: self.page_description.as_deref(),
                 salience: self.salience.as_deref(),
                 requested_container: self.requested_container,
-                engine_rule: self.engine_rule,
                 behaviour_rule: self.behaviour_rule,
                 behaviour_scope: self.behaviour_scope.as_deref(),
                 behaviour_about: self.behaviour_about.as_deref(),
@@ -2468,9 +2446,8 @@ fn validate_capture_plan(
     // longer exists). Placement belongs to the hourly round, which reads the
     // whole memory before deciding. The exceptions below are the WHOLE list:
     // two independent switches on the plan, plus standing rules, which never
-    // reach this router because they never become facts (`engine_rule` →
-    // the sender's `@rules.md`, `behaviour_rule` → the calling agent's own
-    // wiki).
+    // reach this router because they never become facts (`behaviour_rule` →
+    // the rules page of the scope's home wiki).
     //
     // - **List-shaped material.** A list is a *set*: it is right or it is
     //   wrong, and half a shopping list is a wrong answer rather than a
@@ -7614,7 +7591,6 @@ fn build_prompt(
     sender_groups: &[(String, Option<String>)],
     known_users: &[enrollment::EnrolledUserLite],
     known_entities: &[fact_index::KnownEntity],
-    sender_rules: Option<&str>,
     sender_timezone: Option<&str>,
     language_directive: &str,
     parti: &[&str],
@@ -7702,37 +7678,6 @@ fn build_prompt(
             }
             out.push('\n');
         }
-    }
-
-    // sender_rules: the sender's own standing policy (their `@rules.md`).
-    // The classifier honours the privacy/sharing rules here when it
-    // decides each fact's `subject_id`/`allow_ids` (e.g. "keep health private" →
-    // subject-only), and surfaces the behaviour rules to the consumer. Absent →
-    // "(none)": decide ACL without it. No hard gate — an aid to the decision.
-    //
-    // **Rendered whole.** The prompt calls this the sender's policy «in full»,
-    // under the standing rule that a slot may act against a set it is shown
-    // COMPLETE and never against a sample — and this is the block that carries
-    // governance. Cutting it at `max_sender_rules_chars` would drop a rule
-    // mid-word with nothing logged: a user whose `@rules.md` runs past 1 500
-    // characters, and whose last line is *«i fatti sulla mia salute restano
-    // privati»*, would lose that rule while the prompt tells the model it has
-    // seen everything. A rules file is written by a person and is short; the
-    // number stays as the point where an unusual one is worth saying out loud.
-    out.push_str("\nsender_rules:\n");
-    match sender_rules.map(str::trim).filter(|s| !s.is_empty()) {
-        Some(rules) => {
-            if rules.chars().count() > policy.max_sender_rules_chars {
-                tracing::warn!(
-                    chars = rules.chars().count(),
-                    expected_under = policy.max_sender_rules_chars,
-                    "ingest: sender rules are unusually long — shown in full, but they cost every turn"
-                );
-            }
-            out.push_str(rules);
-            out.push('\n');
-        },
-        None => out.push_str("  (none)\n"),
     }
 
     // known_users: the enrolled people the classifier can attribute facts to
@@ -7965,8 +7910,8 @@ fn truncate(s: &str, max_chars: usize) -> String {
 /// omitted entirely, header included (the empty-section contract).
 ///
 /// This is the injected-block sibling of [`truncate`], which flattens
-/// newlines for one-line *prompt* fields (`sender_rules`, recent messages)
-/// and stays in use there; recall-block sections keep their line structure.
+/// newlines for one-line *prompt* fields (recent messages) and stays in use
+/// there; recall-block sections keep their line structure.
 fn fit_bullets<'a, I>(header: &str, items: I, max_chars: usize) -> Option<String>
 where
     I: IntoIterator<Item = &'a str>,
@@ -8192,92 +8137,13 @@ pub(crate) fn available_wikis(tree: &WikiTree, cap: usize) -> Result<Vec<Availab
     Ok(identity)
 }
 
-/// Read the sender's `@rules.md` user-policy — governance PROSE only,
-/// best-effort.
-///
-/// The sender's identity wiki is `wiki_id == sender_id`; its `@rules.md`
-/// ([`crate::wiki::RULES_FILENAME`]) holds the standing privacy/sharing policy
-/// the classifier honours when it assigns per-fact ACL. The
-/// same page also carries the user's USER-GLOBAL behaviour rules as `{{f=…}}`
-/// fact regions — those reach the classifier separately, with `fact_id`s, via
-/// `agent_behaviour_rules` ([`push_behaviour_rules_section`]), so the regions
-/// are stripped here: only the free prose is the governance policy, and no
-/// rule is injected twice (or under the wrong section). Headings are dropped
-/// with them — a heading is structure, and the page is seeded with one and
-/// nothing else, so a page carrying only headings carries no policy. Returns
-/// `None` — and the prompt's `sender_rules` section reads `(none)`, so the
-/// classifier decides ACL as it does for anyone who set no rule — for a
-/// sender with no identity wiki, no `@rules.md`, a page with no policy on it,
-/// or any read error.
-/// Best-effort by design: a policy is an aid to the ACL decision, never a hard
-/// gate, so it must never fail the ingest (pillar: the LLM decides).
-fn sender_rules(tree: &WikiTree, sender_id: &str) -> Option<String> {
-    let id = WikiId::parse(sender_id).ok()?;
-    let body = tree
-        .locate(&id)
-        .ok()?
-        .read_page(Path::new(crate::wiki::RULES_FILENAME))
-        .ok()?;
-    // The page's own identity card is not policy: `description:` and `style:`
-    // are what the engine says ABOUT the page, and read back as the sender's
-    // standing instructions they become sentences nobody dictated.
-    let body = crate::wiki::MarkdownDoc::parse(&body).map_or_else(|| body.clone(), |doc| doc.body);
-    let prose: String = crate::parser::parse(&body)
-        .events
-        .into_iter()
-        .filter_map(|e| match e {
-            crate::parser::ParseEvent::Prose { text, .. } => Some(text),
-            _ => None,
-        })
-        .collect();
-    // What survives is what the PERSON said. Headings are the page's
-    // furniture, and so is everything the engine writes on its own account —
-    // the withdrawal note above all, which would otherwise be read back as an
-    // instruction the sender never gave (`crate::wiki::is_engine_furniture`).
-    let policy = prose
-        .lines()
-        .filter(|line| {
-            !line.trim_start().starts_with('#') && !crate::wiki::is_engine_furniture(line)
-        })
-        .collect::<Vec<_>>()
-        .join("\n");
-    (!policy.trim().is_empty()).then_some(policy)
-}
-
-/// Append an engine-rule to the sender's `@rules.md`.
-///
-/// The write side of the engine-rule loop: when the classifier marks an
-/// extraction as a standing *governance* directive, the orchestrator routes the
-/// body here instead of [`capture::wiki_capture`] — the rule lives as prose in
-/// `wikis/<sender_id>/@rules.md` and is read straight back as [`sender_rules`]
-/// next turn (a tight write→read loop), never as a row in `fact_index`.
-///
-/// Returns `Ok(true)` when the rule was written, `Ok(false)` when the sender has
-/// no locatable identity wiki (the rule is dropped, mirroring the best-effort
-/// posture of the read side, rather than failing the turn). A genuine IO write
-/// failure bubbles as [`IngestError::Wiki`] — consistent with how a real
-/// `wiki_capture` filesystem error propagates.
-fn append_sender_rule(tree: &WikiTree, sender_id: &str, rule: &str) -> Result<bool> {
-    let Ok(id) = WikiId::parse(sender_id) else {
-        return Ok(false);
-    };
-    let Ok(handle) = tree.locate(&id) else {
-        return Ok(false);
-    };
-    crate::wiki::append_engine_rule(&handle, rule)?;
-    Ok(true)
-}
-
-/// Page where behaviour rules are filed (the ingest prompt's Part 7).
-/// Unified with the engine-policy page name: in the *agent's*
-/// wiki this `@rules.md` holds the per-user and agent-wide behaviour facts —
-/// no collision, since [`sender_rules`] (the engine-policy reader) never runs
-/// for the agent (it is never a sender). In the *user's* identity wiki the
-/// same page carries their USER-GLOBAL behaviour facts alongside the
-/// governance prose — [`sender_rules`] reads the prose only and
-/// skips the fact regions. The per-fact `subject` scopes each rule (the served
-/// user for a per-user or user-global rule, the agent for an agent-wide one);
-/// the home wiki tells per-user and user-global apart.
+/// Page where standing rules are filed (the ingest prompt's Part 7) — one
+/// page, wherever the rule is homed. In the *agent's* wiki this `@rules.md`
+/// holds the per-user and agent-wide rules; in a *person's* identity wiki, the
+/// user-global ones they set for every assistant serving them. The per-fact
+/// `subject` scopes each rule (the served user for a per-user or user-global
+/// rule, the agent for an agent-wide one); the home wiki tells per-user and
+/// user-global apart.
 const BEHAVIOUR_RULES_PAGE: &str = crate::wiki::RULES_FILENAME;
 
 /// The governance scope of a behaviour-rule: who may set it, and how widely it
@@ -8470,8 +8336,8 @@ async fn retire_narrower_twins(
 ///
 /// Returns the capture outcome — which says whether the rule was written or
 /// was already standing on that page, word for word — or `None` when no target
-/// wiki could be located (the rule is dropped, mirroring the best-effort
-/// posture of [`append_sender_rule`]).
+/// wiki could be located: a turn is never failed over a rule that has nowhere
+/// to go, and the dispatch logs the drop.
 async fn capture_behaviour_rule(
     tree: &WikiTree,
     pool: &SqlitePool,
@@ -8479,6 +8345,7 @@ async fn capture_behaviour_rule(
     request: &IngestRequest,
     rule: &str,
     scope: BehaviourScope,
+    also_for: &[Principal],
     supersede: Option<&FactId>,
 ) -> Result<Option<crate::capture::CaptureOutcome>> {
     let sender = request.sender_id.as_str();
@@ -8524,6 +8391,7 @@ async fn capture_behaviour_rule(
         subject.clone(),
         scope,
         rule,
+        also_for,
         supersede,
         request.turn_now(),
     )
@@ -8588,6 +8456,7 @@ pub async fn file_behaviour_rule(
     subject: Principal,
     scope: BehaviourScope,
     rule: &str,
+    also_for: &[Principal],
     supersede: Option<&FactId>,
     dictated_at: chrono::DateTime<chrono::Utc>,
 ) -> crate::capture::Result<crate::capture::CaptureOutcome> {
@@ -8606,6 +8475,19 @@ pub async fn file_behaviour_rule(
         );
         return Err(crate::capture::CaptureError::RuleIsAPlaceholder);
     }
+    // Who else may read it. A rule is private to whoever stated it — an empty
+    // audience IS that, since they are both its subject and its narrator —
+    // unless they widened it while stating it («this one goes for Bob too»),
+    // which is what `also_for` carries. The one rule that is everybody's by
+    // nature is the assistant's own standing operation: nobody is the
+    // assistant, so an empty audience there would mean nobody at all. It is
+    // decided here, in the chokepoint, because every road that files a rule
+    // owes the same answer and none of them is in a position to know better.
+    let allow = if scope == BehaviourScope::AgentWide {
+        vec![Principal::global()]
+    } else {
+        also_for.to_vec()
+    };
     let page_description = match scope {
         BehaviourScope::PerUser => {
             "How this agent should behave, per requesting user (per-user \
@@ -8617,8 +8499,7 @@ pub async fn file_behaviour_rule(
         },
         BehaviourScope::UserGlobal => {
             "This user's standing rules for EVERY assistant serving them \
-             (user-global behaviour rules), alongside their governance policy \
-             prose."
+             (user-global behaviour rules)."
         },
     };
     // Kept before the id moves into the request: the widening has to know
@@ -8634,7 +8515,7 @@ pub async fn file_behaviour_rule(
         page: Some(PathBuf::from(BEHAVIOUR_RULES_PAGE)),
         body: rule.to_owned(),
         subject: subject.clone(),
-        allow: Vec::new(),
+        allow,
         sender: None,
         fact_type: Some("rule".to_owned()),
         topics: Vec::new(),
@@ -8850,91 +8731,103 @@ async fn capture_agent_self_fact(
 /// safety bound; in practice a user holds a handful of standing directives.
 const BEHAVIOUR_RULES_RECALL_CAP: usize = 50;
 
-/// Pull the behaviour-rule facts whose SUBJECT is this principal, on the
-/// agent's `@rules.md`
-/// page, via [`fact_index::find_behaviour_rules`]. Page-scoped
-/// on purpose: a `subject = agent` query would otherwise drag in the agent's
-/// self-facts, which live on its content pages, not here. The
-/// rules-page predicate sits **in the SQL, before the cap**, so unrelated
-/// facts under the same subject can never starve old rules out of the LIMIT
-/// window; and the query filters validity at *now* — a rule whose window was
-/// closed (retracted from chat, or dated and expired) stops being served,
-/// while the fact itself stays (closing is never deleting). Best-effort — a
-/// DB miss yields nothing.
-async fn behaviour_rows_on_page(
-    pool: &SqlitePool,
-    agent_wiki: &str,
-    subject: &Principal,
-) -> Vec<(FactId, String)> {
-    let now = chrono::Utc::now().to_rfc3339();
-    match fact_index::find_behaviour_rules(
-        pool,
-        agent_wiki,
-        subject,
-        &now,
-        BEHAVIOUR_RULES_RECALL_CAP,
-    )
-    .await
-    {
-        Ok(rows) => rows.into_iter().map(|r| (r.fact_id, r.text)).collect(),
-        Err(e) => {
-            tracing::warn!(error = %e, "ingest: behaviour-rule recall failed (best-effort)");
-            Vec::new()
-        },
-    }
-}
-
-/// Recall the behaviour rules in force for THIS turn — the read side of the
-/// behaviour-rule loop. Three scopes, two homes:
-/// **agent-wide** (the agent's wiki, `subject = the agent`) applies for every
-/// user of this agent; **user-global** (the SENDER's identity wiki, `subject =
-/// the sender`) applies on every consumer serving this user; **per-user** (the
-/// agent's wiki, `subject = the served user`) applies only to this user on this
-/// agent. Returns `(fact_id, body, scope)` so the consumer applies them every
-/// turn and the classifier can supersede any of the three (the scope gates who
-/// may — see the dispatch in [`run`]). Order pinned, most specific last:
-/// agent-wide (the floor) → user-global → per-user. A smart consumer (no
-/// distinct agent wiki) gets only the user-global set — its wiki IS the
-/// user's, so everything on that rules page is the user's own everywhere-rule.
-/// Best-effort throughout.
+/// Recall the standing rules in force for THIS turn — the read side of the
+/// rules loop, and one question: **which rules may the person speaking
+/// read?**
+///
+/// `fact_index::find_behaviour_rules` answers it with `can_read` over the
+/// pages a rule may live on — this assistant's `@rules.md`, or any person's,
+/// never another assistant's. A rule is private to whoever stated it unless
+/// they said otherwise when stating it, and that falls out of the same
+/// predicate: an empty audience is the speaker alone. What somebody shared
+/// («this one goes for Bob too») reaches Bob by the same road, with no second
+/// rule about sharing.
+///
+/// The SCOPE is read off where the row sits, not asked for separately:
+///
+/// - the assistant's page, subject the ASSISTANT → [`BehaviourScope::AgentWide`],
+///   its own standing operation, which the administrator sets;
+/// - a person's own page → [`BehaviourScope::UserGlobal`], in force on every
+///   assistant serving them;
+/// - the assistant's page, subject a PERSON → [`BehaviourScope::PerUser`],
+///   how this assistant behaves with them.
+///
+/// Returned `(fact_id, body, scope)` so the consumer applies them every turn
+/// and the classifier can supersede any of them (the scope gates who may — see
+/// the dispatch in [`run`]). Order pinned, most specific last: agent-wide (the
+/// floor) → the person's own → this assistant's for them. A smart consumer has
+/// no distinct assistant wiki, so it gets the person half alone.
+/// Best-effort — a DB miss yields nothing rather than failing the turn.
 async fn recall_behaviour_rules(
     pool: &SqlitePool,
     request: &IngestRequest,
 ) -> Vec<(FactId, String, BehaviourScope)> {
-    fn tag(
-        rows: Vec<(FactId, String)>,
-        scope: BehaviourScope,
-    ) -> impl Iterator<Item = (FactId, String, BehaviourScope)> {
-        rows.into_iter().map(move |(id, body)| (id, body, scope))
-    }
-    let sender = Principal::User(request.sender_id.clone());
-    // The user's everywhere-rules: their identity wiki's rules page, owned by
-    // themself — in force on EVERY consumer serving them.
-    let user_global = behaviour_rows_on_page(pool, request.sender_id.as_str(), &sender).await;
     let agent_wiki = match request.consumer_id.as_deref() {
         Some(cid) => crate::consumers::system_user_for(pool, cid)
             .await
             .ok()
             .flatten(),
         None => None,
-    };
-    let Some(agent_wiki) = agent_wiki.filter(|w| *w != request.sender_id) else {
-        // Smart consumer / no binding — no distinct agent wiki, so the only
-        // dedicated channel source is the user's own everywhere-set.
-        return tag(user_global, BehaviourScope::UserGlobal).collect();
-    };
-    // Agent-wide rules (subject = the agent) — recalled for everyone.
-    let mut rules: Vec<_> = tag(
-        behaviour_rows_on_page(pool, &agent_wiki, &Principal::User(agent_wiki.clone())).await,
-        BehaviourScope::AgentWide,
+    }
+    .filter(|w| *w != request.sender_id);
+    let groups = crate::enrollment::groups_for(pool, request.sender_id.as_str())
+        .await
+        .unwrap_or_default();
+    let principals = crate::acl::reader_principals(request.sender_id.as_str(), &groups);
+    let now = chrono::Utc::now().to_rfc3339();
+    let rows = match fact_index::find_behaviour_rules(
+        pool,
+        request.sender_id.as_str(),
+        agent_wiki.as_deref(),
+        &principals,
+        &now,
+        BEHAVIOUR_RULES_RECALL_CAP,
     )
-    .collect();
-    rules.extend(tag(user_global, BehaviourScope::UserGlobal));
-    // The served user's own per-user rules (subject = the user) — "WITH ME".
-    rules.extend(tag(
-        behaviour_rows_on_page(pool, &agent_wiki, &sender).await,
-        BehaviourScope::PerUser,
-    ));
+    .await
+    {
+        Ok(rows) => rows,
+        Err(e) => {
+            tracing::warn!(error = %e, "ingest: rules recall failed (best-effort)");
+            return Vec::new();
+        },
+    };
+    let mut rules: Vec<(FactId, String, BehaviourScope)> = rows
+        .into_iter()
+        .map(|r| {
+            let on_the_assistant = agent_wiki.as_deref() == Some(r.wiki_id.as_str());
+            let about_the_assistant = matches!(
+                (&r.subject_id, agent_wiki.as_deref()),
+                (Principal::User(s), Some(a)) if s == a
+            );
+            let scope = match (on_the_assistant, about_the_assistant) {
+                (true, true) => BehaviourScope::AgentWide,
+                (true, false) => BehaviourScope::PerUser,
+                (false, _) => BehaviourScope::UserGlobal,
+            };
+            // Somebody ELSE's rule, reaching this reader because they were
+            // named in it. Say whose it is: the body was written in its
+            // author's deixis («this user»), and read without the name that
+            // "this user" becomes the person now speaking — the wrong one.
+            // The assistant's own standing operation is nobody's in this
+            // sense, and carries no label.
+            let text = match &r.subject_id {
+                Principal::User(whose)
+                    if whose != request.sender_id.as_str() && !about_the_assistant =>
+                {
+                    format!("[a rule of {whose}'s] {}", r.text)
+                },
+                _ => r.text,
+            };
+            (r.fact_id, text, scope)
+        })
+        .collect();
+    // Most specific last, so a narrower rule is read after the floor it
+    // narrows. Within a scope the query's own order (newest first) stands.
+    rules.sort_by_key(|(_, _, scope)| match scope {
+        BehaviourScope::AgentWide => 0u8,
+        BehaviourScope::UserGlobal => 1,
+        BehaviourScope::PerUser => 2,
+    });
     rules
 }
 
@@ -8949,7 +8842,7 @@ const HDR_YOUR_RULES: &str = "YOUR RULES (standing directives — agent-wide, th
 /// per-bullet scope is a governance detail the classifier needs (it rides
 /// [`push_behaviour_rules_section`]), not the consumer: a rule in force is a
 /// rule in force. `None` when empty; whole-bullet fitted against
-/// `policy.max_sender_rules_chars` ([`fit_bullets`] — one rule per line,
+/// `policy.max_rules_chars` ([`fit_bullets`] — one rule per line,
 /// never a mid-word cut).
 fn format_behaviour_rules(
     rules: &[(FactId, String, BehaviourScope)],
@@ -8958,7 +8851,7 @@ fn format_behaviour_rules(
     fit_bullets(
         HDR_YOUR_RULES,
         rules.iter().map(|(_, body, _)| body.as_str()),
-        policy.max_sender_rules_chars,
+        policy.max_rules_chars,
     )
 }
 
@@ -10304,14 +10197,17 @@ fn slot_question(stored: &StoredValue, asserted: &str) -> (Vec<DisambigCandidate
 /// tokens — into the classifier prompt, so the model can revise one by
 /// setting an extraction's `supersede_target` to its id (exactly as it
 /// supersedes a recalled fact) and restate the right `behaviour_scope` when
-/// it does. Mirrors the `sender_rules` injection. No-op when empty.
+/// it does. No-op when empty.
 fn push_behaviour_rules_section(out: &mut String, rules: &[(FactId, String, BehaviourScope)]) {
     if rules.is_empty() {
         return;
     }
     out.push_str(
-        "\nagent_behaviour_rules (the standing directives in force for this user, each with \
-         its scope; to revise one, set an extraction's supersede_target to its fact_id):\n",
+        "\nagent_behaviour_rules (the standing directives in force for this user, each \
+         with its scope — HONOUR THEM ON THIS TURN: one that governs who may see what, or \
+         what must never be stored, decides this turn's allow_ids and what you extract at \
+         all, overriding every default below; to revise one, set an extraction's \
+         supersede_target to its fact_id):\n",
     );
     for (id, body, scope) in rules {
         out.push_str("  - [");
@@ -11697,7 +11593,6 @@ pub async fn wiki_ingest_message(
     // The sender's standing policy, so the classifier
     // honours their privacy/sharing rules when it assigns per-fact ACL.
     // Best-effort — absent/unreadable → the classifier decides without it.
-    let sender_policy = sender_rules(tree, &request.sender_id);
     // The behaviour rules in force for this user (all three scopes — agent's
     // wiki + the sender's identity wiki) — surfaced to the
     // classifier WITH fact_ids and scopes so it can supersede one, and reused
@@ -11770,7 +11665,6 @@ pub async fn wiki_ingest_message(
         &sender_groups_scoped,
         &known_users,
         &known_entities,
-        sender_policy.as_deref(),
         sender_timezone.as_deref(),
         &language_directive,
         &parti,
@@ -11999,11 +11893,11 @@ pub async fn wiki_ingest_message(
     // judged against the same message.
     let turn_said = TurnWords::of(&request, completed_message, plan.withdrawal);
     let mut capture_id: Option<FactId> = None;
-    // Set when a NON-admin asks for an agent-wide behaviour-rule (one that would
-    // apply to everyone — admin-only): the rule is NOT filed, and the dedicated
-    // `rules` field carries a one-shot notice so the agent declines politely
-    // this turn.
-    let mut agent_wide_denied = false;
+    // Set when a NON-admin asks for a rule binding everyone this assistant
+    // serves (admin-only): the rule IS filed, narrowed to the speaker's own,
+    // and the dedicated `rules` field carries a one-shot notice saying which
+    // half of what they asked for was kept.
+    let mut agent_wide_narrowed = false;
     // A rule whose subject is somebody other than the speaker: refused for
     // everyone, the admin included, and answered on the notice channel.
     let mut rule_about_other_denied = false;
@@ -12185,35 +12079,6 @@ pub async fn wiki_ingest_message(
                     continue;
                 }
 
-                // An engine-rule is a
-                // standing GOVERNANCE directive (a privacy/sharing policy, or a
-                // do-not-store rule), not a fact. The classifier flags it; the
-                // orchestrator appends it as prose to the sender's `@rules.md`
-                // (read back as `sender_rules` next turn) and files NOTHING in
-                // `fact_index`. A rule needs only a body — no capture-plan /
-                // supersede validation, no target page. The world/household
-                // `rule` fact_type ("in casa non si fuma") stays a normal fact.
-                if unit.engine_rule {
-                    let Some(rule) = unit.body.map(str::trim).filter(|b| !b.is_empty()) else {
-                        tracing::warn!("ingest: engine_rule extraction has no body — dropped");
-                        continue;
-                    };
-                    if append_sender_rule(tree, &request.sender_id, rule)? {
-                        tracing::info!(
-                            sender_id = request.sender_id.as_str(),
-                            rule,
-                            "ingest: engine-rule appended to sender rules.md (no fact filed)"
-                        );
-                        captured_any = true;
-                    } else {
-                        tracing::warn!(
-                            sender_id = request.sender_id.as_str(),
-                            "ingest: engine_rule but sender has no identity wiki — rule dropped"
-                        );
-                    }
-                    continue;
-                }
-
                 // A behaviour-rule is a standing directive about how the
                 // CALLING AGENT should converse or operate — neither a fact
                 // about the user nor an engine governance rule. The classifier
@@ -12303,32 +12168,45 @@ pub async fn wiki_ingest_message(
                         );
                         continue;
                     }
-                    let scope = BehaviourScope::from_hint(unit.behaviour_scope);
+                    let mut scope = BehaviourScope::from_hint(unit.behaviour_scope);
                     let mut supersede = behaviour_supersede_target(unit, &behaviour_rules);
+                    // What the speaker said on top of «mine»: the extraction's
+                    // own audience, in the wire form the classifier writes it.
+                    let mut also_for: Vec<Principal> = unit
+                        .allow_ids
+                        .iter()
+                        .filter_map(|a| a.parse::<Principal>().ok())
+                        .collect();
+                    // EVERYONE is the administrator's word, in whichever of its
+                    // three spellings it arrives: a scope binding every user of
+                    // this assistant, an audience of `global`, or a supersede
+                    // reaching for a rule that already binds everyone. One
+                    // question answers all three.
                     let touches_everyone = scope == BehaviourScope::AgentWide
-                        || matches!(supersede, Some((_, BehaviourScope::AgentWide)));
-                    let authorized = !touches_everyone
-                        || crate::enrollment::is_admin(pool, request.sender_id.as_str())
+                        || matches!(supersede, Some((_, BehaviourScope::AgentWide)))
+                        || also_for.iter().any(Principal::is_global);
+                    let admin = touches_everyone
+                        && crate::enrollment::is_admin(pool, request.sender_id.as_str())
                             .await
                             .unwrap_or(false);
-                    if !authorized {
+                    if touches_everyone && !admin {
                         if scope == BehaviourScope::AgentWide {
-                            agent_wide_denied = true;
-                            tracing::info!(
-                                sender_id = request.sender_id.as_str(),
-                                rule,
-                                "ingest: agent-wide behaviour-rule from non-admin — refused (admin-only)"
-                            );
-                            continue;
+                            // «For everyone» is not theirs to say — and the
+                            // rule still is. Keep it at the narrowest reading
+                            // of the same sentence, this assistant and this
+                            // speaker, and say so in the receipt: a rule they
+                            // meant to set must not vanish over a permission
+                            // they had no way of knowing about.
+                            agent_wide_narrowed = true;
+                            scope = BehaviourScope::PerUser;
                         }
-                        // The new rule is the sender's own; only the supersede
-                        // reached for the agent-wide floor — drop it, file
-                        // the rule additively at its own scope.
+                        also_for.retain(|p| !p.is_global());
+                        supersede = None;
                         tracing::info!(
                             sender_id = request.sender_id.as_str(),
-                            "ingest: non-admin supersede of an agent-wide rule — kept additive"
+                            rule,
+                            "ingest: non-admin rule for everyone — kept as the speaker's own"
                         );
-                        supersede = None;
                     }
                     match capture_behaviour_rule(
                         tree,
@@ -12337,6 +12215,7 @@ pub async fn wiki_ingest_message(
                         &request,
                         rule,
                         scope,
+                        &also_for,
                         supersede.as_ref().map(|(id, _)| id),
                     )
                     .await?
@@ -13398,19 +13277,16 @@ pub async fn wiki_ingest_message(
                 // stage reads from — so the one case a demotion would exist
                 // for is exactly the case it breaks.
                 //
-                // `agent_wide_denied` rides the same path: nothing filed, but
-                // the turn must still carry the one-shot decline notice. So
-                // does `list_page_refused`, for the same reason.
+                // `list_page_refused` rides the same path: nothing filed, but
+                // the turn must still carry the one-shot notice.
                 //
                 // Nothing is lost by continuing: unclaimed media is filed by
                 // the deterministic pass below, and a turn whose reading also
                 // comes back empty still gets the canned seed — see the
                 // fallback right after the recall block.
                 include_flat = true;
-                nothing_filed = !captured_any
-                    && !agent_wide_denied
-                    && list_page_refused.is_none()
-                    && slot_questions.is_empty();
+                nothing_filed =
+                    !captured_any && list_page_refused.is_none() && slot_questions.is_empty();
             }
         },
         IntentKind::Recall => {
@@ -13937,12 +13813,13 @@ pub async fn wiki_ingest_message(
              from the dashboard's operator chat. Do not adopt the rule."
                 .to_owned()
         }),
-        agent_wide_denied.then(|| {
-            "NOTE — the user asked to set a rule that would apply to EVERYONE (an \
-             agent-wide directive). Only the administrator may do that, so it was \
-             not applied. Tell the user politely that an agent-wide change is \
-             reserved to the admin; do not adopt it. A preference that applies \
-             only to them you may still honour."
+        agent_wide_narrowed.then(|| {
+            "NOTE — the user asked to set a rule for EVERYONE you serve. Only the \
+             administrator may do that, so it was kept as THEIR OWN rule with you \
+             instead of everybody's, and it is in force from now on for them alone. \
+             Tell the user plainly which half was kept and which was not, and that \
+             an administrator can make it everybody's from the dashboard's operator \
+             chat. Follow it with this user."
                 .to_owned()
         }),
         (own_facts_not_removed > 0).then(|| {
@@ -14587,114 +14464,68 @@ mod tests {
         assert!(!out.contains("scope: \n"), "{out}");
     }
 
-    // ---------- sender rules.md read ----------
+    // ---------- what counts as a rule in force ----------
 
-    /// The sender's standing policy is what the SENDER said, and nothing the
-    /// engine wrote on the same page.
+    /// **A rule in force is a `rule` fact, and a sentence typed onto the page
+    /// by hand is not one.**
     ///
-    /// That page carries three things a person did not dictate: the page's own
-    /// `description:`/`style:` card, the headings, and the note the engine
-    /// leaves when a directive is withdrawn. Read back as policy they become
-    /// instructions nobody gave — and the withdrawal note is the worst of the
-    /// three, because it turns "you took a rule back" into a standing sentence
-    /// about rules being taken back.
-    #[test]
-    fn the_senders_policy_is_their_own_words_and_not_the_pages_furniture() {
-        let dir = tempfile::tempdir().unwrap();
-        let wikis = dir.path().join("wikis");
-        std::fs::create_dir_all(&wikis).unwrap();
-        write_wiki(&wikis, "alice", "Alice", "wiki-user", None);
-        std::fs::write(
-            wikis.join("alice").join(crate::wiki::RULES_FILENAME),
-            format!(
-                "---\ndescription: How this agent should behave.\nstyle: prosa-tecnica\n---\n\n\
-                 # Le regole\n\n\
-                 Health information is always private.\n\n\
-                 {}\n",
-                crate::wiki::withdrawn_note("10 September 2026 (UTC)")
-            ),
+    /// `@rules.md` looks like a page anybody could dictate to: it has a
+    /// heading, it can hold prose, and the engine leaves a note on it when a
+    /// directive is withdrawn. None of that is read. What the assistant is
+    /// handed each turn are the `rule` facts indexed on the page, each with
+    /// its own audience — so the page's furniture cannot become an
+    /// instruction, and neither can a paragraph somebody pasted there.
+    #[tokio::test]
+    async fn a_rule_in_force_is_a_fact_and_not_the_pages_prose() {
+        let (dir, tree, pool) = setup_agent_workdir().await;
+        let handle = tree.locate(&WikiId::parse("samvisebot").unwrap()).unwrap();
+        handle
+            .write_page(
+                Path::new(crate::wiki::RULES_FILENAME),
+                &format!(
+                    "---\ndescription: How this agent should behave.\nstyle: prosa-tecnica\n---\n\n\
+                     # Le regole\n\nKeep health information private.\n\n{}\n",
+                    crate::wiki::withdrawn_note("10 September 2026 (UTC)")
+                ),
+            )
+            .unwrap();
+        assert!(
+            recall_behaviour_rules(&pool, &req_consumer("?", "alice", "botdeploy"))
+                .await
+                .is_empty(),
+            "prose on the page — the person's paragraph, the heading, the \
+             frontmatter, the withdrawal note — is not a rule in force"
+        );
+
+        // The same sentence, said to the assistant, becomes a fact on the same
+        // page, and THAT is what comes back.
+        let llm = FakeLlmBackend::new(
+            "fake",
+            "{\"intent\":\"capture\",\"extractions\":[{\"behaviour_rule\":true,\
+             \"behaviour_scope\":\"per-user\",\
+             \"body\":\"Keep health information private.\"}]}",
+        );
+        wiki_ingest_message(
+            &pool,
+            &tree,
+            fake_embedder(),
+            &llm,
+            None,
+            req_consumer("keep my health private", "alice", "botdeploy"),
+            &IngestPolicy::default(),
         )
-        .unwrap();
-        let tree = WikiTree::open(dir.path()).expect("open tree");
-
-        let policy = sender_rules(&tree, "alice").expect("the person's own words survive");
-        assert!(
-            policy.contains("Health information is always private."),
-            "the policy lost what the person actually said: {policy}"
+        .await
+        .expect("ingest");
+        let served = recall_behaviour_rules(&pool, &req_consumer("?", "alice", "botdeploy")).await;
+        assert_eq!(
+            served
+                .iter()
+                .map(|(_, b, _)| b.as_str())
+                .collect::<Vec<_>>(),
+            vec!["Keep health information private."],
+            "the filed rule is served, once, and nothing else on the page is"
         );
-        for furniture in [
-            "description:",
-            "style:",
-            "# Le regole",
-            crate::wiki::WITHDRAWN_NOTE_PREFIX,
-        ] {
-            assert!(
-                !policy.contains(furniture),
-                "the policy carries the page's furniture, not the sender's words: \
-                 {furniture:?} in {policy:?}"
-            );
-        }
         drop(dir);
-    }
-
-    #[test]
-    fn sender_rules_reads_actor_rules_md_else_none() {
-        let dir = tempfile::tempdir().unwrap();
-        std::fs::create_dir_all(dir.path().join("wikis")).unwrap();
-        let tree = WikiTree::open(dir.path()).expect("tree");
-        // No identity wiki for the sender yet → best-effort None.
-        assert!(sender_rules(&tree, "alice").is_none());
-
-        // Creating alice's identity wiki seeds a rules.md that is a heading
-        // and nothing else — a page with no policy on it, which reaches the
-        // classifier as no policy rather than as a rule Alice never wrote.
-        let id = WikiId::parse("alice").unwrap();
-        crate::wiki::create_identity_wiki(&tree, &id, "Alice", crate::wiki::IdentityKind::User)
-            .expect("create alice");
-        // Re-open so the registry picks up the new wiki for `locate`.
-        let tree = WikiTree::open(dir.path()).expect("reopen");
-        assert!(sender_rules(&tree, "alice").is_none());
-
-        // A user-edited policy is read back verbatim.
-        let handle = tree.locate(&id).unwrap();
-        handle
-            .write_page(
-                Path::new(crate::wiki::RULES_FILENAME),
-                "# Rules\n\nkeep health private",
-            )
-            .unwrap();
-        assert!(
-            sender_rules(&tree, "alice")
-                .unwrap()
-                .contains("keep health private")
-        );
-
-        // A user-global behaviour rule lives on the same page as a `{{f=…}}`
-        // region — the governance read strips it: the rule
-        // reaches the classifier via `agent_behaviour_rules` (with its
-        // fact_id), never as policy prose.
-        handle
-            .write_page(
-                Path::new(crate::wiki::RULES_FILENAME),
-                "# Rules\n\nkeep health private\n\n\
-                 {{f=018f1234-5678-7abc-9def-0123456789ab}}Parlami in italiano.{{/}}\n",
-            )
-            .unwrap();
-        let got = sender_rules(&tree, "alice").unwrap();
-        assert!(got.contains("keep health private"));
-        assert!(
-            !got.contains("Parlami in italiano."),
-            "fact regions must be stripped from the governance prose: {got}"
-        );
-
-        // A page holding ONLY regions has no governance prose → None.
-        handle
-            .write_page(
-                Path::new(crate::wiki::RULES_FILENAME),
-                "{{f=018f1234-5678-7abc-9def-0123456789ab}}Parlami in italiano.{{/}}\n",
-            )
-            .unwrap();
-        assert!(sender_rules(&tree, "alice").is_none());
     }
 
     #[test]
@@ -14850,7 +14681,6 @@ mod tests {
             page_description: Some("what the family still needs to buy"),
             salience: None,
             requested_container: requested,
-            engine_rule: false,
             behaviour_rule: false,
             behaviour_scope: None,
             behaviour_about: None,
@@ -14941,7 +14771,6 @@ mod tests {
             page_description: None,
             salience: None,
             requested_container: false,
-            engine_rule: false,
             behaviour_rule: false,
             behaviour_scope: None,
             behaviour_about: None,
@@ -15062,7 +14891,6 @@ mod tests {
             page_description: None,
             salience: None,
             requested_container: false,
-            engine_rule: false,
             behaviour_rule: false,
             behaviour_scope: None,
             behaviour_about: None,
@@ -15118,7 +14946,6 @@ mod tests {
             page_description: None,
             salience: None,
             requested_container: false,
-            engine_rule: false,
             behaviour_rule: false,
             behaviour_scope: None,
             behaviour_about: None,
@@ -15170,7 +14997,6 @@ mod tests {
             page_description: None,
             salience: None,
             requested_container: false,
-            engine_rule: false,
             behaviour_rule: false,
             behaviour_scope: None,
             behaviour_about: None,
@@ -15230,7 +15056,6 @@ mod tests {
             page_description: None,
             salience: None,
             requested_container: false,
-            engine_rule: false,
             behaviour_rule: false,
             behaviour_scope: None,
             behaviour_about: None,
@@ -15278,7 +15103,6 @@ mod tests {
             page_description: None,
             salience: None,
             requested_container: false,
-            engine_rule: false,
             behaviour_rule: false,
             behaviour_scope: None,
             behaviour_about: None,
@@ -15361,7 +15185,6 @@ mod tests {
             page_description: None,
             salience: None,
             requested_container: false,
-            engine_rule: false,
             behaviour_rule: false,
             behaviour_scope: None,
             behaviour_about: None,
@@ -16120,7 +15943,6 @@ mod tests {
             page_description: None,
             salience: None,
             requested_container: false,
-            engine_rule: false,
             behaviour_rule: false,
             behaviour_scope: None,
             behaviour_about: None,
@@ -16690,19 +16512,22 @@ mod tests {
     /// fence is about how the assistant TREATS somebody else; this is about
     /// what it may say of what BOB told it, which nobody but Bob decides.
     ///
-    /// The governance channel is where it belongs and it is reached first, so
-    /// the fence is unreachable for it even when the classifier names the
-    /// other person in `behaviour_about`. Both directions are driven here,
-    /// because the whole defect is the line between them.
+    /// One mechanism carries both, so the line between them is drawn by one
+    /// field and nothing else: `behaviour_about` is the classifier saying
+    /// "this rule is about somebody who is not the speaker", and a withholding
+    /// rule never sets it. Both directions are driven here, because the whole
+    /// defect is the line between them.
     #[tokio::test]
     async fn a_sharing_restriction_is_the_speakers_own_rule() {
         let (dir, tree, pool) = setup_workdir().await;
 
-        // Bob withholds his own thing from a named person. It names Zoe, and
-        // it is still a policy about Bob's information.
+        // Alice withholds her own thing from a named person. It names Zoe, and
+        // it is still a rule about what may be said of Alice's information —
+        // so it carries no `behaviour_about` and takes its scope from the
+        // addressee like any other directive.
         let json = "{\"intent\":\"capture\",\"extractions\":[{\
-            \"subject_id\":\"user:alice\",\"engine_rule\":true,\
-            \"behaviour_about\":\"user:zoe\",\
+            \"subject_id\":\"user:alice\",\"behaviour_rule\":true,\
+            \"behaviour_scope\":\"per-user\",\
             \"body\":\"Never tell Zoe about the scan result.\"}]}";
         let llm = FakeLlmBackend::new("fake", json);
         let resp = wiki_ingest_message(
@@ -16728,7 +16553,7 @@ mod tests {
         .expect("the speaker's rules page");
         assert!(
             rules.contains("Never tell Zoe about the scan result."),
-            "a sharing policy of the speaker's own reaches their rules page: {rules}"
+            "a sharing rule of the speaker's own reaches their rules page: {rules}"
         );
         assert!(
             !resp
@@ -16736,6 +16561,14 @@ mod tests {
                 .unwrap_or_default()
                 .contains("rule about how you treat SOMEBODY ELSE"),
             "and it is not refused as a rule set about another person"
+        );
+        // It is Alice's rule, and Zoe — named in it — is not among its
+        // readers: being the person withheld from is not being an audience.
+        let row = &rules_on(&pool, "alice", "alice").await;
+        assert_eq!(row.len(), 1, "exactly the one rule stands");
+        assert!(
+            rules_on(&pool, "alice", "zoe").await.is_empty(),
+            "the person a rule withholds from does not get to read it"
         );
 
         // The other direction, unchanged: how the assistant TREATS Zoe is not
@@ -16916,6 +16749,7 @@ mod tests {
             Principal::User("alice".into()),
             BehaviourScope::PerUser,
             "Keep answers short: I am on a poor connection this week.",
+            &[],
             None,
             dictated,
         )
@@ -16956,6 +16790,7 @@ mod tests {
             Principal::User("alice".into()),
             BehaviourScope::PerUser,
             "The reasoning: [to be completed by the user in dialogue]",
+            &[],
             None,
             chrono::Utc::now(),
         )
@@ -16966,12 +16801,29 @@ mod tests {
             crate::capture::CaptureError::RuleIsAPlaceholder
         ));
         assert!(
-            behaviour_rows_on_page(&pool, "alice", &Principal::User("alice".into()))
-                .await
-                .is_empty(),
+            rules_on(&pool, "alice", "alice").await.is_empty(),
             "and nothing was written"
         );
         drop(dir);
+    }
+
+    /// The rules one principal reads on one wiki's rules page, through the
+    /// channel the turn itself uses.
+    async fn rules_on(pool: &SqlitePool, wiki: &str, who: &str) -> Vec<(FactId, String)> {
+        let now = chrono::Utc::now().to_rfc3339();
+        fact_index::find_behaviour_rules(
+            pool,
+            who,
+            Some(wiki),
+            &crate::acl::reader_principals(who, &[]),
+            &now,
+            0,
+        )
+        .await
+        .expect("rules")
+        .into_iter()
+        .map(|r| (r.fact_id, r.text))
+        .collect()
     }
 
     /// **The value in the recent window belongs to the turn that said it, not
@@ -17730,7 +17582,6 @@ mod tests {
             &[],
             &[],
             None,
-            None,
             &crate::locale::render_memory_language_directive(Some("it-IT")),
             &[],
             now,
@@ -17758,7 +17609,6 @@ mod tests {
             &[],
             &[],
             None,
-            None,
             &crate::locale::render_memory_language_directive(Some("it-IT")),
             &[],
             now_fixture(),
@@ -17783,7 +17633,6 @@ mod tests {
             &[],
             &[],
             &[],
-            None,
             None,
             &crate::locale::render_memory_language_directive(Some("it-IT")),
             &[],
@@ -17817,7 +17666,6 @@ mod tests {
             &[],
             &[],
             &[],
-            None,
             None,
             &crate::locale::render_memory_language_directive(Some("it-IT")),
             &[],
@@ -17860,7 +17708,6 @@ mod tests {
             &[],
             &[],
             None,
-            None,
             &crate::locale::render_memory_language_directive(Some("it-IT")),
             &[],
             now_fixture(),
@@ -17901,7 +17748,6 @@ mod tests {
             &[],
             &[],
             None,
-            None,
             &crate::locale::render_memory_language_directive(Some("it-IT")),
             &[],
             now_fixture(),
@@ -17921,80 +17767,51 @@ mod tests {
         );
     }
 
-    /// The sender's `@rules.md` policy is injected into the
-    /// `sender_rules` section so the classifier can honour it when assigning
-    /// per-fact ACL; absent → an explicit `(none)`, and an over-long policy is
-    /// truncated to the budget.
+    /// **The rules block is the classifier's governance too, and it is shown
+    /// WHOLE.**
+    ///
+    /// The directives in force reach the model once, in one block, carrying
+    /// both duties: what the assistant is to do, and who may read what. So the
+    /// block is never sampled — a governance rule the model was not shown is a
+    /// fact filed with the wrong audience — and each line carries the
+    /// `fact_id` and the scope a revision needs.
     #[test]
-    fn build_prompt_emits_sender_rules_when_present_else_none() {
-        let request = req("la mia pressione è alta", "alice");
-        let policy = IngestPolicy::default();
+    fn the_rules_block_is_shown_whole_with_ids_and_scopes() {
+        let fake_id =
+            |i: u32| FactId::parse(&format!("018f1234-5678-7abc-9def-{i:012x}")).expect("fact id");
+        let rules: Vec<(FactId, String, BehaviourScope)> = (0..40)
+            .map(|i| {
+                (
+                    fake_id(i),
+                    format!("Rule number {i} about something the assistant must do."),
+                    BehaviourScope::PerUser,
+                )
+            })
+            .chain(std::iter::once((
+                fake_id(99),
+                "Keep health information private.".to_owned(),
+                BehaviourScope::UserGlobal,
+            )))
+            .collect();
+        let mut out = String::new();
+        push_behaviour_rules_section(&mut out, &rules);
 
-        // Absent → explicit (none).
-        let none = build_prompt(
-            &request,
-            &[],
-            &[],
-            &[],
-            &[],
-            &[],
-            None,
-            None,
-            &crate::locale::render_memory_language_directive(Some("it-IT")),
-            &[],
-            now_fixture(),
-            &policy,
-        );
-        assert!(none.contains("sender_rules:\n  (none)"));
-
-        // Present → the policy body is injected verbatim under the section.
-        let rules = "# Rules\n\nkeep anything about my health private";
-        let with = build_prompt(
-            &request,
-            &[],
-            &[],
-            &[],
-            &[],
-            &[],
-            Some(rules),
-            None,
-            &crate::locale::render_memory_language_directive(Some("it-IT")),
-            &[],
-            now_fixture(),
-            &policy,
-        );
-        assert!(with.contains("sender_rules:"));
-        assert!(with.contains("keep anything about my health private"));
-
-        // An over-long policy is shown WHOLE. The prompt calls this block the
-        // sender's policy «in full», under the rule that a slot may act
-        // against a set it is shown complete and never against a sample — and
-        // this is the block that carries governance. Cutting it dropped the
-        // last rule of anyone whose `@rules.md` had grown, silently, while the
-        // prompt asserted they had seen everything.
-        let long = format!(
-            "{}\ni fatti sulla mia salute restano privati",
-            "x".repeat(policy.max_sender_rules_chars + 50)
-        );
-        let whole = build_prompt(
-            &request,
-            &[],
-            &[],
-            &[],
-            &[],
-            &[],
-            Some(&long),
-            None,
-            &crate::locale::render_memory_language_directive(Some("it-IT")),
-            &[],
-            now_fixture(),
-            &policy,
-        );
         assert!(
-            whole.contains("i fatti sulla mia salute restano privati"),
-            "the last rule of a long policy still reaches the model:\n{whole}"
+            out.contains("allow_ids"),
+            "the block must say it decides this turn's audiences: {out}"
         );
-        assert!(!whole.contains('…'), "and nothing is cut mid-word: {whole}");
+        for (id, body, _) in &rules {
+            assert!(out.contains(id.as_str()), "every rule keeps its fact_id");
+            assert!(out.contains(body.as_str()), "every rule reaches the model");
+        }
+        assert!(out.contains("(per-user)") && out.contains("(user-global)"));
+        assert!(!out.contains('…'), "nothing is cut: {out}");
+
+        // No rule in force → no block at all, rather than an empty heading the
+        // model would read as a set it has been shown.
+        let mut empty = String::new();
+        push_behaviour_rules_section(&mut empty, &[]);
+        assert!(empty.is_empty());
     }
 
     /// A name of several words is one entry of the list, and the quotes are
@@ -18038,7 +17855,6 @@ mod tests {
             &[],
             &known,
             &[],
-            None,
             None,
             &crate::locale::render_memory_language_directive(Some("it-IT")),
             &[],
@@ -18085,7 +17901,6 @@ mod tests {
             &known,
             &[],
             None,
-            None,
             &crate::locale::render_memory_language_directive(Some("it-IT")),
             &[],
             now_fixture(),
@@ -18118,7 +17933,6 @@ mod tests {
             &[],
             &[],
             None,
-            None,
             &crate::locale::render_memory_language_directive(Some("it-IT")),
             &[],
             now_fixture(),
@@ -18141,7 +17955,6 @@ mod tests {
             &[],
             &[],
             &[],
-            None,
             None,
             &crate::locale::render_memory_language_directive(Some("it-IT")),
             &[],
@@ -18177,7 +17990,6 @@ mod tests {
             &groups,
             &[],
             &[],
-            None,
             None,
             &crate::locale::render_memory_language_directive(Some("it-IT")),
             &[],
@@ -18290,7 +18102,6 @@ mod tests {
             &[],
             &[],
             None,
-            None,
             &crate::locale::render_memory_language_directive(Some("it-IT")),
             &[],
             now_fixture(),
@@ -18329,7 +18140,6 @@ mod tests {
             &[],
             &[],
             None,
-            None,
             &crate::locale::render_memory_language_directive(Some("it-IT")),
             &[],
             now_fixture(),
@@ -18354,7 +18164,6 @@ mod tests {
             &[],
             &[],
             &[],
-            None,
             None,
             &crate::locale::render_memory_language_directive(Some("it-IT")),
             &[],
@@ -18383,7 +18192,6 @@ mod tests {
             &[],
             &[],
             &[],
-            None,
             None,
             &crate::locale::render_memory_language_directive(Some("it-IT")),
             &[],
@@ -18419,7 +18227,6 @@ mod tests {
             &[],
             &[],
             &[],
-            None,
             Some("Australia/Sydney"),
             &crate::locale::render_memory_language_directive(Some("it-IT")),
             &[],
@@ -18454,7 +18261,6 @@ mod tests {
             &[],
             &[],
             None,
-            None,
             &crate::locale::render_memory_language_directive(Some("it-IT")),
             &[],
             now_fixture(),
@@ -18487,7 +18293,6 @@ mod tests {
             &[],
             &[],
             None,
-            None,
             &crate::locale::render_memory_language_directive(Some("en-GB")),
             &[],
             now_fixture(),
@@ -18511,7 +18316,6 @@ mod tests {
             &[],
             &[],
             &[],
-            None,
             None,
             &crate::locale::render_memory_language_directive(Some("en-GB")),
             &[],
@@ -18549,7 +18353,6 @@ mod tests {
             &[],
             &[],
             &[],
-            None,
             None,
             &crate::locale::render_memory_language_directive(Some("it-IT")),
             &[],
@@ -21923,16 +21726,22 @@ mod tests {
         drop(dir);
     }
 
-    /// An extraction the classifier marks
-    /// as an engine-rule (a standing governance directive) is appended to the
-    /// sender's `@rules.md` as prose and is NEVER filed in `fact_index` or the
-    /// capture buffer. `setup_workdir` does not seed a `@rules.md`, so this also
-    /// exercises the missing-file path (the helper seeds from the default body).
+    /// **A governance directive is a rule like any other: a `rule` fact on the
+    /// rules page, with its own audience, and never a row in the wiki's fact
+    /// memory.**
+    ///
+    /// "Keep my health private" is the memory's business and "answer me
+    /// concisely" is the assistant's, and for a long time that difference had
+    /// its own road: the first was appended to `@rules.md` as bare prose and
+    /// read back whole, the second was filed as a fact. Two roads meant two
+    /// answers to who may read a directive — and the prose one had no answer
+    /// at all. There is one road now, and this drives it from the sentence to
+    /// the page.
     #[tokio::test]
-    async fn ingest_engine_rule_appends_to_rules_md_not_fact_index() {
+    async fn a_governance_rule_is_filed_as_a_rule_fact_not_as_memory() {
         let (dir, tree, pool) = setup_workdir().await;
         let json = "{\"intent\":\"capture\",\"extractions\":[{\
-            \"engine_rule\":true,\"fact_type\":\"rule\",\
+            \"behaviour_rule\":true,\"behaviour_scope\":\"user-global\",\
             \"body\":\"Health information is always private; never share it with any group.\"}],\
             \"suggested_seed\":\"Got it.\"}";
         let llm = FakeLlmBackend::new("fake", json);
@@ -21953,22 +21762,26 @@ mod tests {
         .expect("ingest");
 
         assert_eq!(resp.intent, IntentKind::Capture);
-        // A rule is not a fact: nothing filed, nothing buffered, no anchor id.
-        assert!(resp.capture_id.is_none(), "engine-rule files no fact");
-        assert_eq!(
-            fact_index::count_active_in_wiki(&pool, "alice")
-                .await
-                .unwrap(),
-            0,
-            "engine-rule must not write a fact_index row"
-        );
+        // A rule is not memory about the user: nothing buffered, and the one
+        // row it wrote is the rule itself, on the rules page.
         assert_eq!(
             capture_buffer::count_buffered(&pool).await.unwrap(),
             0,
-            "engine-rule must not buffer a capture"
+            "a rule must not buffer a capture"
         );
-
-        // It landed in alice's rules.md as prose, read straight back next turn.
+        let served = rules_on(&pool, "alice", "alice").await;
+        assert_eq!(
+            served.iter().map(|(_, b)| b.as_str()).collect::<Vec<_>>(),
+            vec!["Health information is always private; never share it with any group."],
+            "the rule is served back to its own author"
+        );
+        // And it is hers: nobody else reads it, because she shared it with
+        // nobody.
+        assert!(
+            rules_on(&pool, "alice", "bilbo").await.is_empty(),
+            "a rule is private to whoever stated it"
+        );
+        // It sits on the rules page, as a fact region like any other fact.
         let rules = std::fs::read_to_string(
             tree.wikis_dir()
                 .join("alice")
@@ -21976,9 +21789,12 @@ mod tests {
         )
         .expect("@rules.md written");
         assert!(
-            rules
-                .contains("- Health information is always private; never share it with any group."),
-            "rule appended as a bullet; body was:\n{rules}"
+            rules.contains("Health information is always private"),
+            "the rule lands on the rules page; body was:\n{rules}"
+        );
+        assert!(
+            rules.contains("{{f="),
+            "as a fact region, not as bare prose; body was:\n{rules}"
         );
         drop(dir);
     }
@@ -22315,6 +22131,7 @@ mod tests {
             Principal::User("alice".to_owned()),
             BehaviourScope::UserGlobal,
             RULE,
+            &[],
             None,
             chrono::Utc::now(),
         )
@@ -22580,12 +22397,16 @@ mod tests {
         drop(dir);
     }
 
-    /// An AGENT-WIDE behaviour-rule from a NON-admin is REFUSED: nothing is
-    /// filed, and the dedicated `rules` field carries a one-shot notice steering
-    /// the agent to decline. A per-user rule from the same user would still be
-    /// accepted — only agent-wide changes are admin-gated.
+    /// **A NON-admin who says «for everyone» keeps the rule as their own.**
+    ///
+    /// «For everyone» is the administrator's word and the rule is still the
+    /// speaker's: the half they may not have is dropped, the half they may is
+    /// kept — narrowed to this assistant, with them alone — and the one-shot
+    /// notice says which is which. Throwing the whole sentence away, which is
+    /// what happened before, cost somebody a rule they meant to set over a
+    /// permission nobody had told them about.
     #[tokio::test]
-    async fn agent_wide_behaviour_rule_from_non_admin_is_refused() {
+    async fn agent_wide_rule_from_non_admin_is_kept_as_their_own() {
         let (dir, tree, pool) = setup_agent_workdir().await;
         // alice has no is_admin=1 row → not the admin.
         let llm = FakeLlmBackend::new(
@@ -22617,18 +22438,96 @@ mod tests {
         )
         .await
         .unwrap();
-        assert!(
-            rows.is_empty(),
-            "a non-admin's agent-wide rule must not be filed anywhere"
+        assert_eq!(rows.len(), 1, "the rule is kept, not thrown away");
+        assert_eq!(
+            rows[0].subject_id,
+            Principal::User("alice".into()),
+            "and it is HERS — not the assistant's, which is what agent-wide means"
         );
-        assert!(resp.capture_id.is_none(), "nothing filed → no anchor id");
+        assert!(
+            !rows[0].allow_ids.iter().any(Principal::is_global),
+            "a non-admin's rule is private to her: {:?}",
+            rows[0].allow_ids
+        );
+        assert!(
+            resp.capture_id.is_some(),
+            "something was filed → an anchor id"
+        );
         assert!(
             resp.rules
                 .as_deref()
                 .unwrap_or_default()
-                .contains("reserved to the admin"),
-            "the `rules` field tells the agent to decline (an agent-wide change is admin-only)"
+                .contains("kept as THEIR OWN rule"),
+            "the `rules` field says which half was kept"
         );
+        // She gets it; nobody else does — the very thing «for everyone» asked
+        // for and did not get.
+        let hers = recall_behaviour_rules(&pool, &req_consumer("?", "alice", "botdeploy")).await;
+        assert_eq!(
+            hers.iter().map(|(_, b, _)| b.as_str()).collect::<Vec<_>>(),
+            vec!["Per i task pesanti delega a Claude Code."]
+        );
+        assert!(
+            recall_behaviour_rules(&pool, &req_consumer("?", "bilbo", "botdeploy"))
+                .await
+                .is_empty(),
+            "and it does not reach everyone this assistant serves"
+        );
+        drop(dir);
+    }
+
+    /// **A rule the speaker widens to somebody else reaches them, and arrives
+    /// with its author's name on it.**
+    ///
+    /// «And this goes for Bob as well» is the whole of the sharing mechanism:
+    /// the extraction's own audience, read back by the same `can_read` as
+    /// every other fact. Bob gets it and follows it — and he is told whose it
+    /// is, because the body was written in Alice's deixis and read without a
+    /// name «this user» would become Bob.
+    #[tokio::test]
+    async fn a_rule_widened_to_somebody_else_reaches_them_as_its_authors() {
+        let (dir, tree, pool) = setup_agent_workdir().await;
+        sqlx::query("INSERT INTO enrollment_users (user_id, is_admin) VALUES ('bilbo', 0)")
+            .execute(&pool)
+            .await
+            .unwrap();
+        let llm = FakeLlmBackend::new(
+            "fake",
+            "{\"intent\":\"capture\",\"extractions\":[{\"behaviour_rule\":true,\
+             \"behaviour_scope\":\"per-user\",\"allow_ids\":[\"user:bilbo\"],\
+             \"body\":\"Never mention the presents this user buys.\"}]}",
+        );
+        wiki_ingest_message(
+            &pool,
+            &tree,
+            fake_embedder(),
+            &llm,
+            None,
+            req_consumer(
+                "non parlare dei regali che compro, e vale anche per Bilbo",
+                "alice",
+                "botdeploy",
+            ),
+            &IngestPolicy::default(),
+        )
+        .await
+        .expect("ingest");
+
+        let hers = recall_behaviour_rules(&pool, &req_consumer("?", "alice", "botdeploy")).await;
+        assert_eq!(
+            hers.iter().map(|(_, b, _)| b.as_str()).collect::<Vec<_>>(),
+            vec!["Never mention the presents this user buys."],
+            "her own rule comes back to her unlabelled"
+        );
+        let his = recall_behaviour_rules(&pool, &req_consumer("?", "bilbo", "botdeploy")).await;
+        assert_eq!(
+            his.iter().map(|(_, b, _)| b.as_str()).collect::<Vec<_>>(),
+            vec!["[a rule of alice's] Never mention the presents this user buys."],
+            "it reaches him, and it says whose it is"
+        );
+        // Somebody she did not name gets nothing.
+        let nobody = recall_behaviour_rules(&pool, &req_consumer("?", "bob", "botdeploy")).await;
+        assert!(nobody.is_empty(), "a rule is private to whoever stated it");
         drop(dir);
     }
 
@@ -23012,9 +22911,7 @@ mod tests {
         );
         assert!(after.source_path.ends_with("/rules.md"));
         // And the re-homed fact is recalled through the behaviour channel.
-        let rules =
-            behaviour_rows_on_page(&pool, "samvisebot", &Principal::User("samvisebot".into()))
-                .await;
+        let rules = rules_on(&pool, "samvisebot", "samvisebot").await;
         assert_eq!(
             rules.iter().map(|(_, b)| b.as_str()).collect::<Vec<_>>(),
             vec!["Dai del tu all'utente."],
@@ -23087,9 +22984,7 @@ mod tests {
             .expect("crowd");
         }
 
-        let rules =
-            behaviour_rows_on_page(&pool, "samvisebot", &Principal::User("samvisebot".into()))
-                .await;
+        let rules = rules_on(&pool, "samvisebot", "samvisebot").await;
         assert_eq!(
             rules.iter().map(|(_, b)| b.as_str()).collect::<Vec<_>>(),
             vec!["Dai del tu all'utente."],
@@ -23139,9 +23034,7 @@ mod tests {
         .expect("close")
         .expect("row exists");
 
-        let rules =
-            behaviour_rows_on_page(&pool, "samvisebot", &Principal::User("samvisebot".into()))
-                .await;
+        let rules = rules_on(&pool, "samvisebot", "samvisebot").await;
         assert_eq!(
             rules.iter().map(|(id, _)| id).collect::<Vec<_>>(),
             vec![&kept.fact_id],
@@ -24284,7 +24177,6 @@ mod tests {
             page_description: None,
             salience: None,
             requested_container: false,
-            engine_rule: false,
             behaviour_rule: false,
             behaviour_scope: None,
             behaviour_about: None,
@@ -25567,14 +25459,14 @@ mod tests {
         );
     }
 
-    /// A single turn can carry BOTH an engine-rule and an ordinary fact. The
-    /// rule is appended to `@rules.md`; the fact still routes normally (buffered
+    /// A single turn can carry BOTH a standing rule and an ordinary fact. The
+    /// rule lands on `@rules.md`; the fact still routes normally (buffered
     /// for the standard `alice` wiki) and surfaces as the turn's `capture_id`.
     #[tokio::test]
-    async fn ingest_mixed_turn_files_fact_and_appends_rule() {
+    async fn ingest_mixed_turn_files_fact_and_rule() {
         let (dir, tree, pool) = setup_workdir().await;
         let json = "{\"intent\":\"capture\",\"extractions\":[\
-            {\"engine_rule\":true,\"fact_type\":\"rule\",\
+            {\"behaviour_rule\":true,\"behaviour_scope\":\"user-global\",\
              \"body\":\"Never store my exact home address.\"},\
             {\"target_wiki_id\":\"alice\",\"target_page\":\"preferenze.md\",\"subject_id\":\"user:alice\",\
              \"body\":\"Alice lives in Bologna.\",\"fact_type\":\"bio\",\"topics\":[\"bio\"]}],\
@@ -25594,13 +25486,11 @@ mod tests {
         .expect("ingest");
 
         assert_eq!(resp.intent, IntentKind::Capture);
-        // The ordinary fact buffers (standard wiki) and anchors the turn.
-        let cid = resp
-            .capture_id
-            .expect("the ordinary fact surfaces a capture_id");
+        // The turn anchors on the first row it filed — here the rule, which is
+        // a row like any other. The anchor is audit-only either way.
+        assert!(resp.capture_id.is_some(), "the turn carries an anchor id");
         let buffered = capture_buffer::find_all_buffered(&pool, 100).await.unwrap();
         assert_eq!(buffered.len(), 1, "exactly the one ordinary fact buffers");
-        assert_eq!(buffered[0].capture_id, cid);
         assert_eq!(buffered[0].body, "Alice lives in Bologna.");
         // The rule went to rules.md, not the buffer.
         let rules = std::fs::read_to_string(
@@ -25609,7 +25499,7 @@ mod tests {
                 .join(crate::wiki::RULES_FILENAME),
         )
         .expect("@rules.md written");
-        assert!(rules.contains("- Never store my exact home address."));
+        assert!(rules.contains("Never store my exact home address."));
         drop(dir);
     }
 
@@ -31661,7 +31551,6 @@ mod tests {
             &[],
             &[],
             None,
-            None,
             &crate::locale::render_memory_language_directive(Some("it-IT")),
             &[],
             now_fixture(),
@@ -31683,7 +31572,6 @@ mod tests {
             &[],
             &[],
             &[],
-            None,
             None,
             &crate::locale::render_memory_language_directive(Some("it-IT")),
             &[],
@@ -31711,7 +31599,6 @@ mod tests {
             &[],
             &[],
             &[],
-            None,
             None,
             &crate::locale::render_memory_language_directive(Some("it-IT")),
             &[regole.as_str()],

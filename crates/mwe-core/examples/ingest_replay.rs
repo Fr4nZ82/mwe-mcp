@@ -612,7 +612,6 @@ const EXTRACTION_FIELDS: &[&str] = &[
     "style",
     "requested_container",
     "salience",
-    "engine_rule",
     "behaviour_rule",
     "behaviour_scope",
     "supersede_target",
@@ -706,7 +705,6 @@ const DEFAULT_FALSE: &[&str] = &[
     "needs_disambig",
     "needs_project_docs",
     "requested_container",
-    "engine_rule",
     "behaviour_rule",
 ];
 

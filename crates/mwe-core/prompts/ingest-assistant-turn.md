@@ -1,8 +1,8 @@
 ---
 name: ingest-assistant-turn
 description: The `ingest` classifier's rules for a turn the consumer agent feeds back as its OWN prior reply (`author: assistant`) — keep the durable sediment it synthesised, drop the rest. Appended to the turn context by `ingest::build_prompt`, and ONLY on such a turn.
-version: 1.0
-default_version_at_bootstrap: v1.0
+version: 1.1
+default_version_at_bootstrap: v1.1
 part_of: ingest
 appended_when: the turn carries `author: assistant`
 ---
@@ -58,7 +58,7 @@ NO TRANSCRIPT. Store the sediment, never the exchange. One distilled fact per du
 
 ANTI-LOOP — do not re-capture what you recalled. If something your reply states is already present in `recalled_memory`, you RECALLED it, you did not derive it — **skip** it. `recalled_memory` shows you what is already stored; re-saving it inflates confidence in a loop. Only newly-synthesised material survives. The canonical echo is IDENTIFICATION: the user asks who they are or what you know about them, and your reply recites their identity card from recall ("You are Frodo B., born on …, who works as …"). NOTHING in that reply is new — no bio extraction, and no episode either ("the agent correctly identified the user" is routine operation, not durable sediment): the whole turn is a `skip`.
 
-ATTRIBUTION IS AUTOMATIC. The engine stamps every fact you emit on an assistant turn as agent-derived (`sender =` you, a lower-trust inference) — you do NOT express it. You only choose `subject_id`: the SUBJECT for kinds 2–3 — `"user:<sender>"` in the normal case, another enrolled user only per kind 3's necessity test — `global` for a kept kind 4, and `"self"` for kind 6 (the engine routes a `"self"` fact into your own wiki — it knows which one that is). Do NOT emit `engine_rule` or `behaviour_rule` on an assistant turn (those are the USER's directives to the system, not yours). When your reply records completing or abandoning something ("done, I have sent it"), that is ordinary kind-2 sediment: write it down as a fact like any other.
+ATTRIBUTION IS AUTOMATIC. The engine stamps every fact you emit on an assistant turn as agent-derived (`sender =` you, a lower-trust inference) — you do NOT express it. You only choose `subject_id`: the SUBJECT for kinds 2–3 — `"user:<sender>"` in the normal case, another enrolled user only per kind 3's necessity test — `global` for a kept kind 4, and `"self"` for kind 6 (the engine routes a `"self"` fact into your own wiki — it knows which one that is). Do NOT emit `behaviour_rule` on an assistant turn (a standing rule is the USER's directive to the system, not yours). When your reply records completing or abandoning something ("done, I have sent it"), that is ordinary kind-2 sediment: write it down as a fact like any other.
 
 Worked calls (`author: assistant`):
 - Your reply "I have read the letter you uploaded: the deadline to file the guardianship order is 27 June 2026." → TWO extractions, the two sides of the one event: (a) kind 2/3 about the USER — `subject_id: "user:<sender>"`, `fact_type: "plan"`, `body: "From the letter the user uploaded, the deadline to file the guardianship order is 27 June 2026."`, `valid_to: "2026-06-27T00:00:00Z"` (the synthesis the user never stated — it lived only in YOUR reply); (b) kind 6 about YOU — `subject_id: "self"`, `fact_type: "episode"`, `body: "The agent helped the user with the maternity claim, pinning down the order's deadline."` (your-eye view, filed in your own wiki).

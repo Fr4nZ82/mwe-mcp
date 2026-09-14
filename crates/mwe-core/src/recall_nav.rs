@@ -585,7 +585,7 @@ pub const BUNDLED_NAVIGATOR_PROMPT_MD: &str = include_str!("../prompts/navigator
 pub const BUNDLED_QUERY_SEEDS_PROMPT_MD: &str = include_str!("../prompts/query-seeds.md");
 
 /// True when a page may never be a navigation destination: today only the
-/// channel-only policy page ([`is_rules_page_path`]).
+/// channel-only rules page ([`is_rules_page_path`]).
 ///
 /// The one place outside the funnel that needs the same judgement is REM's
 /// rail detector, which must not nominate a link to a page nobody can open.
@@ -1490,7 +1490,7 @@ async fn open_target(
         .get(cand.wiki_id.as_str())
         .ok_or(OpenRefusal::WikiVanished)?;
     let page = cand.page.clone();
-    // The reserved `@rules.md` policy page is not navigable:
+    // The reserved `@rules.md` rules page is not navigable:
     // standing directives reach the consumer through the dedicated `rules`
     // field only, and the page's seeded boilerplate is noise as recalled
     // prose. Central fail-safe — the offer-side filters keep the fan clean,
@@ -4382,7 +4382,7 @@ mod tests {
         );
     }
 
-    /// The reserved `@rules.md` policy page is channel-only:
+    /// The reserved `@rules.md` rules page is channel-only:
     /// no route offers it as a door, and even a navigator that asks for it
     /// verbatim is discarded by the `open_target` fail-safe.
     #[tokio::test]

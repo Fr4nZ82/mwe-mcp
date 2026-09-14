@@ -3687,8 +3687,6 @@ async fn gather_standard_facts(pool: &SqlitePool, tree: &WikiTree) -> Result<Vec
             // must NOT gather them — absent from the persisted plan they would
             // look "new", fall back to the identity card, and their channel
             // (which filters on the page) would stop seeing them.
-            // (engine_rule governance is raw `@rules.md` prose, not a
-            // `fact_index` row, so only behaviour-rule rows are spared here.)
             if crate::wiki::is_channel_page(&row.source_path) {
                 continue;
             }
@@ -4760,7 +4758,7 @@ mod tests {
         // via identity fallback.
         assert_eq!(placement_slug(""), None);
         assert_eq!(placement_slug("  "), None);
-        // `@rules.md` → None: the reserved user-policy page is never a
+        // `@rules.md` → None: the reserved rules page is never a
         // fact-bearing concept page; a mis-targeted fact falls back to the identity card.
         assert_eq!(placement_slug("@rules.md"), None);
         assert_eq!(placement_slug("rules"), None);
@@ -5908,7 +5906,7 @@ mod tests {
         );
     }
 
-    /// A behaviour-rule fact lives on the reserved policy page `@rules.md`
+    /// A behaviour-rule fact lives on the reserved rules page `@rules.md`
     /// (written by the rules pipeline's direct path, not the planner). The
     /// compiler must leave it there: gathering it would put it through the
     /// placement pass, changing its `source_path` so `recall_behaviour_rules`

@@ -16,10 +16,10 @@
 //!    `salience: high`, and a high-salience fact is routed to the
 //!    wiki's identity card, `@profile.md` — the page recall serves
 //!    whole on every turn.
-//! 2. **Governance rules → `@rules.md`.** Privacy / sharing / do-not-store
-//!    presets. The ingest LLM marks each `engine_rule: true` and the
-//!    engine appends it to the sender's `@rules.md` policy page
-//!    — never a row in `fact_index`.
+//! 2. **Standing rules → `@rules.md`.** Privacy / sharing / do-not-store
+//!    presets. The ingest LLM marks each `behaviour_rule: true` and the
+//!    engine files it as a `rule` fact on the sender's `@rules.md`
+//!    — never as memory about them.
 //! 3. **The rest → normal pipeline.** Low-weight preferences the LLM
 //!    files wherever it sees fit.
 //!
@@ -53,7 +53,7 @@
 //! first-person message (e.g. `favorite_color=red` becomes
 //! "my favourite colour is red"), one ingest call through the
 //! chat chokepoint (`chat::process_submission`). The LLM `ingest`
-//! slot classifies the message and emits N `wiki_capture` / engine-rule
+//! slot classifies the message and emits N `wiki_capture` / standing-rule
 //! routings so each piece lands at its destination, indistinguishable
 //! from a chat turn.
 //!
@@ -129,8 +129,8 @@ pub fn router() -> Router<DashboardState> {
 /// three universal ingest destinations: step 1 → the user's identity
 /// card (identity + health/safety, marked
 /// `salience: high` by the ingest LLM), step 2 → the user's `@rules.md`
-/// engine-policy page (privacy / do-not-store directives, routed by the
-/// `engine_rule` flag the ingest LLM sets), step 3 → the normal pipeline
+/// rules page (privacy / do-not-store directives, routed by the
+/// `behaviour_rule` flag the ingest LLM sets), step 3 → the normal pipeline
 /// (low-weight preferences the LLM files wherever it sees fit). The
 /// routing itself lives in the ingest prompt (universal); the
 /// wizard only organises the collection and adds reinforcing section
@@ -173,7 +173,7 @@ pub struct ProfileSubmission {
     #[serde(default)]
     pub health_safety: String,
 
-    // ── Step 2 → rules.md (engine-governance policy) ──
+    // ── Step 2 → rules.md (the person's standing rules) ──
     /// Q1 sharing default. One of `""` (unanswered), `"private"`,
     /// `"group"`, `"always_private"`.
     #[serde(default)]
@@ -549,13 +549,12 @@ show(0);\
 })();";
 
 /// Step-2 section marker. Tells the ingest LLM the lines that follow are
-/// the user's GOVERNANCE rules (privacy / do-not-store), not facts — so
-/// it sets `engine_rule: true` and the engine appends them to
-/// the sender's `@rules.md` instead of filing rows in
-/// `fact_index`. Reinforcement, not routing: the universal routing
-/// already lives in the ingest prompt; the marker just nudges the
-/// classification.
-const ENGINE_RULES_SECTION_MARKER: &str = "What follows are NOT facts about me, \
+/// the user's standing rules (privacy / do-not-store), not facts — so it
+/// sets `behaviour_rule: true` and the engine files them as `rule` facts on
+/// the sender's `@rules.md` instead of as memory about them. Reinforcement,
+/// not routing: the universal routing already lives in the ingest prompt;
+/// the marker just nudges the classification.
+const RULES_SECTION_MARKER: &str = "What follows are NOT facts about me, \
 but my RULES for handling my memory — privacy, sharing, and what not to store:";
 
 /// Step-3 section marker. Low-weight personal preferences with no special
@@ -576,7 +575,7 @@ const PREFERENCES_SECTION_MARKER: &str =
 fn compose_ingest_message(email: Option<&str>, form: &ProfileSubmission) -> String {
     [
         compose_identity_section(email, form),
-        compose_engine_rules_section(form),
+        compose_rules_section(form),
         compose_preferences_section(form),
     ]
     .into_iter()
@@ -680,12 +679,11 @@ fn compose_identity_section(email: Option<&str>, form: &ProfileSubmission) -> St
 
 /// Step 2 → `@rules.md`. Turns the preset answers (Q1 sharing / Q2
 /// exclusions / Q3 private topics / Q5 do-not-store) into imperative
-/// policy sentences under [`ENGINE_RULES_SECTION_MARKER`]. Each is a
-/// directive addressed to the memory engine, so the ingest LLM marks it
-/// `engine_rule: true` and it lands in `@rules.md`. Q4 (tone)
-/// is a *behaviour* rule for the consumer, not an engine rule —
-/// out of scope here (it belongs to the consumer-routing path).
-fn compose_engine_rules_section(form: &ProfileSubmission) -> String {
+/// policy sentences under [`RULES_SECTION_MARKER`]. Each is a standing
+/// directive stated impersonally, so the ingest LLM marks it
+/// `behaviour_rule: true` at `user-global` scope and it lands on the
+/// person's own `@rules.md`, in force for every assistant serving them.
+fn compose_rules_section(form: &ProfileSubmission) -> String {
     let mut rules: Vec<String> = Vec::new();
     match form.sharing_default.trim() {
         "private" => rules.push(
@@ -720,7 +718,7 @@ fn compose_engine_rules_section(form: &ProfileSubmission) -> String {
     if rules.is_empty() {
         return String::new();
     }
-    let mut out = String::from(ENGINE_RULES_SECTION_MARKER);
+    let mut out = String::from(RULES_SECTION_MARKER);
     for rule in rules {
         out.push_str("\n- ");
         out.push_str(&rule);
@@ -947,9 +945,9 @@ fn step1_identity_fieldset(
     }
 }
 
-/// Step 2 fieldset → `@rules.md`: the governance presets (Q1 sharing /
-/// Q2 exclusions / Q3 private topics / Q5 do-not-store). Q4 (tone) is a
-/// consumer-behaviour rule, out of scope here.
+/// Step 2 fieldset → `@rules.md`: the presets about who may see what and what
+/// must never be stored (Q1 sharing / Q2 exclusions / Q3 private topics /
+/// Q5 do-not-store).
 fn step2_rules_fieldset(form: &ProfileSubmission) -> Markup {
     html! {
         fieldset data-step="2" {
@@ -1220,7 +1218,7 @@ mod tests {
     }
 
     #[test]
-    fn step2_emits_engine_rules_section_with_bulleted_directives() {
+    fn step2_emits_rules_section_with_bulleted_directives() {
         let form = ProfileSubmission {
             sharing_default: "always_private".into(),
             private_topics: "salute, soldi".into(),
@@ -1228,9 +1226,9 @@ mod tests {
             ..ProfileSubmission::default()
         };
         let msg = compose_ingest_message(None, &form);
-        // The section marker frames the lines as governance rules, not
-        // facts → the ingest LLM sets engine_rule:true → rules.md.
-        assert!(msg.contains(ENGINE_RULES_SECTION_MARKER), "{msg}");
+        // The section marker frames the lines as standing rules, not
+        // facts → the ingest LLM sets behaviour_rule:true → rules.md.
+        assert!(msg.contains(RULES_SECTION_MARKER), "{msg}");
         // Each preset turns into a bulleted imperative directive.
         assert!(msg.contains("\n- Always keep my facts private"), "{msg}");
         assert!(
@@ -1247,7 +1245,7 @@ mod tests {
 
     #[test]
     fn step2_sharing_default_maps_each_preset() {
-        let group = compose_engine_rules_section(&ProfileSubmission {
+        let group = compose_rules_section(&ProfileSubmission {
             sharing_default: "group".into(),
             ..ProfileSubmission::default()
         });
@@ -1256,7 +1254,7 @@ mod tests {
             "{group}"
         );
 
-        let private = compose_engine_rules_section(&ProfileSubmission {
+        let private = compose_rules_section(&ProfileSubmission {
             sharing_default: "private".into(),
             ..ProfileSubmission::default()
         });
@@ -1266,7 +1264,7 @@ mod tests {
         );
 
         // An exclusion alone (no sharing preset) still yields a rule.
-        let excl = compose_engine_rules_section(&ProfileSubmission {
+        let excl = compose_rules_section(&ProfileSubmission {
             sharing_exclusions: "il gruppo lavoro".into(),
             ..ProfileSubmission::default()
         });
@@ -1279,13 +1277,9 @@ mod tests {
     #[test]
     fn step2_is_empty_when_no_rule_answered() {
         // An unanswered sharing radio plus blank rule fields → no section.
-        let section = compose_engine_rules_section(&ProfileSubmission::default());
+        let section = compose_rules_section(&ProfileSubmission::default());
         assert!(section.is_empty(), "{section}");
     }
-
-    // (The former `health_safety_is_not_under_the_public_consent` test asserted
-    // the opposite of today's design — the primer now frames health public too,
-    // covered by `compose_frames_health_public_*` above.)
 
     #[test]
     fn health_follows_the_public_identity_block_when_both_present() {
@@ -1313,7 +1307,7 @@ mod tests {
         };
         let msg = compose_ingest_message(Some("frodo@example.com"), &form);
         let identity = msg.find(PUBLIC_PROFILE_PRIMER_PREFIX).expect("step 1");
-        let rules = msg.find(ENGINE_RULES_SECTION_MARKER).expect("step 2");
+        let rules = msg.find(RULES_SECTION_MARKER).expect("step 2");
         let prefs = msg.find(PREFERENCES_SECTION_MARKER).expect("step 3");
         assert!(
             identity < rules && rules < prefs,

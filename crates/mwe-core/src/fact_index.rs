@@ -2782,39 +2782,85 @@ pub async fn find_by_filters(
     rows.into_iter().map(decode_row).collect()
 }
 
-/// Fetch a principal's active behaviour-rule rows on a wiki's reserved
-/// policy page ([`crate::wiki::RULES_FILENAME`]), newest first, capped
-/// at `limit` (0 = no cap).
+/// A PERSON's wiki, as SQL: enrolled, not marked as an assistant, and not the
+/// identity any consumer speaks as. Two signals because each covers the
+/// other's gap — the `is_agent` marker is stamped when a consumer's token
+/// first connects, so an assistant that has not connected yet would read as a
+/// person; and a consumer binding is how an assistant gets a wiki at all.
+/// Anything else — a group's wiki, a wiki named for its subject — is nobody's
+/// rules page.
+const A_PERSONS_WIKI: &str = "(EXISTS (SELECT 1 FROM enrollment_users u \
+                                        WHERE u.user_id = fact_index.wiki_id) \
+    AND NOT EXISTS (SELECT 1 FROM enrollment_users u \
+                     WHERE u.user_id = fact_index.wiki_id AND u.is_agent = 1) \
+    AND NOT EXISTS (SELECT 1 FROM consumers c \
+                     WHERE c.system_user_id = fact_index.wiki_id))";
+
+/// Fetch the standing rules **this reader may read**, from the pages a rule
+/// is allowed to live on, newest first, capped at `limit` (0 = no cap).
 ///
-/// The storage primitive behind the per-turn behaviour-rules channel
-/// (`ingest::recall_behaviour_rules`). Both channel invariants live
-/// **in the SQL, before the `LIMIT`**, so the cap counts rules only —
-/// unrelated facts sharing the wiki and subject can never starve old
-/// rules out of the window:
+/// The storage primitive behind the per-turn rules channel
+/// (`ingest::recall_behaviour_rules`), and every invariant lives **in the SQL,
+/// before the `LIMIT`**, so the cap counts rules only — an unrelated fact can
+/// never starve an old rule out of the window:
 ///
-/// - **rules-page predicate** — `source_path LIKE '%/' || 'rules.md'`
-///   (every `source_path` is workdir-relative `wikis/<id>/…`, so the
-///   file name always follows a `/`). `SQLite` `LIKE` is ASCII-case-
-///   insensitive, so the decoded rows are re-checked against the exact
-///   [`crate::wiki::is_rules_page`] predicate.
-/// - **validity filter** — a rule whose window is closed at `valid_at`
-///   (`valid_to` set and past) is NOT served: a retracted rule must
-///   stop steering the agent. Same window-contains-instant shape as
-///   [`FactFilters::valid_at`]. For ordinary facts a closed window is
-///   a recall *down-rank signal*, never a filter — the rules channel
-///   is the deliberate exception.
+/// - **the reader** — the same three-axis `can_read` the rest of the read path
+///   applies ([`readable_by_sql`]: subject ∪ allow ∪ narrator). A rule is
+///   private to whoever stated it unless they said otherwise, and this is what
+///   makes that true: an empty audience means the speaker alone, because they
+///   are both its subject and its narrator. There is no filter on the subject
+///   beside this one — the subject is already inside `can_read`, and asking it
+///   twice is how a rule somebody shared with you fails to reach you.
+/// - **the pages** — this assistant's own `@rules.md`, or the `@rules.md` of a
+///   PERSON, and never another assistant's: a rule set on one assistant is
+///   that assistant's, and it does not follow its speaker to the next one.
+///   «Is this wiki a person's» is asked of the enrolment and of the consumer
+///   roster together, because either alone has a gap.
+/// - **the rules page** — `source_path LIKE '%/' || 'rules.md'` (every
+///   `source_path` is workdir-relative `wikis/<id>/…`, so the file name always
+///   follows a `/`). `SQLite`'s `LIKE` is ASCII-case-insensitive, so the
+///   decoded rows are re-checked against the exact
+///   [`crate::wiki::is_rules_page`] predicate. Rules live on ordinary pages
+///   too — a domain rule captured from a conversation is a `rule` fact like
+///   any other — and those are memory, not standing directives: only this one
+///   page carries what steers a turn.
+/// - **validity** — a rule whose window is closed at `valid_at` (`valid_to`
+///   set and past) is NOT served: a retracted rule must stop steering the
+///   agent. Same window-contains-instant shape as [`FactFilters::valid_at`].
+///   For ordinary facts a closed window is a recall *down-rank signal*, never
+///   a filter — the rules channel is the deliberate exception.
+///
+/// `reader_id` is the bare id of the person speaking, whose own identity wiki
+/// is always one of the homes. `agent_wiki` is the assistant this turn is
+/// speaking through, when there is a distinct one; a smart consumer IS its
+/// person, so it passes `None`. `reader_principals` is the speaker's own set
+/// ([`crate::acl::reader_principals`]).
 ///
 /// # Errors
 ///
 /// `sqlx::Error` + decode errors on the embedding / JSON columns.
 pub async fn find_behaviour_rules(
     pool: &SqlitePool,
-    wiki_id: &str,
-    subject: &Principal,
+    reader_id: &str,
+    agent_wiki: Option<&str>,
+    reader_principals: &[String],
     valid_at: &str,
     limit: usize,
 ) -> Result<Vec<FactIndexRow>> {
-    let mut sql = String::from(
+    if reader_principals.is_empty() {
+        return Ok(Vec::new());
+    }
+    let readable = readable_by_sql("fact_index", reader_principals.len());
+    // The reader's OWN page, this assistant's, or another person's. The first
+    // needs no lookup: a person's identity wiki is theirs by construction, and
+    // asking the enrolment for it would make their own rules depend on a row
+    // somebody else writes.
+    let home = if agent_wiki.is_some() {
+        format!("(wiki_id = ? OR wiki_id = ? OR {A_PERSONS_WIKI})")
+    } else {
+        format!("(wiki_id = ? OR {A_PERSONS_WIKI})")
+    };
+    let mut sql = format!(
         r#"SELECT fact_id, wiki_id, source_path, region_start, region_end,
                   "text", embedding, subject_id, allow_ids, sender_id,
                   fact_type, topics, created_at, updated_at, superseded_at,
@@ -2823,34 +2869,37 @@ pub async fn find_behaviour_rules(
                   target_page, style, salience, source_ref, authored_refs,
            subject_external, slot, slot_value
              FROM fact_index
-            WHERE wiki_id = ?
-              AND subject_id = ?
-              AND superseded_at IS NULL AND deleted_at IS NULL
+            WHERE superseded_at IS NULL AND deleted_at IS NULL
+              AND {home}
               AND (source_path LIKE ? OR source_path LIKE ?)
+              AND {readable}
               AND (valid_from IS NULL OR datetime(valid_from) <= datetime(?))
               AND (valid_to IS NULL OR datetime(valid_to) > datetime(?))
-            ORDER BY created_at DESC"#,
+            ORDER BY created_at DESC"#
     );
     if limit > 0 {
         use std::fmt::Write as _;
         let _ = write!(sql, " LIMIT {limit}");
     }
-    let rows = sqlx::query_as::<_, RawFactRow>(&sql)
-        .bind(wiki_id)
-        .bind(subject.to_string())
-        // Both spellings: the marked name every write produces, and the bare
-        // one a row written before 2026-08-18 carries — a rule the channel
-        // stopped finding would sit on disk unread. Same stance as
-        // `wiki::is_rules_page`.
+    let mut q = sqlx::query_as::<_, RawFactRow>(&sql).bind(reader_id.to_owned());
+    if let Some(agent) = agent_wiki {
+        q = q.bind(agent.to_owned());
+    }
+    // Both spellings: the marked name every write produces, and the bare one a
+    // row written before 2026-08-18 carries — a rule the channel stopped
+    // finding would sit on disk unread. Same stance as `wiki::is_rules_page`.
+    q = q
         .bind(format!("%/{}", crate::wiki::RULES_FILENAME))
         .bind(format!(
             "%/{}",
             crate::wiki::RULES_FILENAME.trim_start_matches('@')
-        ))
-        .bind(valid_at)
-        .bind(valid_at)
-        .fetch_all(pool)
-        .await?;
+        ));
+    for _ in 0..3 {
+        for p in reader_principals {
+            q = q.bind(p.clone());
+        }
+    }
+    let rows = q.bind(valid_at).bind(valid_at).fetch_all(pool).await?;
     let mut out = Vec::with_capacity(rows.len());
     for raw in rows {
         let row = decode_row(raw)?;
@@ -4661,34 +4710,56 @@ mod tests {
         assert_eq!(sorted.len(), 2);
     }
 
-    /// The behaviour-rules channel query: the rules-page predicate and the
-    /// validity filter live IN the SQL, before the `LIMIT` — so non-rules
-    /// facts under the same subject never consume the cap (the starvation
-    /// regression), a closed-window rule is not served, and other subjects'
-    /// rules stay out.
+    /// Enrol a principal, saying whether it is an assistant.
+    async fn enrol_as(pool: &SqlitePool, user_id: &str, agent: bool) {
+        sqlx::query(
+            "INSERT INTO enrollment_users (user_id, aliases, is_agent) VALUES (?, '[]', ?)",
+        )
+        .bind(user_id)
+        .bind(i64::from(agent))
+        .execute(pool)
+        .await
+        .expect("enrol");
+    }
+
+    /// The rules channel asks one question — may this reader read it — of the
+    /// pages a rule may live on, and everything else is in the SQL before the
+    /// `LIMIT` so nothing can starve an old rule out of the window.
     #[tokio::test]
-    async fn find_behaviour_rules_filters_page_validity_and_subject_before_the_cap() {
+    async fn find_behaviour_rules_serves_what_the_reader_may_read_and_nothing_else() {
         let pool = make_pool().await;
         let at = "2026-07-02T12:00:00Z";
+        enrol_as(&pool, "agent", true).await;
+        enrol_as(&pool, "other-agent", true).await;
+        enrol_as(&pool, "bob", false).await;
+        enrol_as(&pool, "alice", false).await;
 
-        // Open rule (oldest), closed rule, other-subject rule, and a NEWEST
-        // non-rules crowder under the same subject.
-        let mut open_rule = sample_new_fact(SAMPLE_UUID_V7_1, "agent", "user:bob", "Dammi del tu.");
-        open_rule.source_path = "wikis/agent/@rules.md".to_owned();
-        let mut closed_rule =
-            sample_new_fact(SAMPLE_UUID_V7_2, "agent", "user:bob", "Chiamami Sam.");
-        closed_rule.source_path = "wikis/agent/@rules.md".to_owned();
-        closed_rule.valid_to = Some("2026-07-01T00:00:00Z".to_owned()); // past `at`
-        let mut foreign_rule =
-            sample_new_fact(SAMPLE_UUID_V7_3, "agent", "user:alice", "Dai del lei.");
-        foreign_rule.source_path = "wikis/agent/@rules.md".to_owned();
+        let rules_page = |f: &mut NewFact, wiki: &str| {
+            f.source_path = format!("wikis/{wiki}/@rules.md");
+        };
+        // Bob's own, on the assistant: his to read, oldest of the lot.
+        let mut his = sample_new_fact(SAMPLE_UUID_V7_1, "agent", "user:bob", "Dammi del tu.");
+        rules_page(&mut his, "agent");
+        // His, but retracted before `at`: a closed rule stops steering.
+        let mut closed = sample_new_fact(SAMPLE_UUID_V7_2, "agent", "user:bob", "Chiamami Sam.");
+        rules_page(&mut closed, "agent");
+        closed.valid_to = Some("2026-07-01T00:00:00Z".to_owned());
+        // Alice's, private to her: not his to read.
+        let mut hers = sample_new_fact(SAMPLE_UUID_V7_3, "agent", "user:alice", "Dai del lei.");
+        rules_page(&mut hers, "agent");
+        // She said it, so she is its narrator as well as its subject: the
+        // fixture's default narrator is bob and would hand it to him.
+        hers.sender_id = Some("user:alice".parse().unwrap());
+        hers.allow_ids = Vec::new();
+        // A NEWEST non-rules fact under his own subject: it shares the wiki
+        // but not the page, and a query that filtered the page after the cap
+        // would let it eat the only slot.
         let crowder = sample_new_fact(SAMPLE_UUID_V7_4, "agent", "user:bob", "self-fact");
-        for f in [&open_rule, &closed_rule, &foreign_rule, &crowder] {
+        his.allow_ids = Vec::new();
+        closed.allow_ids = Vec::new();
+        for f in [&his, &closed, &hers, &crowder] {
             insert(&pool, f).await.expect("insert");
         }
-        // Deterministic recency: the non-rules crowder is the NEWEST row,
-        // the open rule the OLDEST — a created_at-capped query that filters
-        // the page only afterwards would drop the rule at limit 1.
         for (id, created) in [
             (SAMPLE_UUID_V7_1, "2026-06-01T00:00:00Z"),
             (SAMPLE_UUID_V7_2, "2026-06-02T00:00:00Z"),
@@ -4703,27 +4774,157 @@ mod tests {
                 .expect("backdate");
         }
 
-        let bob = "user:bob".parse::<Principal>().unwrap();
-        let rules = find_behaviour_rules(&pool, "agent", &bob, at, 1)
+        let bob = crate::acl::reader_principals("bob", &[]);
+        let rules = find_behaviour_rules(&pool, "bob", Some("agent"), &bob, at, 1)
             .await
             .expect("query");
         assert_eq!(
             rules.iter().map(|r| r.fact_id.as_str()).collect::<Vec<_>>(),
             vec![SAMPLE_UUID_V7_1],
-            "limit 1 must still serve the old open rule: the newer non-rules \
-             fact, the closed rule, and the other subject's rule never enter \
-             the window"
+            "limit 1 must still serve his old open rule: the newer non-rules \
+             fact, the rule he retracted, and the rule that is alice's never \
+             enter the window"
         );
 
-        // The closed rule is served again once the asked instant precedes
-        // its `valid_to` (the window-contains-instant shape of `valid_at`).
-        let before_close = find_behaviour_rules(&pool, "agent", &bob, "2026-06-30T00:00:00Z", 0)
-            .await
-            .expect("query");
+        // The retracted one is served again at an instant inside its window.
+        let before_close =
+            find_behaviour_rules(&pool, "bob", Some("agent"), &bob, "2026-06-30T00:00:00Z", 0)
+                .await
+                .expect("query");
         assert_eq!(
             before_close.len(),
             2,
-            "both of bob's rules are in force before the closure instant"
+            "both of his rules are in force before the closure instant"
+        );
+    }
+
+    /// A rule is private to whoever stated it, unless they said otherwise
+    /// when stating it — and «otherwise» is the fact's own audience, read by
+    /// the same `can_read` as everything else.
+    #[tokio::test]
+    async fn a_rule_shared_with_somebody_reaches_them_and_an_unshared_one_does_not() {
+        let pool = make_pool().await;
+        let at = "2026-07-02T12:00:00Z";
+        enrol_as(&pool, "agent", true).await;
+        enrol_as(&pool, "bob", false).await;
+        enrol_as(&pool, "alice", false).await;
+
+        let mut private = sample_new_fact(SAMPLE_UUID_V7_1, "agent", "user:alice", "Dai del lei.");
+        private.source_path = "wikis/agent/@rules.md".to_owned();
+        private.sender_id = Some("user:alice".parse().unwrap());
+        private.allow_ids = Vec::new();
+        let mut shared = sample_new_fact(
+            SAMPLE_UUID_V7_2,
+            "agent",
+            "user:alice",
+            "Con me e con Bob, niente convenevoli.",
+        );
+        shared.source_path = "wikis/agent/@rules.md".to_owned();
+        shared.sender_id = Some("user:alice".parse().unwrap());
+        shared.allow_ids = vec!["user:bob".parse().unwrap()];
+        for f in [&private, &shared] {
+            insert(&pool, f).await.expect("insert");
+        }
+
+        let bobs = find_behaviour_rules(
+            &pool,
+            "bob",
+            Some("agent"),
+            &crate::acl::reader_principals("bob", &[]),
+            at,
+            0,
+        )
+        .await
+        .expect("query");
+        assert_eq!(
+            bobs.iter().map(|r| r.fact_id.as_str()).collect::<Vec<_>>(),
+            vec![SAMPLE_UUID_V7_2],
+            "the one alice said also goes for him reaches him; the one she \
+             kept to herself does not"
+        );
+        let alices = find_behaviour_rules(
+            &pool,
+            "alice",
+            Some("agent"),
+            &crate::acl::reader_principals("alice", &[]),
+            at,
+            0,
+        )
+        .await
+        .expect("query");
+        assert_eq!(alices.len(), 2, "both are hers");
+    }
+
+    /// A rule set on one assistant is that assistant's: it does not follow
+    /// its speaker to the next one, and no assistant reads another's page.
+    #[tokio::test]
+    async fn a_rule_on_one_assistant_does_not_follow_its_speaker_to_another() {
+        let pool = make_pool().await;
+        let at = "2026-07-02T12:00:00Z";
+        enrol_as(&pool, "agent", true).await;
+        enrol_as(&pool, "other-agent", true).await;
+        enrol_as(&pool, "bob", false).await;
+
+        // Three rules of bob's, one per home. All three are his to READ.
+        let mut here = sample_new_fact(SAMPLE_UUID_V7_1, "agent", "user:bob", "Dammi del tu.");
+        here.source_path = "wikis/agent/@rules.md".to_owned();
+        let mut elsewhere = sample_new_fact(
+            SAMPLE_UUID_V7_2,
+            "other-agent",
+            "user:bob",
+            "Parlami piano.",
+        );
+        elsewhere.source_path = "wikis/other-agent/@rules.md".to_owned();
+        let mut everywhere = sample_new_fact(
+            SAMPLE_UUID_V7_3,
+            "bob",
+            "user:bob",
+            "Rispondimi in italiano.",
+        );
+        everywhere.source_path = "wikis/bob/@rules.md".to_owned();
+        for f in [&mut here, &mut elsewhere, &mut everywhere] {
+            f.allow_ids = Vec::new();
+        }
+        for f in [&here, &elsewhere, &everywhere] {
+            insert(&pool, f).await.expect("insert");
+        }
+
+        let mut got = find_behaviour_rules(
+            &pool,
+            "bob",
+            Some("agent"),
+            &crate::acl::reader_principals("bob", &[]),
+            at,
+            0,
+        )
+        .await
+        .expect("query")
+        .into_iter()
+        .map(|r| r.fact_id.as_str().to_owned())
+        .collect::<Vec<_>>();
+        got.sort();
+        assert_eq!(
+            got,
+            vec![SAMPLE_UUID_V7_1.to_owned(), SAMPLE_UUID_V7_3.to_owned()],
+            "this assistant's page and his own; the other assistant's is that \
+             assistant's business"
+        );
+
+        // A smart consumer has no assistant of its own, so only his own page
+        // answers.
+        let smart = find_behaviour_rules(
+            &pool,
+            "bob",
+            None,
+            &crate::acl::reader_principals("bob", &[]),
+            at,
+            0,
+        )
+        .await
+        .expect("query");
+        assert_eq!(
+            smart.iter().map(|r| r.fact_id.as_str()).collect::<Vec<_>>(),
+            vec![SAMPLE_UUID_V7_3]
         );
     }
 

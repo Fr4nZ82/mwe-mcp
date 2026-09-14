@@ -1887,6 +1887,9 @@ async fn dispatch_wiki_set_behaviour_rule(
         mwe_core::types::Principal::User(user_id.to_owned()),
         scope,
         rule,
+        // The operator sets a rule FOR one person, and the subject already
+        // says who that is: there is nobody to widen it to from here.
+        &[],
         None,
         chrono::Utc::now(),
     )

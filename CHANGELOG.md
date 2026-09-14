@@ -13,6 +13,43 @@ semver-governed surface: breaking changes are called out explicitly.
 
 ### Fixed
 
+- **A standing rule is a fact with its own readers, and there is one kind of
+  them.** *Keep my health private* and *answer me concisely* are both things
+  somebody told an assistant, and until now they travelled on two different
+  roads: the first was appended to the rules page as a line of plain text that
+  the engine read back whole, the second was filed as a fact. Two roads meant
+  two answers to the question *who may read this rule*, and the text one had no
+  answer at all — it was handed to whoever was speaking, without asking.
+
+  Now every standing rule is a `rule` fact on a rules page, with readers like
+  any other fact, and each turn an assistant is handed exactly the rules the
+  person speaking is allowed to read: their own, the ones somebody shared with
+  them, and the administrator's. The classifier is handed the same list and
+  obeys it when it decides who may read the facts it writes from that turn.
+  A sentence typed onto the page by hand is no longer a rule in force.
+
+  **Two reaches, and the speaker chooses by who they were talking to.** An
+  instruction to the assistant in front of them — *"don't tell Bob what I
+  buy"* — is that assistant's rule. The same wish with no *you* in it — *"when
+  I buy presents I don't want Bob to know"* — is theirs everywhere, on every
+  assistant they talk to. A rule is private to whoever stated it unless they
+  widened it while stating it (*"and this goes for Bob as well"*), and then Bob
+  reads it and his assistant follows it, shown to him as their rule.
+
+  **What was a refusal is now half a yes.** Somebody who is not an
+  administrator asking for a rule *for everyone* used to lose the sentence
+  entirely. It is kept as their own rule with that assistant, and the assistant
+  tells them which half was kept and which was not.
+
+  **And one sentence that sounded like a rule is not one.** *"I bought Bob a
+  present, but don't tell him"* is about that present: it is filed with Bob
+  left out of its readers, and no standing rule is written. A rule speaks of a
+  kind of thing and binds conversations that have not happened yet.
+
+  A migration gives the assistant's own directives the readers they already had
+  in practice — everybody the assistant serves — so no rule stops being served
+  by the change. Nothing else is rewritten.
+
 - **The words between the facts stop repeating them.** A page is written as
   prose with each fact marked, and only the marked parts carry a permission:
   what is written between them is served to everybody who can open the page.

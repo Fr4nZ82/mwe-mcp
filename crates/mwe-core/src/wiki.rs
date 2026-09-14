@@ -162,15 +162,12 @@ impl std::fmt::Display for PageStyle {
     }
 }
 
-/// Filename of the per-actor user-policy page (`<wiki_dir>/@rules.md`).
+/// Filename of the per-actor rules page (`<wiki_dir>/@rules.md`).
 ///
-/// A **user-facing** page (no underscore, unlike the engine's own plumbing) seeded with a default at actor-wiki creation. It holds the user's
-/// standing policy in natural language — privacy/ACL rules the ingest honours
-/// when it assigns the per-fact ACL (`subject` / `allow`), and behaviour rules
-/// every consumer is shown. Its privacy/governance directives are raw prose
-/// (read whole by `ingest::sender_rules`, never `fact_index` rows); the
-/// behaviour-rule channel additionally writes `{{f=…}}` **behaviour-rule fact
-/// regions** here via the direct path. Either way the engine never derives,
+/// A **user-facing** page (no underscore, unlike the engine's own plumbing) seeded with a default at actor-wiki creation. It holds the standing
+/// directives in force, as `{{f=…}}` **rule fact regions** — how the assistant
+/// is to converse and operate, and who may see what, which the ingest honours
+/// when it assigns the per-fact ACL (`subject` / `allow`). The engine never derives,
 /// re-homes, or folds this page's facts: the slug `rules` is reserved from
 /// placement ([`crate::planner`]); `gather_standard_facts`
 /// skips any fact whose page is this one ([`is_rules_page`]); the REM refile
@@ -221,7 +218,7 @@ pub fn is_identity_card_page(source_path: &str) -> bool {
     names_page(source_path, PROFILE_FILENAME)
 }
 
-/// True when `source_path` is a wiki's reserved policy page [`RULES_FILENAME`].
+/// True when `source_path` is a wiki's reserved rules page [`RULES_FILENAME`].
 ///
 /// It is the rules pipeline's home for behaviour-rule facts, and the
 /// structural sweeps keep off it: the compiler's gather and refile nomination
@@ -237,11 +234,10 @@ pub fn is_rules_page(source_path: &str) -> bool {
 /// The line the engine writes on a rules page when a directive is withdrawn.
 ///
 /// Defined here, next to the predicate that recognises it, because a writer
-/// and two readers have to agree on one shape: [`crate::reindex`] writes it,
-/// [`is_engine_furniture`] keeps it out of the sender's policy and out of the
-/// redaction anchor. A format string copied into three files drifts the first
-/// time somebody rewords it, and it drifts silently — the readers just stop
-/// recognising the line.
+/// and a reader have to agree on one shape: [`crate::reindex`] writes it and
+/// [`is_engine_furniture`] keeps it out of the redaction anchor. A format
+/// string copied into two files drifts the first time somebody rewords it,
+/// and it drifts silently — the reader just stops recognising the line.
 #[must_use]
 pub fn withdrawn_note(on: &str) -> String {
     format!("{WITHDRAWN_NOTE_PREFIX}{on}_")
@@ -253,11 +249,8 @@ pub const WITHDRAWN_NOTE_PREFIX: &str = "_withdrawn on ";
 /// Is this line something the ENGINE wrote about the page, rather than
 /// something a person said?
 ///
-/// One rule with several readers, and they must not drift: what the engine
-/// adds on its own account is scaffolding, and scaffolding is not content.
-/// It does not hold a redacted page up ([`crate::render`]), and it is not part
-/// of anybody's standing policy ([`crate::ingest`] reads that page's prose as
-/// the sender's own words).
+/// What the engine adds on its own account is scaffolding, and scaffolding is
+/// not content: it does not hold a redacted page up ([`crate::render`]).
 ///
 /// Three shapes reach a page this way:
 ///
@@ -2137,75 +2130,24 @@ pub struct IdentityWikiCreation {
 /// Default body of a freshly-seeded [`RULES_FILENAME`]: a heading and
 /// nothing else.
 ///
-/// **Every word of this page's free prose is sent to the ingest classifier as
-/// the sender's standing policy** ([`crate::ingest`]'s `sender_rules`, fact
-/// regions stripped), so the page holds the user's policy and only that — a
-/// seeded explanation would arrive as a rule the user never wrote. The place
-/// that explains the page to a person is the welcome form, which asks the
-/// governance questions and writes the answers here as imperative sentences.
-///
-/// What lands here: the memory-governance policy — who may see the user's
-/// facts (privacy & sharing) and what must never be stored — appended as a
-/// bullet by [`append_engine_rule`]. In a *consumer agent's* wiki the same
-/// page carries that agent's behaviour rules instead, as `{{f=…}}` fact
-/// regions the governance read skips. Layout is not load-bearing either way.
-///
-/// A user who answers no governance question has no policy, and the page says
-/// exactly that: the classifier's `sender_rules` reads `(none)` and it decides
-/// as it does for anyone who set no rule.
-const RULES_DEFAULT_BODY: &str = "# Rules\n";
-
-/// Append one engine-rule to a wiki's [`RULES_FILENAME`], as a prose bullet.
-///
-/// This is the write side of the engine-rule loop: when the ingest classifier
-/// marks an extraction as a standing *governance* directive (a privacy/sharing
-/// policy or a do-not-store rule), the orchestrator routes it here instead of
-/// filing it as a fact — the rule lives as prose the engine reads back as
-/// `sender_rules`, never as a row in `fact_index`. That read takes the page's
-/// policy prose wherever it sits, so we simply append; section layout is not
+/// This page holds the standing directives in force, and it holds them the way
+/// every other page holds what it knows: as `{{f=…}}` fact regions, one `rule`
+/// fact each, every one with its own audience. On a PERSON's wiki they are the
+/// rules they set for every assistant serving them; on a *consumer agent's*
+/// wiki, the rules set on that agent — by one user, or by an administrator for
+/// everyone it serves. Nothing reads the page's free prose, and layout is not
 /// load-bearing.
 ///
-/// Reads the wiki's current `@rules.md` and appends `- <rule>` after a blank
-/// line. When the file is missing it starts from [`RULES_DEFAULT_BODY`], so
-/// the rule is never lost.
-///
-/// `rule` is trusted prose from the classifier (the rule restated as a standing
-/// policy sentence); a leading `- ` is stripped if the model already bulleted
-/// it, and surrounding whitespace is trimmed.
-///
-/// # Errors
-///
-/// - [`WikiError::UnsafePagePath`] (never, for the constant `@rules.md`).
-/// - [`WikiError::Io`] on a filesystem read/write failure.
-pub fn append_engine_rule(handle: &WikiHandle, rule: &str) -> Result<()> {
-    let rule = rule.trim().trim_start_matches("- ").trim();
-    if rule.is_empty() {
-        return Ok(());
-    }
-    let rules_path = Path::new(RULES_FILENAME);
-    let mut body = match handle.read_page(rules_path) {
-        Ok(existing) => existing,
-        Err(WikiError::PageNotFound { .. }) => RULES_DEFAULT_BODY.to_owned(),
-        Err(e) => return Err(e),
-    };
-    if !body.ends_with('\n') {
-        body.push('\n');
-    }
-    // A blank line before the first bullet keeps the Markdown list well-formed
-    // whatever the body ends in; consecutive rules just stack.
-    if !body.ends_with("\n\n") {
-        body.push('\n');
-    }
-    body.push_str("- ");
-    body.push_str(rule);
-    body.push('\n');
-    handle.write_page(rules_path, &body)
-}
+/// Seeded with the heading alone because a wiki gets its content from what is
+/// written into it. A user who has set no rule has no `rule` fact, and the
+/// channel that serves them ([`crate::fact_index::find_behaviour_rules`])
+/// returns nothing.
+const RULES_DEFAULT_BODY: &str = "# Rules\n";
 
 /// Create the on-disk scaffold for an identity wiki.
 ///
 /// Writes `<workdir>/wikis/<id>/_meta.md` (frontmatter) +
-/// [`@rules.md`](RULES_FILENAME) (default user-policy page). No content page:
+/// [`@rules.md`](RULES_FILENAME) (the rules page, seeded empty). No content page:
 /// the wiki's pages arrive from what is written into it.
 ///
 /// Idempotent — when the directory already has a `_meta.md`, returns
@@ -2279,7 +2221,7 @@ pub fn create_identity_wiki(
         detail: format!("rendering canonical meta: {e}"),
     })?;
     atomic_write(&meta_path, meta_doc.as_bytes())?;
-    // Seed the user-facing policy page. Only at creation; the idempotent
+    // Seed the user-facing rules page. Only at creation; the idempotent
     // early-return above preserves a user-edited rules.md on re-runs.
     atomic_write(&dir.join(RULES_FILENAME), RULES_DEFAULT_BODY.as_bytes())?;
     tracing::info!(
@@ -2801,68 +2743,12 @@ mod tests {
             !tree.wikis_dir().join("franz").join("index.md").exists(),
             "a wiki is seeded with `_meta.md` and `@rules.md` only"
         );
-        // The policy page is seeded too, as a heading and nothing else: every
-        // word of its prose is served to the classifier as this user's
-        // standing policy, so a seeded sentence would arrive as a rule they
-        // never wrote.
+        // The rules page is seeded too, as a heading and nothing else: the
+        // directives in force on it arrive as `{{f=…}}` fact regions written
+        // by the engine, like the content of any other page.
         let rules =
             fs::read_to_string(tree.wikis_dir().join("franz").join(RULES_FILENAME)).unwrap();
-        assert_eq!(rules.trim(), "# Rules", "seeded policy page was:\n{rules}");
-    }
-
-    #[test]
-    fn append_engine_rule_adds_bullet_and_creates_when_missing() {
-        // Write path of the engine-rule loop: a governance directive
-        // is appended to rules.md as prose, never filed as a fact.
-        let dir = tempdir().unwrap();
-        fs::create_dir_all(dir.path().join("wikis")).unwrap();
-        let tree = WikiTree::open(dir.path()).unwrap();
-        let id = WikiId::parse("franz").unwrap();
-        create_identity_wiki(&tree, &id, "Franz", IdentityKind::User).unwrap();
-        let handle = tree.locate(&id).unwrap();
-
-        append_engine_rule(
-            &handle,
-            "Health information is always private; never share it.",
-        )
-        .unwrap();
-        // A model that already bulleted the rule must not double-bullet.
-        append_engine_rule(&handle, "- Never store credit-card numbers.").unwrap();
-        // Empty / whitespace rules are no-ops.
-        append_engine_rule(&handle, "   ").unwrap();
-
-        let rules =
-            fs::read_to_string(tree.wikis_dir().join("franz").join(RULES_FILENAME)).unwrap();
-        assert!(rules.contains("- Health information is always private; never share it."));
-        assert!(rules.contains("- Never store credit-card numbers."));
-        assert!(
-            !rules.contains("- - "),
-            "a pre-bulleted rule must not be double-bulleted; body was:\n{rules}"
-        );
-        assert_eq!(
-            rules.matches("- ").count(),
-            2,
-            "exactly two rules appended (the whitespace one is a no-op); body was:\n{rules}"
-        );
-    }
-
-    #[test]
-    fn append_engine_rule_starts_from_default_when_no_file() {
-        // A legacy wiki has a _meta.md but no rules.md: the helper must
-        // seed from the default body rather than lose the rule.
-        let dir = tempdir().unwrap();
-        fs::create_dir_all(dir.path().join("wikis")).unwrap();
-        let tree = WikiTree::open(dir.path()).unwrap();
-        let id = WikiId::parse("legacy").unwrap();
-        create_identity_wiki(&tree, &id, "Legacy", IdentityKind::User).unwrap();
-        let rules_path = tree.wikis_dir().join("legacy").join(RULES_FILENAME);
-        fs::remove_file(&rules_path).unwrap();
-        let handle = tree.locate(&id).unwrap();
-
-        append_engine_rule(&handle, "Default everything private.").unwrap();
-        let rules = fs::read_to_string(&rules_path).unwrap();
-        assert!(rules.contains("# Rules"), "seeded from default body");
-        assert!(rules.contains("- Default everything private."));
+        assert_eq!(rules.trim(), "# Rules", "seeded rules page was:\n{rules}");
     }
 
     #[test]
