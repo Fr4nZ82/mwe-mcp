@@ -11,6 +11,16 @@ semver-governed surface: breaking changes are called out explicitly.
 
 ## Unreleased
 
+### Security
+
+- **rustls 0.23.40 → 0.23.45** (RUSTSEC-2026-0285, GHSA-2mjx-qc3c-rqvc):
+  rustls accepted TLS 1.3 handshake messages sent at the wrong encryption
+  level when they followed a key-changing message in the same record. The
+  handshake transcript stays authenticated, so nobody in the network path can
+  alter or complete a handshake with it; what it allowed was a peer sending in
+  plaintext something that should have been encrypted, without the connection
+  being refused. Pulls `rustls-webpki` 0.103.13 → 0.103.15 with it.
+
 ### Added
 
 - **A word for a relation is not a name.** *«Mum»* is what somebody is to the
