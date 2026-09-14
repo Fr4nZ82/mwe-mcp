@@ -1043,9 +1043,6 @@ async fn compile_leaf_page(
 /// - the NAME of a thing that carries a number, whether an article says so
 ///   ([`an_article_names_it`]) or the token itself does
 ///   ([`names_a_thing_rather_than_a_value`]);
-/// - how long or how far something is, which a unit after the number says
-///   ([`a_duration_or_a_measure`]) — except on a card, where that shape is a
-///   weight or a height;
 /// - a DATE, a year or a time, wherever it appears. A page whose facts are
 ///   dated is normally organised BY those dates («26 March:», «21–23 May:»),
 ///   and the heading a reader needs is the one the fact also carries. A
@@ -1077,11 +1074,7 @@ fn prose_restates_fact(merged_body: &str, facts: &[FactForPage]) -> Option<Strin
         }
         let line_words = words_of(line);
         for fact in facts {
-            if let Some(value) = a_value_in_the_open(
-                &line_words,
-                &words_of(&fact.text),
-                fact.fact_type.as_deref(),
-            ) {
+            if let Some(value) = a_value_in_the_open(&line_words, &words_of(&fact.text)) {
                 return Some(format!(
                     "«{value}» is {}'s, and it is outside its marker",
                     fact.fact_id
@@ -1147,16 +1140,18 @@ const COMPANION_DISTANCE: usize = 5;
 /// the sentence. One of those in the open is a leak whatever stands next to
 /// it.
 ///
-/// **And three shapes are never a value**, whatever stands beside them: a
-/// date, a year or a time ([`reads_as_a_date`]); the name of a thing, whether
+/// **And two shapes are never a value**, whatever stands beside them: a date,
+/// a year or a time ([`reads_as_a_date`]); and the name of a thing, whether
 /// the token says so ([`names_a_thing_rather_than_a_value`]) or an article in
-/// front of it does ([`an_article_names_it`]); and a duration or a quantity,
-/// which the unit after the number says ([`a_duration_or_a_measure`]).
-fn a_value_in_the_open(
-    prose: &[String],
-    fact: &[String],
-    fact_type: Option<&str>,
-) -> Option<String> {
+/// front of it does ([`an_article_names_it`]).
+///
+/// A unit after the number is NOT one of them. «14 giorni», «3 settimane» read
+/// like the page explaining itself, and most of the time they are — but a
+/// number of a fact whose readers are two people, in prose the whole page can
+/// see, is a leak by the definition of this check whatever word follows it:
+/// «ha perso 12 kg dopo l'intervento» is exactly that. A rewrite costs one
+/// call; a number in the open costs the thing the marker was for.
+fn a_value_in_the_open(prose: &[String], fact: &[String]) -> Option<String> {
     for (i, word) in prose.iter().enumerate() {
         if !word.chars().any(|c| c.is_ascii_digit()) {
             continue;
@@ -1174,7 +1169,6 @@ fn a_value_in_the_open(
         if reads_as_a_date(prose, i)
             || names_a_thing_rather_than_a_value(word)
             || an_article_names_it(prose, i)
-            || a_duration_or_a_measure(prose, i, fact_type)
         {
             continue;
         }
@@ -1309,80 +1303,6 @@ const ARTICLES: &[&str] = &[
     "il", "lo", "la", "l", "del", "dello", "della", "dell", "al", "allo", "alla", "all", "dal",
     "dallo", "dalla", "dall", "nel", "nello", "nella", "nell", "sul", "sullo", "sulla", "sull",
     "col", "the",
-];
-
-/// Is this number a duration or a quantity the prose is explaining, rather
-/// than a value of the fact?
-///
-/// «rileggere la polizza nei 14 giorni di recesso», «l'ha aspettato 3
-/// settimane», «a 5 km da casa»: the unit after the number is what makes it
-/// one, and what it tells a reader is how long or how far, which is the
-/// scaffolding of the sentence rather than anything anybody could act on.
-///
-/// **Except on card material.** A weight and a height are written exactly this
-/// way — «pesa 3,2 kg», «alta 168 cm» — and there the number IS the value, the
-/// one a person may not be entitled to read. So a fact of the kind a card is
-/// made of ([`crate::fact_index::is_an_identity_kind`]) keeps every number it
-/// carries, unit or not: the same predicate every road onto a card asks, so
-/// this one cannot drift away from them.
-fn a_duration_or_a_measure(words: &[String], at: usize, fact_type: Option<&str>) -> bool {
-    if crate::fact_index::is_an_identity_kind(fact_type) {
-        return false;
-    }
-    words
-        .get(at + 1)
-        .is_some_and(|w| UNITS.contains(&w.as_str()))
-}
-
-/// The units of time and measure that turn a number into a duration or a
-/// quantity, in both languages.
-///
-/// Money is deliberately absent: «21.000 euro» is a value and reads exactly
-/// like one. So are the one-letter abbreviations (`g`, `l`, `m`): a single
-/// letter after a number collides with too much else to read as a unit.
-const UNITS: &[&str] = &[
-    "giorno",
-    "giorni",
-    "settimana",
-    "settimane",
-    "mese",
-    "mesi",
-    "anno",
-    "anni",
-    "ora",
-    "ore",
-    "minuto",
-    "minuti",
-    "secondo",
-    "secondi",
-    "day",
-    "days",
-    "week",
-    "weeks",
-    "month",
-    "months",
-    "year",
-    "years",
-    "hour",
-    "hours",
-    "minute",
-    "minutes",
-    "second",
-    "seconds",
-    "km",
-    "chilometro",
-    "chilometri",
-    "metro",
-    "metri",
-    "cm",
-    "mm",
-    "kg",
-    "chilo",
-    "chili",
-    "grammo",
-    "grammi",
-    "litro",
-    "litri",
 ];
 
 /// Does this number read as a date, a year or a time?
@@ -3629,25 +3549,27 @@ mod tests {
         );
     }
 
-    /// **A number with a unit after it says how long or how far.**
+    /// **A unit after a number does not make it safe to repeat.**
     ///
-    /// «nei 14 giorni di recesso», «3 settimane», «a 5 km da casa»: the unit
-    /// is what makes the number a duration or a quantity, and what it tells a
-    /// reader is the scaffolding of the sentence rather than anything anybody
-    /// could act on. **Except on card material**, where a weight and a height
-    /// are written in exactly that shape and the number IS the value.
+    /// «14 giorni di recesso» reads like the page explaining itself, and most
+    /// of the time it is. But the check is about a number of a FACT appearing
+    /// where the fact does not: «ha perso 12 kg dopo l'intervento» is a fact
+    /// two people may read, and the prose around it is served to everybody who
+    /// can open the page. Excusing every number with a unit after it excuses
+    /// that one. A rewrite costs one call; the number in the open costs the
+    /// thing the marker was for.
     #[test]
-    fn a_number_with_a_unit_is_a_duration_unless_a_card_carries_it() {
-        let policy = "Alice ha firmato la polizza auto e ha 14 giorni di recesso.";
-        let facts = vec![ffp_of(0x62, policy, "event")];
+    fn a_unit_after_a_number_does_not_excuse_repeating_it() {
+        // Card material or not: the shape is the same and so is the answer.
+        let loss = "Bob ha perso 12 kg dopo l'intervento.";
+        let facts = vec![ffp_of(0x62, loss, "state")];
         let page = format!(
-            "{} Conviene rileggere la polizza prima che passino 14 giorni.",
-            marked(0x62, policy)
+            "{} Conta perché quei 12 kg dopo l'intervento cambiano la terapia.",
+            marked(0x62, loss)
         );
-        assert_eq!(
-            prose_restates_fact(&page, &facts),
-            None,
-            "the prose is explaining how long, not publishing a value"
+        assert!(
+            prose_restates_fact(&page, &facts).is_some(),
+            "a value of a restricted fact, in prose the whole page reads"
         );
 
         let weight = "La bambina pesa 3 kg alla nascita.";
@@ -3655,7 +3577,7 @@ mod tests {
         let with_weight = format!("{} Alla nascita pesava 3 kg.", marked(0x63, weight));
         assert!(
             prose_restates_fact(&with_weight, &card).is_some(),
-            "on a card the same shape is the value, and it stays in the net"
+            "and a weight on a card was never in question"
         );
     }
 
