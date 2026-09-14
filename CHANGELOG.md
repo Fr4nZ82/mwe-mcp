@@ -47,6 +47,38 @@ semver-governed surface: breaking changes are called out explicitly.
 
 ### Changed
 
+- **With the reveal lens off, the administrator is an ordinary reader.** Being
+  the person who runs the server is not a key to everybody's memory: it is the
+  right to turn the key, visibly, in Settings. Six places were treating it as
+  the key itself. The **Proposals** page and its badge showed the administrator
+  every note the night addressed to nobody — which is most of what the night
+  writes, and each one names somebody's pages; now those wait for the lens, and
+  what stays is the notes the memory writes about **itself**, which are about
+  nobody's pages at all. A **wiki's home** listed every page and counted every
+  fact; now the list holds the pages you can read something on and the number
+  counts the facts you can read, because a file name says what is on a page
+  before anybody opens it. The **integrity report** named facts and page paths
+  without asking who was reading, for the administrator most of all; now it
+  names only the facts its reader may read, administrator included, because the
+  lens is a dashboard thing and that report is not on the dashboard. A page's
+  **one-line summary**, which the memory uses to decide where to look, was
+  offered for pages whose facts were all somebody else's. Asking to **forget** a
+  fact you cannot read answered differently from asking about a fact that does
+  not exist, which made the tool a way of finding out whether an id named
+  anything. And a refusal to write to a wiki that is not yours no longer answers
+  with the name of the person it belongs to.
+
+- **An assistant speaking for you does not become you, and does not become the
+  administrator.** When an assistant relays a turn it attributes it to the
+  person it is serving — that is how a fact of yours ends up filed as yours.
+  The administrator's own permissions were travelling with that attribution, so
+  for as long as the administrator was the one talking, the household assistant
+  held the office: it could read the whole call log, open the spend page, and
+  collect notices meant for whoever runs the server. The person travels; the
+  office stays with the token. A dashboard link an assistant mints while
+  speaking for somebody now carries that somebody's permissions, which is to
+  say none.
+
 - **A notice now goes to the people it is addressed to, and stops there.** The
   memory queues a notice when something happens somebody should hear about, and
   an assistant collects the ones meant for the people it serves. Three kinds

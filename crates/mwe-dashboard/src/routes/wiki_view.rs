@@ -736,18 +736,51 @@ async fn view(
     // A **smart** wiki surfaces only to a reader who can read something in it:
     // its consumer is its sole writer and the sharing model is that consumer's
     // to grant. A standard wiki is STRUCTURE and hides from nobody (founder,
-    // 2026-09-04) — what it holds is another matter, and the answer to that is
-    // per fact: every body on this page goes through
-    // `render::render_for_sender`, so a reader who may read none of its facts
-    // is served the page with every region `[redacted]`. An admin with reveal
-    // on sees all.
+    // 2026-09-04): the door opens. What is behind it is another matter and is
+    // answered per fact, below — the page list and the fact count are a
+    // reader's view, not the wiki's shape. An admin with reveal on sees all.
     if !reveal && meta.smart && !wiki_readable(&state, memory, &wiki_id, &user.sender_id).await? {
         return Err(DashboardError::NotFound);
     }
-    let pages = wiki_list_pages(&memory.tree, &wiki_id).map_err(map_wiki_err)?;
-    let fact_count = fact_index::count_active_in_wiki(&state.pool, wiki_id.as_str())
+    let all_pages = wiki_list_pages(&memory.tree, &wiki_id).map_err(map_wiki_err)?;
+    let sender_groups = mwe_core::enrollment::groups_for(&state.pool, &user.sender_id)
         .await
-        .map_err(|e| DashboardError::Internal(format!("count_active_in_wiki: {e}")))?;
+        .map_err(|e| DashboardError::Internal(format!("groups_for: {e}")))?;
+    // What this home shows is a reader's view of the wiki, not the wiki's own
+    // shape. A page name is content — `blood_test_june.md` says what is on a
+    // page before anybody opens it — and a count of everything says how much
+    // there is that you are not being shown. So the list holds the pages this
+    // reader reads a fact of and the number counts those facts. Reveal shows
+    // the whole shelf, which is what the lens is for.
+    let mut pages = Vec::with_capacity(all_pages.len());
+    for p in all_pages {
+        let source_path = format!("wikis/{}/{}", wiki_id.as_str(), p.rel_path.display());
+        if reveal
+            || fact_index::readable_fact_on_page(
+                &state.pool,
+                &source_path,
+                &user.sender_id,
+                &sender_groups,
+            )
+            .await
+            .map_err(|e| DashboardError::Internal(format!("readable_fact_on_page: {e}")))?
+        {
+            pages.push(p);
+        }
+    }
+    let fact_count = if reveal {
+        fact_index::count_active_in_wiki(&state.pool, wiki_id.as_str())
+            .await
+            .map_err(|e| DashboardError::Internal(format!("count_active_in_wiki: {e}")))?
+    } else {
+        fact_index::count_readable_in_wiki(
+            &state.pool,
+            wiki_id.as_str(),
+            &mwe_core::acl::reader_principals(&user.sender_id, &sender_groups),
+        )
+        .await
+        .map_err(|e| DashboardError::Internal(format!("count_readable_in_wiki: {e}")))?
+    };
     // No wiki is assumed to have an `index.md`. A standard wiki has none at
     // all, and nothing may coin one; a smart
     // wiki has whatever pages its consumer pushed, which may or may not

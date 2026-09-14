@@ -627,9 +627,8 @@ async fn dashboard_editor_forbidden_on_smart_wiki() {
 /// revertable op-log rows.
 ///
 /// The rows the Revert button acts on are `push_*` rows, and every one of
-/// them is written here — by a smart consumer's `wiki_admin_push`, or by a
-/// dashboard action that funnels through the same call. The button is about
-/// the op log, not about who filled it.
+/// them is written here, by a smart consumer's `wiki_admin_push`. The button
+/// is about the op log, not about who filled it.
 async fn seed_a_push(
     pool: &SqlitePool,
     tree: &WikiTree,
@@ -639,19 +638,48 @@ async fn seed_a_push(
 ) {
     use mwe_core::wiki_admin::{ActorKind, AdminCaller, PushMode, PushPage, PushRequest, push};
 
+    // This API writes smart wikis, so the op-log rows the Revert button acts
+    // on are seeded on one. The first call forges it under alice; the rest
+    // find it already there.
     let caller = AdminCaller {
         sender_id: "alice".to_owned(),
-        consumer_id: None,
-        consumer_class: mwe_core::jwt::ConsumerClass::Standard,
+        consumer_id: Some("cc-alice".to_owned()),
+        consumer_class: mwe_core::jwt::ConsumerClass::Smart,
     };
+    let target = mwe_core::types::WikiId::parse(wiki_id).expect("wiki id");
+    if tree.locate(&target).is_err() {
+        push(
+            pool,
+            tree,
+            &caller,
+            ActorKind::SmartConsumer,
+            PushRequest {
+                mode: PushMode::Create,
+                wiki_id: None,
+                parent_wiki_id: Some(mwe_core::types::WikiId::parse("alice").expect("parent")),
+                slug: Some("appunti".to_owned()),
+                title: Some("Appunti".to_owned()),
+                wiki_type: Some("wiki-companion".to_owned()),
+                smart: true,
+                project_id: None,
+                description: None,
+                pages: Vec::new(),
+                deletes: Vec::new(),
+                mark_processed: Vec::new(),
+                expected_op_log_head: None,
+            },
+        )
+        .await
+        .expect("forge the smart wiki the pushes land on");
+    }
     let req = PushRequest {
         mode: PushMode::Upsert,
-        wiki_id: Some(mwe_core::types::WikiId::parse(wiki_id).expect("wiki id")),
+        wiki_id: Some(target),
         parent_wiki_id: None,
         slug: None,
         title: None,
         wiki_type: None,
-        smart: false,
+        smart: true,
         project_id: None,
         description: None,
         pages: vec![PushPage {
@@ -662,7 +690,7 @@ async fn seed_a_push(
         mark_processed: Vec::new(),
         expected_op_log_head: None,
     };
-    push(pool, tree, &caller, ActorKind::Dashboard, req)
+    push(pool, tree, &caller, ActorKind::SmartConsumer, req)
         .await
         .expect("seed a push");
 }
@@ -679,15 +707,15 @@ async fn dashboard_revert_button_succeeds_on_revertable_row() {
     // (We need a second op_log row so the first save's `pre_image_json`
     // is non-NULL — that's the row whose pre-image carries the original
     // body and whose revert restores it.)
-    seed_a_push(&pool, &tree, "alice", "appunti.md", "# v1 body\n").await;
-    seed_a_push(&pool, &tree, "alice", "appunti.md", "# v2 body\n").await;
+    seed_a_push(&pool, &tree, "alice-appunti", "appunti.md", "# v1 body\n").await;
+    seed_a_push(&pool, &tree, "alice-appunti", "appunti.md", "# v2 body\n").await;
 
     // GET the op-log view: the page must render a Revert form for the
     // second row (the upsert).
     let response = send(
         &app,
         Request::builder()
-            .uri("/wiki/alice/op-log")
+            .uri("/wiki/alice-appunti/op-log")
             .header(header::COOKIE, cookie.clone())
             .body(Body::empty())
             .unwrap(),
@@ -696,7 +724,7 @@ async fn dashboard_revert_button_succeeds_on_revertable_row() {
     assert_eq!(response.status(), StatusCode::OK);
     let html = body_string(response).await;
     assert!(
-        html.contains("/wiki/alice/op-log/") && html.contains("/revert"),
+        html.contains("/wiki/alice-appunti/op-log/") && html.contains("/revert"),
         "op-log view must expose a Revert POST form for revertable rows: {html}"
     );
     assert!(
@@ -707,7 +735,7 @@ async fn dashboard_revert_button_succeeds_on_revertable_row() {
     // Look up the target op_id (the second push_upsert row).
     let target_op_id: i64 = sqlx::query_scalar(
         "SELECT op_id FROM wiki_admin_op_log
-          WHERE wiki_id = 'alice' AND op_kind = 'push_upsert'
+          WHERE wiki_id = 'alice-appunti' AND op_kind = 'push_upsert'
           ORDER BY op_id DESC LIMIT 1",
     )
     .fetch_one(&pool)
@@ -719,7 +747,7 @@ async fn dashboard_revert_button_succeeds_on_revertable_row() {
         &app,
         Request::builder()
             .method("POST")
-            .uri(format!("/wiki/alice/op-log/{target_op_id}/revert"))
+            .uri(format!("/wiki/alice-appunti/op-log/{target_op_id}/revert"))
             .header(header::COOKIE, cookie.clone())
             .body(Body::empty())
             .unwrap(),
@@ -736,8 +764,8 @@ async fn dashboard_revert_button_succeeds_on_revertable_row() {
         .and_then(|v| v.to_str().ok())
         .unwrap_or("");
     assert!(
-        location.starts_with("/dashboard/wiki/alice/op-log?flash=revert_ok")
-            || location.starts_with("/wiki/alice/op-log?flash=revert_ok"),
+        location.starts_with("/dashboard/wiki/alice-appunti/op-log?flash=revert_ok")
+            || location.starts_with("/wiki/alice-appunti/op-log?flash=revert_ok"),
         "redirect location must carry success flash, got {location}"
     );
 
@@ -745,7 +773,7 @@ async fn dashboard_revert_button_succeeds_on_revertable_row() {
     let (actor_kind, sender_id, consumer_id, op_kind): (String, String, Option<String>, String) =
         sqlx::query_as(
             "SELECT actor_kind, sender_id, consumer_id, op_kind
-               FROM wiki_admin_op_log WHERE wiki_id = 'alice'
+               FROM wiki_admin_op_log WHERE wiki_id = 'alice-appunti'
               ORDER BY op_id DESC LIMIT 1",
         )
         .fetch_one(&pool)
@@ -760,7 +788,7 @@ async fn dashboard_revert_button_succeeds_on_revertable_row() {
     let response = send(
         &app,
         Request::builder()
-            .uri("/wiki/alice/op-log?flash=revert_ok")
+            .uri("/wiki/alice-appunti/op-log?flash=revert_ok")
             .header(header::COOKIE, cookie)
             .body(Body::empty())
             .unwrap(),
@@ -785,24 +813,24 @@ async fn dashboard_revert_button_returns_409_with_conflict_details_on_target_cha
     // Save v1 (creates `appunti.md`), then v2 (overwrites with the body
     // we'll try to revert), then v3 (an independent later edit on the
     // same page — this is the conflict).
-    seed_a_push(&pool, &tree, "alice", "appunti.md", "# v1 body\n").await;
-    seed_a_push(&pool, &tree, "alice", "appunti.md", "# v2 body\n").await;
+    seed_a_push(&pool, &tree, "alice-appunti", "appunti.md", "# v1 body\n").await;
+    seed_a_push(&pool, &tree, "alice-appunti", "appunti.md", "# v2 body\n").await;
     // The middle row is our revert target (its pre-image is "# v1 body\n").
     let target_op_id: i64 = sqlx::query_scalar(
         "SELECT op_id FROM wiki_admin_op_log
-          WHERE wiki_id = 'alice' AND op_kind = 'push_upsert'
+          WHERE wiki_id = 'alice-appunti' AND op_kind = 'push_upsert'
           ORDER BY op_id DESC LIMIT 1",
     )
     .fetch_one(&pool)
     .await
     .unwrap();
-    seed_a_push(&pool, &tree, "alice", "appunti.md", "# v3 body\n").await;
+    seed_a_push(&pool, &tree, "alice-appunti", "appunti.md", "# v3 body\n").await;
 
     let response = send(
         &app,
         Request::builder()
             .method("POST")
-            .uri(format!("/wiki/alice/op-log/{target_op_id}/revert"))
+            .uri(format!("/wiki/alice-appunti/op-log/{target_op_id}/revert"))
             .header(header::COOKIE, cookie.clone())
             .body(Body::empty())
             .unwrap(),
@@ -822,7 +850,7 @@ async fn dashboard_revert_button_returns_409_with_conflict_details_on_target_cha
     // No compensating row was written.
     let system_rows: i64 = sqlx::query_scalar(
         "SELECT COUNT(*) FROM wiki_admin_op_log
-          WHERE wiki_id = 'alice' AND actor_kind = 'system'",
+          WHERE wiki_id = 'alice-appunti' AND actor_kind = 'system'",
     )
     .fetch_one(&pool)
     .await
@@ -836,7 +864,7 @@ async fn dashboard_revert_button_returns_409_with_conflict_details_on_target_cha
     let response = send(
         &app,
         Request::builder()
-            .uri("/wiki/alice/op-log?flash=revert_conflict")
+            .uri("/wiki/alice-appunti/op-log?flash=revert_conflict")
             .header(header::COOKIE, cookie)
             .body(Body::empty())
             .unwrap(),
@@ -859,14 +887,14 @@ async fn dashboard_revert_button_hidden_for_pull_rows() {
     let cookie = login_as_admin(&app).await;
 
     // Build a revertable history first so the table has at least one
-    // pull-discriminated assertion: a dashboard save (push_upsert) +
-    // a manually inserted pull row simulating an MCP `wiki_admin_pull`.
-    seed_a_push(&pool, &tree, "alice", "appunti.md", "# body\n").await;
+    // pull-discriminated assertion: a push_upsert plus a manually inserted
+    // pull row standing in for an MCP `wiki_admin_pull`.
+    seed_a_push(&pool, &tree, "alice-appunti", "appunti.md", "# body\n").await;
     sqlx::query(
         "INSERT INTO wiki_admin_op_log
             (wiki_id, sender_id, consumer_id, actor_kind, op_kind, op_mode,
              payload_hash, pages_affected, pre_image_json, ts)
-         VALUES ('alice', 'alice', 'cc-laptop', 'smart_consumer', 'pull', NULL,
+         VALUES ('alice-appunti', 'alice', 'cc-laptop', 'smart_consumer', 'pull', NULL,
                  'deadbeef', 1, NULL, datetime('now'))",
     )
     .execute(&pool)
@@ -876,7 +904,7 @@ async fn dashboard_revert_button_hidden_for_pull_rows() {
     let response = send(
         &app,
         Request::builder()
-            .uri("/wiki/alice/op-log")
+            .uri("/wiki/alice-appunti/op-log")
             .header(header::COOKIE, cookie)
             .body(Body::empty())
             .unwrap(),
@@ -895,13 +923,13 @@ async fn dashboard_revert_button_hidden_for_pull_rows() {
     // form pointing at the pull row's op_id (the last inserted).
     let pull_op_id: i64 = sqlx::query_scalar(
         "SELECT op_id FROM wiki_admin_op_log
-          WHERE wiki_id = 'alice' AND op_kind = 'pull'
+          WHERE wiki_id = 'alice-appunti' AND op_kind = 'pull'
           ORDER BY op_id DESC LIMIT 1",
     )
     .fetch_one(&pool)
     .await
     .unwrap();
-    let pull_action = format!("/wiki/alice/op-log/{pull_op_id}/revert");
+    let pull_action = format!("/wiki/alice-appunti/op-log/{pull_op_id}/revert");
     assert!(
         !html.contains(&pull_action),
         "no Revert form must point at the pull row {pull_op_id}: {html}"
@@ -917,11 +945,11 @@ async fn dashboard_revert_button_admin_only() {
     let admin_cookie = login_as_admin(&app).await;
 
     // Seed a revertable row.
-    seed_a_push(&pool, &tree, "alice", "appunti.md", "# body\n").await;
-    seed_a_push(&pool, &tree, "alice", "appunti.md", "# body2\n").await;
+    seed_a_push(&pool, &tree, "alice-appunti", "appunti.md", "# body\n").await;
+    seed_a_push(&pool, &tree, "alice-appunti", "appunti.md", "# body2\n").await;
     let target_op_id: i64 = sqlx::query_scalar(
         "SELECT op_id FROM wiki_admin_op_log
-          WHERE wiki_id = 'alice' AND op_kind = 'push_upsert'
+          WHERE wiki_id = 'alice-appunti' AND op_kind = 'push_upsert'
           ORDER BY op_id DESC LIMIT 1",
     )
     .fetch_one(&pool)
@@ -971,7 +999,7 @@ async fn dashboard_revert_button_admin_only() {
         &app,
         Request::builder()
             .method("POST")
-            .uri(format!("/wiki/alice/op-log/{target_op_id}/revert"))
+            .uri(format!("/wiki/alice-appunti/op-log/{target_op_id}/revert"))
             .header(header::COOKIE, bilbo_cookie.clone())
             .body(Body::empty())
             .unwrap(),
@@ -979,25 +1007,19 @@ async fn dashboard_revert_button_admin_only() {
     .await;
     assert_eq!(response.status(), StatusCode::FORBIDDEN);
 
-    // Bilbo's GET on the op-log view (if he can read at all) does
-    // not show any Revert form — the cell is a muted dash.
+    // And the view itself is not his to open: the wiki belongs to alice, so
+    // the answer is the one a wiki that does not exist would give. Hiding the
+    // button would have been the weaker guarantee.
     let response = send(
         &app,
         Request::builder()
-            .uri("/wiki/alice/op-log")
+            .uri("/wiki/alice-appunti/op-log")
             .header(header::COOKIE, bilbo_cookie)
             .body(Body::empty())
             .unwrap(),
     )
     .await;
-    // Reading is allowed (no read gate on the op-log view), but no
-    // Revert form is exposed.
-    assert_eq!(response.status(), StatusCode::OK);
-    let html = body_string(response).await;
-    assert!(
-        !html.contains("/revert"),
-        "non-admin must not see a Revert form: {html}"
-    );
+    assert_eq!(response.status(), StatusCode::NOT_FOUND);
 }
 
 #[tokio::test]

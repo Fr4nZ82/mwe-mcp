@@ -1954,10 +1954,14 @@ fn reader_page_keywords(
 /// falls back to opening the page, which is never wrong; the table is a
 /// cache, and an empty one costs an open per page, never a wrong answer.
 ///
-/// The description is read from the **owner-tier** testata but shown only
+/// The description is read from the **owner-tier** testata and shown only
 /// where the reader is inside the wiki's default visibility
-/// (`summary_visible`). A page whose card cannot be read (vanished, unparseable) is marked read with no
-/// summary: a missing card is a candidate with no abstract, never an error.
+/// (`summary_visible`) AND reads a fact of the page itself
+/// (`reader_can_read_page`) — the same pair the door test asks before
+/// offering a page at all, because a card describes a page and a page is not
+/// a wiki. A page whose card cannot be read (vanished, unparseable) is marked
+/// read with no summary: a missing card is a candidate with no abstract,
+/// never an error.
 async fn fill_summaries(
     db: &SqlitePool,
     tree: &WikiTree,
@@ -1970,11 +1974,17 @@ async fn fill_summaries(
         let Some(d) = by_id.get(c.wiki_id.as_str()) else {
             continue;
         };
-        if !reader_card.summary_visible(c.wiki_id.as_str()) {
-            continue;
-        }
         let abs = d.abs_dir.join(&c.page);
         let source_path = wiki::workdir_relative_source_path(tree.workdir(), &abs);
+        // Both halves, the way the door test asks them: inside the wiki's
+        // default visibility AND able to read a fact of this page. A card
+        // says what its page is about, so handing one over about a page whose
+        // facts are all somebody else's tells this reader what is on it.
+        if !reader_card.summary_visible(c.wiki_id.as_str())
+            || !reader_card.reader_can_read_page(c.wiki_id.as_str(), &source_path)
+        {
+            continue;
+        }
         if let Ok(Some(row)) = page_card::get(db, &source_path).await
             && row.matches_file(&abs)
         {
@@ -3292,6 +3302,73 @@ mod tests {
             .await
             .expect("reader card");
         (tree.walk().expect("walk"), reader, pool)
+    }
+
+    /// A page's one-line card is content, and it answers the same per-page
+    /// question the funnel already asks before offering a door.
+    ///
+    /// The card is written on the owner tier and says what the page is about:
+    /// «servicing and insurance for the car» tells a reader what is on a page
+    /// they may not read a line of. Being inside the wiki's default visibility
+    /// is not enough — that is a fact about the WIKI, and what is being handed
+    /// over describes a PAGE.
+    #[tokio::test]
+    async fn a_page_summary_needs_the_same_reader_the_page_does() {
+        let (_dir, tree) = open_tree();
+        forge_user(&tree, "alice");
+        write_page(
+            &tree,
+            "alice",
+            "cucina.md",
+            "---\ntitle: \"Cucina\"\ndescription: \"gluten-free recipes and what to cook\"\n---\n\nprose\n",
+        );
+        write_page(
+            &tree,
+            "alice",
+            "auto.md",
+            "---\ntitle: \"Auto\"\ndescription: \"servicing and insurance for the car\"\n---\n\nprose\n",
+        );
+        // Readable on `cucina.md` and nowhere else: `auto.md` holds a fact of
+        // somebody else's, so its door is shut for this reader.
+        let (wikis, _, db) = pool_inputs(&tree, "alice", &[("alice", "cucina.md")]).await;
+        seed_fact(
+            &db,
+            &fid(9),
+            "alice",
+            "wikis/alice/auto.md",
+            "user:galadriel".parse().expect("subject"),
+            &[],
+        )
+        .await;
+        let reader = meta_annotate::build_reader_card(&db, &tree, "alice", &[])
+            .await
+            .expect("reader card");
+
+        let mut pool = initial_pool(
+            &[
+                entry("alice", "cucina.md", EntryOrigin::Rag, 0.9),
+                entry("alice", "auto.md", EntryOrigin::Rag, 0.8),
+            ],
+            &by_id_of(&wikis),
+            &reader,
+        );
+        fill_summaries(&db, &tree, &mut pool, &by_id_of(&wikis), &reader).await;
+
+        let summary_of = |page: &str| {
+            pool.iter()
+                .find(|c| c.page.to_string_lossy() == page)
+                .and_then(|c| c.summary.clone())
+        };
+        assert_eq!(
+            summary_of("cucina.md").as_deref(),
+            Some("gluten-free recipes and what to cook"),
+            "a page this reader reads is described by its own card"
+        );
+        assert_eq!(
+            summary_of("auto.md"),
+            None,
+            "a page whose facts are all somebody else's does not describe itself to them"
+        );
     }
 
     fn by_id_of(wikis: &[DiscoveredWiki]) -> BTreeMap<&str, &DiscoveredWiki> {

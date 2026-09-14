@@ -52,9 +52,12 @@
 //!   ([`RecipientScope::Addressee`]) — which, by
 //!   `mwe_core::proposals::recipient_from_fact`, means the proposals
 //!   raised about their own facts or about what they themselves said.
-//! - **An admin** sees those plus the rows addressed to nobody
-//!   ([`RecipientScope::AddresseeOrNobody`]) — the nightly pass addresses
-//!   none of its receipts, and they name pages across every wiki.
+//! - **An admin** sees those plus the rows addressed to nobody that are
+//!   reports about the ENGINE
+//!   ([`RecipientScope::AddresseeOrEngineReport`]). The nightly pass
+//!   addresses none of its receipts and they name pages across every wiki, so
+//!   those are somebody's material and wait for the lens; the server's own
+//!   diagnostics are nobody's material and do not.
 //! - **Admin reveal** ([`crate::reveal`]) lifts the scope to every
 //!   recipient, the same posture the facts table and the wiki pages take.
 //!   It is admin-only, so a reader can never widen past themself.
@@ -135,7 +138,7 @@ pub fn readable_scope(sender_id: &str, is_admin: bool, reveal: bool) -> Recipien
     if reveal {
         RecipientScope::Everybody
     } else if is_admin {
-        RecipientScope::AddresseeOrNobody(me)
+        RecipientScope::AddresseeOrEngineReport(me)
     } else {
         RecipientScope::Addressee(me)
     }
@@ -431,8 +434,9 @@ fn render_index_body(
             @if reveal {
                 " Admin reveal is on, so this is every recipient's."
             } @else if is_admin {
-                " Listed here are the ones addressed to you and the ones addressed to "
-                "nobody in particular; turn on Admin reveal in "
+                " Listed here are the ones addressed to you, and the reports the "
+                "engine writes about itself. What the memory rearranged for somebody "
+                "else is theirs: turn on Admin reveal in "
                 a href="/dashboard/settings/me" { "Settings" }
                 " to see everyone's."
             } @else {

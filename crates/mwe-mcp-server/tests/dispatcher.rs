@@ -83,7 +83,7 @@ async fn fixture_with_llm(
         rate_limit_id: "default".into(),
         token_jti: "test-token".into(),
         consumer_id: consumer_id.map(str::to_owned),
-        is_admin,
+        token_is_admin: is_admin,
         consumer_class: mwe_core::jwt::ConsumerClass::Standard,
         profile: mwe_core::jwt::ConsumerProfile::Local,
     };
@@ -351,6 +351,168 @@ async fn an_unaddressed_notice_is_the_operators_own_and_not_a_delegates() {
     assert!(
         out["events"].as_array().unwrap().is_empty(),
         "acting for somebody else is not being the operator: {out}"
+    );
+}
+
+/// A delegated identity never carries the administrator's role.
+///
+/// `X-MWE-Act-As` is how a standard consumer attributes a turn to the human it
+/// serves. The person it names is the subject of the turn; the office is not
+/// transferable with them, and the token's own identity is what holds it. Three
+/// surfaces, one rule: an admin-only intent is refused, a link minted for the
+/// delegated identity carries no role into the dashboard, and the whole-
+/// deployment view of the call log stays shut.
+#[tokio::test]
+async fn a_delegated_identity_carries_the_person_and_not_the_office() {
+    let (state, admin, _dir) = fixture(true, Some("telegram-bot")).await;
+    let delegated = IdentityProfile {
+        sender_id: "bob".into(),
+        ..admin.clone()
+    };
+    assert!(
+        admin.is_admin(),
+        "the token's own identity is the administrator's"
+    );
+    assert!(
+        !delegated.is_admin(),
+        "the same token speaking for somebody else is not"
+    );
+
+    // The spend page: the whole deployment, not the caller.
+    let err = call(
+        &state,
+        &delegated,
+        "dashboard_link",
+        json!({"intent": "costs"}),
+    )
+    .await
+    .expect_err("an admin-only intent must be refused to a delegated call");
+    assert!(err.contains("sender_unauthorized"), "{err}");
+
+    // And the link a delegated call DOES get carries no role with it: the
+    // dashboard reads the minted token, so the office would travel otherwise.
+    let out = call(
+        &state,
+        &delegated,
+        "dashboard_link",
+        json!({"intent": "home"}),
+    )
+    .await
+    .expect("home is everybody's");
+    let url = out["url"].as_str().expect("a url");
+    let token = url
+        .rsplit_once("token=")
+        .expect("a token in the url")
+        .1
+        .split('&')
+        .next()
+        .expect("the token value");
+    let claims =
+        mwe_core::jwt::verify_offline(&state.secret, token).expect("the minted token verifies");
+    assert_eq!(claims.sender_id, "bob");
+    assert!(
+        !claims.is_admin,
+        "the minted link must carry the delegated identity's role, which is none"
+    );
+
+    // The call log: an admin sees every row, a delegated call sees its own.
+    let err = call(
+        &state,
+        &delegated,
+        "tool_log_search",
+        json!({"sender_id_filter": "carol"}),
+    )
+    .await
+    .expect_err("a delegated call may not read somebody else's rows");
+    assert!(err.contains("sender_unauthorized"), "{err}");
+}
+
+/// A fact you cannot read answers one way, and it is the way a fact that does
+/// not exist answers.
+///
+/// `wiki_forget` takes an id. Told apart, «no such fact», «already forgotten»
+/// and «you may not touch this one» turn the tool into a way of asking whether
+/// an id names anything — and the detailed refusal goes further, saying
+/// whether the fact is about you or whether you wrote it.
+#[tokio::test]
+async fn forgetting_a_fact_you_cannot_read_answers_as_if_it_were_not_there() {
+    let (state, identity, _dir) = fixture(false, None).await;
+    let hers = insert_forget_fact(
+        &state.pool,
+        "0b",
+        "user:galadriel",
+        &[],
+        Some("user:galadriel"),
+    )
+    .await;
+
+    let err = call(&state, &identity, "wiki_forget", json!({"fact_id": hers}))
+        .await
+        .expect_err("a fact alice cannot read is not hers to forget");
+    let missing = mwe_core::types::FactId::parse("0190f3c2-7a4e-7c31-9b02-2f6a1c8e5dff")
+        .expect("a well-formed id nothing was ever filed under");
+    let absent = call(
+        &state,
+        &identity,
+        "wiki_forget",
+        json!({"fact_id": missing.as_str()}),
+    )
+    .await
+    .expect_err("nothing is filed under that id");
+    assert_eq!(
+        err.replace(hers.as_str(), "<id>"),
+        absent.replace(missing.as_str(), "<id>"),
+        "the two answers must be the same sentence: {err} / {absent}"
+    );
+}
+
+/// `wiki_lint` names facts, and a name is a fact's id on a page path. The
+/// caller gets the ones they may read, and being the administrator does not
+/// widen that: the reveal lens is a dashboard thing and there is none here.
+#[tokio::test]
+async fn a_lint_report_names_only_the_facts_its_caller_may_read() {
+    let (state, admin, _dir) = fixture(true, None).await;
+    mwe_core::wiki::create_identity_wiki(
+        &state.tree,
+        &mwe_core::types::WikiId::parse("galadriel").unwrap(),
+        "Galadriel",
+        mwe_core::wiki::IdentityKind::User,
+    )
+    .expect("her wiki");
+    std::fs::write(
+        state.workdir.join("wikis/galadriel/diario.md"),
+        "# Diario\n\nprose with no markers\n",
+    )
+    .expect("a page with no markers");
+    // A fact of hers, filed against that page: the orphan check will name it,
+    // because the page carries no `{{f=…}}` region for it.
+    let hers = insert_forget_fact(
+        &state.pool,
+        "0c",
+        "user:galadriel",
+        &[],
+        Some("user:galadriel"),
+    )
+    .await;
+    sqlx::query("UPDATE fact_index SET wiki_id = 'galadriel', source_path = ? WHERE fact_id = ?")
+        .bind("wikis/galadriel/diario.md")
+        .bind(&hers)
+        .execute(&state.pool)
+        .await
+        .expect("file it on her page");
+
+    let out = call(
+        &state,
+        &admin,
+        "wiki_lint",
+        json!({"scope": {"wiki_ids": ["galadriel"]}, "checks": ["orphan_facts"]}),
+    )
+    .await
+    .expect("lint runs");
+    let body = out.to_string();
+    assert!(
+        !body.contains(hers.as_str()),
+        "the administrator is an ordinary reader here: {body}"
     );
 }
 
@@ -2255,14 +2417,26 @@ async fn wiki_forget_non_author_subject_is_pointed_to_dashboard() {
     assert_eq!(proposals, 0, "no fact_forget proposal opened from MCP");
 }
 
-/// An unrelated caller (neither author, subject, nor owning-group member) is
+/// A caller who can READ a fact but is neither its author nor its subject is
 /// refused with `sender_unauthorized`.
+///
+/// Being shown something is not being given it: alice is in the audience of
+/// this one, so she knows it exists and the answer can say why she may not
+/// touch it. A fact she could not read answers as if it were not there
+/// instead — a different question, and its own test.
 #[tokio::test]
-async fn wiki_forget_unrelated_caller_is_refused() {
+async fn wiki_forget_a_reader_who_is_neither_author_nor_subject_is_refused() {
     let (state, base, _dir) = forget_fixture().await;
-    // subject=bob (a user, not a group), sender=carol → alice is in neither
-    // role. The fixture identity is already alice, but spell it out for clarity.
-    let fid = insert_forget_fact(&state.pool, "03", "user:bob", &[], Some("user:carol")).await;
+    // subject=bob (a user, not a group), sender=carol, shared with alice →
+    // she is in neither role but does read it.
+    let fid = insert_forget_fact(
+        &state.pool,
+        "03",
+        "user:bob",
+        &["user:alice"],
+        Some("user:carol"),
+    )
+    .await;
     let alice = IdentityProfile {
         sender_id: "alice".into(),
         token_sender_id: "alice".into(),

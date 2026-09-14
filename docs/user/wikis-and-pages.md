@@ -27,7 +27,11 @@ page. Lists and notes you asked to keep are written straight away.
 ## One wiki
 
 Opening a wiki shows its id, title, kind, short name and how many facts still
-hold, then the list of its **Pages** with their sizes. Two page names recur:
+hold, then the list of its **Pages** with their sizes. Both the count and the
+list are **yours**: the pages listed are the ones you can read something on,
+and the number counts the facts you can read. A page whose every fact was
+written for somebody else is not listed for you, because its name would tell
+you what is on it. Two page names recur where you can see them:
 `@profile.md`, the identity card, and `@rules.md`, the standing rules.
 
 ## One page

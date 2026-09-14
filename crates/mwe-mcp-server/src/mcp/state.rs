@@ -61,9 +61,13 @@ pub struct IdentityProfile {
     /// `consumer_id` claim — set on bot / orchestrator tokens; required
     /// for `events_poll` / `events_ack` calls.
     pub consumer_id: Option<String>,
-    /// UI gating hint — `tool_log_search` surfaces every row when this
-    /// is true; otherwise it scopes to `sender_id = caller`.
-    pub is_admin: bool,
+    /// The `is_admin` claim exactly as the TOKEN carries it.
+    ///
+    /// **Read [`Self::is_admin`] instead**, everywhere. This is the raw claim,
+    /// and it stays true for an administrator's token even on a call that
+    /// token is making for somebody else — which is never what a gate wants to
+    /// know. A test pins that no other module reads it.
+    pub token_is_admin: bool,
     /// Consumer class — `Smart` authorises the smart-wiki
     /// tool families (`wiki_admin_*`, `wiki_type_register`). Defaults
     /// to [`ConsumerClass::Standard`] when the JWT omits the claim, so a
@@ -87,7 +91,7 @@ impl IdentityProfile {
             rate_limit_id: claims.rate_limit_id,
             token_jti: claims.jti,
             consumer_id: claims.consumer_id,
-            is_admin: claims.is_admin,
+            token_is_admin: claims.is_admin,
             consumer_class: claims.consumer_class,
             profile: claims.profile,
         }
@@ -103,18 +107,21 @@ impl IdentityProfile {
         self.token_sender_id == self.sender_id
     }
 
-    /// Is the operator personally on the other end of this call?
+    /// Does this call carry the administrator's role?
     ///
-    /// Not *«is this call entitled to an admin's reach»* — that is
-    /// [`Self::is_admin`] and it is a property of the token. This is the
-    /// narrower question the engine's own notices ask: the token belongs to
-    /// the administrator AND is not standing in for anybody, which is
-    /// [`Self::token_sender_id`] still agreeing with `sender_id`. A bot
-    /// delegated for the admin is a bot, and what belongs to the operator is
-    /// not thereby its business.
+    /// The token's own claim AND nobody being stood in for. `X-MWE-Act-As`
+    /// names the person a turn is ABOUT — that is its whole job, attributing a
+    /// memory to the human a consumer serves — and the office does not travel
+    /// with the attribution: a bot speaking for the administrator is a bot.
+    ///
+    /// So every admin gate on this surface asks THIS, and the raw claim
+    /// ([`Self::token_is_admin`]) is read in one place, here. It is also the
+    /// answer to *«is the operator personally on the other end»*, which is the
+    /// same question wearing a different hat: what the engine addresses to
+    /// nobody is the operator's, and a delegated call is not them.
     #[must_use]
-    pub fn is_the_operator(&self) -> bool {
-        self.is_admin && self.speaks_for_itself()
+    pub fn is_admin(&self) -> bool {
+        self.token_is_admin && self.speaks_for_itself()
     }
 }
 
@@ -235,5 +242,34 @@ impl std::fmt::Debug for McpState {
             .field("secret", &"<redacted>")
             .field("embedder", &self.embedder.model_id())
             .finish_non_exhaustive()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    /// The raw `is_admin` claim is read HERE and nowhere else.
+    ///
+    /// It is the field a gate reaches for by muscle memory, and it answers the
+    /// wrong question: it stays true while the token speaks for somebody else.
+    /// The narrowing lives in [`IdentityProfile::is_admin`], and a call site
+    /// that walks around it cannot be caught by the compiler — the field is a
+    /// `bool` and reads perfectly well. So it is caught here.
+    #[test]
+    fn nothing_outside_this_module_reads_the_raw_admin_claim() {
+        const RAW: &str = "token_is_admin";
+        for (name, body) in [
+            ("mcp/mod.rs", include_str!("mod.rs")),
+            ("mcp/auth.rs", include_str!("auth.rs")),
+            ("mcp/tools.rs", include_str!("tools.rs")),
+            ("mcp/schemas.rs", include_str!("schemas.rs")),
+            ("mcp/ratelimit.rs", include_str!("ratelimit.rs")),
+            ("mcp/error.rs", include_str!("error.rs")),
+        ] {
+            assert!(
+                !body.contains(RAW),
+                "{name} reads `{RAW}` directly: ask `is_admin()`, which knows about \
+                 `X-MWE-Act-As`"
+            );
+        }
     }
 }

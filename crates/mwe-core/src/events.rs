@@ -789,7 +789,7 @@ impl PollScope<'_> {
 /// call — their own token, standing in for nobody. It opens the unaddressed
 /// arm and nothing else. The transport answers it, because whose token this is
 /// is a property of the token rather than of the database (the MCP road asks
-/// `IdentityProfile::is_the_operator`); a caller that cannot tell passes
+/// `IdentityProfile::is_admin`); a caller that cannot tell passes
 /// `false` and loses only the operator's own notices.
 ///
 /// # Errors

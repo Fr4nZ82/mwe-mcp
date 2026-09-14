@@ -169,6 +169,32 @@ pub mod kind {
         RECALL_TUNING,
     ];
 
+    /// The kinds that are reports about the ENGINE rather than receipts
+    /// about somebody's material.
+    ///
+    /// Addressed to nobody means two different things, and this list is which
+    /// is which. A receipt the night writes about a page it rearranged names
+    /// that page and quotes what is on it, so it belongs to whoever the page
+    /// belongs to even when the engine could not name them: the operator
+    /// reads it under the reveal lens, like any other content of somebody
+    /// else's. A report about the engine's own workings is nobody's material,
+    /// so whoever runs the server meets it with the lens off — otherwise the
+    /// only way to read the server's own diagnostics is to open everybody's
+    /// memory at the same time, which is the opposite of what the lens is
+    /// for.
+    ///
+    /// A LIST and not a rule about the text: which family a kind falls in is
+    /// a judgement about what the row says, and a heuristic that guessed it
+    /// would guess wrong silently. A test pins the membership, so a kind
+    /// added later makes its author choose.
+    pub const ENGINE_REPORTS: &[&str] = &[RECALL_TUNING];
+
+    /// `true` when `s` is one of [`ENGINE_REPORTS`].
+    #[must_use]
+    pub fn is_engine_report(s: &str) -> bool {
+        ENGINE_REPORTS.contains(&s)
+    }
+
     /// `true` when `s` matches one of the canonical kinds.
     #[must_use]
     pub fn is_canonical(s: &str) -> bool {
@@ -343,8 +369,14 @@ pub enum RecipientScope {
     #[default]
     Everybody,
     /// Rows addressed to this principal — a `Principal` wire string like
-    /// `"user:frodo"` — **plus** the unaddressed ones.
-    AddresseeOrNobody(String),
+    /// `"user:frodo"` — **plus** the unaddressed rows that are reports about
+    /// the engine ([`kind::ENGINE_REPORTS`]).
+    ///
+    /// The administrator with the reveal lens OFF. Being the administrator is
+    /// not a key to other people's memory, so an unaddressed receipt about
+    /// somebody's pages is not in this scope; the server's own diagnostics
+    /// are, because they are nobody's memory.
+    AddresseeOrEngineReport(String),
     /// Rows addressed to this principal, and nothing else.
     Addressee(String),
 }
@@ -361,6 +393,19 @@ pub enum RecipientScope {
 ///
 /// Narrowed to the one kind that has an electorate, so no other row is
 /// ever matched by a stray `eligible_voters` key.
+/// [`kind::ENGINE_REPORTS`] as a quoted SQL list, built once.
+///
+/// The membership is a constant of this crate, so it is written into the
+/// statement rather than bound — there is no caller text anywhere near it, and
+/// a bound list would have to vary its placeholder count with the constant.
+static ENGINE_REPORT_LITERALS: std::sync::LazyLock<String> = std::sync::LazyLock::new(|| {
+    kind::ENGINE_REPORTS
+        .iter()
+        .map(|k| format!("'{k}'"))
+        .collect::<Vec<_>>()
+        .join(", ")
+});
+
 const ELECTOR_CLAUSE: &str = "(kind = 'fact_forget' AND EXISTS (\
      SELECT 1 FROM json_each(structure_proposals.context, '$.eligible_voters') \
       WHERE json_each.value = ?))";
@@ -370,7 +415,7 @@ impl RecipientScope {
     const fn principal(&self) -> Option<&String> {
         match self {
             Self::Everybody => None,
-            Self::AddresseeOrNobody(p) | Self::Addressee(p) => Some(p),
+            Self::AddresseeOrEngineReport(p) | Self::Addressee(p) => Some(p),
         }
     }
 
@@ -389,10 +434,18 @@ impl RecipientScope {
     fn sql(&self) -> Option<String> {
         match self {
             Self::Everybody => None,
-            // 0032: addressed to me OR unaddressed (admin-fallback bucket).
-            Self::AddresseeOrNobody(_) => Some(format!(
-                "(recipient_id = ? OR recipient_id IS NULL OR {ELECTOR_CLAUSE})"
-            )),
+            // Addressed to me, or an engine report nobody was addressed
+            // with. The kind list is inlined as quoted literals rather than
+            // bound, because it is a compile-time constant of this crate and
+            // never caller text.
+            Self::AddresseeOrEngineReport(_) => {
+                let literals = &*ENGINE_REPORT_LITERALS;
+                Some(format!(
+                    "(recipient_id = ? \
+                  OR (recipient_id IS NULL AND kind IN ({literals})) \
+                  OR {ELECTOR_CLAUSE})"
+                ))
+            },
             Self::Addressee(_) => Some(format!("(recipient_id = ? OR {ELECTOR_CLAUSE})")),
         }
     }
@@ -480,7 +533,9 @@ pub struct ProposalRow {
     /// `sender_id` that applied, or `None` for auto-apply at timeout.
     pub applied_by: Option<String>,
     /// Addressee of the proposal: a `Principal` wire string like
-    /// `"user:frodo"`, or `None` for unaddressed / admin-fallback rows.
+    /// `"user:frodo"`, or `None` when the row is addressed to nobody. Who
+    /// reads an unaddressed row then depends on its [`kind`]: see
+    /// [`RecipientScope`].
     pub recipient_id: Option<String>,
 }
 
@@ -655,7 +710,7 @@ pub async fn count_pending(pool: &SqlitePool, scope: &RecipientScope) -> Result<
 ///
 /// The human who actually said it (`sender_id`) wins; otherwise the
 /// owning user; otherwise `None` (a group/global subject with no sender →
-/// unaddressed / admin-fallback). The returned string, when `Some`, is a
+/// addressed to nobody). The returned string, when `Some`, is a
 /// `Principal` wire string like `"user:frodo"`, matching `subject_id` /
 /// `sender_id` on the fact and the `recipient_id` column.
 ///
@@ -792,10 +847,9 @@ pub fn group_by_recipient<T: Clone>(
 /// Whether `caller_sender_id` may apply a proposal whose addressee is
 /// `recipient_id`.
 ///
-/// Admins always may. An unaddressed proposal (`recipient_id == None` —
-/// the admin-fallback bucket) stays actionable by anyone, preserving the
-/// pre-0032 single-operator behaviour. Otherwise only the addressed user
-/// may act. `recipient_id`, when `Some`, is a `Principal` wire string
+/// Admins always may. A proposal addressed to nobody stays actionable by
+/// anyone who is shown it, which is what makes a receipt nobody was addressed
+/// with answerable at all. Otherwise only the addressed user may act. `recipient_id`, when `Some`, is a `Principal` wire string
 /// (`"user:<id>"`); `caller_sender_id` is the bare session id.
 #[must_use]
 pub fn recipient_can_act(
@@ -1910,7 +1964,7 @@ pub struct EmitParams {
     /// [`DEFAULT_EMIT_TIMEOUT`]).
     pub timeout: chrono::Duration,
     /// Addressee of the proposal: a `Principal` wire string like
-    /// `"user:frodo"`, or `None` for unaddressed / admin-fallback.
+    /// `"user:frodo"`, or `None` to address it to nobody.
     /// Emitters derive it with [`recipient_from_fact`].
     pub recipient: Option<String>,
 }
@@ -2971,7 +3025,7 @@ mod tests {
             recipient_from_fact(&Principal::User("galadriel".into()), None),
             Some("user:galadriel".to_owned()),
         );
-        // Group / global subject with no sender → unaddressed (admin-fallback).
+        // Group / global subject with no sender → addressed to nobody.
         assert_eq!(
             recipient_from_fact(&Principal::Group("famiglia".into()), None),
             None,
@@ -3040,59 +3094,6 @@ mod tests {
         seed(&pool, "p-3", kind::DEDUP_MERGE, "expired", 86_400).await;
         let rows = list(&pool, &ListFilters::default()).await.unwrap();
         assert_eq!(rows.len(), 3);
-    }
-
-    /// The two narrowed scopes differ on exactly one row: the one nobody
-    /// was addressed with. [`RecipientScope::AddresseeOrNobody`] hands it
-    /// over (it is the bucket anybody may answer),
-    /// [`RecipientScope::Addressee`] does not (it is a receipt of what the
-    /// engine did, and it describes pages its reader may not be able to
-    /// open). Somebody else's row is out of both.
-    #[tokio::test]
-    async fn the_unaddressed_bucket_is_what_the_two_narrow_scopes_disagree_on() {
-        let (_workdir, pool) = fresh_pool().await;
-        seed_addressed(&pool, "p-mine", Some("user:frodo")).await;
-        seed_addressed(&pool, "p-nobody", None).await;
-        seed_addressed(&pool, "p-theirs", Some("user:bilbo")).await;
-
-        let ids = |rows: Vec<ProposalRow>| {
-            let mut out: Vec<String> = rows.into_iter().map(|r| r.proposal_id).collect();
-            out.sort();
-            out
-        };
-
-        let with_bucket = list(
-            &pool,
-            &ListFilters {
-                recipient: RecipientScope::AddresseeOrNobody("user:frodo".to_owned()),
-                ..Default::default()
-            },
-        )
-        .await
-        .unwrap();
-        assert_eq!(ids(with_bucket), ["p-mine", "p-nobody"]);
-
-        let without_bucket = list(
-            &pool,
-            &ListFilters {
-                recipient: RecipientScope::Addressee("user:frodo".to_owned()),
-                ..Default::default()
-            },
-        )
-        .await
-        .unwrap();
-        assert_eq!(ids(without_bucket), ["p-mine"]);
-
-        let everybody = list(
-            &pool,
-            &ListFilters {
-                recipient: RecipientScope::Everybody,
-                ..Default::default()
-            },
-        )
-        .await
-        .unwrap();
-        assert_eq!(ids(everybody), ["p-mine", "p-nobody", "p-theirs"]);
     }
 
     /// A batch that touches several people is split into one group each,
@@ -3221,6 +3222,103 @@ mod tests {
     }
 
     /// One `pending` row with an explicit addressee.
+    /// Seed an unaddressed proposal of a given kind.
+    async fn seed_unaddressed_of(pool: &SqlitePool, proposal_id: &str, kind: &str) {
+        let now = chrono::Utc::now();
+        sqlx::query(
+            "INSERT INTO structure_proposals (proposal_id, kind, context, questions, \
+             proposed_at, timeout_at, status, recipient_id) \
+             VALUES (?, ?, '{}', '[]', ?, ?, 'pending', NULL)",
+        )
+        .bind(proposal_id)
+        .bind(kind)
+        .bind(now.to_rfc3339())
+        .bind((now + chrono::Duration::hours(24)).to_rfc3339())
+        .execute(pool)
+        .await
+        .unwrap();
+    }
+
+    /// Addressed to nobody is two different things, and only one of them is
+    /// the administrator's to read with the lens off.
+    ///
+    /// A receipt of what the night did to somebody's material is that
+    /// person's business even when the engine could not name them — it
+    /// describes their pages. A report about the engine's own workings is
+    /// nobody's material at all, and whoever runs the server has to be able
+    /// to meet it without turning on a lens over other people's memory.
+    #[tokio::test]
+    async fn an_engine_report_is_the_operators_and_a_receipt_about_somebody_is_not() {
+        let (_workdir, pool) = fresh_pool().await;
+        seed_addressed(&pool, "p-mine", Some("user:frodo")).await;
+        seed_unaddressed_of(&pool, "p-engine", kind::RECALL_TUNING).await;
+        seed_unaddressed_of(&pool, "p-somebodys", kind::PAGE_CREATE).await;
+
+        let ids = |rows: Vec<ProposalRow>| {
+            let mut out: Vec<String> = rows.into_iter().map(|r| r.proposal_id).collect();
+            out.sort();
+            out
+        };
+        let listed = async |scope: RecipientScope| {
+            list(
+                &pool,
+                &ListFilters {
+                    recipient: scope,
+                    ..Default::default()
+                },
+            )
+            .await
+            .unwrap()
+        };
+
+        assert_eq!(
+            ids(listed(RecipientScope::AddresseeOrEngineReport(
+                "user:frodo".to_owned()
+            ))
+            .await),
+            ["p-engine", "p-mine"],
+            "the engine's own report comes with the lens off; a receipt about \
+             somebody's pages does not"
+        );
+        assert_eq!(
+            ids(listed(RecipientScope::Addressee("user:frodo".to_owned())).await),
+            ["p-mine"],
+            "an ordinary reader gets neither"
+        );
+        assert_eq!(
+            ids(listed(RecipientScope::Everybody).await),
+            ["p-engine", "p-mine", "p-somebodys"],
+            "the lens shows everything, which is what a lens is for"
+        );
+    }
+
+    /// Every kind belongs to exactly one family, and adding one makes the
+    /// author choose.
+    ///
+    /// The split decides who reads an unaddressed row with no lens on, so a
+    /// kind that nobody classified would quietly join the safe side and then
+    /// be wrong in a way nothing announces. The list is the classification —
+    /// there is no heuristic on the text, by decision.
+    #[test]
+    fn every_kind_is_either_an_engine_report_or_somebodys_business() {
+        let reports: Vec<&str> = kind::ALL
+            .iter()
+            .copied()
+            .filter(|k| kind::is_engine_report(k))
+            .collect();
+        assert_eq!(
+            reports,
+            [kind::RECALL_TUNING],
+            "the engine-report family is this list and nothing else"
+        );
+        for k in kind::ENGINE_REPORTS {
+            assert!(
+                kind::is_canonical(k),
+                "`{k}` is listed as an engine report but is not a kind"
+            );
+        }
+    }
+
     async fn seed_addressed(pool: &SqlitePool, proposal_id: &str, recipient: Option<&str>) {
         let now = chrono::Utc::now();
         sqlx::query(

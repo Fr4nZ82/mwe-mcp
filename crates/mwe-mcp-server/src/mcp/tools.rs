@@ -721,7 +721,7 @@ pub(super) async fn call_events_poll(
         &state.pool,
         &args.consumer_id,
         &identity.sender_id,
-        identity.is_the_operator(),
+        identity.is_admin(),
         args.since.as_deref(),
         &args.kinds,
         args.top_k.unwrap_or(events::DEFAULT_POLL_TOP_K),
@@ -788,7 +788,7 @@ fn enforce_consumer_match(identity: &IdentityProfile, arg: &str) -> Result<(), T
             // Token has no consumer_id ⇒ caller is a human user, not a
             // bot. They can drain events for any registered consumer
             // (admin debugging surface). This may be tightened later.
-            if identity.is_admin {
+            if identity.is_admin() {
                 Ok(())
             } else {
                 Err(ToolError::new(
@@ -944,8 +944,14 @@ pub(super) async fn call_wiki_read(
     // Whose category this wiki is, derived from where it sits in the tree. A
     // topic wiki — one named for its subject, standing for nobody, which is
     // what the nightly grouping raises — answers to no principal, so the field
-    // is `null` rather than a name: what may be read on its pages was decided
-    // per fact above, and no principal owns them.
+    // is `null` rather than a name.
+    //
+    // **It is not a permission.** Nothing on this road reads it to decide
+    // anything: what may be read on these pages was decided fact by fact
+    // above, by `render_for_sender`, and a caller who is handed the owner's
+    // name has been handed a name and nothing else. It rides along because a
+    // consumer telling a person where something is filed says «in your wiki»
+    // rather than «in wiki `frodo`».
     let owner = state
         .tree
         .resolve_scope_principal(meta)
@@ -1656,7 +1662,7 @@ pub(super) async fn call_tool_log_search(
     forbid_guest(identity, "tool_log_search")?;
     let mut args: ToolLogSearchArgs = parse_args(&args)?;
     // Non-admin callers can only see their own rows.
-    if !identity.is_admin {
+    if !identity.is_admin() {
         match &args.sender_id_filter {
             Some(s) if s != &identity.sender_id => {
                 return Err(ToolError::new(
@@ -1749,11 +1755,10 @@ pub(super) async fn call_wiki_lint(
     let report = lint::run(&state.pool, &state.tree, &scope, &checks)
         .await
         .map_err(|e| ToolError::new(ToolErrorClass::InternalError, e.to_string()))?;
-    let report = if identity.is_admin {
-        report
-    } else {
-        lint_report_readable_by(state, identity, report).await?
-    };
+    // Everybody, the administrator included. The reveal lens is what lets an
+    // operator read past the per-fact gates and it is a dashboard thing; there
+    // is none on this surface, so here they are a reader like any other.
+    let report = lint_report_readable_by(state, identity, report).await?;
     Ok(json!({
         "issues": report.issues,
         "summary": {
@@ -1764,10 +1769,17 @@ pub(super) async fn call_wiki_lint(
     }))
 }
 
-/// Cut a lint report down to the wikis `identity` may read, through the
-/// same wiki-level gate `wiki_read` applies (`wiki_admin::wiki_readable_by`,
-/// which answers for both families), and recount the summary over what is
-/// left. Issues that name no wiki are dropped: they describe the tree.
+/// Cut a lint report down to what `identity` may read, and recount the summary
+/// over what is left.
+///
+/// Two gates, because an issue names two different things. An issue that names
+/// a FACT is kept only when the caller may read that fact
+/// (`fact_index::row_readable_by`): its message carries the fact's id and the
+/// page path it was expected on, which is the fact's whereabouts even when its
+/// text is not there. An issue that names no fact is gated on the WIKI, the
+/// same gate `wiki_read` applies — it is the most this shape allows, since the
+/// page such an issue is about lives in its prose rather than in a field.
+/// Issues that name no wiki are dropped: they describe the tree.
 async fn lint_report_readable_by(
     state: &McpState,
     identity: &IdentityProfile,
@@ -1783,6 +1795,28 @@ async fn lint_report_readable_by(
         let Some(wiki_id) = issue.wiki_id.clone() else {
             continue;
         };
+        // A named fact answers for itself.
+        if let Some(fact_id) = issue.fact_id.as_deref() {
+            let readable_fact = match mwe_core::types::FactId::parse(fact_id) {
+                Ok(id) => mwe_core::fact_index::find_by_id(&state.pool, &id)
+                    .await
+                    .map_err(|e| internal(e.to_string()))?
+                    // No row under that id: the issue is about a fact the
+                    // index does not hold, so there is no audience to ask.
+                    .is_some_and(|row| {
+                        mwe_core::fact_index::row_readable_by(
+                            &row,
+                            &identity.sender_id,
+                            &sender_groups,
+                        )
+                    }),
+                Err(_) => false,
+            };
+            if readable_fact {
+                kept.push(issue);
+            }
+            continue;
+        }
         let visible = if let Some(v) = readable.get(&wiki_id) {
             *v
         } else {
@@ -1861,7 +1895,8 @@ pub(super) async fn call_consumer_register(
     let already = consumers::is_registered(&state.pool, &args.consumer_id)
         .await
         .map_err(|e| ToolError::new(ToolErrorClass::InternalError, e.to_string()))?;
-    if already && !identity.is_admin && identity.consumer_id.as_deref() != Some(&args.consumer_id) {
+    if already && !identity.is_admin() && identity.consumer_id.as_deref() != Some(&args.consumer_id)
+    {
         return Err(ToolError::new(
             ToolErrorClass::SenderUnauthorized,
             format!(
@@ -2407,7 +2442,7 @@ pub(super) async fn call_dashboard_link(
     // it for every signed-in user, so the tool gates it for nobody. The two
     // that stay behind the admin gate are the ones that show the whole
     // deployment rather than the caller: the recall traces and the spend.
-    if matches!(args.intent.as_str(), "audit" | "costs") && !identity.is_admin {
+    if matches!(args.intent.as_str(), "audit" | "costs") && !identity.is_admin() {
         return Err(ToolError::new(
             ToolErrorClass::SenderUnauthorized,
             format!("intent `{}` is admin-only", args.intent),
@@ -2419,7 +2454,7 @@ pub(super) async fn call_dashboard_link(
         DASHBOARD_RATE_LIMIT_ID,
         DASHBOARD_LINK_TTL,
     );
-    claims.is_admin = identity.is_admin;
+    claims.is_admin = identity.is_admin();
     let token = jwt::issue(&state.secret, &claims)
         .map_err(|e| ToolError::new(ToolErrorClass::InternalError, format!("jwt: {e}")))?;
 
@@ -3526,17 +3561,31 @@ pub(super) async fn call_wiki_forget(
     // The caller acts as the JWT's sender (a bare user id); a consumer is
     // never an admin on the MCP path, so `is_admin` is the token's own flag.
     let caller = identity.sender_id.as_str();
-    let is_admin = identity.is_admin;
+    let is_admin = identity.is_admin();
 
+    let not_there = || {
+        ToolError::new(
+            ToolErrorClass::NotFound,
+            format!("fact `{}` not found", fact_id.as_str()),
+        )
+    };
     let row = mwe_core::fact_index::find_by_id(&state.pool, &fact_id)
         .await
         .map_err(|e| ToolError::new(ToolErrorClass::InternalError, e.to_string()))?
-        .ok_or_else(|| {
-            ToolError::new(
-                ToolErrorClass::NotFound,
-                format!("fact `{}` not found", fact_id.as_str()),
-            )
-        })?;
+        .ok_or_else(not_there)?;
+
+    // A fact this caller cannot READ answers exactly as a fact that is not
+    // there. The tool takes an id and nothing else, so three different
+    // answers — «no such fact», «already forgotten», «not yours to touch» —
+    // make it a way of asking whether an id names anything, and the last one
+    // went further and said whether the fact was about the asker or written
+    // by them. One answer, and it is the emptiest one.
+    let caller_groups = mwe_core::enrollment::groups_for(&state.pool, caller)
+        .await
+        .map_err(|e| ToolError::new(ToolErrorClass::InternalError, e.to_string()))?;
+    if !mwe_core::fact_index::row_readable_by(&row, caller, &caller_groups) {
+        return Err(not_there());
+    }
 
     // Already forgotten → idempotent success, never an error.
     if row.deleted_at.is_some() {
@@ -3571,9 +3620,6 @@ pub(super) async fn call_wiki_forget(
     // background by the agent. So we do NOT open a request here: if the caller
     // owns the fact (its subject, or a member of an owning group) point them
     // at the dashboard; otherwise they have no path at all → refused.
-    let caller_groups = mwe_core::enrollment::groups_for(&state.pool, caller)
-        .await
-        .map_err(|e| ToolError::new(ToolErrorClass::InternalError, e.to_string()))?;
     if mwe_core::acl::sender_is_subject(&row.subject_id, caller, &caller_groups) {
         return Ok(json!({
             "outcome": "request_from_dashboard",

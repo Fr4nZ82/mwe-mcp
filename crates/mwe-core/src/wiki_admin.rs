@@ -73,7 +73,6 @@ use crate::wiki::{META_FILENAME, WikiError, WikiHandle, WikiMeta, WikiTree, atom
 /// | `actor_kind`      | `consumer_class=smart` required? | smart-family wiki required? | owner-match required? |
 /// |-------------------|----------------------------------|----------------------------------------|-----------------------|
 /// | `SmartConsumer`   | yes (`AdminError::RequiresSmart`) | yes (`AdminError::WikiNotSmart`) | yes |
-/// | `Dashboard`       | no                               | **relaxed** — any wiki     | yes, where a wiki has an owner |
 /// | `System`          | no                               | no — reserved for the revert handler | n/a (handler-driven)  |
 ///
 /// `System` is threaded through the API but its write logic lives in
@@ -84,11 +83,6 @@ pub enum ActorKind {
     /// MCP-side write from a `consumer_class=smart` token. The original
     /// behaviour, default for every existing call site.
     SmartConsumer,
-    /// Dashboard-side write from the textual page editor. The
-    /// smart-family gate is relaxed: any wiki the
-    /// operator owns can be edited from the dashboard, and so can a topic
-    /// wiki, which nobody owns and whose editor is admin-only.
-    Dashboard,
     /// System-generated compensation row produced by the revert
     /// handler. Threaded through `record_op_log` only — no
     /// `push` call ever passes this variant today; reserved for
@@ -103,7 +97,6 @@ impl ActorKind {
     pub const fn wire(self) -> &'static str {
         match self {
             Self::SmartConsumer => "smart_consumer",
-            Self::Dashboard => "dashboard",
             Self::System => "system",
         }
     }
@@ -550,8 +543,7 @@ pub struct AdminCaller {
 /// reading the dashboard, so a consumer labelling somebody else's wiki "agent"
 /// is a lie the UI would repeat. A consumer may claim it on exactly one wiki:
 /// the one the engine forged for it at consent, whose slug is its own
-/// `consumer_id`. Operator/dashboard writes are unaffected — the operator may
-/// label anything.
+/// `consumer_id`.
 fn guard_agent_label(
     tree: &WikiTree,
     caller: &AdminCaller,
@@ -1609,6 +1601,16 @@ fn revert_payload_hash(op_id: i64, paths: &[String]) -> String {
 
 // ---------- Shared helpers ----------
 
+/// Two questions, and the order is the point: **the wiki first, the person
+/// second**.
+///
+/// The family check is about the WIKI — this API writes smart wikis and
+/// nothing else — and it can be answered without resolving who a wiki belongs
+/// to. The ownership check is about a PERSON, and its refusal names them. Ask
+/// them the other way round and a caller who guesses a wiki id is told who it
+/// belongs to before being told they were never going to be allowed in: the
+/// answer to a knock on a door that does not open should not be the name on
+/// the letterbox.
 async fn enforce_admin_auth(
     pool: &SqlitePool,
     tree: &WikiTree,
@@ -1616,6 +1618,15 @@ async fn enforce_admin_auth(
     caller: &AdminCaller,
     actor_kind: ActorKind,
 ) -> Result<(), AdminError> {
+    // The smart-family gate keeps standard wikis (`wiki-user`, `wiki-tech`,
+    // …) write-protected: they are reached through the LLM-mediated
+    // `wiki_ingest_message` path and never through here. Read per-wiki from
+    // `_meta.smart`, stamped at create time.
+    if actor_kind == ActorKind::SmartConsumer && !handle.meta().smart {
+        return Err(AdminError::WikiNotSmart {
+            wiki_type: handle.meta().wiki_type.clone(),
+        });
+    }
     match resolve_owner_user(tree, handle) {
         // User-owned wiki: only its single owner may write.
         Ok(Some(owner)) => {
@@ -1630,19 +1641,8 @@ async fn enforce_admin_auth(
         // A topic wiki — named for its subject, standing for nobody: there is
         // no owner to compare the caller against and no group whose membership
         // stands in for one. What may be written there is decided per fact, and
-        // the channel that writes a fact is `wiki_ingest_message`. For
-        // everybody else "nobody owns it" is not "anybody may write it".
-        //
-        // **Nothing in this deployment reaches this arm.** No caller writes
-        // with [`ActorKind::Dashboard`]: the panel has no route that takes a
-        // page's text, and a page is changed through comments, the chat and
-        // the fact actions, none of which comes through here. The arm stands
-        // because the actor kind still exists and rows in the op log still
-        // carry it; it and the kind go together, and not before somebody has
-        // decided what the kind is for. **Do not add a writer here to reach
-        // it** — a permission check is not a hole to be filled from the other
-        // side.
-        Ok(None) if actor_kind == ActorKind::Dashboard => {},
+        // the channel that writes a fact is `wiki_ingest_message`. "Nobody
+        // owns it" is not "anybody may write it".
         Ok(None) => {
             return Err(AdminError::WikiNotSmart {
                 wiki_type: handle.meta().wiki_type.clone(),
@@ -1674,17 +1674,6 @@ async fn enforce_admin_auth(
             }
         },
         Err(e) => return Err(e),
-    }
-    // The smart-family gate keeps standard wikis (`wiki-user`,
-    // `wiki-tech`, …) write-protected from smart consumers — they must
-    // reach those wikis via the regular `wiki_ingest_message`
-    // LLM-mediated path. Dashboard writes bypass the gate by design:
-    // a human at the editor is the intended escape hatch. Read
-    // per-wiki from `_meta.smart`, stamped at create time.
-    if actor_kind == ActorKind::SmartConsumer && !handle.meta().smart {
-        return Err(AdminError::WikiNotSmart {
-            wiki_type: handle.meta().wiki_type.clone(),
-        });
     }
     Ok(())
 }
@@ -2634,6 +2623,54 @@ mod tests {
         assert_eq!(ok.ops_applied.created, 1);
     }
 
+    /// A refusal names the rule, not the person.
+    ///
+    /// `alice`'s identity wiki is a standard wiki: nothing writes there over
+    /// this API, whoever asks. Answering `bob` that it belongs to `alice`
+    /// tells him a wiki exists and who it is for, and he learns that by
+    /// guessing a name — so the family check, which is about the WIKI, is
+    /// asked before the ownership check, which is about a person.
+    #[tokio::test]
+    async fn a_wiki_this_api_never_writes_is_refused_without_naming_its_owner() {
+        let (_dir, tree, pool) = seeded_tree().await;
+        let bob_smart = AdminCaller {
+            sender_id: "bob".into(),
+            consumer_id: Some("cc-bob".into()),
+            consumer_class: ConsumerClass::Smart,
+        };
+        let err = push(
+            &pool,
+            &tree,
+            &bob_smart,
+            ActorKind::SmartConsumer,
+            PushRequest {
+                mode: PushMode::Upsert,
+                wiki_id: Some(WikiId::parse("alice").unwrap()),
+                parent_wiki_id: None,
+                slug: None,
+                title: None,
+                wiki_type: None,
+                smart: false,
+                project_id: None,
+                description: None,
+                pages: vec![page("appunti.md", "# not yours\n")],
+                deletes: Vec::new(),
+                mark_processed: Vec::new(),
+                expected_op_log_head: None,
+            },
+        )
+        .await
+        .expect_err("a standard wiki is not written through this API");
+        assert!(
+            matches!(err, AdminError::WikiNotSmart { .. }),
+            "expected the family refusal, got {err:?}"
+        );
+        assert!(
+            !format!("{err}").contains("alice"),
+            "a refusal must not name the owner: {err}"
+        );
+    }
+
     #[tokio::test]
     async fn create_refuses_non_smart_request() {
         let (_dir, tree, pool) = seeded_tree().await;
@@ -2675,80 +2712,6 @@ mod tests {
         push(&pool, &tree, &alice_smart(), ActorKind::SmartConsumer, req)
             .await
             .expect("own operational wiki may carry the agent label");
-    }
-
-    /// The dashboard is not a consumer: the operator may label anything.
-    #[tokio::test]
-    async fn dashboard_may_label_any_wiki_agent() {
-        let (_dir, tree, pool) = seeded_tree().await;
-        let mut req = create_smart_wiki_request("lnprint");
-        req.wiki_type = Some(crate::wiki::AGENT_WIKI_TYPE.to_owned());
-        push(&pool, &tree, &alice_smart(), ActorKind::Dashboard, req)
-            .await
-            .expect("dashboard writes are not gated by the consumer's identity");
-    }
-
-    /// A standard wiki is a shelf, and a shelf stands on the floor.
-    #[tokio::test]
-    async fn create_lands_a_standard_wiki_at_the_top_level() {
-        let (dir, tree, pool) = seeded_tree().await;
-        let req = PushRequest {
-            mode: PushMode::Create,
-            wiki_id: None,
-            parent_wiki_id: None,
-            slug: Some("giardinaggio".into()),
-            title: Some("Giardinaggio".into()),
-            wiki_type: Some("project".into()),
-            smart: false,
-            project_id: None,
-            description: None,
-            pages: Vec::new(),
-            deletes: Vec::new(),
-            mark_processed: Vec::new(),
-            expected_op_log_head: None,
-        };
-        push(&pool, &tree, &alice_smart(), ActorKind::Dashboard, req)
-            .await
-            .expect("a standard wiki needs no parent");
-
-        let tree = WikiTree::open(dir.path()).unwrap();
-        let made = tree
-            .locate(&WikiId::parse("giardinaggio").unwrap())
-            .expect("the new wiki is at the top level");
-        assert_eq!(made.meta().parent_wiki_id, None, "and it has no parent");
-        assert_eq!(
-            made.abs_dir(),
-            tree.wikis_dir().join("giardinaggio"),
-            "its directory sits beside the others, not inside one",
-        );
-    }
-
-    /// Passing one says the caller means a smart wiki and did not say so.
-    #[tokio::test]
-    async fn create_refuses_a_parent_for_a_standard_wiki() {
-        let (_dir, tree, pool) = seeded_tree().await;
-        let req = PushRequest {
-            mode: PushMode::Create,
-            wiki_id: None,
-            parent_wiki_id: Some(WikiId::parse("alice").unwrap()),
-            slug: Some("giardinaggio".into()),
-            title: Some("Giardinaggio".into()),
-            wiki_type: Some("project".into()),
-            smart: false,
-            project_id: None,
-            description: None,
-            pages: Vec::new(),
-            deletes: Vec::new(),
-            mark_processed: Vec::new(),
-            expected_op_log_head: None,
-        };
-        let err = push(&pool, &tree, &alice_smart(), ActorKind::Dashboard, req)
-            .await
-            .expect_err("a standard wiki has no parent");
-        assert!(
-            err.to_string().contains("has no parent"),
-            "the message says why: {err}",
-        );
     }
 
     #[tokio::test]
@@ -3118,7 +3081,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn push_warns_only_about_dense_smart_pages() {
+    async fn push_warns_about_a_dense_page_and_says_nothing_about_a_healthy_one() {
         let (_dir, tree, pool) = seeded_tree().await;
         // A healthy create says nothing.
         let create = push(
@@ -3157,33 +3120,72 @@ mod tests {
         .expect("upsert");
         assert_eq!(dense.warnings.len(), 1, "{:?}", dense.warnings);
         assert!(dense.warnings[0].contains("decisions.md"));
+    }
 
-        // Same bytes on a standard wiki: no sections, so no warning.
-        let alice_id = WikiId::parse("alice").unwrap();
-        let standard = push(
+    /// A push carrying `mark_processed` flips the briefing row with the page
+    /// write, in one transaction.
+    ///
+    /// This is how a smart consumer recepisce a comment left on its own wiki:
+    /// it writes the answer onto the page and stamps the item in the same
+    /// call, so a crash between the two cannot leave a comment that has been
+    /// acted on still showing as pending.
+    #[tokio::test]
+    async fn a_push_marks_the_briefing_items_it_names() {
+        let (_dir, tree, pool) = seeded_tree().await;
+        let create = push(
             &pool,
             &tree,
-            &alice_dashboard(),
-            ActorKind::Dashboard,
+            &alice_smart(),
+            ActorKind::SmartConsumer,
+            create_smart_wiki_request("lnprint"),
+        )
+        .await
+        .expect("create");
+        let bi: i64 = sqlx::query_scalar(
+            "INSERT INTO wiki_briefing_items (wiki_id, topic, body, source_kind, source_ref, ts) \
+             VALUES (?, 'a note', 'a body', 'dashboard', 'user:alice', datetime('now')) \
+             RETURNING id",
+        )
+        .bind(create.wiki_id.as_str())
+        .fetch_one(&pool)
+        .await
+        .expect("seed a briefing item");
+
+        let resp = push(
+            &pool,
+            &tree,
+            &alice_smart(),
+            ActorKind::SmartConsumer,
             PushRequest {
                 mode: PushMode::Upsert,
-                wiki_id: Some(alice_id),
+                wiki_id: Some(create.wiki_id.clone()),
                 parent_wiki_id: None,
                 slug: None,
                 title: None,
                 wiki_type: None,
-                smart: false,
+                smart: true,
                 project_id: None,
                 description: None,
-                pages: vec![page("decisions.md", &dense_page_body())],
+                pages: vec![page("index.md", "# answered\n")],
                 deletes: Vec::new(),
-                mark_processed: Vec::new(),
+                mark_processed: vec![format!("bi_{bi}")],
                 expected_op_log_head: None,
             },
         )
         .await
-        .expect("dashboard upsert");
-        assert!(standard.warnings.is_empty());
+        .expect("upsert with mark_processed");
+
+        assert_eq!(resp.marked_processed, vec![format!("bi_{bi}")]);
+        let processed: Option<String> =
+            sqlx::query_scalar("SELECT processed_at FROM wiki_briefing_items WHERE id = ?")
+                .bind(bi)
+                .fetch_one(&pool)
+                .await
+                .expect("the row");
+        assert!(
+            processed.is_some(),
+            "the item the push named must be stamped"
+        );
     }
 
     #[tokio::test]
@@ -3701,76 +3703,6 @@ mod tests {
     }
 
     // ---------- actor_kind discipline ----------
-
-    /// Caller shape for a dashboard editor save: no smart class
-    /// required, no `consumer_id` plumbed through (the human is at
-    /// the dashboard, not behind an MCP token).
-    fn alice_dashboard() -> AdminCaller {
-        AdminCaller {
-            sender_id: "alice".into(),
-            consumer_id: None,
-            // The `consumer_class` field is irrelevant on the
-            // `Dashboard` path — the gate is bypassed. We pin
-            // `Standard` here to assert the bypass is real (the
-            // smart-consumer gate would reject this caller).
-            consumer_class: ConsumerClass::Standard,
-        }
-    }
-
-    #[tokio::test]
-    async fn dashboard_actor_kind_bypasses_smart_family_gate() {
-        // A dashboard write must succeed on a
-        // non-smart wiki (here `wiki-user`, Alice's identity
-        // wiki seeded by the fixture) and produce an op-log row
-        // tagged `actor_kind = 'dashboard'`. Same wiki + same
-        // request shape under `SmartConsumer` would be rejected by
-        // the smart-family gate — covered by the sibling test
-        // below.
-        let (_dir, tree, pool) = seeded_tree().await;
-        let alice_id = WikiId::parse("alice").unwrap();
-
-        let resp = push(
-            &pool,
-            &tree,
-            &alice_dashboard(),
-            ActorKind::Dashboard,
-            PushRequest {
-                mode: PushMode::Upsert,
-                wiki_id: Some(alice_id.clone()),
-                parent_wiki_id: None,
-                slug: None,
-                title: None,
-                wiki_type: None,
-                smart: false,
-                project_id: None,
-                description: None,
-                pages: vec![page("appunti.md", "# dashboard-typed note\n")],
-                deletes: Vec::new(),
-                mark_processed: Vec::new(),
-                expected_op_log_head: None,
-            },
-        )
-        .await
-        .expect("dashboard upsert on wiki-user must succeed");
-
-        assert_eq!(resp.ops_applied.created, 1);
-
-        let (actor_kind, sender_id, consumer_id): (String, String, Option<String>) =
-            sqlx::query_as(
-                "SELECT actor_kind, sender_id, consumer_id
-                   FROM wiki_admin_op_log WHERE op_id = ?",
-            )
-            .bind(resp.op_log_id)
-            .fetch_one(&pool)
-            .await
-            .expect("op log row");
-        assert_eq!(actor_kind, "dashboard");
-        assert_eq!(sender_id, "alice");
-        assert!(
-            consumer_id.is_none(),
-            "dashboard writes carry no consumer_id (the operator is at the editor, not behind an MCP device)"
-        );
-    }
 
     #[tokio::test]
     async fn smart_consumer_actor_kind_still_enforces_the_smart_flag_gate() {

@@ -2329,10 +2329,15 @@ pub async fn page_visible_to(
         }))
 }
 
-/// The per-row visibility test both wiki-level questions above are built
-/// from — the same [`crate::acl::can_read`] the redaction path applies, so a
-/// per-fragment `allow=` grant is honoured.
-fn row_readable_by(row: &FactIndexRow, sender_id: &str, sender_groups: &[String]) -> bool {
+/// May this reader read this one fact?
+///
+/// The per-row visibility test the wiki-level and page-level questions above
+/// are built from — the same [`crate::acl::can_read`] the redaction path
+/// applies, so a per-fragment `allow=` grant is honoured. A surface holding a
+/// single row in its hand asks this one, so that «may I see it» is answered
+/// the same way wherever it is asked.
+#[must_use]
+pub fn row_readable_by(row: &FactIndexRow, sender_id: &str, sender_groups: &[String]) -> bool {
     let acl = crate::types::Acl {
         subject: Some(row.subject_id.clone()),
         allow: row.allow_ids.clone(),
@@ -2449,6 +2454,44 @@ pub async fn count_active_in_wiki(pool: &SqlitePool, wiki_id: &str) -> Result<i6
     .fetch_one(pool)
     .await?;
     Ok(n)
+}
+
+/// How many of a wiki's live facts this reader may read.
+///
+/// The reader-relative twin of [`count_active_in_wiki`], for the surfaces that
+/// show a person a number: a count of everything is a statement about somebody
+/// else's memory, and «112 facts» on a wiki whose owner shares two of them
+/// with you has told you how much there is to not be shown. Uses the same
+/// three-axis predicate the rest of the read path does
+/// ([`FactFilters::readable_by`]).
+///
+/// `principals` is the reader's own set — their id, their groups, `global` —
+/// in wire form.
+///
+/// # Errors
+///
+/// `sqlx::Error` on any SQL failure.
+pub async fn count_readable_in_wiki(
+    pool: &SqlitePool,
+    wiki_id: &str,
+    principals: &[String],
+) -> Result<i64> {
+    if principals.is_empty() {
+        return Ok(0);
+    }
+    let sql = format!(
+        "SELECT count(*) FROM fact_index \
+          WHERE wiki_id = ? AND superseded_at IS NULL AND deleted_at IS NULL \
+            AND {}",
+        readable_by_sql("fact_index", principals.len())
+    );
+    let mut q = sqlx::query_scalar::<_, i64>(&sql).bind(wiki_id);
+    for _ in 0..3 {
+        for p in principals {
+            q = q.bind(p.clone());
+        }
+    }
+    Ok(q.fetch_one(pool).await?)
 }
 
 /// Structured filter for [`find_by_filters`].

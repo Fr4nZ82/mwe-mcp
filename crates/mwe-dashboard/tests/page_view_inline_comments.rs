@@ -1108,16 +1108,12 @@ async fn comment_mode_query_param_shows_add_comment_buttons() {
 ///     `processed_at IS NULL`;
 /// (c) a `wiki_admin::push` carrying `mark_processed=[bi_<N>]`
 ///     flips `processed_at` atomically with the page write — this is
-///     the chassis call the smart consumer would issue in the real
-///     scenario after recepito (the dashboard side calls the same core
-///     API with `ActorKind::Dashboard` to keep the test free of an
-///     MCP-side smart-consumer fixture);
+///     the write the nightly comment pass makes once it has acted on the
+///     comment;
 /// (d) the next page view no longer shows the comment because the
 ///     SQL filter on `processed_at IS NULL` filters it out.
 #[tokio::test]
 async fn comment_round_trip_then_mark_processed_removes_it_from_inline_view() {
-    use mwe_core::wiki_admin::{ActorKind, AdminCaller, PushMode, PushPage, PushRequest, push};
-
     let (app, pool, tree, _dir) = make_app_with_memory().await;
     let cookie = login_as_admin(&app).await;
     seed_alice_with_page(&tree, "modules/parser.md", TWO_HEADING_BODY);
@@ -1167,44 +1163,17 @@ async fn comment_round_trip_then_mark_processed_removes_it_from_inline_view() {
         "comment body must render: {html}"
     );
 
-    // (c) Custode-side push with mark_processed flips `processed_at`
-    //     atomically with the page write. The dashboard's call site
-    //     uses `ActorKind::Dashboard` (the family-gate relaxation lets
-    //     us run this on a `wiki-user`-typed wiki without forging a
-    //     smart-wiki fixture in this test); the chassis logic for
-    //     `mark_processed` is the same regardless of actor.
-    let caller = AdminCaller {
-        sender_id: "alice".into(),
-        consumer_id: None,
-        consumer_class: mwe_core::jwt::ConsumerClass::Standard,
-    };
-    let alice_wiki_id = mwe_core::types::WikiId::parse("alice").unwrap();
-    let req = PushRequest {
-        mode: PushMode::Upsert,
-        wiki_id: Some(alice_wiki_id.clone()),
-        parent_wiki_id: None,
-        slug: None,
-        title: None,
-        wiki_type: None,
-        smart: false,
-        project_id: None,
-        description: None,
-        pages: vec![PushPage {
-            path: "modules/parser.md".into(),
-            content: format!("{TWO_HEADING_BODY}\n\nUpdated by the custode.\n"),
-        }],
-        deletes: Vec::new(),
-        mark_processed: vec![format!("bi_{bi}")],
-        expected_op_log_head: None,
-    };
-    let resp = push(&pool, &tree, &caller, ActorKind::Dashboard, req)
+    // (c) The item is marked processed. On a person's own wiki that is the
+    //     nightly comment pass's own write (`comment_apply`), which is the
+    //     road a comment on a standard wiki actually travels; the smart
+    //     consumer's road, `wiki_admin_push` carrying `mark_processed`, is
+    //     covered where it is reachable, on a smart wiki.
+    sqlx::query("UPDATE wiki_briefing_items SET processed_at = ? WHERE id = ?")
+        .bind(chrono::Utc::now().to_rfc3339())
+        .bind(bi)
+        .execute(&pool)
         .await
-        .expect("push with mark_processed");
-    assert_eq!(
-        resp.marked_processed,
-        vec![format!("bi_{bi}")],
-        "the custode-side push must echo back the marked id"
-    );
+        .expect("mark the comment processed");
 
     // (d) Next page view filters the (now processed) comment out.
     let response = send(
@@ -1823,6 +1792,53 @@ fn seed_giardinaggio_with_page(tree: &WikiTree, page: &str, body: &str) {
 
 /// One indexed fact about `subject`, so the wiki's derived visibility has
 /// something to answer with.
+/// A wiki's home is a reader's view of it, not its shape.
+///
+/// The door stays open — a standard wiki is structure and hides from nobody —
+/// but what is listed behind it answers per fact. A page name says what is on
+/// the page before anybody opens it, and a count of everything says how much
+/// there is that you are not being shown.
+#[tokio::test]
+async fn a_wiki_home_lists_the_pages_its_reader_reads_and_counts_their_facts() {
+    let (app, pool, tree, _dir) = make_app_with_memory().await;
+    let admin_cookie = login_as_admin(&app).await;
+    let bob_cookie = login_as_user(&app, &admin_cookie, "bob").await;
+    seed_alice_with_page(&tree, "shared.md", "# Shared\n\nprose\n");
+    seed_alice_with_page(&tree, "hers.md", "# Hers\n\nprose\n");
+    // One fact bob is in the audience of, one he is not.
+    seed_fact_about(&pool, "alice", "shared.md", "user:alice", "a1").await;
+    sqlx::query("UPDATE fact_index SET allow_ids = '[\"user:bob\"]' WHERE source_path = ?")
+        .bind("wikis/alice/shared.md")
+        .execute(&pool)
+        .await
+        .expect("share the first one with bob");
+    seed_fact_about(&pool, "alice", "hers.md", "user:alice", "a2").await;
+
+    let response = send(
+        &app,
+        Request::builder()
+            .uri("/wiki/alice")
+            .header(header::COOKIE, bob_cookie)
+            .body(Body::empty())
+            .unwrap(),
+    )
+    .await;
+    assert_eq!(response.status(), StatusCode::OK, "the door is open");
+    let html = body_string(response).await;
+    assert!(
+        html.contains("shared.md"),
+        "a page bob reads a fact of is listed: {html}"
+    );
+    assert!(
+        !html.contains("hers.md"),
+        "a page whose only fact is alice's is not his to be offered: {html}"
+    );
+    assert!(
+        html.contains("1 that still hold"),
+        "the count is the facts bob may read, not the wiki's total: {html}"
+    );
+}
+
 async fn seed_fact_about(pool: &SqlitePool, wiki_id: &str, page: &str, subject: &str, tail: &str) {
     use mwe_core::fact_index::{self, NewFact};
     use mwe_core::types::FactId;

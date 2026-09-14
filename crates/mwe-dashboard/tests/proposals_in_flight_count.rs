@@ -5,9 +5,9 @@
 //! Verifies the JSON shape, that only `pending` rows are counted (an
 //! applied change is not undone, so nothing else is still actionable),
 //! and that the count is ACL-scoped to the signed-in user: everyone —
-//! admins included — sees only rows addressed to them plus the
-//! unaddressed/admin-fallback ones, and the admin ACL-reveal cookie
-//! lifts an admin to the deployment-wide count.
+//! admins included — sees only rows addressed to them, plus, for an admin,
+//! the reports the engine writes about itself. The ACL-reveal cookie lifts an
+//! admin to the deployment-wide count.
 
 mod common;
 
@@ -81,14 +81,27 @@ async fn seed_proposal(
     status: &str,
     recipient_id: Option<&str>,
 ) {
+    seed_proposal_of_kind(pool, proposal_id, "wiki_promote", status, recipient_id).await;
+}
+
+/// The same seeder with the kind spelled out, for the tests that turn on
+/// which FAMILY an unaddressed row belongs to.
+async fn seed_proposal_of_kind(
+    pool: &SqlitePool,
+    proposal_id: &str,
+    kind: &str,
+    status: &str,
+    recipient_id: Option<&str>,
+) {
     let now = chrono::Utc::now();
     sqlx::query(
         "INSERT INTO structure_proposals \
          (proposal_id, kind, context, questions, proposed_at, timeout_at, status, \
           recipient_id) \
-         VALUES (?, 'wiki_promote', '{\"intent\":\"t\"}', '[]', ?, ?, ?, ?)",
+         VALUES (?, ?, '{\"intent\":\"t\"}', '[]', ?, ?, ?, ?)",
     )
     .bind(proposal_id)
+    .bind(kind)
     .bind(now.to_rfc3339())
     .bind((now + chrono::Duration::seconds(86_400)).to_rfc3339())
     .bind(status)
@@ -134,10 +147,10 @@ async fn in_flight_count_requires_auth() {
     );
 }
 
-/// An admin is scoped to their **own** in-flight items by default, plus
-/// the ones addressed to nobody: a proposal addressed to another user
-/// does not show in the badge count, because it carries that user's fact
-/// text. The admin ACL-reveal cookie lifts the scope to the whole
+/// An admin is scoped to their **own** in-flight items by default, plus the
+/// engine's own reports: a proposal addressed to another user carries that
+/// user's fact text, and so does an unaddressed receipt about what the night
+/// did to somebody's pages. The ACL-reveal cookie lifts the scope to the whole
 /// deployment, the same posture the facts table takes.
 #[tokio::test]
 async fn admin_count_is_scoped_to_self_without_reveal_full_with_reveal() {
@@ -146,28 +159,31 @@ async fn admin_count_is_scoped_to_self_without_reveal_full_with_reveal() {
 
     // pending (addressed to a stranger — hidden from the admin unless reveal)
     seed_proposal(&pool, "p-pending", "pending", Some("user:frodo")).await;
-    // pending (unaddressed → admin-fallback, always counts)
-    seed_proposal(&pool, "p-unaddressed", "pending", None).await;
+    // pending, unaddressed, about the ENGINE → the operator's, lens or no lens
+    seed_proposal_of_kind(&pool, "p-engine", "recall_tuning", "pending", None).await;
+    // pending, unaddressed, about somebody's PAGES → waits for the lens
+    seed_proposal(&pool, "p-somebodys", "pending", None).await;
     // applied → NOT counted: an applied change is not actionable.
     seed_proposal(&pool, "p-applied", "applied", None).await;
     // expired → NOT counted.
     seed_proposal(&pool, "p-expired", "expired", None).await;
 
-    // Without reveal: only the unaddressed admin-fallback row counts.
+    // Without reveal: the engine's report and nothing else.
     let scoped = fetch_count(&app, &admin).await;
     assert_eq!(scoped["pending"], 1, "{scoped}");
 
     // With the reveal cookie: the deployment-wide count.
     let revealed = fetch_count(&app, &format!("{admin}; mwe_admin_reveal=1")).await;
-    assert_eq!(revealed["pending"], 2, "{revealed}");
+    assert_eq!(revealed["pending"], 3, "{revealed}");
 }
 
 /// A person counts what the proposals page will show them, and nothing
 /// else — the badge is a promise that there is something to open, so it
 /// reads by the same rule the page reads by
-/// (`routes::proposals::readable_scope`). The rows addressed to nobody are
-/// the nightly run's receipts, which name pages across every wiki: the
-/// admin's, not a reader's.
+/// (`routes::proposals::readable_scope`). A row addressed to nobody is either
+/// the nightly run's receipt about somebody's pages — which waits for the
+/// lens — or a report about the engine, which is the operator's. Neither is a
+/// reader's.
 #[tokio::test]
 async fn non_admin_count_is_scoped_to_recipient() {
     let (app, pool, _tree, _dir) = make_app_with_memory().await;
@@ -176,8 +192,8 @@ async fn non_admin_count_is_scoped_to_recipient() {
 
     // Addressed to bilbo → counts for bilbo.
     seed_proposal(&pool, "p-mine", "pending", Some("user:bilbo")).await;
-    // Unaddressed → the admin's, not his.
-    seed_proposal(&pool, "p-unaddressed", "pending", None).await;
+    // Unaddressed and about the engine → the operator's, not his.
+    seed_proposal_of_kind(&pool, "p-engine", "recall_tuning", "pending", None).await;
     // Addressed to someone else → must NOT count for bilbo.
     seed_proposal(&pool, "p-frodo", "pending", Some("user:frodo")).await;
 
@@ -185,8 +201,8 @@ async fn non_admin_count_is_scoped_to_recipient() {
     let bilbo_json = fetch_count(&app, &bilbo).await;
     assert_eq!(bilbo_json["pending"], 1, "{bilbo_json}");
 
-    // Admin without reveal: scoped exactly like a normal user — only the
-    // unaddressed admin-fallback row (frodo's and bilbo's stay hidden).
+    // Admin without reveal: scoped exactly like a normal user, plus the
+    // engine's own report (frodo's and bilbo's stay hidden).
     let admin_json = fetch_count(&app, &admin).await;
     assert_eq!(admin_json["pending"], 1, "{admin_json}");
 

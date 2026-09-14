@@ -111,9 +111,13 @@ When one turn closes several facts belonging to several people, the memory
 writes **one note each**, and each carries only its own reader's facts. The
 sentence somebody typed goes only to the person who typed it.
 
-The admin also sees the ones addressed to nobody in particular, which is most
-of what the nightly run writes. With **Admin reveal** turned on in Settings,
-they see everybody's, and the page says so at the top while it is on.
+Most of what the nightly run writes is addressed to nobody in particular, and
+those notes are still about somebody's pages: whoever runs the server does not
+see them either, unless they turn on **Admin reveal** in Settings. What they do
+see without it are the notes the memory writes about **itself** — a fact it
+keeps failing to find, and the like — which are about nobody's pages at all.
+With reveal on they see everybody's, and the page says so at the top while it
+is on.
 
 ## On an instance you are only looking at
 

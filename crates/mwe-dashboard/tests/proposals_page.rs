@@ -136,12 +136,15 @@ async fn get_page(app: &Router, uri: &str, cookie: &str) -> (StatusCode, String)
     (status, body_string(response).await)
 }
 
-/// A person is shown the proposals raised about their own facts, and is
-/// shown neither somebody else's nor the ones the nightly run addresses
-/// to nobody. The second half is the deliberate difference from the
-/// topnav badge, which does hand everybody the unaddressed bucket: a
+/// A person is shown the proposals raised about their own facts, and is shown
+/// neither somebody else's nor the ones the nightly run addresses to nobody: a
 /// receipt names pages across every wiki, and a listing of them is not a
 /// reader's to browse.
+///
+/// And an administrator with the lens off reads by the same rule, with one
+/// exception that is not about anybody's memory — a report about the ENGINE.
+/// A receipt about somebody's pages waits for the lens like everything else
+/// of theirs.
 #[tokio::test]
 async fn a_reader_sees_their_own_rows_and_neither_anothers_nor_the_unaddressed_ones() {
     let (app, pool, _tree, _dir) = make_app_with_memory().await;
@@ -192,11 +195,36 @@ async fn a_reader_sees_their_own_rows_and_neither_anothers_nor_the_unaddressed_o
         "the unaddressed bucket is not a reader's: {html}"
     );
 
-    // The admin, without reveal, gets their own plus the unaddressed one
-    // — and still not the row addressed to somebody else.
+    // An engine report, addressed to nobody and about nobody's memory.
+    seed(
+        &pool,
+        "p-engine",
+        "recall_tuning",
+        &serde_json::json!({
+            "fact_id": "018f1234-5678-7abc-9def-0123456789e1",
+            "wiki_id": "alice",
+            "source_path": "wikis/alice/appunti.md",
+            "miss_count": 4,
+        }),
+        "applied",
+        None,
+        now,
+    )
+    .await;
+
+    // The admin, without reveal, gets their own plus the engine's report —
+    // and neither somebody else's row nor the unaddressed receipt about
+    // somebody's pages.
     let (status, html) = get_page(&app, "/proposals", &admin).await;
     assert_eq!(status, StatusCode::OK);
-    assert!(html.contains("Nobody's kitchen"), "{html}");
+    assert!(
+        html.contains("wikis/alice/appunti.md"),
+        "the engine's own report is the operator's with the lens off: {html}"
+    );
+    assert!(
+        !html.contains("Nobody's kitchen"),
+        "a receipt about somebody's pages waits for the lens: {html}"
+    );
     assert!(!html.contains("Bob's"), "{html}");
     assert!(!html.contains("Frodo"), "{html}");
 
