@@ -725,6 +725,7 @@ async fn index_one_fact(
     mwe_core::fact_index::insert(
         pool,
         &mwe_core::fact_index::NewFact {
+            excluded_ids: Vec::new(),
             fact_id: mwe_core::types::FactId::parse(fact_id).expect("fact id"),
             wiki_id: wiki.to_owned(),
             source_path: format!("wikis/{wiki}/{page}"),
@@ -1121,6 +1122,7 @@ async fn wiki_read_strips_frontmatter_so_card_topics_never_leak() {
 async fn pasta_fact_on_a_nested_page(state: &McpState) -> mwe_core::fact_index::NewFact {
     const TEXT: &str = "Carbonara needs guanciale, never pancetta.";
     mwe_core::fact_index::NewFact {
+        excluded_ids: Vec::new(),
         subject_external: None,
         slot: None,
         slot_value: None,
@@ -2488,6 +2490,7 @@ async fn insert_forget_fact(
     fact_index::insert(
         pool,
         &NewFact {
+            excluded_ids: Vec::new(),
             subject_external: None,
             slot: None,
             slot_value: None,

@@ -654,6 +654,7 @@ mod tests {
         let pool = seed_workdir(work.path()).await;
         let raw = uuid::Uuid::new_v7(uuid::Timestamp::now(uuid::ContextV7::new()));
         let fact = crate::fact_index::NewFact {
+            excluded_ids: Vec::new(),
             subject_external: None,
             slot: None,
             slot_value: None,

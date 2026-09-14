@@ -43,6 +43,12 @@ pub struct RegionAcl {
     pub subject: Principal,
     /// `allow=` extension list (possibly empty).
     pub allow: Vec<Principal>,
+    /// Principals this region must NOT reach, whatever the other three say
+    /// ([`crate::fact_index::FactIndexRow::excluded_ids`]). It travels with
+    /// the map because the page render asks this map, and a render that could
+    /// not see the exclusion would serve the region to the one person it was
+    /// kept from.
+    pub excluded: Vec<Principal>,
     /// Cross-user attribution; `None` ⇒ sender equals subject.
     pub sender: Option<Principal>,
 }
@@ -59,6 +65,11 @@ pub type FactAclMap = HashMap<FactId, RegionAcl>;
 
 /// Decide whether `sender_id` (member of `sender_groups`) can read a region
 /// with the given `region_acl`.
+///
+/// **Four terms: three that grant and one that takes away.** Subject, audience
+/// and whoever captured it each open the region on their own; `excluded`
+/// closes it against a named person whatever the other three say, and it is
+/// checked first ([`crate::types::Acl::excluded`]).
 ///
 /// `sender_of_region` is the principal that originally captured the
 /// region. It is `None` when the caller has no attribution info to pass;
@@ -79,6 +90,20 @@ pub fn can_read(
     sender_groups: &[String],
     sender_of_region: Option<&Principal>,
 ) -> bool {
+    // **The exclusion is subtracted first, and nothing puts it back.** Each of
+    // the other three terms grants on its own, so a reader matched by any of
+    // them would be in — and the subject is the one that does it without
+    // anybody choosing: a fact ABOUT the parents is readable by every parent,
+    // which is how «I'd rather she didn't know» was defeated by the group she
+    // was already in. Taking the exclusion out afterwards would be the same
+    // answer written later; taking it out FIRST is what makes it the rule.
+    if region_acl
+        .excluded
+        .iter()
+        .any(|p| principal_matches(p, sender_id, sender_groups))
+    {
+        return false;
+    }
     // Effective principal set: subject ∪ allow ∪ {sender_of_region}.
     let subject_iter = region_acl.subject.iter();
     let allow_iter = region_acl.allow.iter();
@@ -97,7 +122,8 @@ pub fn can_read(
 /// [`can_read`] asks, per stored principal, "does this reader match it?".
 /// The same question can be asked once per *reader* instead: build the set
 /// of principal strings this reader matches, and a region is readable
-/// exactly when that set intersects `subject ∪ allow ∪ {sender}`. The two
+/// exactly when that set intersects `subject ∪ allow ∪ {sender}` and misses
+/// the region's exclusions. The two
 /// formulations are equivalent, and this one is the shape a **query** can
 /// use — which is why it exists: `fact_index::FactFilters::readable_by`
 /// turns the ACL from a post-filter over every active fact into a
@@ -127,16 +153,23 @@ pub fn reader_principals(sender_id: &str, sender_groups: &[String]) -> Vec<Strin
     out
 }
 
-/// The set of principals a region grants read access to, in canonical wire
-/// form — `subject ∪ allow ∪ {sender}`, the **same three axes** [`can_read`]
-/// evaluates.
+/// Who a region is read by, as a comparable set — the **four terms**
+/// [`can_read`] evaluates: `subject ∪ allow ∪ {sender}`, and who it is kept
+/// from.
 ///
 /// It lives beside `can_read` on purpose: a caller that reasons about "who can
-/// read this" must not re-derive the union itself, or the two answers drift
-/// and the drift is invisible until somebody is shown something they were
-/// never told. None of the three is sufficient alone — a fact can be readable
+/// read this" must not re-derive the answer itself, or the two drift and the
+/// drift is invisible until somebody is shown something they were never told.
+/// None of the granting three is sufficient alone — a fact can be readable
 /// through its `allow=` extension or through the principal who captured it,
 /// with no bearing on its subject.
+///
+/// **An exclusion is part of the audience, not a footnote to it.** Two facts
+/// told to the same people but one of them kept from her are two audiences,
+/// and a caller asking «same audience?» to decide whether to MERGE them must
+/// see that: merging them would carry the one she may read over the one she
+/// may not. The excluded are written in with a `not:` prefix so they can never
+/// be mistaken for a principal that grants.
 ///
 /// Comparable by construction (a `BTreeSet` of the canonical strings), so
 /// "same audience?" is set equality. Group membership is deliberately **not**
@@ -148,11 +181,13 @@ pub fn reader_set(
     subject: &Principal,
     allow: &[Principal],
     sender: Option<&Principal>,
+    excluded: &[Principal],
 ) -> BTreeSet<String> {
     std::iter::once(subject)
         .chain(allow.iter())
         .chain(sender)
         .map(ToString::to_string)
+        .chain(excluded.iter().map(|p| format!("not:{p}")))
         .collect()
 }
 
@@ -373,6 +408,74 @@ mod tests {
     use proptest::collection::vec;
     use proptest::prelude::*;
 
+    /// **«Not for her» holds against the group she is already in.**
+    ///
+    /// The demo corpus, twice over: «I'd rather Zoe didn't know the number»
+    /// and «I don't want Zoe to hear it from the assistant», both written as
+    /// facts whose SUBJECT is the parents — a group Zoe is in. Narrowing the
+    /// audience could never have stopped her, because she was never reaching
+    /// them through the audience.
+    ///
+    /// The three cases below are the three roads in, and the exclusion has to
+    /// close all of them: the subject she belongs to, a name added to the
+    /// audience later, and the group she joins next year.
+    #[test]
+    fn an_exclusion_holds_against_every_road_in() {
+        let parents = Principal::Group("parents".into());
+        let zoe = Principal::User("zoe".into());
+        let acl_for = |allow: Vec<Principal>| Acl {
+            subject: Some(parents.clone()),
+            allow,
+            excluded: vec![zoe.clone()],
+        };
+
+        // 1. The subject is a group she is a member of — the corpus's case.
+        assert!(
+            !can_read(&acl_for(Vec::new()), "zoe", &["parents".to_owned()], None),
+            "the group the fact is ABOUT does not let her in"
+        );
+        // 2. A later widening names her outright.
+        assert!(
+            !can_read(
+                &acl_for(vec![zoe.clone()]),
+                "zoe",
+                &["parents".to_owned()],
+                None
+            ),
+            "being named in the audience does not lift the exclusion"
+        );
+        // 3. She joins another group that IS in the audience.
+        assert!(
+            !can_read(
+                &acl_for(vec![Principal::Group("money".into())]),
+                "zoe",
+                &["parents".to_owned(), "money".to_owned()],
+                None
+            ),
+            "joining a group later does not reach her past it"
+        );
+        // And it excludes HER, not the household: the fact is still the
+        // parents' to read.
+        assert!(
+            can_read(&acl_for(Vec::new()), "bob", &["parents".to_owned()], None),
+            "everybody else reads it exactly as before"
+        );
+        // Taken back — said of this fact — and she reads it like anybody else.
+        assert!(
+            can_read(
+                &Acl {
+                    subject: Some(parents),
+                    allow: Vec::new(),
+                    excluded: Vec::new(),
+                },
+                "zoe",
+                &["parents".to_owned()],
+                None
+            ),
+            "once it is lifted she is a parent like the others"
+        );
+    }
+
     /// The reader set is the union of all three axes, and it must agree with
     /// `can_read` — which is the whole reason it lives here. The negative half
     /// is the load-bearing one: a set that quietly expanded a group would call
@@ -384,7 +487,7 @@ mod tests {
         let allow = vec![Principal::User("bob".to_owned())];
         let sender = Principal::Group("famiglia".to_owned());
 
-        let set = reader_set(&subject, &allow, Some(&sender));
+        let set = reader_set(&subject, &allow, Some(&sender), &[]);
         assert_eq!(
             set,
             ["group:famiglia", "user:alice", "user:bob"]
@@ -400,6 +503,7 @@ mod tests {
             ("dora", &["famiglia".to_owned()][..]),
         ] {
             let acl = Acl {
+                excluded: Vec::new(),
                 subject: Some(subject.clone()),
                 allow: allow.clone(),
             };
@@ -412,8 +516,8 @@ mod tests {
         // A group is a name, not its roster: two facts naming different groups
         // are two audiences even if the members coincide today, because a
         // roster changes and a merge does not un-merge.
-        let famiglia = reader_set(&Principal::Group("famiglia".to_owned()), &[], None);
-        let casa = reader_set(&Principal::Group("casa".to_owned()), &[], None);
+        let famiglia = reader_set(&Principal::Group("famiglia".to_owned()), &[], None, &[]);
+        let casa = reader_set(&Principal::Group("casa".to_owned()), &[], None, &[]);
         assert_ne!(famiglia, casa);
 
         // Order and duplication never make two identical audiences differ.
@@ -421,13 +525,15 @@ mod tests {
             &subject,
             &[allow[0].clone(), subject.clone()],
             Some(&sender),
+            &[],
         );
-        let b = reader_set(&subject, &[sender, allow[0].clone()], Some(&subject));
+        let b = reader_set(&subject, &[sender, allow[0].clone()], Some(&subject), &[]);
         assert_eq!(a, b);
     }
 
     fn acl_subject(subject: Principal) -> Acl {
         Acl {
+            excluded: Vec::new(),
             subject: Some(subject),
             allow: vec![],
         }
@@ -435,6 +541,7 @@ mod tests {
 
     fn acl_subject_allow(subject: Principal, allow: Vec<Principal>) -> Acl {
         Acl {
+            excluded: Vec::new(),
             subject: Some(subject),
             allow,
         }
@@ -942,7 +1049,11 @@ mod tests {
             proptest::option::of(principal_strategy()),
             vec(principal_strategy(), 0..4),
         )
-            .prop_map(|(subject, allow)| Acl { subject, allow })
+            .prop_map(|(subject, allow)| Acl {
+                subject,
+                allow,
+                excluded: Vec::new(),
+            })
     }
 
     fn sender_groups_strategy() -> impl Strategy<Value = Vec<String>> {
@@ -969,7 +1080,11 @@ mod tests {
             allow in vec(principal_strategy(), 0..4),
             groups in sender_groups_strategy(),
         ) {
-            let acl = Acl { subject: Some(Principal::User(sender.clone())), allow };
+            let acl = Acl {
+                subject: Some(Principal::User(sender.clone())),
+                allow,
+                excluded: Vec::new(),
+            };
             prop_assert!(can_read(&acl, &sender, &groups, None));
         }
 

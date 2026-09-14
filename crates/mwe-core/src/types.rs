@@ -183,6 +183,22 @@ pub struct Acl {
     /// Additional principals extended by `allow=…` — the *audience* axis,
     /// who may read it beyond subject + sender (possibly empty).
     pub allow: Vec<Principal>,
+    /// Principals this region must **not** reach — the fourth term, and the
+    /// only one that SUBTRACTS.
+    ///
+    /// The other three each let somebody in on their own, and the subject
+    /// does it silently: a fact about the parents is readable by every
+    /// parent, so «keep this from her» written as a narrower audience is not
+    /// kept from her at all when she is one of them. This is carried on the
+    /// ACL rather than resolved into the audience because the two answer
+    /// different questions — one is a list of who was meant, the other a wish
+    /// that holds against whatever the list becomes
+    /// ([`crate::fact_index::FactIndexRow::excluded_ids`]).
+    ///
+    /// A hand-written region has no syntax for it, so it is empty there: the
+    /// exclusion is something a person SAYS, and the marker language has no
+    /// way to say it.
+    pub excluded: Vec<Principal>,
 }
 
 // ---------- FactId ----------

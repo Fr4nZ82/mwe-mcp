@@ -422,6 +422,7 @@ mod tests {
 
     async fn seed_fact(pool: &SqlitePool, id: &str, wiki: &str, text: &str) {
         let fact = fact_index::NewFact {
+            excluded_ids: Vec::new(),
             subject_external: None,
             slot: None,
             slot_value: None,

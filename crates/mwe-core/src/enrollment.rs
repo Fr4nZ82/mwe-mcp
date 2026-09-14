@@ -526,6 +526,35 @@ pub async fn list_users(pool: &SqlitePool) -> Result<Vec<EnrolledUserLite>, sqlx
         .collect())
 }
 
+/// **Every group with its members, in one read** — who is in what, as of now.
+///
+/// The membership an audience is settled against. It has to be read once for
+/// the turn and handed down: asking per group, per fact, is what turns a
+/// household into a query storm as it grows, and asking again later would
+/// settle two facts of one turn against two different answers.
+///
+/// # Errors
+///
+/// As [`sqlx::Error`]. A `members` column that will not parse reads as an
+/// empty group rather than failing the turn.
+pub async fn every_group_with_members(
+    pool: &SqlitePool,
+) -> Result<std::collections::BTreeMap<String, Vec<String>>, sqlx::Error> {
+    Ok(
+        sqlx::query_as::<_, (String, String)>("SELECT group_id, members FROM enrollment_groups")
+            .fetch_all(pool)
+            .await?
+            .into_iter()
+            .map(|(id, members)| {
+                (
+                    id,
+                    serde_json::from_str::<Vec<String>>(&members).unwrap_or_default(),
+                )
+            })
+            .collect(),
+    )
+}
+
 /// The roster a MODEL is handed: the enrolled people this speaker may name.
 ///
 /// [`list_users`] is the whole enrolment and the engine needs that — the
@@ -624,6 +653,7 @@ pub async fn roster_for(
             &crate::types::Acl {
                 subject: Some(row.subject_id.clone()),
                 allow: row.allow_ids.clone(),
+                excluded: row.excluded_ids.clone(),
             },
             reader_id,
             reader_groups,
@@ -642,6 +672,7 @@ pub async fn roster_for(
                 &crate::types::Acl {
                     subject: Some(row.subject_id.clone()),
                     allow: row.allow_ids.clone(),
+                    excluded: row.excluded_ids.clone(),
                 },
                 &u.user_id,
                 &groups,

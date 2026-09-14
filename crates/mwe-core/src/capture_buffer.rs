@@ -184,6 +184,12 @@ pub struct BufferedCapture {
     pub slot_value: Option<String>,
     /// Extra principals granted read access via `allow=`.
     pub allow: Vec<Principal>,
+    /// Principals this claim must not reach when it is written, whatever the
+    /// other axes say (see [`crate::fact_index::FactIndexRow::excluded_ids`]).
+    /// It waits here with the claim: an exclusion that did not survive the
+    /// wait would be one the memory forgot between hearing it and writing it
+    /// down.
+    pub excluded: Vec<Principal>,
     /// Cross-user attribution (who captured the fact). Always materialized
     /// (= subject when absent) and kept distinct from `subject`; `None` survives
     /// only as the degenerate scrubbed state that falls back to subject.
@@ -551,6 +557,9 @@ async fn write_capture(
         // on the same terms.
         slot,
         slot_value,
+        // Who the claim must not reach when it is written.
+        excluded,
+        ..
     } = req;
     validate_buffer_body(&body)?;
     // Mirror capture.rs: sender is always materialized (= subject when
@@ -570,6 +579,7 @@ async fn write_capture(
         slot,
         slot_value,
         allow,
+        excluded,
         sender,
         fact_type,
         topics,
@@ -1240,7 +1250,7 @@ const SELECT_COLS: &str = "SELECT capture_id, body, subject_id, allow_ids, \
      sender_id, fact_type, topics, supersede_hint, status, captured_at, processed_at, \
      resolved_fact_id, source_kind, source_ref, valid_from, valid_to, decay_reason, style, \
      salience, authored_refs, embedding, origin_message_hash, placement_attempts, \
-     last_attempt_at, subject_external, slot, slot_value \
+     last_attempt_at, subject_external, slot, slot_value, excluded_ids \
      FROM capture_buffer";
 
 #[derive(sqlx::FromRow)]
@@ -1252,6 +1262,7 @@ struct BufferRow {
     subject_external: Option<String>,
     slot: Option<String>,
     slot_value: Option<String>,
+    excluded_ids: String,
     allow_ids: String,
     sender_id: Option<String>,
     fact_type: Option<String>,
@@ -1292,6 +1303,7 @@ fn decode(r: BufferRow) -> Result<BufferedCapture> {
         subject_external: r.subject_external,
         slot: r.slot,
         slot_value: r.slot_value,
+        excluded: principals_from_json(&r.excluded_ids),
         body: r.body,
         subject: r.subject_id.parse::<Principal>()?,
         allow: principals_from_json(&r.allow_ids),
@@ -1431,6 +1443,7 @@ mod tests {
     /// drops them, which is what `no_destination_reaches_the_row` checks.
     fn req(wiki: &str, body: &str, subject: &str) -> CaptureRequest {
         CaptureRequest {
+            excluded: Vec::new(),
             subject_external: None,
             slot: None,
             slot_value: None,

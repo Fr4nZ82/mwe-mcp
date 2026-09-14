@@ -78,6 +78,7 @@ fn seed_alice_wiki(tree: &WikiTree) {
 async fn capture_fact(pool: &SqlitePool, tree: &WikiTree, page: &str, body: &str) -> FactId {
     let embedder: Arc<dyn Embedder> = Arc::new(FakeEmbedder::new("fake-bge-m3", 8));
     let req = CaptureRequest {
+        excluded: Vec::new(),
         subject_external: None,
         slot: None,
         slot_value: None,
@@ -2125,6 +2126,7 @@ async fn capture_fact_in(
 ) -> FactId {
     let embedder: Arc<dyn Embedder> = Arc::new(FakeEmbedder::new("fake-bge-m3", 8));
     let req = CaptureRequest {
+        excluded: Vec::new(),
         subject_external: None,
         slot: None,
         slot_value: None,

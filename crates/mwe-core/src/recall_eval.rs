@@ -428,6 +428,7 @@ mod tests {
 
     fn fact(id: &str, text: &str, embedding: Vec<f32>) -> fact_index::NewFact {
         fact_index::NewFact {
+            excluded_ids: Vec::new(),
             subject_external: None,
             slot: None,
             slot_value: None,

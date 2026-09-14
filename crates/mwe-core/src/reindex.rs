@@ -2241,6 +2241,7 @@ mod tests {
         offsets: Option<(i64, i64)>,
     ) {
         let new = NewFact {
+            excluded_ids: Vec::new(),
             subject_external: None,
             slot: None,
             slot_value: None,
@@ -2878,6 +2879,7 @@ mod tests {
     /// rows whose claimed wiki diverges from their `source_path`).
     async fn seed_fact_in(pool: &SqlitePool, fact_id: &FactId, wiki_id: &str, source_path: &str) {
         let new = NewFact {
+            excluded_ids: Vec::new(),
             subject_external: None,
             slot: None,
             slot_value: None,

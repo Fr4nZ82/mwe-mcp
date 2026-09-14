@@ -1887,6 +1887,7 @@ mod tests {
         crate::fact_index::insert(
             pool,
             &crate::fact_index::NewFact {
+                excluded_ids: Vec::new(),
                 fact_id: crate::types::FactId::parse(&format!(
                     "018f1234-5678-7abc-9def-0123456789{byte:02x}"
                 ))

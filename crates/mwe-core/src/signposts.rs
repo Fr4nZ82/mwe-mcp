@@ -898,6 +898,7 @@ async fn put(
         subject_external: None,
         slot: None,
         slot_value: None,
+        excluded: Vec::new(),
         page: Some(req.page.clone()),
         body: req.body,
         subject: req.subject.clone(),

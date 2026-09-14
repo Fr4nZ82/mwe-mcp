@@ -3443,6 +3443,7 @@ mod tests {
         body: &str,
     ) -> FactId {
         let req = CaptureRequest {
+            excluded: Vec::new(),
             subject_external: None,
             slot: None,
             slot_value: None,
@@ -3553,6 +3554,7 @@ mod tests {
         body: &str,
     ) -> FactId {
         let req = CaptureRequest {
+            excluded: Vec::new(),
             subject_external: None,
             slot: None,
             slot_value: None,

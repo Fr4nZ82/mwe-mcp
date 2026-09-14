@@ -417,6 +417,7 @@ mod tests {
     ) -> FactId {
         let embedder: Arc<dyn Embedder> = Arc::new(FakeEmbedder::new("fake-bge-m3", 8));
         let req = CaptureRequest {
+            excluded: Vec::new(),
             subject_external: None,
             slot: None,
             slot_value: None,

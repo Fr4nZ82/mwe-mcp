@@ -1375,6 +1375,7 @@ mod tests {
         body: &str,
     ) -> FactId {
         let req = CaptureRequest {
+            excluded: Vec::new(),
             subject_external: None,
             slot: None,
             slot_value: None,
@@ -1502,6 +1503,7 @@ mod tests {
             &"user:bob".parse().unwrap(),
             &["user:alice".parse().unwrap()],
             Some(&"user:bob".parse().unwrap()),
+            None,
         )
         .await
         .unwrap();
@@ -1664,6 +1666,7 @@ mod tests {
             &pool,
             crate::capture_buffer::mint_parked_id().expect("an id"),
             CaptureRequest {
+                excluded: Vec::new(),
                 wiki_id: WikiId::parse("alice").unwrap(),
                 page: None,
                 body: "alice's mobile number is 07700 900275.".to_owned(),

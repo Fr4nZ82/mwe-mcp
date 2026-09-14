@@ -1253,6 +1253,7 @@ async fn dispatch_wiki_get_fact(
                 &mwe_core::types::Acl {
                     subject: Some(r.subject_id.clone()),
                     allow: r.allow_ids.clone(),
+                    excluded: r.excluded_ids.clone(),
                 },
                 &ctx.sender_ctx.sender_id,
                 &ctx.sender_ctx.sender_groups,
@@ -1612,6 +1613,9 @@ fn build_supersede_request(
         // A replacement is about whatever the fact it replaces was about:
         // correcting a reading keeps it a reading of the same patient.
         subject_external: old_row.subject_external.clone(),
+        // A replacement inherits the exclusion of what it replaces: the wish
+        // was about the claim, and the claim is still the claim.
+        excluded: old_row.excluded_ids.clone(),
         slot: None,
         slot_value: None,
         wiki_id,
@@ -2807,6 +2811,7 @@ mod tests {
         mwe_core::fact_index::insert(
             &pool,
             &mwe_core::fact_index::NewFact {
+                excluded_ids: Vec::new(),
                 subject_external: None,
                 slot: None,
                 slot_value: None,
@@ -3001,6 +3006,7 @@ mod tests {
     ) -> FactId {
         use mwe_core::capture::{CaptureAction, CaptureRequest, wiki_capture};
         let req = CaptureRequest {
+            excluded: Vec::new(),
             subject_external: None,
             slot: None,
             slot_value: None,
@@ -3049,6 +3055,7 @@ mod tests {
         mwe_core::fact_index::insert(
             pool,
             &mwe_core::fact_index::NewFact {
+                excluded_ids: Vec::new(),
                 subject_external: None,
                 slot: None,
                 slot_value: None,

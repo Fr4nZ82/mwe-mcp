@@ -228,6 +228,10 @@ pub struct CaptureRequest {
     /// The bare value that slot holds (see
     /// [`fact_index::FactIndexRow::slot_value`]), on the same terms.
     pub slot_value: Option<String>,
+    /// Principals this claim must NOT reach, whatever the audience turns out
+    /// to be ([`fact_index::FactIndexRow::excluded_ids`]). Empty on every path
+    /// but a turn that states an exclusion.
+    pub excluded: Vec<Principal>,
     /// Project-wiki pages this fact's turn authored, as plain
     /// `[[wiki_id/page]]` wikilinks ([`fact_index::NewFact::authored_refs`]).
     /// Threaded from `wiki_ingest_message`'s `metadata.authored_refs` so
@@ -726,6 +730,7 @@ async fn reader_to_carry_over(
     let acl = crate::types::Acl {
         subject: Some(req.subject.clone()),
         allow: req.allow.clone(),
+        excluded: req.excluded.clone(),
     };
     if crate::acl::can_read(&acl, bare, &groups, req.sender.as_ref()) {
         return None;
@@ -962,6 +967,7 @@ pub async fn wiki_capture_with_source(
         slot: req.slot.clone(),
         slot_value: req.slot_value.clone(),
         allow_ids: req.allow,
+        excluded_ids: req.excluded,
         sender_id: req.sender,
         fact_type: req.fact_type,
         topics: req.topics,
@@ -1425,6 +1431,7 @@ mod tests {
 
     fn sample_request(body: &str) -> CaptureRequest {
         CaptureRequest {
+            excluded: Vec::new(),
             subject_external: None,
             slot: None,
             slot_value: None,
@@ -1782,6 +1789,7 @@ mod tests {
 
     fn req_with(subject: &str, sender: Option<&str>, allow: Vec<&str>) -> CaptureRequest {
         CaptureRequest {
+            excluded: Vec::new(),
             subject_external: None,
             slot: None,
             slot_value: None,

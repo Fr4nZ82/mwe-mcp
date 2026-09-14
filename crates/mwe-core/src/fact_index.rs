@@ -113,6 +113,16 @@ pub struct FactIndexRow {
     /// Additional principals the region's `allow=` extension grants
     /// read access to (possibly empty).
     pub allow_ids: Vec<Principal>,
+    /// Principals this fact must **not** reach, whatever the other three axes
+    /// say — the fourth term of the permission, subtracted last.
+    ///
+    /// «I'd rather Zoe didn't know the number» is not a narrower audience: it
+    /// names somebody who must stay out of whatever the audience turns out to
+    /// be. Each of the other three can let her in on its own, and the SUBJECT
+    /// does it silently — a fact about the parents is readable by every
+    /// parent, and she is one. Only a person saying so OF THIS FACT takes an
+    /// exclusion off ([`crate::acl::can_read`]).
+    pub excluded_ids: Vec<Principal>,
     /// Cross-user attribution — the principal who authored the region.
     /// Always populated on the write path (equal to `subject_id` for a
     /// self-authored fact); `None` only on legacy rows with unknown
@@ -389,6 +399,10 @@ pub struct NewFact {
     pub subject_id: Principal,
     /// `allow=` extension list (possibly empty).
     pub allow_ids: Vec<Principal>,
+    /// Principals this fact must not reach, whatever the other axes say
+    /// (see [`FactIndexRow::excluded_ids`]). Empty on every path but a turn
+    /// that states an exclusion.
+    pub excluded_ids: Vec<Principal>,
     /// Cross-user attribution.
     pub sender_id: Option<Principal>,
     /// Optional fact taxonomy hint.
@@ -535,6 +549,7 @@ async fn insert_with(pool: &SqlitePool, fact: &NewFact, ignore_conflict: bool) -
     let embedding_dim = i64::try_from(fact.embedding.len()).unwrap_or(i64::MAX);
     let blob = encode_embedding(&fact.embedding);
     let allow_json = principals_to_json(&fact.allow_ids)?;
+    let excluded_json = principals_to_json(&fact.excluded_ids)?;
     let topics_json = topics_to_json(&fact.topics)?;
     // `topics_to_json` is a generic Vec<String> → JSON serializer; reused
     // here for the provenance breadcrumbs (same shape as topics).
@@ -554,8 +569,8 @@ async fn insert_with(pool: &SqlitePool, fact: &NewFact, ignore_conflict: bool) -
             fact_type, topics, created_at, updated_at,
             valid_from, valid_to, target_page, style,
             salience, source_ref, authored_refs, subject_external, slot, slot_value,
-            recall_count_30d
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0)
+            excluded_ids, recall_count_30d
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0)
         ON CONFLICT(fact_id) DO NOTHING"#
     } else {
         r#"INSERT INTO fact_index (
@@ -564,8 +579,8 @@ async fn insert_with(pool: &SqlitePool, fact: &NewFact, ignore_conflict: bool) -
             fact_type, topics, created_at, updated_at,
             valid_from, valid_to, target_page, style,
             salience, source_ref, authored_refs, subject_external, slot, slot_value,
-            recall_count_30d
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0)"#
+            excluded_ids, recall_count_30d
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0)"#
     };
 
     let res = sqlx::query(sql)
@@ -594,6 +609,7 @@ async fn insert_with(pool: &SqlitePool, fact: &NewFact, ignore_conflict: bool) -
         .bind(&fact.subject_external)
         .bind(&fact.slot)
         .bind(&fact.slot_value)
+        .bind(&excluded_json)
         .execute(pool)
         .await?;
     Ok(res.rows_affected())
@@ -1275,6 +1291,7 @@ pub async fn set_acl(
     subject: &Principal,
     allow: &[Principal],
     sender: Option<&Principal>,
+    excluded: Option<&[Principal]>,
 ) -> Result<Option<PrevAcl>> {
     let Some(row) = find_by_id(pool, fact_id).await? else {
         return Ok(None);
@@ -1289,15 +1306,23 @@ pub async fn set_acl(
     };
     let allow_json = principals_to_json(allow)?;
     let now = chrono::Utc::now().to_rfc3339();
+    // **`NULL` leaves the exclusions where they are.** A message that widens
+    // an audience says nothing about the person somebody asked to keep the
+    // claim from, and writing an empty list on its behalf would revoke a wish
+    // nobody withdrew. Only a caller with something to say about them passes
+    // `Some`, and only then does the column move.
+    let excluded_json = excluded.map(principals_to_json).transpose()?;
     sqlx::query(
         "UPDATE fact_index
-            SET subject_id = ?, allow_ids = ?, sender_id = ?, updated_at = ?
+            SET subject_id = ?, allow_ids = ?, sender_id = ?, updated_at = ?,
+                excluded_ids = COALESCE(?, excluded_ids)
           WHERE fact_id = ? AND deleted_at IS NULL",
     )
     .bind(subject.to_string())
     .bind(&allow_json)
     .bind(sender.map(ToString::to_string))
     .bind(&now)
+    .bind(&excluded_json)
     .bind(fact_id.as_str())
     .execute(pool)
     .await?;
@@ -1992,25 +2017,29 @@ pub async fn page_external_names(
     Ok(out)
 }
 
+/// One page's ACL columns as stored: fact id, subject, audience, sender, and
+/// who the fact is kept from.
+type RawRegionAcl = (String, String, Option<String>, Option<String>, String);
+
 async fn page_acl_map_impl(
     pool: &SqlitePool,
     source_path: &str,
     active_only: bool,
 ) -> Result<FactAclMap> {
     let sql = if active_only {
-        "SELECT fact_id, subject_id, allow_ids, sender_id FROM fact_index
+        "SELECT fact_id, subject_id, allow_ids, sender_id, excluded_ids FROM fact_index
          WHERE source_path = ? AND superseded_at IS NULL AND deleted_at IS NULL"
     } else {
-        "SELECT fact_id, subject_id, allow_ids, sender_id FROM fact_index
+        "SELECT fact_id, subject_id, allow_ids, sender_id, excluded_ids FROM fact_index
          WHERE source_path = ?"
     };
-    let rows: Vec<(String, String, Option<String>, Option<String>)> = sqlx::query_as(sql)
+    let rows: Vec<RawRegionAcl> = sqlx::query_as(sql)
         .bind(source_path)
         .fetch_all(pool)
         .await?;
 
     let mut map = FactAclMap::with_capacity(rows.len());
-    for (fact_id, subject, allow, sender) in rows {
+    for (fact_id, subject, allow, sender, excluded) in rows {
         let fact_id = FactId::parse(&fact_id)
             .map_err(|e| sqlx::Error::Decode(format!("fact_id: {e}").into()))?;
         let subject = subject
@@ -2024,11 +2053,16 @@ async fn page_acl_map_impl(
             .map(|s| s.parse::<Principal>())
             .transpose()
             .map_err(|e| sqlx::Error::Decode(format!("sender_id: {e}").into()))?;
+        let excluded = match excluded.as_str() {
+            "" => Vec::new(),
+            s => principals_from_json(s).map_err(|e| sqlx::Error::Decode(e.into()))?,
+        };
         map.insert(
             fact_id,
             RegionAcl {
                 subject,
                 allow,
+                excluded,
                 sender,
             },
         );
@@ -2054,6 +2088,10 @@ pub struct CardAclRow {
     pub subject_id: Principal,
     /// `allow=` extension list (possibly empty).
     pub allow_ids: Vec<Principal>,
+    /// Principals this fact must not reach (see
+    /// [`FactIndexRow::excluded_ids`]). The card boundary asks the same
+    /// question as every other reader, so it needs the same four terms.
+    pub excluded_ids: Vec<Principal>,
     /// Cross-user attribution (`None` ⇒ sender equals subject).
     pub sender_id: Option<Principal>,
     /// Free-form topic tags contributed to the reader's visible card.
@@ -2080,45 +2118,55 @@ pub async fn active_card_acl_rows(pool: &SqlitePool) -> Result<Vec<CardAclRow>> 
         Option<String>,
         Option<String>,
         Option<String>,
+        String,
     );
     let rows: Vec<RawCardTuple> = sqlx::query_as(
-        "SELECT wiki_id, source_path, subject_id, allow_ids, sender_id, topics FROM fact_index
+        "SELECT wiki_id, source_path, subject_id, allow_ids, sender_id, topics, excluded_ids
+               FROM fact_index
              WHERE superseded_at IS NULL AND deleted_at IS NULL",
     )
     .fetch_all(pool)
     .await?;
 
     rows.into_iter()
-        .map(|(wiki_id, source_path, subject, allow, sender, topics)| {
-            let subject_id = subject
-                .parse::<Principal>()
-                .map_err(|e| sqlx::Error::Decode(format!("subject_id: {e}").into()))?;
-            let allow_ids = match allow.as_deref() {
-                None | Some("") => Vec::new(),
-                Some(s) => principals_from_json(s)
-                    .map_err(|e| sqlx::Error::Decode(format!("allow_ids: {e}").into()))?,
-            };
-            let sender_id = sender
-                .as_deref()
-                .map(str::parse::<Principal>)
-                .transpose()
-                .map_err(|e| sqlx::Error::Decode(format!("sender_id: {e}").into()))?;
-            let topics = topics
-                .as_deref()
-                .filter(|s| !s.is_empty())
-                .map(topics_from_json)
-                .transpose()
-                .map_err(|e| sqlx::Error::Decode(format!("topics: {e}").into()))?
-                .unwrap_or_default();
-            Ok(CardAclRow {
-                wiki_id,
-                source_path,
-                subject_id,
-                allow_ids,
-                sender_id,
-                topics,
-            })
-        })
+        .map(
+            |(wiki_id, source_path, subject, allow, sender, topics, excluded)| {
+                let subject_id = subject
+                    .parse::<Principal>()
+                    .map_err(|e| sqlx::Error::Decode(format!("subject_id: {e}").into()))?;
+                let allow_ids = match allow.as_deref() {
+                    None | Some("") => Vec::new(),
+                    Some(s) => principals_from_json(s)
+                        .map_err(|e| sqlx::Error::Decode(format!("allow_ids: {e}").into()))?,
+                };
+                let excluded_ids = match excluded.as_str() {
+                    "" => Vec::new(),
+                    s => principals_from_json(s)
+                        .map_err(|e| sqlx::Error::Decode(format!("excluded_ids: {e}").into()))?,
+                };
+                let sender_id = sender
+                    .as_deref()
+                    .map(str::parse::<Principal>)
+                    .transpose()
+                    .map_err(|e| sqlx::Error::Decode(format!("sender_id: {e}").into()))?;
+                let topics = topics
+                    .as_deref()
+                    .filter(|s| !s.is_empty())
+                    .map(topics_from_json)
+                    .transpose()
+                    .map_err(|e| sqlx::Error::Decode(format!("topics: {e}").into()))?
+                    .unwrap_or_default();
+                Ok(CardAclRow {
+                    wiki_id,
+                    source_path,
+                    subject_id,
+                    allow_ids,
+                    excluded_ids,
+                    sender_id,
+                    topics,
+                })
+            },
+        )
         .collect()
 }
 
@@ -2296,6 +2344,7 @@ pub async fn readable_fact_on_page(
             &crate::types::Acl {
                 subject: Some(region.subject.clone()),
                 allow: region.allow.clone(),
+                excluded: region.excluded.clone(),
             },
             sender_id,
             sender_groups,
@@ -2346,6 +2395,7 @@ pub async fn page_visible_to(
                 &crate::types::Acl {
                     subject: Some(region.subject.clone()),
                     allow: region.allow.clone(),
+                    excluded: region.excluded.clone(),
                 },
                 sender_id,
                 sender_groups,
@@ -2366,6 +2416,7 @@ pub fn row_readable_by(row: &FactIndexRow, sender_id: &str, sender_groups: &[Str
     let acl = crate::types::Acl {
         subject: Some(row.subject_id.clone()),
         allow: row.allow_ids.clone(),
+        excluded: row.excluded_ids.clone(),
     };
     crate::acl::can_read(&acl, sender_id, sender_groups, row.sender_id.as_ref())
 }
@@ -2395,7 +2446,7 @@ pub async fn find_recently_contradicted(
            superseded_by, successor_fact_id, deleted_at, deleted_reason, last_recall_at,
            recall_count_30d, valid_from, valid_to, decay_reason,
            target_page, style, salience, source_ref, authored_refs,
-           subject_external, slot, slot_value
+           subject_external, slot, slot_value, excluded_ids
       FROM fact_index
      WHERE wiki_id = ?
        AND deleted_at IS NULL
@@ -2444,7 +2495,7 @@ pub async fn find_due_between(
                   superseded_by, successor_fact_id, deleted_at, deleted_reason, last_recall_at,
                   recall_count_30d, valid_from, valid_to, decay_reason,
                   target_page, style, salience, source_ref, authored_refs,
-           subject_external, slot, slot_value
+           subject_external, slot, slot_value, excluded_ids
              FROM fact_index
             WHERE superseded_at IS NULL AND deleted_at IS NULL
               AND valid_to IS NOT NULL
@@ -2511,7 +2562,7 @@ pub async fn count_readable_in_wiki(
         readable_by_sql("fact_index", principals.len())
     );
     let mut q = sqlx::query_scalar::<_, i64>(&sql).bind(wiki_id);
-    for _ in 0..3 {
+    for _ in 0..READABLE_BY_BINDS {
         for p in principals {
             q = q.bind(p.clone());
         }
@@ -2698,7 +2749,7 @@ pub async fn find_by_filters(
                   superseded_by, successor_fact_id, deleted_at, deleted_reason, last_recall_at,
                   recall_count_30d, valid_from, valid_to, decay_reason,
                   target_page, style, salience, source_ref, authored_refs,
-           subject_external, slot, slot_value
+           subject_external, slot, slot_value, excluded_ids
              FROM fact_index"#,
     );
 
@@ -2762,7 +2813,7 @@ pub async fn find_by_filters(
     // reaches the SQL.
     if let Some(principals) = filters.readable_by.as_ref().filter(|p| !p.is_empty()) {
         preds.push(readable_by_sql("fact_index", principals.len()));
-        for _ in 0..3 {
+        for _ in 0..READABLE_BY_BINDS {
             binds.extend(principals.iter().cloned());
         }
     }
@@ -2895,7 +2946,7 @@ pub async fn find_behaviour_rules(
                   superseded_by, successor_fact_id, deleted_at, deleted_reason, last_recall_at,
                   recall_count_30d, valid_from, valid_to, decay_reason,
                   target_page, style, salience, source_ref, authored_refs,
-           subject_external, slot, slot_value
+           subject_external, slot, slot_value, excluded_ids
              FROM fact_index
             WHERE superseded_at IS NULL AND deleted_at IS NULL
               AND {home}
@@ -2922,7 +2973,7 @@ pub async fn find_behaviour_rules(
             "%/{}",
             crate::wiki::RULES_FILENAME.trim_start_matches('@')
         ));
-    for _ in 0..3 {
+    for _ in 0..READABLE_BY_BINDS {
         for p in reader_principals {
             q = q.bind(p.clone());
         }
@@ -3248,13 +3299,24 @@ pub async fn move_to_wiki(
 /// Placeholders are generated from `n`, never from caller text, so the result
 /// is injection-safe by construction; the caller binds the principal list
 /// three times, in the order the clauses appear.
+/// How many times a caller of [`readable_by_sql`] must bind the reader's
+/// principals: once per placeholder group in the predicate.
+///
+/// Named, because the number is stated in two places that cannot see each
+/// other — the SQL below and the binding loop at every call site — and a
+/// predicate that grew a group while a caller kept binding for the old count
+/// is a query that silently stops filtering.
+const READABLE_BY_BINDS: usize = 4;
+
 fn readable_by_sql(table: &str, n: usize) -> String {
     let placeholders = vec!["?"; n].join(",");
     format!(
-        "(subject_id IN ({placeholders}) \
-          OR sender_id IN ({placeholders}) \
-          OR EXISTS (SELECT 1 FROM json_each({table}.allow_ids) \
-                      WHERE json_each.value IN ({placeholders})))"
+        "(NOT EXISTS (SELECT 1 FROM json_each({table}.excluded_ids) \
+                       WHERE json_each.value IN ({placeholders})) \
+          AND (subject_id IN ({placeholders}) \
+               OR sender_id IN ({placeholders}) \
+               OR EXISTS (SELECT 1 FROM json_each({table}.allow_ids) \
+                           WHERE json_each.value IN ({placeholders}))))"
     )
 }
 
@@ -3319,7 +3381,7 @@ pub async fn known_entities(
          LIMIT ?"
     );
     let mut q = sqlx::query_as::<_, (String, String, i64)>(&sql);
-    for _ in 0..3 {
+    for _ in 0..READABLE_BY_BINDS {
         for p in principals {
             q = q.bind(p);
         }
@@ -3439,7 +3501,7 @@ pub async fn readable_fact_texts(
         },
     };
     let mut q = sqlx::query_as::<_, (String, String, String)>(&sql);
-    for _ in 0..3 {
+    for _ in 0..READABLE_BY_BINDS {
         for principal in principals {
             q = q.bind(principal.clone());
         }
@@ -3488,7 +3550,7 @@ pub async fn list_pages_readable_by(
             AND fact_index.deleted_at IS NULL AND {acl_facts}"
     );
     let mut q = sqlx::query_as::<_, (String, String, Option<String>, Option<String>, String)>(&sql);
-    for _ in 0..3 {
+    for _ in 0..READABLE_BY_BINDS {
         for p in principals {
             q = q.bind(p.clone());
         }
@@ -3784,7 +3846,7 @@ const SELECT_ALL_COLUMNS_WHERE_ID: &str = r#"
            superseded_by, successor_fact_id, deleted_at, deleted_reason, last_recall_at,
            recall_count_30d, valid_from, valid_to, decay_reason,
            target_page, style, salience, source_ref, authored_refs,
-           subject_external, slot, slot_value
+           subject_external, slot, slot_value, excluded_ids
       FROM fact_index
      WHERE fact_id = ?
 "#;
@@ -3796,7 +3858,7 @@ const SELECT_ACTIVE_BY_SUBJECT: &str = r#"
            superseded_by, successor_fact_id, deleted_at, deleted_reason, last_recall_at,
            recall_count_30d, valid_from, valid_to, decay_reason,
            target_page, style, salience, source_ref, authored_refs,
-           subject_external, slot, slot_value
+           subject_external, slot, slot_value, excluded_ids
       FROM fact_index
      WHERE subject_id = ?
        AND superseded_at IS NULL
@@ -3811,7 +3873,7 @@ const SELECT_ACTIVE_BY_SENDER: &str = r#"
            superseded_by, successor_fact_id, deleted_at, deleted_reason, last_recall_at,
            recall_count_30d, valid_from, valid_to, decay_reason,
            target_page, style, salience, source_ref, authored_refs,
-           subject_external, slot, slot_value
+           subject_external, slot, slot_value, excluded_ids
       FROM fact_index
      WHERE sender_id = ?
        AND superseded_at IS NULL
@@ -3826,7 +3888,7 @@ const SELECT_ACTIVE_IN_WIKI: &str = r#"
            superseded_by, successor_fact_id, deleted_at, deleted_reason, last_recall_at,
            recall_count_30d, valid_from, valid_to, decay_reason,
            target_page, style, salience, source_ref, authored_refs,
-           subject_external, slot, slot_value
+           subject_external, slot, slot_value, excluded_ids
       FROM fact_index
      WHERE wiki_id = ?
        AND superseded_at IS NULL
@@ -3841,7 +3903,7 @@ const SELECT_ACTIVE_BY_SOURCE_PATH: &str = r#"
            superseded_by, successor_fact_id, deleted_at, deleted_reason, last_recall_at,
            recall_count_30d, valid_from, valid_to, decay_reason,
            target_page, style, salience, source_ref, authored_refs,
-           subject_external, slot, slot_value
+           subject_external, slot, slot_value, excluded_ids
       FROM fact_index
      WHERE source_path = ?
        AND superseded_at IS NULL
@@ -3883,6 +3945,7 @@ struct RawFactRow {
     subject_external: Option<String>,
     slot: Option<String>,
     slot_value: Option<String>,
+    excluded_ids: String,
 }
 
 fn decode_row(raw: RawFactRow) -> Result<FactIndexRow> {
@@ -3896,6 +3959,11 @@ fn decode_row(raw: RawFactRow) -> Result<FactIndexRow> {
         None | Some("") => Vec::new(),
         Some(s) => principals_from_json(s)
             .map_err(|e| sqlx::Error::Decode(format!("allow_ids: {e}").into()))?,
+    };
+    let excluded_ids = match raw.excluded_ids.as_str() {
+        "" => Vec::new(),
+        s => principals_from_json(s)
+            .map_err(|e| sqlx::Error::Decode(format!("excluded_ids: {e}").into()))?,
     };
     let sender_id = raw
         .sender_id
@@ -3934,6 +4002,7 @@ fn decode_row(raw: RawFactRow) -> Result<FactIndexRow> {
 
     Ok(FactIndexRow {
         fact_id,
+        excluded_ids,
         wiki_id: raw.wiki_id,
         source_path: raw.source_path,
         region_start: raw.region_start,
@@ -4213,6 +4282,7 @@ mod tests {
 
     fn sample_new_fact(fact_id_str: &str, wiki: &str, subject: &str, text: &str) -> NewFact {
         NewFact {
+            excluded_ids: Vec::new(),
             subject_external: None,
             slot: None,
             slot_value: None,
@@ -4452,6 +4522,7 @@ mod tests {
         insert_if_absent(
             &pool,
             &NewFact {
+                excluded_ids: Vec::new(),
                 subject_external: None,
                 slot: None,
                 slot_value: None,
@@ -5779,7 +5850,7 @@ mod tests {
 
         let new_subject: Principal = "user:alice".parse().unwrap();
         let new_allow = vec!["global".parse::<Principal>().unwrap()];
-        let prev = set_acl(&pool, &f.fact_id, &new_subject, &new_allow, None)
+        let prev = set_acl(&pool, &f.fact_id, &new_subject, &new_allow, None, None)
             .await
             .expect("set")
             .expect("active row");
@@ -5792,6 +5863,66 @@ mod tests {
         assert_eq!(changed.sender_id, None, "sender cleared when None passed");
         // The snapshot the receipt records is the ACL as it was.
         assert_eq!(prev.prev_allow_ids, vec!["group:family".parse().unwrap()]);
+    }
+
+    /// **Widening an audience does not lift an exclusion.**
+    ///
+    /// «I'm putting Zoe on the money side of things» is a message about who
+    /// may read what, and it says nothing about the claim somebody asked to
+    /// keep from her. In the demo corpus a later turn did exactly that and the
+    /// engine added her by name to a fact whose own words read «this figure is
+    /// not to be shared with Zoe». An audience change leaves the column alone;
+    /// only a caller with something to say about the exclusions moves it.
+    #[tokio::test]
+    async fn widening_an_audience_leaves_an_exclusion_standing() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let pool = crate::db::open_or_init(dir.path()).await.expect("open");
+        let zoe: Principal = "user:zoe".parse().unwrap();
+        let parents: Principal = "group:parents".parse().unwrap();
+        let id = FactId::parse("0190f3c2-7a4e-7c31-9b02-2f6a1c8e5e07").unwrap();
+        sqlx::query(
+            "INSERT INTO fact_index (fact_id, wiki_id, source_path, \"text\", subject_id, \
+                                     allow_ids, excluded_ids, embedding, embedding_dim, \
+                                     created_at, updated_at) \
+             VALUES (?, 'famiglia', 'casa.md', 'the ceiling is 14k', 'group:parents', \
+                     '[]', '[\"user:zoe\"]', ?, 1, ?, ?)",
+        )
+        .bind(id.as_str())
+        .bind(vec![0u8; 4])
+        .bind("2026-09-12T13:00:00Z")
+        .bind("2026-09-12T13:00:00Z")
+        .execute(&pool)
+        .await
+        .expect("plant");
+
+        // The later turn: her name is added to the audience.
+        set_acl(&pool, &id, &parents, std::slice::from_ref(&zoe), None, None)
+            .await
+            .expect("set")
+            .expect("active row");
+        let row = find_by_id(&pool, &id).await.unwrap().expect("row");
+        assert_eq!(
+            row.excluded_ids,
+            vec![zoe.clone()],
+            "the wish stands: widening said nothing about it"
+        );
+        assert!(
+            !row_readable_by(&row, "zoe", &["parents".to_owned()]),
+            "and she still does not read it"
+        );
+
+        // Taken back, said of this fact: the column moves and she reads it.
+        set_acl(&pool, &id, &parents, &[zoe], None, Some(&[]))
+            .await
+            .expect("set")
+            .expect("active row");
+        let row = find_by_id(&pool, &id).await.unwrap().expect("row");
+        assert!(row.excluded_ids.is_empty(), "lifted");
+        assert!(
+            row_readable_by(&row, "zoe", &["parents".to_owned()]),
+            "and now she reads it like anybody else"
+        );
+        drop(dir);
     }
 
     /// The chain end to end: a horizon that named a DAY is found by the

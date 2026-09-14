@@ -694,6 +694,7 @@ mod tests {
         fact_index::insert(
             pool,
             &NewFact {
+                excluded_ids: Vec::new(),
                 subject_external: None,
                 slot: None,
                 slot_value: None,

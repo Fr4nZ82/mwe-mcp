@@ -1911,7 +1911,9 @@ fn candidate_readers(
     sender: Option<&Principal>,
 ) -> BTreeSet<String> {
     let (subject, allow) = candidate_acl(cand, fallback_subject);
-    crate::acl::reader_set(&subject, &allow, sender)
+    // A document extraction states no exclusion: the field is something a
+    // PERSON says in a turn, and an uploaded file names nobody to keep out.
+    crate::acl::reader_set(&subject, &allow, sender, &[])
 }
 
 async fn reduce_candidates(
@@ -2220,6 +2222,7 @@ async fn process_job(
                 // A document's own page is not an identity card.
                 slot: None,
                 slot_value: None,
+                excluded: Vec::new(),
                 allow: allow.clone(),
                 sender: sender.clone(),
                 // The anchor is a pointer to a document this memory holds, not
@@ -2552,6 +2555,7 @@ async fn process_job(
                     // conversation to be asked, so nothing names a slot.
                     slot: None,
                     slot_value: None,
+                    excluded: Vec::new(),
                     allow: fact_allow,
                     sender: sender.clone(),
                     fact_type: cand.fact_type.clone(),
@@ -3742,6 +3746,7 @@ mod tests {
         crate::fact_index::insert(
             &pool,
             &crate::fact_index::NewFact {
+                excluded_ids: Vec::new(),
                 subject_external: Some("la serra".to_owned()),
                 slot: None,
                 slot_value: None,

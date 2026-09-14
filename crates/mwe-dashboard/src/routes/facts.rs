@@ -287,6 +287,10 @@ struct FactRow {
     subject_id: String,
     sender_id: Option<String>,
     allow_ids: Vec<String>,
+    /// Who this fact is kept FROM, whatever the other columns say. Shown to
+    /// anybody who may read the fact: they are the people who could otherwise
+    /// repeat it to the one person it was kept from.
+    excluded_ids: Vec<String>,
     topics: Vec<String>,
     salience: Option<String>,
     style: Option<mwe_core::wiki::PageStyle>,
@@ -321,6 +325,7 @@ impl FactRow {
             subject_id: r.subject_id.to_string(),
             sender_id: r.sender_id.map(|p| p.to_string()),
             allow_ids: r.allow_ids.iter().map(ToString::to_string).collect(),
+            excluded_ids: r.excluded_ids.iter().map(ToString::to_string).collect(),
             topics: r.topics,
             salience: r.salience,
             style: r.style,
@@ -355,6 +360,7 @@ impl FactRow {
             subject_id: c.subject.to_string(),
             sender_id: c.sender.map(|p| p.to_string()),
             allow_ids: c.allow.iter().map(ToString::to_string).collect(),
+            excluded_ids: c.excluded.iter().map(ToString::to_string).collect(),
             topics: c.topics,
             salience: c.salience,
             style: c.style,
@@ -1263,6 +1269,7 @@ fn fact_visible_to(row: &FactIndexRow, sender: &SenderContext) -> bool {
     let acl = Acl {
         subject: Some(row.subject_id.clone()),
         allow: row.allow_ids.clone(),
+        excluded: row.excluded_ids.clone(),
     };
     can_read(
         &acl,
@@ -1413,6 +1420,7 @@ fn render_index(
                     (sort_header(filters, page_size, "subject_id", "About"))
                     th { "Said by" }
                     th { "Also readable by" }
+                    th { "Not for" }
                     th { "Topics" }
                     th { "What it says" }
                     (sort_header(filters, page_size, "valid_from", "Holds from"))
@@ -1443,6 +1451,7 @@ fn render_index(
                             td { code { (row.subject_id) } }
                             td { (opt_cell(row.sender_id.as_deref())) }
                             td { (list_cell(&row.allow_ids)) }
+                            td { (list_cell(&row.excluded_ids)) }
                             td { (list_cell(&row.topics)) }
                             td.body-cell { (components::truncate_chars(&row.body, BODY_PREVIEW_CHARS)) }
                             td { (ts_cell(row.valid_from.as_deref())) }
@@ -2087,6 +2096,7 @@ mod tests {
 
     fn make_row(fact_id: &str) -> FactIndexRow {
         FactIndexRow {
+            excluded_ids: Vec::new(),
             subject_external: None,
             slot: None,
             slot_value: None,

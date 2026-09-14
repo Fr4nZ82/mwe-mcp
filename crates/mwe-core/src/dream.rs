@@ -1262,6 +1262,7 @@ mod tests {
         capture_buffer::buffer_capture(
             pool,
             crate::capture::CaptureRequest {
+                excluded: Vec::new(),
                 subject_external: None,
                 slot: None,
                 slot_value: None,
@@ -1330,6 +1331,7 @@ mod tests {
         capture_buffer::buffer_capture(
             pool,
             crate::capture::CaptureRequest {
+                excluded: Vec::new(),
                 subject_external: None,
                 slot: None,
                 slot_value: None,
@@ -1369,6 +1371,7 @@ mod tests {
             pool,
             Arc::new(FakeEmbedder::new("fake", 4)),
             crate::capture::CaptureRequest {
+                excluded: Vec::new(),
                 subject_external: None,
                 slot: None,
                 slot_value: None,

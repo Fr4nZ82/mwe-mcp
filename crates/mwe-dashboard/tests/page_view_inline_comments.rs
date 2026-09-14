@@ -72,6 +72,7 @@ async fn seed_one_fact_on(pool: &SqlitePool, page: &str) {
     mwe_core::fact_index::insert(
         pool,
         &mwe_core::fact_index::NewFact {
+            excluded_ids: Vec::new(),
             fact_id: mwe_core::types::FactId::parse(&id).expect("fact id"),
             wiki_id: "alice".to_owned(),
             source_path: format!("wikis/alice/{page}"),
@@ -1516,6 +1517,7 @@ async fn page_view_redacts_a_retired_region_but_reveal_still_shows_it() {
     fact_index::insert(
         &pool,
         &NewFact {
+            excluded_ids: Vec::new(),
             subject_external: None,
             slot: None,
             slot_value: None,
@@ -2103,6 +2105,7 @@ async fn seed_fact_about(
     fact_index::insert(
         pool,
         &NewFact {
+            excluded_ids: Vec::new(),
             subject_external: None,
             slot: None,
             slot_value: None,

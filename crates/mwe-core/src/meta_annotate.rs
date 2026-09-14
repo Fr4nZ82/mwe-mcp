@@ -358,6 +358,7 @@ fn fact_readable_by(
     let acl = Acl {
         subject: Some(row.subject_id.clone()),
         allow: row.allow_ids.clone(),
+        excluded: row.excluded_ids.clone(),
     };
     crate::acl::can_read(&acl, reader_id, reader_groups, row.sender_id.as_ref())
 }
@@ -814,6 +815,7 @@ mod tests {
         topics: &[&str],
     ) {
         let fact = fact_index::NewFact {
+            excluded_ids: Vec::new(),
             subject_external: None,
             slot: None,
             slot_value: None,
@@ -854,6 +856,7 @@ mod tests {
         topics: &[&str],
     ) {
         let fact = fact_index::NewFact {
+            excluded_ids: Vec::new(),
             subject_external: None,
             slot: None,
             slot_value: None,

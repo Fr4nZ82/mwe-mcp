@@ -1535,6 +1535,7 @@ mod tests {
         crate::fact_index::insert(
             pool,
             &crate::fact_index::NewFact {
+                excluded_ids: Vec::new(),
                 subject_external: None,
                 slot: None,
                 slot_value: None,

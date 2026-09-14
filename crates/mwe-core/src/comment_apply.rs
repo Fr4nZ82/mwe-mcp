@@ -644,6 +644,7 @@ impl CommenterAuthority<'_> {
             &crate::types::Acl {
                 subject: Some(row.subject_id.clone()),
                 allow: row.allow_ids.clone(),
+                excluded: row.excluded_ids.clone(),
             },
             self.id(),
             &self.groups,
@@ -950,6 +951,10 @@ async fn apply_add(
         slot: None,
         slot_value: None,
         allow_ids,
+        // A comment carries no exclusion: the form has no way to state one,
+        // and inventing one from the prose would be the engine deciding who
+        // may not read something nobody named.
+        excluded_ids: Vec::new(),
         sender_id: commenter.cloned(),
         fact_type: None,
         topics: Vec::new(),
@@ -1647,6 +1652,7 @@ mod tests {
         fact_index::insert(
             &pool,
             &NewFact {
+                excluded_ids: Vec::new(),
                 subject_external: None,
                 slot: None,
                 slot_value: None,
@@ -1792,6 +1798,7 @@ mod tests {
         fact_index::insert(
             &pool,
             &NewFact {
+                excluded_ids: Vec::new(),
                 subject_external: None,
                 slot: None,
                 slot_value: None,
@@ -1879,6 +1886,7 @@ mod tests {
         fact_index::insert(
             &pool,
             &NewFact {
+                excluded_ids: Vec::new(),
                 subject_external: None,
                 slot: None,
                 slot_value: None,
@@ -1952,6 +1960,7 @@ mod tests {
         fact_index::insert(
             pool,
             &NewFact {
+                excluded_ids: Vec::new(),
                 subject_external: None,
                 slot: None,
                 slot_value: None,
@@ -1984,6 +1993,7 @@ mod tests {
         fact_index::insert(
             pool,
             &NewFact {
+                excluded_ids: Vec::new(),
                 subject_external: None,
                 slot: None,
                 slot_value: None,
@@ -2307,6 +2317,7 @@ mod tests {
         fact_index::insert(
             &pool,
             &NewFact {
+                excluded_ids: Vec::new(),
                 subject_external: None,
                 slot: None,
                 slot_value: None,
@@ -2777,6 +2788,7 @@ mod tests {
     ) -> FactId {
         use crate::capture::{CaptureAction, CaptureRequest, wiki_capture};
         let req = CaptureRequest {
+            excluded: Vec::new(),
             subject_external: None,
             slot: None,
             slot_value: None,

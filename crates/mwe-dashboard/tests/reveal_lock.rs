@@ -282,6 +282,7 @@ async fn an_unlocked_deployment_still_offers_the_toggle() {
 async fn capture_fact(pool: &SqlitePool, tree: &WikiTree) {
     let embedder: Arc<dyn Embedder> = Arc::new(FakeEmbedder::new("fake-bge-m3", 8));
     let req = CaptureRequest {
+        excluded: Vec::new(),
         subject_external: None,
         slot: None,
         slot_value: None,

@@ -962,6 +962,10 @@ fn resolve_region_acl<'a>(
                         // a category-wide audience.
                         subject: attrs.acl.subject.clone().or_else(|| attrs.sender.clone()),
                         allow: attrs.acl.allow.clone(),
+                        // A region the DB does not know is read off its inline
+                        // attributes, and the marker language has no way to
+                        // write an exclusion: there is none to carry.
+                        excluded: Vec::new(),
                     },
                     attrs.sender.as_ref(),
                 )
@@ -971,6 +975,7 @@ fn resolve_region_acl<'a>(
                     Acl {
                         subject: Some(rec.subject.clone()),
                         allow: rec.allow.clone(),
+                        excluded: rec.excluded.clone(),
                     },
                     rec.sender.as_ref(),
                 )
@@ -1000,6 +1005,7 @@ mod tests {
         map.insert(
             FactId::parse(SAMPLE_UUID_V7).unwrap(),
             RegionAcl {
+                excluded: Vec::new(),
                 subject: subject.parse().unwrap(),
                 allow: allow.iter().map(|p| p.parse().unwrap()).collect(),
                 sender: sender.map(|p| p.parse().unwrap()),
@@ -1025,6 +1031,7 @@ mod tests {
         map.insert(
             FactId::parse("018f1234-5678-7abc-9def-0123456789cd").unwrap(),
             RegionAcl {
+                excluded: Vec::new(),
                 subject: "user:alice".parse().unwrap(),
                 allow: Vec::new(),
                 sender: None,
@@ -1183,6 +1190,7 @@ mod tests {
             crate::fact_index::insert(
                 &pool,
                 &crate::fact_index::NewFact {
+                    excluded_ids: Vec::new(),
                     fact_id: FactId::parse(&format!("018f1234-5678-7abc-9def-01234567{n:02x}00"))
                         .unwrap(),
                     wiki_id: wiki.to_owned(),
@@ -2164,6 +2172,7 @@ al 10 maggio, ha {{{{f={public_key}}}}}tagliato i capelli{{{{/}}}} ieri."
         map.insert(
             FactId::parse(public_key).unwrap(),
             RegionAcl {
+                excluded: Vec::new(),
                 subject: "global".parse().unwrap(),
                 allow: vec![],
                 sender: None,

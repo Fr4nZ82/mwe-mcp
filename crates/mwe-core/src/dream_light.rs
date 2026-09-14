@@ -598,6 +598,7 @@ async fn write_placed(
         slot: cap.slot.clone(),
         slot_value: cap.slot_value.clone(),
         allow_ids: cap.allow.clone(),
+        excluded_ids: cap.excluded.clone(),
         sender_id: cap.sender.clone(),
         fact_type: cap.fact_type.clone(),
         topics: cap.topics.clone(),
@@ -763,6 +764,7 @@ mod tests {
     /// would make every test below assert on an empty corpus.
     fn cap_req(body: &str) -> CaptureRequest {
         CaptureRequest {
+            excluded: Vec::new(),
             subject_external: None,
             slot: None,
             slot_value: None,

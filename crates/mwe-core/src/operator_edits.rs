@@ -99,7 +99,9 @@ pub async fn acl_change_operator(
     // Surface write: promoted row first, then the still-buffered capture
     // (the id is stable across promotion), EXACTLY like the chat path.
     let (prev, surface) =
-        match fact_index::set_acl(pool, fact_id, new_subject, new_allow, keep_sender).await? {
+        // An operator changing an audience from the dashboard says nothing
+        // about who a fact was asked to be kept from: the exclusions stand.
+        match fact_index::set_acl(pool, fact_id, new_subject, new_allow, keep_sender, None).await? {
             Some(prev) => (prev, promote::ClosureSurface::Fact),
             None => {
                 match capture_buffer::set_acl(pool, fact_id, new_subject, new_allow, keep_sender)

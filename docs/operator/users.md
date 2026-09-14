@@ -45,6 +45,14 @@ One account per person. The table lists **User id**, **Email**, **Role**,
   it can read **Italian and English**, and for the other languages it says
   nothing rather than guess.
 
+Somebody can also ask for a single claim to be kept from one named person —
+*"I'd rather Zoe didn't know the figure"*. That is recorded on the claim
+itself, not as a narrower audience, and it holds against everything else: the
+group she is already in, a group she joins later, and a later change that
+widens who may read it. The facts list shows it in the **Not for** column, to
+everybody who may read the fact. Only somebody saying so about that same claim
+takes it back.
+
 Press **Create user + invitation link**. The list comes back with a green line
 carrying a **single-use link** — by default it expires in 24 hours. Hand it
 over; the person opens it, picks their own password (minimum 12 characters)

@@ -363,6 +363,7 @@ mod tests {
 
     async fn capture_one(tree: &WikiTree, pool: &SqlitePool, body: &str) -> FactId {
         let req = CaptureRequest {
+            excluded: Vec::new(),
             subject_external: None,
             slot: None,
             slot_value: None,
@@ -398,6 +399,7 @@ mod tests {
         refs: &[String],
     ) -> FactId {
         let req = CaptureRequest {
+            excluded: Vec::new(),
             subject_external: None,
             slot: None,
             slot_value: None,

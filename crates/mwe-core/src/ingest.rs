@@ -909,6 +909,10 @@ struct LlmIngestPlan {
     subject_external: Option<String>,
     #[serde(default)]
     allow_ids: Vec<String>,
+    /// The legacy single-fact shape carries the same exclusion field as an
+    /// extraction does (see [`LlmExtraction::excluded`]).
+    #[serde(default)]
+    excluded: Vec<String>,
     #[serde(default)]
     fact_type: Option<String>,
     /// Per-fact **validity interval**.
@@ -1197,6 +1201,18 @@ struct LlmAclChange {
     /// New allow-list principal wire strings (replaces the old list).
     #[serde(default)]
     allow_ids: Vec<String>,
+    /// The fact's exclusions, restated in full — **and absent means
+    /// UNCHANGED**, which is the whole point of the field.
+    ///
+    /// `allow_ids` replaces, because an audience is what the message is
+    /// about. An exclusion is not: a message widening a group says nothing
+    /// about the person somebody asked to keep a claim from, and reading
+    /// silence as «you may tell her now» would revoke a wish nobody withdrew.
+    /// So the only way it changes is a message that says so OF THIS FACT —
+    /// «Zoe may know the figure» — which the classifier writes as this field
+    /// present and empty.
+    #[serde(default)]
+    excluded_ids: Option<Vec<String>>,
     /// The message NAMES THIS FACT as the thing whose audience changes —
     /// «fai vedere a tutti quello che ti ho detto del giardino», «questa
     /// tienila per te».
@@ -1334,6 +1350,13 @@ struct LlmExtraction {
     /// writes marker syntax.
     #[serde(default)]
     attachments: Vec<String>,
+    /// Who this claim must NOT reach, whatever its audience turns out to be:
+    /// «I'd rather Zoe didn't know the number». It is not a narrower
+    /// audience — it names somebody who must stay out of whichever audience
+    /// the claim ends up with, including one they are already inside by way
+    /// of the fact's subject ([`crate::fact_index::FactIndexRow::excluded_ids`]).
+    #[serde(default)]
+    excluded: Vec<String>,
 }
 
 /// The names of the fields of one `extractions` element — the list
@@ -1370,6 +1393,7 @@ const EXTRACTION_FIELDS: &[&str] = &[
     "slot",
     "slot_value",
     "attachments",
+    "excluded",
     // The alias the parser answers to for `subject_id`.
     "owner_id",
 ];
@@ -1521,6 +1545,9 @@ struct CaptureUnit<'a> {
     /// [`crate::fact_index::FactIndexRow::subject_external`]). Independent of
     /// `subject_id`, which keeps answering for the fact.
     subject_external: Option<&'a str>,
+    /// Borrowed view of [`LlmExtraction::excluded`] — who this claim must not
+    /// reach, whatever its audience turns out to be.
+    excluded_ids: &'a [String],
     allow_ids: &'a [String],
     fact_type: Option<&'a str>,
     /// Borrowed view of the per-fact
@@ -1640,6 +1667,7 @@ impl LlmIngestPlan {
                     subject_id: e.subject_id.as_deref(),
                     subject_external: named_or_absent(e.subject_external.as_deref()),
                     allow_ids: &e.allow_ids,
+                    excluded_ids: &e.excluded,
                     fact_type: e.fact_type.as_deref(),
                     valid_from: e.valid_from.as_deref(),
                     valid_to: e.valid_to.as_deref(),
@@ -1680,6 +1708,7 @@ impl LlmIngestPlan {
                 subject_id: self.subject_id.as_deref(),
                 subject_external: named_or_absent(self.subject_external.as_deref()),
                 allow_ids: &self.allow_ids,
+                excluded_ids: &self.excluded,
                 fact_type: self.fact_type.as_deref(),
                 valid_from: self.valid_from.as_deref(),
                 valid_to: self.valid_to.as_deref(),
@@ -2427,6 +2456,68 @@ fn subject_of_the_claim(
     )
 }
 
+/// **Who this claim must not reach**, as the classifier heard it said.
+///
+/// A name it cannot read is dropped rather than failing the turn: an
+/// unparseable exclusion must not take the fact down with it, and the audience
+/// settling beside it is what makes the ones it CAN read binding.
+fn read_exclusions(unit: &CaptureUnit<'_>) -> Vec<Principal> {
+    unit.excluded_ids
+        .iter()
+        .filter_map(|s| Principal::from_str(s).ok())
+        .collect()
+}
+
+/// **The audience a fact is written with, once somebody has been excluded
+/// from it** — and the exclusion itself, to be stored beside it.
+///
+/// A group in the audience is a promise about a LIST that changes. «The
+/// parents may read this, but not Zoe» written as `group:parents` minus
+/// nothing is not that promise at all: it is «whoever is a parent when the
+/// question is asked», and the day she joins another group in the list she
+/// reads the fact. So a named group is expanded into the people who are in it
+/// TODAY and the excluded are taken out, and no group is left in the list —
+/// the audience is frozen at the moment the person said it, which is what
+/// they meant.
+///
+/// **The exclusion is still stored, and it is not redundant.** The expansion
+/// answers «who did they mean»; the stored exclusion answers «who must never
+/// read this», and the two come apart the moment anything else moves: the
+/// fact's SUBJECT can be a group she is already in, a later widening can name
+/// her, and neither of those is the audience this function froze. One is a
+/// list; the other is a wish, and only the person who made it takes it back.
+fn audience_without_the_excluded(
+    allow: Vec<Principal>,
+    excluded: Vec<Principal>,
+    groups: &std::collections::BTreeMap<String, Vec<String>>,
+) -> (Vec<Principal>, Vec<Principal>) {
+    if excluded.is_empty() {
+        return (allow, excluded);
+    }
+    let mut out: Vec<Principal> = Vec::with_capacity(allow.len());
+    let keep = |p: Principal, out: &mut Vec<Principal>| {
+        if !excluded.contains(&p) && !out.contains(&p) {
+            out.push(p);
+        }
+    };
+    for principal in allow {
+        match &principal {
+            // `global` is not a list of people and cannot be narrowed into
+            // one: a fact somebody wants kept from one person is not public,
+            // and the honest reading of the pair is the restriction. It goes,
+            // and nothing takes its place.
+            Principal::Group(id) if id == "global" => {},
+            Principal::Group(id) => {
+                for member in groups.get(id).into_iter().flatten() {
+                    keep(Principal::User(member.clone()), &mut out);
+                }
+            },
+            Principal::User(_) => keep(principal, &mut out),
+        }
+    }
+    (out, excluded)
+}
+
 fn validate_capture_plan(
     unit: &CaptureUnit<'_>,
     request: &IngestRequest,
@@ -2434,6 +2525,7 @@ fn validate_capture_plan(
     available: &[AvailableWiki],
     list_pages: &[fact_index::ListPage],
     allow_message_fallback: bool,
+    groups: &std::collections::BTreeMap<String, Vec<String>>,
 ) -> std::result::Result<CaptureRequest, CapturePlanError> {
     // Subject first: since the classifier stopped choosing a wiki, the subject
     // is an INPUT to the destination rather than a sibling decision.
@@ -2561,6 +2653,7 @@ fn validate_capture_plan(
     // protects hand-written calls) cannot kill the whole ingest turn.
     let sender_principal = Principal::User(request.sender_id.clone());
     allow.retain(|p| *p != sender_principal);
+    let (allow, excluded) = audience_without_the_excluded(allow, read_exclusions(unit), groups);
     // Body: the legacy single-fact shape may omit it (fall back to the raw
     // message); a multi-fact extraction MUST carry its own body, else filing
     // the whole message under every extraction would duplicate it.
@@ -2591,6 +2684,7 @@ fn validate_capture_plan(
             .flatten()
             .map(str::to_owned),
         allow,
+        excluded,
         sender: Some(Principal::User(request.sender_id.clone())),
         fact_type: unit.fact_type.map(str::to_owned),
         topics: normalize_fact_topics(unit.topics),
@@ -2961,6 +3055,7 @@ async fn file_unclaimed_attachments(
             subject_external: None,
             slot: None,
             slot_value: None,
+            excluded: Vec::new(),
             // Nobody placed this: it waits in the queue like any other claim.
             page: None,
             body,
@@ -5134,8 +5229,9 @@ fn parked_claim(
     policy: &IngestPolicy,
     available: &[AvailableWiki],
     list_pages: &[fact_index::ListPage],
+    groups: &std::collections::BTreeMap<String, Vec<String>>,
 ) -> Option<CaptureRequest> {
-    match validate_capture_plan(unit, request, policy, available, list_pages, false) {
+    match validate_capture_plan(unit, request, policy, available, list_pages, false, groups) {
         Ok(req) => Some(req),
         Err(err) => {
             tracing::warn!(
@@ -7234,8 +7330,22 @@ async fn apply_plan_acl_changes(
         // capturer keeps the read shortcut. The widening signal is computed
         // against the PREVIOUS read-set, returned by set_acl.
         let keep_sender = hit.sender_id.as_ref();
-        let fact_set =
-            fact_index::set_acl(pool, &hit.fact_id, &new_subject, &new_allow, keep_sender).await;
+        // The exclusions move only when the message says so of THIS fact.
+        // Widening a group is not that, and `None` is what keeps the wish.
+        let new_excluded: Option<Vec<Principal>> = change.excluded_ids.as_ref().map(|ids| {
+            ids.iter()
+                .filter_map(|s| Principal::from_str(s).ok())
+                .collect()
+        });
+        let fact_set = fact_index::set_acl(
+            pool,
+            &hit.fact_id,
+            &new_subject,
+            &new_allow,
+            keep_sender,
+            new_excluded.as_deref(),
+        )
+        .await;
         let (prev, surface) = match fact_set {
             Ok(Some(prev)) => (prev, promote::ClosureSurface::Fact),
             Ok(None) => {
@@ -8589,6 +8699,7 @@ pub async fn file_behaviour_rule(
         // slot of their card.
         slot: None,
         slot_value: None,
+        excluded: Vec::new(),
         page: Some(PathBuf::from(BEHAVIOUR_RULES_PAGE)),
         body: rule.to_owned(),
         subject: subject.clone(),
@@ -8761,6 +8872,7 @@ async fn capture_agent_self_fact(
         // The agent's own card is not a person's identity card.
         slot: None,
         slot_value: None,
+        excluded: Vec::new(),
         page,
         body: body.to_owned(),
         // OWNED BY THE AGENT — this is its own self-knowledge, not about the
@@ -10004,6 +10116,7 @@ async fn identity_core_roster(
                 &crate::types::Acl {
                     subject: Some(row.subject_id.clone()),
                     allow: row.allow_ids.clone(),
+                    excluded: row.excluded_ids.clone(),
                 },
                 &sender.sender_id,
                 &sender.sender_groups,
@@ -11705,6 +11818,12 @@ pub async fn wiki_ingest_message(
     // instead of the published `.md`. "Standard" is exactly "not smart":
     // the per-wiki flag is the whole test.
     let available: Vec<AvailableWiki> = available_wikis(tree, usize::MAX)?;
+    // Who is in what, read ONCE for the turn: an audience settled against two
+    // different answers would be two audiences, and asking per fact is a query
+    // per fact ([`crate::enrollment::every_group_with_members`]).
+    let groups = crate::enrollment::every_group_with_members(pool)
+        .await
+        .unwrap_or_default();
     tracing::debug!(available = available.len(), "ingest: enumerated wikis");
 
     // Step 2b — the list-page inventory, the ONE placement surface the
@@ -12722,7 +12841,14 @@ pub async fn wiki_ingest_message(
                                     "the speaker may not read the value already on the card, so \
                                      they could not be asked which of the two is right",
                                 ),
-                                parked_claim(&unit, &request, policy, &available, &list_pages),
+                                parked_claim(
+                                    &unit,
+                                    &request,
+                                    policy,
+                                    &available,
+                                    &list_pages,
+                                    &groups,
+                                ),
                             )
                             .await;
                             note_the_owner(&mut slots_passed_to_their_owners, &stored.subject);
@@ -12766,7 +12892,7 @@ pub async fn wiki_ingest_message(
                                 None,
                                 "they are neither its subject nor the person who said it",
                             ),
-                            parked_claim(&unit, &request, policy, &available, &list_pages),
+                            parked_claim(&unit, &request, policy, &available, &list_pages, &groups),
                         )
                         .await;
                         continue;
@@ -12802,7 +12928,7 @@ pub async fn wiki_ingest_message(
                                      turn was already asking them something else"
                                 },
                             ),
-                            parked_claim(&unit, &request, policy, &available, &list_pages),
+                            parked_claim(&unit, &request, policy, &available, &list_pages, &groups),
                         )
                         .await;
                         note_the_owner(&mut slots_passed_to_their_owners, &stored.subject);
@@ -12844,6 +12970,7 @@ pub async fn wiki_ingest_message(
                     &available,
                     &list_pages,
                     legacy,
+                    &groups,
                 ) {
                     Ok(req) => req,
                     Err(err) => {
@@ -14903,6 +15030,7 @@ mod tests {
         let available = [sample_available("alice")];
         let no_ids: [String; 0] = [];
         let unit = |style: Option<&'static str>, requested: bool| CaptureUnit {
+            excluded_ids: &no_ids,
             subject_external: None,
             target_wiki_id: None,
             target_page: Some("spesa.md"),
@@ -14935,6 +15063,7 @@ mod tests {
                 &available,
                 &[],
                 true,
+                &std::collections::BTreeMap::new(),
             )
             .expect("capture")
         };
@@ -14993,6 +15122,7 @@ mod tests {
         }];
         let no_ids: [String; 0] = [];
         let unit = |wiki: Option<&'static str>, page: Option<&'static str>| CaptureUnit {
+            excluded_ids: &no_ids,
             subject_external: None,
             target_wiki_id: wiki,
             target_page: page,
@@ -15108,6 +15238,7 @@ mod tests {
         // name was already gone. A list-shaped unit is the case that reaches
         // disk inside the turn, so it is the one that had to be closed.
         let plan = LlmIngestPlan {
+            excluded: Vec::new(),
             withdrawal: false,
             erasure: false,
             withdraw_target: None,
@@ -15146,9 +15277,16 @@ mod tests {
         let request = req("comprare il latte", "alice");
         let policy = IngestPolicy::default();
         let available = vec![sample_available("alice")];
-        let cap =
-            validate_capture_plan(&first_unit(&plan), &request, &policy, &available, &[], true)
-                .expect("the capture is filed, just not there");
+        let cap = validate_capture_plan(
+            &first_unit(&plan),
+            &request,
+            &policy,
+            &available,
+            &[],
+            true,
+            &std::collections::BTreeMap::new(),
+        )
+        .expect("the capture is filed, just not there");
         assert_eq!(
             cap.page, None,
             "a capture that names a reserved page lands in the buffer, and the placement \
@@ -15163,6 +15301,7 @@ mod tests {
     #[test]
     fn validate_capture_plan_derives_the_wiki_from_the_sender() {
         let plan = LlmIngestPlan {
+            excluded: Vec::new(),
             withdrawal: false,
             erasure: false,
             withdraw_target: None,
@@ -15201,9 +15340,16 @@ mod tests {
         let request = req("a fact", "alice");
         let policy = IngestPolicy::default();
         let available = vec![sample_available("alice")];
-        let cap =
-            validate_capture_plan(&first_unit(&plan), &request, &policy, &available, &[], true)
-                .expect("a plan with no wiki is derived, not refused");
+        let cap = validate_capture_plan(
+            &first_unit(&plan),
+            &request,
+            &policy,
+            &available,
+            &[],
+            true,
+            &std::collections::BTreeMap::new(),
+        )
+        .expect("a plan with no wiki is derived, not refused");
         assert_eq!(
             cap.wiki_id.as_str(),
             "alice",
@@ -15214,6 +15360,7 @@ mod tests {
     #[test]
     fn validate_capture_plan_defaults_subject_to_sender() {
         let plan = LlmIngestPlan {
+            excluded: Vec::new(),
             withdrawal: false,
             erasure: false,
             withdraw_target: None,
@@ -15252,9 +15399,16 @@ mod tests {
         let request = req("alice prefers coffee black", "alice");
         let policy = IngestPolicy::default();
         let available = vec![sample_available("alice")];
-        let cap =
-            validate_capture_plan(&first_unit(&plan), &request, &policy, &available, &[], true)
-                .expect("validated");
+        let cap = validate_capture_plan(
+            &first_unit(&plan),
+            &request,
+            &policy,
+            &available,
+            &[],
+            true,
+            &std::collections::BTreeMap::new(),
+        )
+        .expect("validated");
         assert_eq!(cap.wiki_id.as_str(), "alice");
         assert_eq!(
             cap.page, None,
@@ -15273,6 +15427,7 @@ mod tests {
         // SenderRedundantInAllow lint would otherwise kill the turn)
         // while keeping the legitimate entries.
         let plan = LlmIngestPlan {
+            excluded: Vec::new(),
             withdrawal: false,
             erasure: false,
             withdraw_target: None,
@@ -15311,15 +15466,23 @@ mod tests {
         let request = req("alice prefers coffee black", "alice");
         let policy = IngestPolicy::default();
         let available = vec![sample_available("alice")];
-        let cap =
-            validate_capture_plan(&first_unit(&plan), &request, &policy, &available, &[], true)
-                .expect("validated");
+        let cap = validate_capture_plan(
+            &first_unit(&plan),
+            &request,
+            &policy,
+            &available,
+            &[],
+            true,
+            &std::collections::BTreeMap::new(),
+        )
+        .expect("validated");
         assert_eq!(cap.allow, vec![Principal::Group("famiglia".into())]);
     }
 
     #[test]
     fn validate_capture_plan_rejects_bad_principal() {
         let plan = LlmIngestPlan {
+            excluded: Vec::new(),
             withdrawal: false,
             erasure: false,
             withdraw_target: None,
@@ -15358,9 +15521,16 @@ mod tests {
         let request = req("hello", "alice");
         let policy = IngestPolicy::default();
         let available = vec![sample_available("alice")];
-        let err =
-            validate_capture_plan(&first_unit(&plan), &request, &policy, &available, &[], true)
-                .expect_err("bad principal");
+        let err = validate_capture_plan(
+            &first_unit(&plan),
+            &request,
+            &policy,
+            &available,
+            &[],
+            true,
+            &std::collections::BTreeMap::new(),
+        )
+        .expect_err("bad principal");
         assert!(matches!(err, CapturePlanError::BadPrincipal(_)));
     }
 
@@ -15402,6 +15572,7 @@ mod tests {
     #[test]
     fn validate_capture_plan_ignores_a_hallucinated_target_wiki() {
         let plan = LlmIngestPlan {
+            excluded: Vec::new(),
             withdrawal: false,
             erasure: false,
             withdraw_target: None,
@@ -15440,9 +15611,16 @@ mod tests {
         let request = req("public fact", "alice");
         let policy = IngestPolicy::default();
         let available = vec![sample_available("alice")];
-        let cap =
-            validate_capture_plan(&first_unit(&plan), &request, &policy, &available, &[], true)
-                .expect("an unknown target_wiki_id is ignored, not fatal");
+        let cap = validate_capture_plan(
+            &first_unit(&plan),
+            &request,
+            &policy,
+            &available,
+            &[],
+            true,
+            &std::collections::BTreeMap::new(),
+        )
+        .expect("an unknown target_wiki_id is ignored, not fatal");
         assert_eq!(
             cap.wiki_id.as_str(),
             "alice",
@@ -15473,6 +15651,7 @@ mod tests {
             &available,
             &[],
             true,
+            &std::collections::BTreeMap::new(),
         )
         .expect("a malformed bound must not kill the capture");
         assert_eq!(cap.valid_to, None, "malformed valid_to degrades to open");
@@ -15505,6 +15684,7 @@ mod tests {
             &available,
             &[],
             true,
+            &std::collections::BTreeMap::new(),
         )
         .expect("validated");
         assert_eq!(
@@ -15540,6 +15720,7 @@ mod tests {
             &available,
             &[],
             true,
+            &std::collections::BTreeMap::new(),
         )
         .expect("validated");
         assert_eq!(cap.valid_from.as_deref(), Some("2026-07-04T10:00:00Z"));
@@ -15557,6 +15738,7 @@ mod tests {
             &available,
             &[],
             true,
+            &std::collections::BTreeMap::new(),
         )
         .expect("validated");
         assert_eq!(cap.valid_from, None, "absent valid_from stays open");
@@ -15598,9 +15780,16 @@ mod tests {
              \"subject_id\":\"user:morgana\",\"body\":\"Morgana prefers herbal tea\"}",
         )
         .expect("plan parses");
-        let cap =
-            validate_capture_plan(&first_unit(&plan), &request, &policy, &available, &[], true)
-                .expect("a redirect must succeed");
+        let cap = validate_capture_plan(
+            &first_unit(&plan),
+            &request,
+            &policy,
+            &available,
+            &[],
+            true,
+            &std::collections::BTreeMap::new(),
+        )
+        .expect("a redirect must succeed");
         assert_eq!(
             cap.wiki_id.as_str(),
             "morgana",
@@ -15617,6 +15806,7 @@ mod tests {
             &available_no_home,
             &[],
             true,
+            &std::collections::BTreeMap::new(),
         )
         .expect_err("no resolvable home → drop");
         assert!(
@@ -15644,9 +15834,16 @@ mod tests {
              \"subject_id\":\"user:hermes1\",\"body\":\"L'agente è competente sulle pratiche INPS\"}",
         )
         .expect("plan parses");
-        let cap =
-            validate_capture_plan(&first_unit(&plan), &request, &policy, &available, &[], true)
-                .expect("the agent's own fact stays home");
+        let cap = validate_capture_plan(
+            &first_unit(&plan),
+            &request,
+            &policy,
+            &available,
+            &[],
+            true,
+            &std::collections::BTreeMap::new(),
+        )
+        .expect("the agent's own fact stays home");
         assert_eq!(cap.wiki_id.as_str(), "hermes1");
         assert_eq!(cap.subject, Principal::User("hermes1".to_owned()));
 
@@ -15664,6 +15861,7 @@ mod tests {
             &available,
             &[],
             true,
+            &std::collections::BTreeMap::new(),
         )
         .expect("redirect");
         assert_eq!(cap.wiki_id.as_str(), "morgana");
@@ -15687,9 +15885,16 @@ mod tests {
              \"subject_id\":\"user:samvisebot\",\"body\":\"Samvise gestisce le prenotazioni\"}",
         )
         .expect("plan parses");
-        let cap =
-            validate_capture_plan(&first_unit(&plan), &request, &policy, &available, &[], true)
-                .expect("redirect to the other agent's own wiki");
+        let cap = validate_capture_plan(
+            &first_unit(&plan),
+            &request,
+            &policy,
+            &available,
+            &[],
+            true,
+            &std::collections::BTreeMap::new(),
+        )
+        .expect("redirect to the other agent's own wiki");
         assert_eq!(cap.wiki_id.as_str(), "samvisebot");
     }
 
@@ -15835,6 +16040,86 @@ mod tests {
             VettedSupersede::NotTheirs { .. } => "asked".to_owned(),
             VettedSupersede::Unsound(r) => r.as_str().to_owned(),
         }
+    }
+
+    /// **A group named in the audience is frozen into its people, and the
+    /// excluded one is not among them.**
+    ///
+    /// «The parents may read this, but not Zoe» stored as `group:parents` is
+    /// not that promise: it is «whoever is a parent when the question is
+    /// asked», and the day she joins it she reads the fact. The audience is
+    /// therefore the people who are in the group TODAY, and no group is left
+    /// in the list.
+    ///
+    /// The exclusion is stored as well, and that is not redundant: the
+    /// expansion answers «who did they mean», the stored exclusion answers
+    /// «who must never read this», and the second is what holds when the
+    /// fact's own SUBJECT is a group she is in.
+    #[test]
+    fn a_named_group_is_frozen_into_its_people_without_the_excluded() {
+        let groups = std::collections::BTreeMap::from([
+            (
+                "parents".to_owned(),
+                vec!["bob".to_owned(), "alice".to_owned(), "zoe".to_owned()],
+            ),
+            ("money".to_owned(), vec!["bob".to_owned()]),
+        ]);
+        let zoe = Principal::User("zoe".into());
+
+        let (allow, excluded) = audience_without_the_excluded(
+            vec![Principal::Group("parents".into())],
+            vec![zoe.clone()],
+            &groups,
+        );
+        assert_eq!(
+            allow,
+            vec![
+                Principal::User("bob".into()),
+                Principal::User("alice".into())
+            ],
+            "the parents of today, and no group left to grow"
+        );
+        assert_eq!(excluded, vec![zoe.clone()], "and the wish is kept as well");
+
+        // Two groups overlapping: each person once, the excluded one never.
+        let (allow, _) = audience_without_the_excluded(
+            vec![
+                Principal::Group("parents".into()),
+                Principal::Group("money".into()),
+            ],
+            vec![zoe.clone()],
+            &groups,
+        );
+        assert_eq!(
+            allow,
+            vec![
+                Principal::User("bob".into()),
+                Principal::User("alice".into())
+            ],
+            "nobody is listed twice"
+        );
+
+        // `global` is not a list of people. A fact somebody wants kept from
+        // one person is not public, and the restriction is the honest reading.
+        let (allow, _) = audience_without_the_excluded(
+            vec![Principal::Group("global".into())],
+            vec![zoe],
+            &groups,
+        );
+        assert!(
+            allow.is_empty(),
+            "public and «not for her» cannot both hold"
+        );
+
+        // With nothing excluded the audience is left exactly as written: a
+        // group stays a group, which is what almost every fact wants.
+        let (allow, excluded) = audience_without_the_excluded(
+            vec![Principal::Group("parents".into())],
+            Vec::new(),
+            &groups,
+        );
+        assert_eq!(allow, vec![Principal::Group("parents".into())]);
+        assert!(excluded.is_empty());
     }
 
     /// **The poorer sentence does not drive out the richer one.**
@@ -16335,6 +16620,7 @@ mod tests {
 
     fn plan_with_supersede(target: Option<&str>) -> LlmIngestPlan {
         LlmIngestPlan {
+            excluded: Vec::new(),
             withdrawal: false,
             erasure: false,
             withdraw_target: None,
@@ -16694,6 +16980,7 @@ mod tests {
             &pool,
             fake_embedder(),
             CaptureRequest {
+                excluded: Vec::new(),
                 subject_external: None,
                 slot: None,
                 slot_value: None,
@@ -16812,6 +17099,7 @@ mod tests {
             &pool,
             fake_embedder(),
             CaptureRequest {
+                excluded: Vec::new(),
                 subject_external: None,
                 slot: None,
                 slot_value: None,
@@ -16849,6 +17137,7 @@ mod tests {
                 target: Some(theirs.fact_id.as_str().to_owned()),
                 subject_id: None,
                 allow_ids: vec!["global".to_owned()],
+                excluded_ids: None,
                 named_in_the_message: false,
             }],
             &candidates,
@@ -16887,6 +17176,7 @@ mod tests {
                 target: Some(theirs.fact_id.as_str().to_owned()),
                 subject_id: None,
                 allow_ids: vec!["global".to_owned()],
+                excluded_ids: None,
                 named_in_the_message: true,
             }],
             &candidates,
@@ -17033,6 +17323,7 @@ mod tests {
             &pool,
             fake_embedder(),
             CaptureRequest {
+                excluded: Vec::new(),
                 subject_external: None,
                 slot: None,
                 slot_value: None,
@@ -18786,6 +19077,7 @@ mod tests {
     async fn ingest_records_recall_miss_on_unsurfaced_dedup_hit() {
         let (dir, tree, pool) = setup_workdir().await;
         let existing = fact_index::NewFact {
+            excluded_ids: Vec::new(),
             subject_external: None,
             slot: None,
             slot_value: None,
@@ -18859,6 +19151,7 @@ mod tests {
     async fn ingest_records_no_miss_when_recall_surfaced_the_fact() {
         let (dir, tree, pool) = setup_workdir().await;
         let existing = fact_index::NewFact {
+            excluded_ids: Vec::new(),
             subject_external: None,
             slot: None,
             slot_value: None,
@@ -19663,6 +19956,7 @@ mod tests {
         subject: Principal,
     ) {
         let fact = fact_index::NewFact {
+            excluded_ids: Vec::new(),
             subject_external: None,
             slot: None,
             slot_value: None,
@@ -20543,6 +20837,7 @@ mod tests {
         fact_index::insert(
             pool,
             &fact_index::NewFact {
+                excluded_ids: Vec::new(),
                 subject_external: None,
                 slot: None,
                 slot_value: None,
@@ -21811,6 +22106,7 @@ mod tests {
                 &[sample_available("alice")],
                 &[],
                 true,
+                &std::collections::BTreeMap::new(),
             )
             .expect("plan")
             .slot
@@ -23547,6 +23843,7 @@ mod tests {
         let (dir, tree, pool) = setup_agent_workdir().await;
         // Plant a behaviour-rule fact on the LEGACY page name.
         let cap_req = CaptureRequest {
+            excluded: Vec::new(),
             subject_external: None,
             slot: None,
             slot_value: None,
@@ -23617,6 +23914,7 @@ mod tests {
     /// channel fixtures directly.
     fn agent_fact_req(page: &str, body: &str, dedup_threshold: Option<f32>) -> CaptureRequest {
         CaptureRequest {
+            excluded: Vec::new(),
             subject_external: None,
             slot: None,
             slot_value: None,
@@ -24533,6 +24831,7 @@ mod tests {
             &pool,
             fake_embedder(),
             CaptureRequest {
+                excluded: Vec::new(),
                 subject_external: None,
                 slot: None,
                 slot_value: None,
@@ -24631,6 +24930,7 @@ mod tests {
                 pool,
                 fake_embedder(),
                 CaptureRequest {
+                    excluded: Vec::new(),
                     subject_external: None,
                     slot: None,
                     slot_value: None,
@@ -24857,6 +25157,7 @@ mod tests {
     /// of them.
     const fn bare_unit() -> CaptureUnit<'static> {
         CaptureUnit {
+            excluded_ids: &[],
             target_wiki_id: None,
             target_page: None,
             subject_id: None,
@@ -25169,6 +25470,7 @@ mod tests {
             &pool,
             fake_embedder(),
             CaptureRequest {
+                excluded: Vec::new(),
                 subject_external: None,
                 slot: None,
                 slot_value: None,
@@ -25903,6 +26205,7 @@ mod tests {
             target: Some(target.fact_id.as_str().to_owned()),
             subject_id: None,
             allow_ids: vec!["group:famiglia".to_owned()],
+            excluded_ids: None,
             named_in_the_message: true,
         };
         assert!(
@@ -26271,6 +26574,7 @@ mod tests {
         fact_index::insert(
             pool,
             &fact_index::NewFact {
+                excluded_ids: Vec::new(),
                 subject_external: None,
                 slot: None,
                 slot_value: None,
@@ -26580,6 +26884,7 @@ mod tests {
         fact_index::insert(
             pool,
             &fact_index::NewFact {
+                excluded_ids: Vec::new(),
                 subject_external: None,
                 slot: None,
                 slot_value: None,
@@ -26899,6 +27204,7 @@ mod tests {
         fact_index::insert(
             pool,
             &fact_index::NewFact {
+                excluded_ids: Vec::new(),
                 fact_id: FactId::parse("018f1234-5678-7abc-9def-0123456789fe").unwrap(),
                 wiki_id: a.to_owned(),
                 source_path: format!("wikis/{a}/note.md"),
@@ -26947,6 +27253,7 @@ mod tests {
         fact_index::insert(
             pool,
             &fact_index::NewFact {
+                excluded_ids: Vec::new(),
                 subject_external: None,
                 slot: Some("mobile_number".to_owned()),
                 slot_value: Some(number.to_owned()),
@@ -28233,6 +28540,7 @@ mod tests {
         let (dir, tree, pool) = setup_workdir().await;
         // Plant the row that we want the next turn to supersede.
         let cap_req = CaptureRequest {
+            excluded: Vec::new(),
             subject_external: None,
             slot: None,
             slot_value: None,
@@ -28331,6 +28639,7 @@ mod tests {
         let (dir, tree, pool) = setup_workdir().await;
         // Plant a fact SHARED with group:famiglia.
         let cap_req = CaptureRequest {
+            excluded: Vec::new(),
             subject_external: None,
             slot: None,
             slot_value: None,
@@ -28406,6 +28715,7 @@ mod tests {
         let (dir, tree, pool) = setup_workdir().await;
         // Plant the open watchlist item the next turn completes.
         let cap_req = CaptureRequest {
+            excluded: Vec::new(),
             subject_external: None,
             slot: None,
             slot_value: None,
@@ -28611,6 +28921,7 @@ mod tests {
             pool,
             fake_embedder(),
             CaptureRequest {
+                excluded: Vec::new(),
                 subject_external: None,
                 slot: None,
                 slot_value: None,
@@ -28644,6 +28955,7 @@ mod tests {
     async fn ingest_closure_with_malformed_valid_to_falls_back_to_turn_now() {
         let (dir, tree, pool) = setup_workdir().await;
         let cap_req = CaptureRequest {
+            excluded: Vec::new(),
             subject_external: None,
             slot: None,
             slot_value: None,
@@ -28763,6 +29075,7 @@ mod tests {
     async fn ingest_closure_lands_on_a_buffered_capture() {
         let (dir, tree, pool) = setup_workdir().await;
         let cap_req = CaptureRequest {
+            excluded: Vec::new(),
             subject_external: None,
             slot: None,
             slot_value: None,
@@ -28831,6 +29144,7 @@ mod tests {
         let (dir, tree, pool) = setup_workdir().await;
         // One public capture (allow=global) and one private to alice.
         let public = CaptureRequest {
+            excluded: Vec::new(),
             subject_external: None,
             slot: None,
             slot_value: None,
@@ -29026,6 +29340,7 @@ mod tests {
     async fn closure_topics_second_pass_closes_the_starved_target() {
         let (dir, tree, pool) = setup_workdir().await;
         let cap_req = CaptureRequest {
+            excluded: Vec::new(),
             subject_external: None,
             slot: None,
             slot_value: None,
@@ -29109,6 +29424,7 @@ mod tests {
             &pool,
             fake_embedder(),
             CaptureRequest {
+                excluded: Vec::new(),
                 subject_external: None,
                 slot: None,
                 slot_value: None,
@@ -29197,6 +29513,7 @@ mod tests {
                     pool,
                     fake_embedder(),
                     CaptureRequest {
+                        excluded: Vec::new(),
                         subject_external: None,
                         slot: None,
                         slot_value: None,
@@ -29296,6 +29613,7 @@ mod tests {
                     pool,
                     fake_embedder(),
                     CaptureRequest {
+                        excluded: Vec::new(),
                         subject_external: None,
                         slot: None,
                         slot_value: None,
@@ -29404,6 +29722,7 @@ mod tests {
                     pool,
                     fake_embedder(),
                     CaptureRequest {
+                        excluded: Vec::new(),
                         subject_external: None,
                         slot: None,
                         slot_value: None,
@@ -29492,6 +29811,7 @@ mod tests {
         capture_buffer::buffer_capture_staged(
             &pool,
             CaptureRequest {
+                excluded: Vec::new(),
                 subject_external: None,
                 slot: None,
                 slot_value: None,
@@ -29561,6 +29881,7 @@ mod tests {
         capture_buffer::buffer_capture(
             pool,
             CaptureRequest {
+                excluded: Vec::new(),
                 subject_external: None,
                 slot: None,
                 slot_value: None,
@@ -29972,6 +30293,7 @@ mod tests {
         let buffered = capture_buffer::buffer_capture(
             &pool,
             CaptureRequest {
+                excluded: Vec::new(),
                 subject_external: None,
                 slot: None,
                 slot_value: None,
@@ -30049,6 +30371,7 @@ mod tests {
                     pool,
                     fake_embedder(),
                     CaptureRequest {
+                        excluded: Vec::new(),
                         subject_external: None,
                         slot: None,
                         slot_value: None,
@@ -30144,6 +30467,7 @@ mod tests {
                     pool,
                     fake_embedder(),
                     CaptureRequest {
+                        excluded: Vec::new(),
                         subject_external: None,
                         slot: None,
                         slot_value: None,
@@ -30169,18 +30493,12 @@ mod tests {
             }
         };
         // Alice's own, private. Then the correction: it is Bob who goes.
-        let old = plant(
-            "alice ha il dentista giovedì",
+        let (alice, bob) = (
             Principal::User("alice".into()),
-            Vec::new(),
-        )
-        .await;
-        let new = plant(
-            "bob ha il dentista giovedì",
             Principal::User("bob".into()),
-            Vec::new(),
-        )
-        .await;
+        );
+        let old = plant("alice ha il dentista giovedì", alice, Vec::new()).await;
+        let new = plant("bob ha il dentista giovedì", bob, Vec::new()).await;
         let candidates = vec![recall::RecallHit::from_row(
             fact_index::find_by_id(&pool, &old.fact_id)
                 .await
@@ -30230,6 +30548,7 @@ mod tests {
             &successor.subject_id,
             &successor.allow_ids,
             successor.sender_id.as_ref(),
+            &successor.excluded_ids,
         );
         assert!(
             readers.contains("user:bob"),
@@ -30262,6 +30581,7 @@ mod tests {
             &pool,
             fake_embedder(),
             CaptureRequest {
+                excluded: Vec::new(),
                 subject_external: None,
                 slot: None,
                 slot_value: None,
@@ -30380,6 +30700,7 @@ mod tests {
             &pool,
             fake_embedder(),
             CaptureRequest {
+                excluded: Vec::new(),
                 subject_external: None,
                 slot: None,
                 slot_value: None,
@@ -30527,6 +30848,7 @@ mod tests {
     async fn closure_confirmer_cannot_close_outside_its_candidates() {
         let (dir, tree, pool) = setup_workdir().await;
         let cap_req = CaptureRequest {
+            excluded: Vec::new(),
             subject_external: None,
             slot: None,
             slot_value: None,
@@ -30596,6 +30918,7 @@ mod tests {
     async fn ingest_validity_edit_corrects_dates_on_an_owned_fact() {
         let (dir, tree, pool) = setup_workdir().await;
         let cap_req = CaptureRequest {
+            excluded: Vec::new(),
             subject_external: None,
             slot: None,
             slot_value: None,
@@ -30675,6 +30998,7 @@ mod tests {
     async fn ingest_validity_edit_by_non_subject_is_skipped() {
         let (dir, tree, pool) = setup_workdir().await;
         let cap_req = CaptureRequest {
+            excluded: Vec::new(),
             subject_external: None,
             slot: None,
             slot_value: None,
@@ -30746,6 +31070,7 @@ mod tests {
     async fn ingest_acl_change_widens_and_audits() {
         let (_dir, tree, pool) = setup_workdir().await;
         let cap_req = CaptureRequest {
+            excluded: Vec::new(),
             subject_external: None,
             slot: None,
             slot_value: None,
@@ -30822,6 +31147,7 @@ mod tests {
         // shortcut). Regression guard: the apply path must not clear sender.
         let (dir, tree, pool) = setup_workdir().await;
         let cap_req = CaptureRequest {
+            excluded: Vec::new(),
             subject_external: None,
             slot: None,
             slot_value: None,
@@ -30908,6 +31234,7 @@ mod tests {
         fact_index::insert(
             &pool,
             &fact_index::NewFact {
+                excluded_ids: Vec::new(),
                 subject_external: None,
                 slot: None,
                 slot_value: None,
@@ -30943,6 +31270,7 @@ mod tests {
             target: Some(fid.as_str().to_owned()),
             subject_id: None,
             allow_ids: vec!["global".into()],
+            excluded_ids: None,
             named_in_the_message: true,
         };
         let applied = apply_plan_acl_changes(
@@ -31163,6 +31491,7 @@ mod tests {
                 &pool,
                 fake_embedder(),
                 CaptureRequest {
+                    excluded: Vec::new(),
                     subject_external: None,
                     slot: None,
                     slot_value: None,
@@ -31849,6 +32178,7 @@ mod tests {
     async fn replacing_a_list_row_never_takes_it_away_from_its_author() {
         let (dir, tree, pool) = setup_workdir().await;
         let bobs = crate::capture::CaptureRequest {
+            excluded: Vec::new(),
             subject_external: None,
             slot: None,
             slot_value: None,
@@ -31878,6 +32208,7 @@ mod tests {
                 .expect("row");
             crate::acl::can_read(
                 &crate::types::Acl {
+                    excluded: Vec::new(),
                     subject: Some(row.subject_id.clone()),
                     allow: row.allow_ids.clone(),
                 },
@@ -32045,6 +32376,7 @@ mod tests {
             capture_buffer::buffer_capture(
                 &pool,
                 crate::capture::CaptureRequest {
+                    excluded: Vec::new(),
                     subject_external: None,
                     slot: None,
                     slot_value: None,
@@ -32768,6 +33100,7 @@ mod tests {
             pool,
             fake_embedder(),
             CaptureRequest {
+                excluded: Vec::new(),
                 subject_external: None,
                 slot: None,
                 slot_value: None,
@@ -33396,6 +33729,7 @@ mod tests {
         // Plant a row so recall has something to surface — but the
         // LLM's supersede_target will name a *different*, unseen id.
         let cap_req = CaptureRequest {
+            excluded: Vec::new(),
             subject_external: None,
             slot: None,
             slot_value: None,
@@ -33474,6 +33808,7 @@ mod tests {
         // First, plant a captured fact directly so recall has something to find.
         let _wiki = WikiSlug::parse("alice").unwrap();
         let cap_req = CaptureRequest {
+            excluded: Vec::new(),
             subject_external: None,
             slot: None,
             slot_value: None,
@@ -34241,6 +34576,7 @@ mod tests {
         // One active fact on the opened page makes the fragment header
         // carry the in-band freshness annotation (`· updated <date>`).
         let fact = fact_index::NewFact {
+            excluded_ids: Vec::new(),
             subject_external: None,
             slot: None,
             slot_value: None,
@@ -34326,6 +34662,7 @@ mod tests {
         )
         .unwrap();
         let fact = fact_index::NewFact {
+            excluded_ids: Vec::new(),
             subject_external: None,
             slot: None,
             slot_value: None,
@@ -34400,6 +34737,7 @@ mod tests {
         )
         .unwrap();
         let fact = fact_index::NewFact {
+            excluded_ids: Vec::new(),
             subject_external: None,
             slot: None,
             slot_value: None,
@@ -34528,6 +34866,7 @@ mod tests {
         let due = (chrono::Utc::now() + chrono::Duration::hours(24))
             .to_rfc3339_opts(chrono::SecondsFormat::Secs, true);
         let fact = fact_index::NewFact {
+            excluded_ids: Vec::new(),
             subject_external: None,
             slot: None,
             slot_value: None,
@@ -34616,6 +34955,7 @@ mod tests {
         let due = (chrono::Utc::now() + chrono::Duration::hours(24))
             .to_rfc3339_opts(chrono::SecondsFormat::Secs, true);
         let fact = fact_index::NewFact {
+            excluded_ids: Vec::new(),
             subject_external: None,
             slot: None,
             slot_value: None,

@@ -2163,8 +2163,17 @@ fn note_llm_failure(errors: &mut Vec<String>, consecutive: &mut usize, note: Str
 /// naming different groups are two audiences even when today's membership
 /// happens to coincide.
 fn reader_sets_differ(a: &fact_index::FactIndexRow, b: &fact_index::FactIndexRow) -> bool {
-    crate::acl::reader_set(&a.subject_id, &a.allow_ids, a.sender_id.as_ref())
-        != crate::acl::reader_set(&b.subject_id, &b.allow_ids, b.sender_id.as_ref())
+    crate::acl::reader_set(
+        &a.subject_id,
+        &a.allow_ids,
+        a.sender_id.as_ref(),
+        &a.excluded_ids,
+    ) != crate::acl::reader_set(
+        &b.subject_id,
+        &b.allow_ids,
+        b.sender_id.as_ref(),
+        &b.excluded_ids,
+    )
 }
 
 #[allow(
@@ -10320,6 +10329,7 @@ mod tests {
         subject: &str,
     ) -> FactId {
         let req = CaptureRequest {
+            excluded: Vec::new(),
             subject_external: None,
             slot: None,
             slot_value: None,
@@ -10357,6 +10367,7 @@ mod tests {
         valid_to: Option<String>,
     ) -> FactId {
         let req = CaptureRequest {
+            excluded: Vec::new(),
             subject_external: None,
             slot: None,
             slot_value: None,
@@ -10394,6 +10405,7 @@ mod tests {
         sender: Option<Principal>,
     ) -> FactId {
         let req = CaptureRequest {
+            excluded: Vec::new(),
             subject_external: None,
             slot: None,
             slot_value: None,
@@ -10484,6 +10496,7 @@ mod tests {
         embedding: Vec<f32>,
     ) -> FactId {
         let req = CaptureRequest {
+            excluded: Vec::new(),
             subject_external: None,
             slot: None,
             slot_value: None,
@@ -10975,6 +10988,7 @@ mod tests {
         subject: &str,
     ) -> FactId {
         let req = CaptureRequest {
+            excluded: Vec::new(),
             subject_external: None,
             slot: None,
             slot_value: None,
@@ -12700,6 +12714,7 @@ mod tests {
     /// [`already_fills_a_wiki`]).
     async fn plant_off_topic_page(tree: &WikiTree, pool: &SqlitePool, wiki: &str, subject: &str) {
         let req = CaptureRequest {
+            excluded: Vec::new(),
             subject_external: None,
             slot: None,
             slot_value: None,
@@ -12745,6 +12760,7 @@ mod tests {
         let mut out = Vec::with_capacity(n);
         for t in TOPICS.iter().take(n) {
             let req = CaptureRequest {
+                excluded: Vec::new(),
                 subject_external: None,
                 slot: None,
                 slot_value: None,
@@ -12866,6 +12882,7 @@ mod tests {
         crate::capture_buffer::buffer_capture(
             &pool,
             crate::capture::CaptureRequest {
+                excluded: Vec::new(),
                 subject_external: None,
                 slot: None,
                 slot_value: None,
@@ -13802,6 +13819,7 @@ mod tests {
         crate::fact_index::insert(
             &pool,
             &crate::fact_index::NewFact {
+                excluded_ids: Vec::new(),
                 subject_external: None,
                 slot: None,
                 slot_value: None,
@@ -14299,6 +14317,7 @@ mod tests {
                     pool,
                     fake_embedder(),
                     CaptureRequest {
+                        excluded: Vec::new(),
                         subject_external: None,
                         slot: None,
                         slot_value: None,
@@ -14546,6 +14565,7 @@ mod tests {
         valid_from: Option<String>,
     ) -> FactId {
         let req = CaptureRequest {
+            excluded: Vec::new(),
             subject_external: None,
             slot: None,
             slot_value: None,
@@ -14621,6 +14641,7 @@ mod tests {
         let newer = FactId::parse("018f1234-5678-7abc-9def-000000000002").unwrap();
         let unwoven = FactId::parse("018f1234-5678-7abc-9def-000000000003").unwrap();
         let row = |id: &FactId, text: &str| FactIndexRow {
+            excluded_ids: Vec::new(),
             subject_external: None,
             slot: None,
             slot_value: None,
@@ -17816,6 +17837,7 @@ mod tests {
             &pool,
             fake_embedder(),
             CaptureRequest {
+                excluded: Vec::new(),
                 subject_external: None,
                 slot: None,
                 slot_value: None,
@@ -18061,6 +18083,7 @@ mod tests {
         topics: &[&str],
     ) -> FactId {
         let req = crate::capture::CaptureRequest {
+            excluded: Vec::new(),
             subject_external: None,
             slot: None,
             slot_value: None,
@@ -19354,6 +19377,7 @@ mod tests {
     fn the_recall_tuning_notice_names_the_fact_and_never_quotes_the_person() {
         let fact_id = FactId::parse("018f1234-5678-7abc-9def-0123456789c1").unwrap();
         let fact = FactIndexRow {
+            excluded_ids: Vec::new(),
             subject_external: None,
             slot: None,
             slot_value: None,

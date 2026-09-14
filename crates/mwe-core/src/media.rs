@@ -506,6 +506,12 @@ pub fn row_visible_to(row: &MediaRow, sender_id: &str, sender_groups: &[String])
     let acl = Acl {
         subject: Some(row.subject_id.clone()),
         allow: row.allow_ids.clone(),
+        // The media catalog is its own table and carries no exclusion: a
+        // photo's audience is stated when it is uploaded, and «keep this from
+        // her» is said of a CLAIM. A reader kept from the fact cannot reach
+        // the photo through it — the prose that names the catalog id is the
+        // part they do not get — but they are not stopped by this check.
+        excluded: Vec::new(),
     };
     can_read(&acl, sender_id, sender_groups, row.sender_id.as_ref())
 }

@@ -857,6 +857,7 @@ fn row_visible_to(row: &FactIndexRow, sender: &SenderContext) -> bool {
     let acl = Acl {
         subject: Some(row.subject_id.clone()),
         allow: row.allow_ids.clone(),
+        excluded: row.excluded_ids.clone(),
     };
     can_read(
         &acl,
@@ -870,6 +871,7 @@ fn buffered_visible_to(cap: &BufferedCapture, sender: &SenderContext) -> bool {
     let acl = Acl {
         subject: Some(cap.subject.clone()),
         allow: cap.allow.clone(),
+        excluded: cap.excluded.clone(),
     };
     can_read(
         &acl,
@@ -1335,6 +1337,9 @@ async fn readable_smart_wikis(
             let acl = Acl {
                 subject: Some(w.owner_id.clone()),
                 allow: w.shared_with.clone(),
+                // A WIKI has no exclusion: «keep this from her» is said of a
+                // claim, and there is no way to say it of a whole memory.
+                excluded: Vec::new(),
             };
             can_read(&acl, &sender.sender_id, &sender.sender_groups, None)
         })
@@ -1629,6 +1634,9 @@ async fn smart_wikis_named_in(
             let acl = Acl {
                 subject: Some(w.owner_id.clone()),
                 allow: w.shared_with.clone(),
+                // A WIKI has no exclusion: «keep this from her» is said of a
+                // claim, and there is no way to say it of a whole memory.
+                excluded: Vec::new(),
             };
             can_read(&acl, &sender.sender_id, &sender.sender_groups, None)
                 && message_names_wiki(&tokens, &w.slug)
@@ -1689,6 +1697,8 @@ async fn projects_signposted_in(
                 let acl = Acl {
                     subject: Some(w.owner_id.clone()),
                     allow: w.shared_with.clone(),
+                    // A WIKI has no exclusion (as above).
+                    excluded: Vec::new(),
                 };
                 can_read(&acl, &sender.sender_id, &sender.sender_groups, None)
             }
@@ -2871,6 +2881,7 @@ mod tests {
 
     fn sample_row(id_str: &str, subject: &str, sender: Option<&str>, text: &str) -> FactIndexRow {
         FactIndexRow {
+            excluded_ids: Vec::new(),
             subject_external: None,
             slot: None,
             slot_value: None,
@@ -2990,6 +3001,7 @@ mod tests {
         std::fs::write(d.join("cucina.md"), "# index\n").unwrap();
 
         let mk = |body: String| CaptureRequest {
+            excluded: Vec::new(),
             subject_external: None,
             slot: None,
             slot_value: None,
@@ -3071,6 +3083,7 @@ mod tests {
         std::fs::write(d.join("cucina.md"), "# index\n").unwrap();
 
         let mk = |body: &str| CaptureRequest {
+            excluded: Vec::new(),
             subject_external: None,
             slot: None,
             slot_value: None,
@@ -3174,6 +3187,7 @@ mod tests {
         }
 
         let mk = |wiki: &str, body: &str, subject: &str| CaptureRequest {
+            excluded: Vec::new(),
             subject_external: None,
             slot: None,
             slot_value: None,
@@ -3264,6 +3278,7 @@ mod tests {
         }
 
         let mk = |wiki: &str, body: &str, subject: &str, fact_type: Option<&str>| CaptureRequest {
+            excluded: Vec::new(),
             subject_external: None,
             slot: None,
             slot_value: None,
@@ -4084,6 +4099,7 @@ mod tests {
         embedding: Vec<f32>,
     ) {
         pool_setup.push(NewFact {
+            excluded_ids: Vec::new(),
             subject_external: None,
             slot: None,
             slot_value: None,
@@ -4537,6 +4553,7 @@ mod tests {
         embedding: Vec<f32>,
     ) {
         pool_setup.push(NewFact {
+            excluded_ids: Vec::new(),
             subject_external: None,
             slot: None,
             slot_value: None,
@@ -5183,6 +5200,7 @@ mod tests {
     ) -> RecallHit {
         let fact_id = crate::capture::new_fact_id().unwrap();
         let row = NewFact {
+            excluded_ids: Vec::new(),
             subject_external: None,
             slot: None,
             slot_value: None,
@@ -5587,6 +5605,7 @@ mod tests {
         let pool = make_pool().await;
         let mut rows = Vec::new();
         let r1 = NewFact {
+            excluded_ids: Vec::new(),
             subject_external: None,
             slot: None,
             slot_value: None,
@@ -5638,6 +5657,7 @@ mod tests {
     async fn find_by_filters_topics_any_uses_json_each() {
         let pool = make_pool().await;
         let r1 = NewFact {
+            excluded_ids: Vec::new(),
             subject_external: None,
             slot: None,
             slot_value: None,

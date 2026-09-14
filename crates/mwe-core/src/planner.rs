@@ -4670,6 +4670,7 @@ mod tests {
         fact_index::insert(
             pool,
             &crate::fact_index::NewFact {
+                excluded_ids: Vec::new(),
                 subject_external: None,
                 slot: None,
                 slot_value: None,
@@ -5372,6 +5373,7 @@ mod tests {
         fact_index::insert(
             &pool,
             &NewFact {
+                excluded_ids: Vec::new(),
                 subject_external: None,
                 slot: None,
                 slot_value: None,
@@ -5500,6 +5502,7 @@ mod tests {
         fact_index::insert(
             &pool,
             &NewFact {
+                excluded_ids: Vec::new(),
                 subject_external: None,
                 slot: None,
                 slot_value: None,
@@ -5811,6 +5814,7 @@ mod tests {
             fact_index::insert(
                 &pool,
                 &NewFact {
+                    excluded_ids: Vec::new(),
                     subject_external: None,
                     slot: None,
                     slot_value: None,
@@ -5934,6 +5938,7 @@ mod tests {
         .unwrap();
 
         let mk = |id_tail: &str, source_path: &str, fact_type: &str| NewFact {
+            excluded_ids: Vec::new(),
             subject_external: None,
             slot: None,
             slot_value: None,
@@ -6538,6 +6543,7 @@ mod tests {
         fact_index::insert(
             &pool,
             &NewFact {
+                excluded_ids: Vec::new(),
                 subject_external: None,
                 slot: None,
                 slot_value: None,
@@ -6822,6 +6828,7 @@ mod tests {
             fact_index::insert(
                 pool,
                 &crate::fact_index::NewFact {
+                    excluded_ids: Vec::new(),
                     subject_external: None,
                     slot: None,
                     slot_value: None,

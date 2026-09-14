@@ -2519,6 +2519,7 @@ mod tests {
         crate::fact_index::insert(
             pool,
             &crate::fact_index::NewFact {
+                excluded_ids: Vec::new(),
                 subject_external: None,
                 slot: None,
                 slot_value: None,
@@ -2759,6 +2760,7 @@ mod tests {
             pool,
             crate::capture_buffer::mint_parked_id().expect("an id"),
             crate::capture::CaptureRequest {
+                excluded: Vec::new(),
                 wiki_id: crate::types::WikiId::parse("bob").unwrap(),
                 page: None,
                 body: "bob was born on 8 July 2012".to_owned(),

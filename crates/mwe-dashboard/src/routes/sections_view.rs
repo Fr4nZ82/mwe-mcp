@@ -152,6 +152,8 @@ async fn index(
                     &Acl {
                         subject: Some(w.owner_id.clone()),
                         allow: w.shared_with.clone(),
+                        // A wiki has no exclusion: it is said of a claim.
+                        excluded: Vec::new(),
                     },
                     &user.sender_id,
                     &sender_groups,

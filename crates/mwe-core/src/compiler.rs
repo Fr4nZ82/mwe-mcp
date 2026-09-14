@@ -4259,6 +4259,7 @@ mod tests {
         acl.insert(
             FactId::parse("0190f3c2-7a4e-7c31-9b02-2f6a1c8e5d21").unwrap(),
             crate::acl::RegionAcl {
+                excluded: Vec::new(),
                 subject: "user:zoe".parse::<Principal>().unwrap(),
                 allow: Vec::new(),
                 sender: None,
@@ -5279,6 +5280,7 @@ mod tests {
         fact_index::insert(
             pool,
             &crate::fact_index::NewFact {
+                excluded_ids: Vec::new(),
                 subject_external: None,
                 slot: None,
                 slot_value: None,
@@ -5311,6 +5313,7 @@ mod tests {
         fact_index::insert(
             pool,
             &crate::fact_index::NewFact {
+                excluded_ids: Vec::new(),
                 subject_external: None,
                 slot: None,
                 slot_value: None,
@@ -5438,6 +5441,7 @@ mod tests {
         fact_index::insert(
             &pool,
             &crate::fact_index::NewFact {
+                excluded_ids: Vec::new(),
                 subject_external: None,
                 slot: None,
                 slot_value: None,
@@ -5522,6 +5526,7 @@ mod tests {
         fact_index::insert(
             &pool,
             &crate::fact_index::NewFact {
+                excluded_ids: Vec::new(),
                 subject_external: None,
                 slot: None,
                 slot_value: None,
@@ -5630,6 +5635,7 @@ mod tests {
                 fact_index::insert(
                     &pool,
                     &crate::fact_index::NewFact {
+                        excluded_ids: Vec::new(),
                         subject_external: None,
                         slot: None,
                         slot_value: None,
@@ -5779,6 +5785,7 @@ mod tests {
         fact_index::insert(
             &pool,
             &crate::fact_index::NewFact {
+                excluded_ids: Vec::new(),
                 subject_external: None,
                 slot: None,
                 slot_value: None,
@@ -5845,6 +5852,7 @@ mod tests {
         fact_index::insert(
             &pool,
             &crate::fact_index::NewFact {
+                excluded_ids: Vec::new(),
                 subject_external: None,
                 slot: None,
                 slot_value: None,
@@ -7594,6 +7602,7 @@ mod tests {
         fact_index::insert(
             pool,
             &crate::fact_index::NewFact {
+                excluded_ids: Vec::new(),
                 subject_external: None,
                 slot: None,
                 slot_value: None,

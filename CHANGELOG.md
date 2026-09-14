@@ -11,6 +11,22 @@ semver-governed surface: breaking changes are called out explicitly.
 
 ## Unreleased
 
+### Added
+
+- **"I'd rather she didn't know" is something a fact carries.** Asking for one
+  claim to be kept from one person was being recorded as a narrower audience,
+  and an audience cannot say it: a fact about *the parents* is readable by
+  every parent, so if she is one she reads it whatever the audience says. On
+  the demo corpus both facts carrying an explicit exclusion were readable by
+  the person excluded, from the moment they were written. A claim now carries
+  who it is kept from, and that is subtracted after everything else — it holds
+  against the group she is already in, against a group she joins next year,
+  and against a later message that widens who may read it. Where the audience
+  names a group, that group is also written down as the people in it today, so
+  tomorrow's members do not inherit yesterday's confidences. Only somebody
+  saying so of that same claim takes the restriction back, and the dashboard
+  shows it in a **Not for** column to everyone who may read the fact.
+
 ### Fixed
 
 - **A page that comes out in the wrong language is asked for again.** The
