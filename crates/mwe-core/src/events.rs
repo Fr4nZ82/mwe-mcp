@@ -184,6 +184,11 @@ pub enum EventsError {
     /// JSON serialisation of the payload failed.
     #[error("events payload: {0}")]
     Json(#[from] serde_json::Error),
+    /// A `recipient_id` that is not one canonical principal — see
+    /// [`canonical_addressee`]. A caller's mistake, refused at the door
+    /// rather than stored as a notice nothing will deliver.
+    #[error("events: `{0}` is not an addressee (expected `user:<id>`, `group:<id>` or `global`)")]
+    NotAnAddressee(String),
 }
 
 /// Result alias for this module.
@@ -219,8 +224,9 @@ const SERVED_BY_CONSUMER: &str = "\
 ///   in it** ([`crate::enrollment::members_for`]), so it is matched by name —
 ///   and the name is the BARE `global`, which is what
 ///   [`crate::types::Principal`] prints for it and therefore the only form a
-///   recipient ever carries. Matching `group:global` would be matching
-///   something nothing writes.
+///   recipient carries. There is no second spelling to match:
+///   [`canonical_addressee`] is the one place that decides what an addressee
+///   is, and [`insert_event`] refuses everything else at the door.
 /// - **Nobody** — the event is the operator's (a compile-failure streak, a
 ///   budget threshold, an archive proposal). It reaches the operator through
 ///   whatever they happen to be holding, and nobody else: a consumer running
@@ -231,14 +237,14 @@ const SERVED_BY_CONSUMER: &str = "\
 ///   so a bot delegated for the admin is still a bot
 ///   ([`caller_is_the_operator`](poll_events)).
 ///
-/// Those three are the whole of it, and the `CASE` ends in a bare `0` so the
-/// sentence is true rather than nearly true: an addressee in none of the three
-/// shapes matches NOBODY. It has to be spelled that way because the person arm
-/// reads a `user:` recipient from its sixth byte on, so an addressee that is
-/// not a principal at all — anything a future writer might put there — would
-/// otherwise be cut at the same offset and could land on a real short user id.
-/// A recipient the engine cannot parse is not everybody, and it is not
-/// somebody either.
+/// Those three are the whole of it, and the `CASE` ends in a bare `0` so an
+/// addressee in none of them matches NOBODY. The door already refuses such a
+/// recipient, so what this arm answers for is a row an older engine stored or
+/// a repair typed by hand — and it has to be spelled out, because the person
+/// arm reads a `user:` recipient from its sixth byte on: an addressee that is
+/// not a principal at all would otherwise be cut at the same offset and could
+/// land on a real short user id. A recipient the engine cannot parse is not
+/// everybody, and it is not somebody either.
 ///
 /// Each arm tests its prefix with `substr`, not `LIKE`: `SQLite`'s `LIKE` is
 /// ASCII-case-insensitive, so `USER:a` would take the person arm and be cut at
@@ -272,6 +278,26 @@ static RECIPIENT_SERVED_BY_CONSUMER: std::sync::LazyLock<String> = std::sync::La
     )
 });
 
+/// The addressee a `recipient_id` names, when it names one **canonically**.
+///
+/// One question — *«is this a recipient at all?»* — with one answer, because
+/// three places ask it: the emit-time warning, [`consumers_serving`], and the
+/// delivery rule. Written three ways they drift, and the drift is silent: a
+/// shape one of them calls an addressee and another does not is a notice that
+/// is never delivered and never reported.
+///
+/// **Canonical** is round-trip equality with [`crate::types::Principal`]: a
+/// string is the wire form iff parsing it and printing it again gives back the
+/// same string. That is what rules out `group:global` — it parses, because it
+/// IS the universal group, but the engine prints that group bare, so a
+/// `group:global` in a payload is a second spelling of something with one
+/// spelling and the queue would have to know both. It never gets in:
+/// [`insert_event`] refuses it.
+fn canonical_addressee(recipient_id: &str) -> Option<crate::types::Principal> {
+    let principal: crate::types::Principal = recipient_id.parse().ok()?;
+    (principal.to_string() == recipient_id).then_some(principal)
+}
+
 /// The consumers **configured** to receive an event addressed to
 /// `recipient_id`, in the wire form a recipient carries
 /// ([`crate::types::Principal`]: `user:<id>`, `group:<id>`, or the bare
@@ -300,7 +326,7 @@ static RECIPIENT_SERVED_BY_CONSUMER: std::sync::LazyLock<String> = std::sync::La
 /// [`EventsError::Db`] for any SQL failure.
 pub async fn consumers_serving(pool: &SqlitePool, recipient_id: &str) -> Result<Vec<String>> {
     use crate::types::Principal;
-    let Ok(addressee) = recipient_id.parse::<Principal>() else {
+    let Some(addressee) = canonical_addressee(recipient_id) else {
         return Ok(Vec::new());
     };
     let rows: Vec<(String,)> = if let Principal::Group(group) = &addressee {
@@ -349,6 +375,9 @@ pub async fn consumers_serving(pool: &SqlitePool, recipient_id: &str) -> Result<
 /// payload shape. A payload with no `recipient_id` is addressed to nobody,
 /// which makes the notice the operator's — see [`poll_events`].
 ///
+/// A `recipient_id` that is not one canonical principal is refused and no row
+/// is written: see [`canonical_addressee`].
+///
 /// When the payload addresses somebody — a person or a group — and no
 /// consumer serves them, the row is still written — the dashboard and the
 /// audit trail keep it — but a **warning** names the recipient. Without it
@@ -359,6 +388,8 @@ pub async fn consumers_serving(pool: &SqlitePool, recipient_id: &str) -> Result<
 ///
 /// # Errors
 ///
+/// - [`EventsError::NotAnAddressee`] when `recipient_id` is present and is not
+///   one canonical principal.
 /// - [`EventsError::Json`] when payload serialisation fails.
 /// - [`EventsError::Db`] for any SQL failure.
 pub async fn insert_event(
@@ -368,6 +399,18 @@ pub async fn insert_event(
     fact_id: Option<&str>,
     payload: &serde_json::Value,
 ) -> Result<i64> {
+    // A recipient is either absent, or one canonical principal. Anything else
+    // is refused before the row exists: the queue would have to know two
+    // spellings of one addressee, and the second one delivers to nobody
+    // without saying so.
+    let addressed_to = match payload
+        .get("recipient_id")
+        .and_then(serde_json::Value::as_str)
+    {
+        None => None,
+        Some(r) if canonical_addressee(r).is_some() => Some(r),
+        Some(r) => return Err(EventsError::NotAnAddressee(r.to_owned())),
+    };
     let payload_str = if payload.is_null() {
         None
     } else {
@@ -393,10 +436,7 @@ pub async fn insert_event(
         event_id = row.0,
         "events: inserted"
     );
-    if let Some(recipient) = payload
-        .get("recipient_id")
-        .and_then(serde_json::Value::as_str)
-        .filter(|r| r.starts_with("user:") || r.starts_with("group:"))
+    if let Some(recipient) = addressed_to
         && consumers_serving(pool, recipient).await?.is_empty()
     {
         tracing::warn!(
@@ -816,12 +856,13 @@ impl PollScope<'_> {
 /// `IdentityProfile::is_admin`); a caller that cannot tell passes
 /// `false` and loses only the operator's own notices.
 ///
+/// A row whose stored payload is not JSON is logged at `error` and skipped
+/// rather than raised: the queue belongs to every consumer, and one corrupt
+/// row must not close it.
+///
 /// # Errors
 ///
 /// - [`EventsError::Db`] for any SQL failure.
-/// - [`EventsError::Json`] is not raised by a drain: a row whose stored
-///   payload is not JSON is logged at `error` and skipped, because the queue
-///   belongs to every consumer and one corrupt row must not close it.
 pub async fn poll_events(
     pool: &SqlitePool,
     consumer_id: &str,
@@ -2327,6 +2368,12 @@ mod tests {
         );
     }
 
+    /// The delivery rule's own last line, for a row [`insert_event`] never
+    /// wrote.
+    ///
+    /// Nothing can put these in the queue today — the door refuses them — but
+    /// the predicate is what answers for a row an older engine stored, or one
+    /// a repair typed by hand, so the rows go in underneath it.
     #[tokio::test]
     async fn an_addressee_that_is_not_a_principal_matches_nobody() {
         let (_workdir, pool) = fresh_pool().await;
@@ -2334,16 +2381,16 @@ mod tests {
         // branch reads a `user:` recipient from the sixth byte on, so a
         // malformed addressee of the right length would land on them.
         consumer(&pool, "a-bridge", None, &["a"]).await;
-        for wrong in ["banana", "group", "user", "", "USER:a"] {
-            insert_event(
-                &pool,
-                EventKind::StructureApplied,
-                Some("w"),
-                None,
-                &serde_json::json!({ "recipient_id": wrong }),
+        for wrong in ["banana", "group", "user", "", "USER:a", "group:global"] {
+            sqlx::query(
+                "INSERT INTO wiki_events (kind, wiki_id, payload, created_at) \
+                 VALUES ('structure_applied', 'w', ?, ?)",
             )
+            .bind(format!(r#"{{"recipient_id":"{wrong}"}}"#))
+            .bind(chrono::Utc::now().to_rfc3339())
+            .execute(&pool)
             .await
-            .expect("insert");
+            .expect("store it the way an older engine would have");
         }
         let out = poll_events(
             &pool,
@@ -2471,5 +2518,78 @@ mod tests {
                 .expect("ok"),
             vec!["frodo-bridge"]
         );
+    }
+
+    #[tokio::test]
+    async fn a_notice_for_everybody_is_reported_when_nobody_can_collect_it() {
+        let (_workdir, pool) = fresh_pool().await;
+        let everybody = crate::types::Principal::global().to_string();
+        // The question the emit-time warning asks: is anybody configured to
+        // deliver this? On a deployment with no consumers the answer is no,
+        // and the universal group reaches that answer like any other
+        // addressee, because one place decides what an addressee is.
+        assert!(
+            consumers_serving(&pool, &everybody)
+                .await
+                .expect("configured")
+                .is_empty(),
+            "nobody is registered, so nobody can collect it"
+        );
+        insert_event(
+            &pool,
+            EventKind::StructureApplied,
+            None,
+            None,
+            &serde_json::json!({ "recipient_id": everybody }),
+        )
+        .await
+        .expect("it is a real addressee and the row is written");
+
+        // Register one, and the same question answers with it.
+        consumer(&pool, "any-bridge", None, &["carol"]).await;
+        assert_eq!(
+            consumers_serving(&pool, &everybody).await.expect("ok"),
+            vec!["any-bridge"],
+            "the universal group is everybody's, so every consumer serves it"
+        );
+    }
+
+    #[tokio::test]
+    async fn a_second_spelling_of_an_addressee_never_gets_into_the_queue() {
+        let (_workdir, pool) = fresh_pool().await;
+        // `group:global` parses — it IS the universal group — but the engine
+        // prints that group bare, so it is a second spelling of something with
+        // one. Two spellings is how the poll and the emit-time check come to
+        // disagree: the poll would read it as a group with no members and
+        // deliver to nobody, while `consumers_serving` would say «everybody».
+        let err = insert_event(
+            &pool,
+            EventKind::StructureApplied,
+            None,
+            None,
+            &serde_json::json!({ "recipient_id": "group:global" }),
+        )
+        .await
+        .expect_err("the second spelling is refused at the door");
+        assert!(matches!(err, EventsError::NotAnAddressee(ref r) if r == "group:global"));
+        for wrong in ["banana", "USER:a", "user:", ""] {
+            assert!(
+                insert_event(
+                    &pool,
+                    EventKind::StructureApplied,
+                    None,
+                    None,
+                    &serde_json::json!({ "recipient_id": wrong }),
+                )
+                .await
+                .is_err(),
+                "`{wrong}` is not an addressee"
+            );
+        }
+        let rows: i64 = sqlx::query_scalar("SELECT count(*) FROM wiki_events")
+            .fetch_one(&pool)
+            .await
+            .expect("count");
+        assert_eq!(rows, 0, "a refused notice leaves no row behind");
     }
 }

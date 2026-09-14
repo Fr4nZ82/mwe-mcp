@@ -846,8 +846,10 @@ async fn view(
 ///
 /// The question a listing asks is «may this reader be told this page exists»,
 /// and the product answers it in ONE place,
-/// [`fact_index::page_visible_to`]: the page view asks it, the comment surface
-/// asks it, the notice queue asks it. What it refuses is a page whose facts are
+/// [`fact_index::page_visible_to`]: the comment surface asks it, the notice
+/// queue asks it, and so does this listing. Opening a page is a different
+/// road — it gates on the wiki and redacts region by region — so a page this
+/// list withholds can still be reached by its URL and come back empty. What it refuses is a page whose facts are
 /// all out of reach; a page with no active fact keeps nothing from anybody,
 /// which is what an `@rules.md` of plain prose is, and what a page looks like
 /// once the night has moved its facts away. The strict twin answers a different

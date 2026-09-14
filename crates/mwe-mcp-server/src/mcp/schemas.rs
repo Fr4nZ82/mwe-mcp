@@ -927,7 +927,7 @@ mod tests {
     #[test]
     fn wiki_admin_push_schema_advertises_mark_processed_optional_array() {
         // The smart consumer needs to discover the `mark_processed`
-        // field via `list_tools` so it can recepire dashboard comments
+        // field via `list_tools` so it can close off dashboard comments
         // atomically with its push. Optional, so older callers omitting
         // the field still work.
         let tool = all_tools()

@@ -2308,10 +2308,16 @@ pub async fn readable_fact_on_page(
 /// only about facts.
 ///
 /// The strict twin is the one to ask when the question is «send this person to
-/// that page»; this one is for «is this page's door shut in their face», and
-/// it is what the page view, the comment surface, the notice queue and a
-/// wiki's page listing all ask — one question with one answer, so a page a
-/// person may open is a page they are told about.
+/// that page»; this one is for «is this page's door shut in their face». Three
+/// surfaces ask it: whether a page may be COMMENTED on, whether a notice
+/// naming a page may go out, and whether a wiki's home lists that page.
+///
+/// Reading a page is not one of them. `view_page` gates on the WIKI and then
+/// redacts region by region, so a page this predicate refuses can still be
+/// opened and come back with everything on it `[redacted]`. The listing and
+/// the page view therefore do not agree, and that is the state of things
+/// rather than a promise: closing the gap is the render path's work, not this
+/// predicate's.
 ///
 /// # Errors
 ///

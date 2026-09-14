@@ -867,26 +867,30 @@ pub fn group_by_recipient<T: Clone>(
 /// Whether `caller_sender_id` may apply a proposal whose addressee is
 /// `recipient_id`.
 ///
-/// **Acting follows seeing**, and the same three answers decide both: the
-/// addressed person may act on their own; anybody else needs the
-/// administrator's role AND the reveal lens, which is what being shown
-/// somebody else's row costs on the listing too. A row addressed to nobody is
-/// no different — it is about somebody's pages even when the engine could not
-/// name them — so it is the operator's to decide, with the lens on.
+/// **Acting follows seeing**, and it is the same rule
+/// [`crate::proposals::RecipientScope`] narrows a listing by. The addressed
+/// person may act on their own. Anybody else needs the administrator's role
+/// AND the reveal lens, which is what being shown somebody else's row costs.
+/// A row addressed to nobody splits the way the listing splits it: a receipt
+/// about somebody's pages waits for the lens, and a report about the ENGINE
+/// ([`kind::ENGINE_REPORTS`]) does not, because the administrator is shown it
+/// without one.
 ///
-/// Being the administrator with the lens off buys nothing here: a row you
-/// cannot be shown is not a row you may apply by knowing its id.
+/// Being the administrator with the lens off buys nothing on anybody's
+/// material: a row you cannot be shown is not a row you may apply by knowing
+/// its id.
 ///
 /// `recipient_id`, when `Some`, is a `Principal` wire string (`"user:<id>"`);
-/// `caller_sender_id` is the bare session id.
+/// `caller_sender_id` is the bare session id; `kind` is the row's own.
 #[must_use]
 pub fn recipient_can_act(
     recipient_id: Option<&str>,
+    kind: &str,
     caller_sender_id: &str,
     is_admin: bool,
     reveal: bool,
 ) -> bool {
-    if is_admin && reveal {
+    if is_admin && (reveal || (recipient_id.is_none() && kind::is_engine_report(kind))) {
         return true;
     }
     recipient_id.is_some_and(|r| {
@@ -975,7 +979,7 @@ pub async fn apply_proposal(
     }
     // Only the addressee, or the operator with the lens on.
     let caller = applied_by.unwrap_or("");
-    if !recipient_can_act(recipient_id.as_deref(), caller, is_admin, reveal) {
+    if !recipient_can_act(recipient_id.as_deref(), &kind, caller, is_admin, reveal) {
         return Err(ApplyError::NotAuthorized {
             proposal_id: proposal_id.to_owned(),
             caller: caller.to_owned(),
@@ -3068,40 +3072,39 @@ mod tests {
         assert_eq!(recipient_from_fact(&Principal::global(), None), None);
     }
 
-    /// Acting follows seeing: the same three answers decide both.
+    /// Acting follows seeing, arm for arm — the same splits
+    /// `routes::proposals::readable_scope` narrows a listing by.
     #[test]
     fn acting_on_a_proposal_follows_being_shown_it() {
+        let mine = |k: &str, who: &str, admin, reveal| {
+            recipient_can_act(Some("user:frodo"), k, who, admin, reveal)
+        };
         // The addressee acts on their own, lens or no lens, admin or not.
-        assert!(recipient_can_act(Some("user:frodo"), "frodo", false, false));
+        assert!(mine(kind::PAGE_CREATE, "frodo", false, false));
         // Somebody else's is nobody else's — including an administrator's,
         // with the lens off. They cannot be shown it either.
-        assert!(!recipient_can_act(
-            Some("user:frodo"),
-            "galadriel",
-            false,
-            false
-        ));
-        assert!(!recipient_can_act(
-            Some("user:frodo"),
-            "galadriel",
-            true,
-            false
-        ));
+        assert!(!mine(kind::PAGE_CREATE, "galadriel", false, false));
+        assert!(!mine(kind::PAGE_CREATE, "galadriel", true, false));
         // With the lens on, the administrator acts on everybody's.
-        assert!(recipient_can_act(
-            Some("user:frodo"),
-            "galadriel",
-            true,
-            true
-        ));
-        // Addressed to nobody is still about somebody's pages: the operator's
-        // to decide, with the lens on, and nobody else's at all.
-        assert!(!recipient_can_act(None, "anyone", false, false));
-        assert!(!recipient_can_act(None, "galadriel", true, false));
-        assert!(recipient_can_act(None, "galadriel", true, true));
+        assert!(mine(kind::PAGE_CREATE, "galadriel", true, true));
+
+        // Addressed to nobody splits by family, the way the listing does. A
+        // receipt about somebody's pages waits for the lens…
+        let nobodys =
+            |k: &str, who: &str, admin, reveal| recipient_can_act(None, k, who, admin, reveal);
+        assert!(!nobodys(kind::PAGE_CREATE, "anyone", false, false));
+        assert!(!nobodys(kind::PAGE_CREATE, "galadriel", true, false));
+        assert!(nobodys(kind::PAGE_CREATE, "galadriel", true, true));
+        // …and a report about the ENGINE does not, because that is the one
+        // the administrator is shown without one.
+        assert!(nobodys(kind::RECALL_TUNING, "galadriel", true, false));
+        // Still nobody else's, family or no family.
+        assert!(!nobodys(kind::RECALL_TUNING, "anyone", false, false));
+
         // A group recipient addresses nobody who can act.
         assert!(!recipient_can_act(
             Some("group:famiglia"),
+            kind::PAGE_CREATE,
             "frodo",
             false,
             false

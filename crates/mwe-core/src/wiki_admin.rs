@@ -73,7 +73,7 @@ use crate::wiki::{META_FILENAME, WikiError, WikiHandle, WikiMeta, WikiTree, atom
 ///
 /// The strings are pinned by the CHECK constraint in migration 0027, so a
 /// variant's wire form is not free to change.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ActorKind {
     /// A write a smart consumer made through [`push`], which is every write
     /// this API takes.

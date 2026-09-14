@@ -874,7 +874,7 @@ async fn comment_no_read_access_returns_403() {
     let (app, pool, tree, _dir) = make_app_with_memory().await;
     let cookie = login_as_admin(&app).await; // Alice (admin, owns "alice")
     seed_bob_with_page(&tree, "modules/private.md", TWO_HEADING_BODY);
-    seed_fact_about(&pool, "bob", "modules/private.md", "user:bob", "03").await;
+    seed_fact_about(&pool, &tree, "bob", "modules/private.md", "user:bob", "03").await;
 
     let response = send(
         &app,
@@ -917,7 +917,7 @@ async fn comment_affordance_hidden_when_only_reveal_opened_the_page() {
     let (app, pool, tree, _dir) = make_app_with_memory().await;
     let cookie = login_as_admin(&app).await; // alice (admin), not bob
     seed_bob_with_page(&tree, "modules/private.md", TWO_HEADING_BODY);
-    seed_fact_about(&pool, "bob", "modules/private.md", "user:bob", "04").await;
+    seed_fact_about(&pool, &tree, "bob", "modules/private.md", "user:bob", "04").await;
 
     let response = send(
         &app,
@@ -1804,13 +1804,13 @@ async fn a_wiki_home_lists_the_pages_its_reader_reads_and_counts_their_facts() {
     seed_alice_with_page(&tree, "shared.md", "# Shared\n\nprose\n");
     seed_alice_with_page(&tree, "hers.md", "# Hers\n\nprose\n");
     // One fact bob is in the audience of, one he is not.
-    seed_fact_about(&pool, "alice", "shared.md", "user:alice", "a1").await;
+    seed_fact_about(&pool, &tree, "alice", "shared.md", "user:alice", "a1").await;
     sqlx::query("UPDATE fact_index SET allow_ids = '[\"user:bob\"]' WHERE source_path = ?")
         .bind("wikis/alice/shared.md")
         .execute(&pool)
         .await
         .expect("share the first one with bob");
-    seed_fact_about(&pool, "alice", "hers.md", "user:alice", "a2").await;
+    seed_fact_about(&pool, &tree, "alice", "hers.md", "user:alice", "a2").await;
 
     let response = send(
         &app,
@@ -1850,13 +1850,13 @@ async fn a_wiki_home_lists_a_page_that_holds_no_fact_at_all() {
     let bob_cookie = login_as_user(&app, &admin_cookie, "bob").await;
     seed_alice_with_page(&tree, "shared.md", "# Shared\n\nprose\n");
     seed_alice_with_page(&tree, "hers.md", "# Hers\n\nprose\n");
-    seed_fact_about(&pool, "alice", "shared.md", "user:alice", "b1").await;
+    seed_fact_about(&pool, &tree, "alice", "shared.md", "user:alice", "b1").await;
     sqlx::query("UPDATE fact_index SET allow_ids = '[\"user:bob\"]' WHERE source_path = ?")
         .bind("wikis/alice/shared.md")
         .execute(&pool)
         .await
         .expect("share the first one with bob");
-    seed_fact_about(&pool, "alice", "hers.md", "user:alice", "b2").await;
+    seed_fact_about(&pool, &tree, "alice", "hers.md", "user:alice", "b2").await;
 
     let response = send(
         &app,
@@ -1963,12 +1963,7 @@ async fn a_nested_wikis_listing_and_count_agree() {
     )
     .unwrap();
     std::fs::write(dir.join("dolci.md"), "# Dolci\n\nprose\n").unwrap();
-    seed_fact_about(&pool, "alice-ricette", "dolci.md", "user:bob", "b3").await;
-    sqlx::query("UPDATE fact_index SET source_path = ? WHERE wiki_id = 'alice-ricette'")
-        .bind("wikis/alice/ricette/dolci.md")
-        .execute(&pool)
-        .await
-        .expect("file it where the wiki really is");
+    seed_fact_about(&pool, &tree, "alice-ricette", "dolci.md", "user:bob", "b3").await;
 
     let response = send(
         &app,
@@ -1993,9 +1988,26 @@ async fn a_nested_wikis_listing_and_count_agree() {
 
 /// One indexed fact about `subject`, so the wiki's derived visibility has
 /// something to answer with.
-async fn seed_fact_about(pool: &SqlitePool, wiki_id: &str, page: &str, subject: &str, tail: &str) {
+///
+/// The source path comes from the wiki's own handle, never from its id: a
+/// nested wiki lives under its person's directory (`wikis/<user>/<slug>/`)
+/// while its id is `<user>-<slug>`, so a path glued together from the id
+/// names a file that is not there — and every per-page question then answers
+/// about nothing, which is a test passing without testing.
+async fn seed_fact_about(
+    pool: &SqlitePool,
+    tree: &WikiTree,
+    wiki_id: &str,
+    page: &str,
+    subject: &str,
+    tail: &str,
+) {
     use mwe_core::fact_index::{self, NewFact};
-    use mwe_core::types::FactId;
+    use mwe_core::types::{FactId, WikiId};
+
+    let handle = tree
+        .locate(&WikiId::parse(wiki_id).expect("wiki id"))
+        .expect("the wiki must be on disk before a fact is filed on one of its pages");
 
     fact_index::insert(
         pool,
@@ -2006,7 +2018,7 @@ async fn seed_fact_about(pool: &SqlitePool, wiki_id: &str, page: &str, subject: 
             authored_refs: Vec::new(),
             fact_id: FactId::parse(&format!("018f1234-5678-7abc-9def-0000000005{tail}")).unwrap(),
             wiki_id: wiki_id.to_owned(),
-            source_path: format!("wikis/{wiki_id}/{page}"),
+            source_path: handle.source_path(std::path::Path::new(page)),
             region_start: None,
             region_end: None,
             text: "The roses are pruned in February.".to_owned(),
@@ -2082,7 +2094,7 @@ async fn a_page_of_a_wiki_nobody_owns_opens_for_the_reader_of_one_of_its_facts()
     let carol = login_as_user(&app, &admin, "carol").await;
 
     seed_giardinaggio_with_page(&tree, "rose.md", TWO_HEADING_BODY);
-    seed_fact_about(&pool, "giardinaggio", "rose.md", "user:bob", "01").await;
+    seed_fact_about(&pool, &tree, "giardinaggio", "rose.md", "user:bob", "01").await;
 
     let seen = send(
         &app,
@@ -2136,8 +2148,8 @@ async fn commenting_is_offered_on_the_page_you_read_and_refused_on_the_one_you_d
     // Two pages in one wiki: one fact is Bob's, the other is not his to see.
     seed_giardinaggio_with_page(&tree, "rose.md", TWO_HEADING_BODY);
     seed_giardinaggio_with_page(&tree, "conti.md", TWO_HEADING_BODY);
-    seed_fact_about(&pool, "giardinaggio", "rose.md", "user:bob", "03").await;
-    seed_fact_about(&pool, "giardinaggio", "conti.md", "user:carol", "04").await;
+    seed_fact_about(&pool, &tree, "giardinaggio", "rose.md", "user:bob", "03").await;
+    seed_fact_about(&pool, &tree, "giardinaggio", "conti.md", "user:carol", "04").await;
 
     let his = send(
         &app,
@@ -2202,7 +2214,7 @@ async fn a_pages_text_cannot_be_opened_for_editing_by_anybody() {
     let bob = login_as_user(&app, &admin, "bob").await;
 
     seed_giardinaggio_with_page(&tree, "rose.md", TWO_HEADING_BODY);
-    seed_fact_about(&pool, "giardinaggio", "rose.md", "user:bob", "02").await;
+    seed_fact_about(&pool, &tree, "giardinaggio", "rose.md", "user:bob", "02").await;
 
     for (who, cookie) in [("the admin", &admin), ("a reader", &bob)] {
         let form = send(
