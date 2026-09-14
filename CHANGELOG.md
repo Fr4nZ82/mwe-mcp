@@ -68,7 +68,10 @@ semver-governed surface: breaking changes are called out explicitly.
   is often the whole of the news. A page with no facts left on it keeps nothing
   from anybody, so a notice about it still arrives — that is what a page looks
   like after the night has moved its contents elsewhere, and losing your own
-  notice over it would be the wrong answer.
+  notice over it would be the wrong answer. A notice held back that way costs
+  the rest of the queue nothing: an assistant collecting its mail reads on past
+  it and still comes away with a full handful, and it is told there is more
+  only when more is actually coming to it.
 
 - **The notice about a fact the memory keeps failing to find is on the
   Proposals page, and no longer carries the question that failed.** It told the

@@ -227,8 +227,18 @@ const SERVED_BY_CONSUMER: &str = "\
 ///   so a bot delegated for the admin is still a bot
 ///   ([`caller_is_the_operator`](poll_events)).
 ///
-/// An addressee in none of those shapes matches nothing, which is the safe
-/// direction: an addressee the engine cannot read is not everybody.
+/// Those three are the whole of it, and the `CASE` ends in a bare `0` so the
+/// sentence is true rather than nearly true: an addressee in none of the three
+/// shapes matches NOBODY. It has to be spelled that way because the person arm
+/// reads a `user:` recipient from its sixth byte on, so an addressee that is
+/// not a principal at all — anything a future writer might put there — would
+/// otherwise be cut at the same offset and could land on a real short user id.
+/// A recipient the engine cannot parse is not everybody, and it is not
+/// somebody either.
+///
+/// Each arm tests its prefix with `substr`, not `LIKE`: `SQLite`'s `LIKE` is
+/// ASCII-case-insensitive, so `USER:a` would take the person arm and be cut at
+/// the same offset. The prefixes are wire form and wire form is exact.
 ///
 /// Binds, in order: the operator flag and `consumer_id` (unaddressed); the
 /// universal group's id, the caller, `consumer_id` twice (group); the caller,
@@ -245,14 +255,15 @@ static RECIPIENT_SERVED_BY_CONSUMER: std::sync::LazyLock<String> = std::sync::La
              OR EXISTS (SELECT 1 FROM consumers c \
                           JOIN enrollment_users u ON u.user_id = c.system_user_id \
                          WHERE c.consumer_id = ? AND u.is_admin = 1) \
-           WHEN json_extract(payload, '$.recipient_id') LIKE 'group:%' THEN \
+           WHEN substr(json_extract(payload, '$.recipient_id'), 1, 6) = 'group:' THEN \
              substr(json_extract(payload, '$.recipient_id'), 7) = ? \
              OR EXISTS (SELECT 1 FROM enrollment_groups g, json_each(g.members) m \
                          WHERE g.group_id = substr(json_extract(payload, '$.recipient_id'), 7) \
                            AND (m.value = ? OR m.value IN ({SERVED_BY_CONSUMER}))) \
-           ELSE \
+           WHEN substr(json_extract(payload, '$.recipient_id'), 1, 5) = 'user:' THEN \
              substr(json_extract(payload, '$.recipient_id'), 6) = ? \
              OR substr(json_extract(payload, '$.recipient_id'), 6) IN ({SERVED_BY_CONSUMER}) \
+           ELSE 0 \
          END"
     )
 });
@@ -456,8 +467,11 @@ pub struct PollOutcome {
     /// `emitted_at ASC` (oldest first) so a single-pass consumer
     /// preserves event order.
     pub events: Vec<PolledEvent>,
-    /// `true` when more pending events exist past `top_k` — the
-    /// consumer should poll again right after acking these.
+    /// `true` when there is more mail for this consumer behind this
+    /// window — poll again right after acking these. It counts DELIVERIES:
+    /// a pending row that will never be delivered to this consumer does not
+    /// set it, so `false` means the queue holds nothing else for them and
+    /// asking again would be a wasted round trip.
     pub has_more: bool,
 }
 
@@ -598,6 +612,112 @@ impl PageOpenToAddressee {
     }
 }
 
+/// How many queue rows one drain will look at before giving up and saying
+/// «ask again».
+///
+/// The page pass can hold a row back, and a held-back row is looked at on
+/// every poll until the retention sweep takes it, so a drain has to be allowed
+/// to read past them. This bounds how far: ten full windows. Reaching it is
+/// reported as [`PollOutcome::has_more`] rather than as an empty queue, which
+/// is the honest answer — the search stopped, it did not finish.
+const POLL_SCAN_CEILING: i64 = 10 * MAX_POLL_TOP_K;
+
+/// Everything one drain's batches share: who is asking, and the filters that
+/// do not move between batches.
+///
+/// It exists so [`poll_events`] can run the same query from a cursor without
+/// rebuilding nine binds by hand each time, and so the bind ORDER lives in one
+/// place next to the predicate it feeds.
+struct PollScope<'a> {
+    /// The consumer draining the queue.
+    consumer_id: &'a str,
+    /// The verified identity of the caller — the effective sender.
+    caller_id: &'a str,
+    /// Whether the administrator is personally on the other end.
+    caller_is_the_operator: bool,
+    /// `created_at > since`, when the caller gave one.
+    since: Option<&'a str>,
+    /// `kind IN (…)`, when the caller gave any.
+    kinds: &'a [String],
+}
+
+impl PollScope<'_> {
+    /// The next `batch` rows this consumer may receive, strictly after
+    /// `after` in `(created_at, id)` order.
+    ///
+    /// `after` is a row already looked at, not a row already delivered: the
+    /// drain moves it over held-back rows too, which is what keeps them from
+    /// being read again inside the same call.
+    async fn batch_after(
+        &self,
+        pool: &SqlitePool,
+        after: Option<&(String, i64)>,
+        batch: usize,
+    ) -> Result<Vec<EventTuple>> {
+        let kinds_placeholder = if self.kinds.is_empty() {
+            String::new()
+        } else {
+            // Values are bound, so no caller text ever reaches the SQL.
+            let qs = std::iter::repeat_n("?", self.kinds.len())
+                .collect::<Vec<_>>()
+                .join(",");
+            format!(" AND kind IN ({qs})")
+        };
+        let since_clause = if self.since.is_some() {
+            " AND created_at > ?"
+        } else {
+            ""
+        };
+        // The cursor is the ORDER BY pair read as a tuple: strictly later
+        // stamp, or the same stamp and a later id. `created_at` is compared as
+        // TEXT here and ordered as TEXT there, so the two agree by
+        // construction — a cursor that compared it any other way could step
+        // over a row the ordering had not reached yet.
+        let after_clause = if after.is_some() {
+            " AND (created_at > ? OR (created_at = ? AND id > ?))"
+        } else {
+            ""
+        };
+        let recipient_scope = &*RECIPIENT_SERVED_BY_CONSUMER;
+        let sql = format!(
+            "SELECT id, kind, wiki_id, fact_id, payload, created_at
+               FROM wiki_events
+              WHERE json_extract(acks, '$.' || ?) IS NULL
+                AND ({recipient_scope}){since_clause}{after_clause}{kinds_placeholder}
+              ORDER BY created_at ASC, id ASC
+              LIMIT ?"
+        );
+        let mut query = sqlx::query_as::<_, EventTuple>(&sql)
+            .bind(self.consumer_id)
+            // unaddressed: the operator in person, or a consumer running as them
+            .bind(i64::from(self.caller_is_the_operator))
+            .bind(self.consumer_id)
+            // group: the universal group by name, then the member test
+            .bind(crate::enrollment::GLOBAL_GROUP_ID)
+            .bind(self.caller_id)
+            .bind(self.consumer_id)
+            .bind(self.consumer_id)
+            // person
+            .bind(self.caller_id)
+            .bind(self.consumer_id)
+            .bind(self.consumer_id);
+        if let Some(s) = self.since {
+            query = query.bind(s);
+        }
+        if let Some((stamp, id)) = after {
+            query = query.bind(stamp).bind(stamp).bind(id);
+        }
+        for k in self.kinds {
+            query = query.bind(k);
+        }
+        query
+            .bind(i64::try_from(batch).unwrap_or(i64::MAX))
+            .fetch_all(pool)
+            .await
+            .map_err(EventsError::from)
+    }
+}
+
 /// Drain pending events for `consumer_id`.
 ///
 /// Selection semantics (intersected, all optional except consumer):
@@ -637,16 +757,33 @@ impl PageOpenToAddressee {
 /// admitted, because the answer is the render path's ACL map rather than a
 /// column.
 ///
-/// A row held back that way stays pending: it is re-examined on the next
-/// poll — the page may gain a fact this person reads — and until then it
-/// occupies one slot of the window, for at most the queue's retention
-/// ([`crate::housekeeping`]). That is what asking a question the query cannot
-/// ask costs.
+/// A row held back that way stays pending and is re-examined on the next poll,
+/// because the page may gain a fact this person reads. It costs the caller
+/// nothing meanwhile: the drain reads on past it.
 ///
-/// `has_more` is `true` iff the underlying query returned `top_k + 1`
-/// matches — the extra row is discarded. It counts what the SQL matched, so
-/// a drain that ends with fewer rows than it asked for and `has_more` false
-/// has reached the end of what this consumer may receive.
+/// ## Why the drain pages
+///
+/// A held-back row is the OLDEST thing in the queue and the order is oldest
+/// first, so a single `LIMIT top_k` would hand it the same slot on every poll
+/// for as long as the retention sweep leaves it there
+/// ([`crate::housekeeping`]) — and `top_k` of them would wedge the queue shut
+/// with the real mail behind them, reported as an empty queue. So the drain
+/// reads in batches from a cursor on `(created_at, id)` and keeps going until
+/// it has `top_k` rows that PASSED, or the queue runs out, or it has looked at
+/// [`POLL_SCAN_CEILING`] rows.
+///
+/// `has_more` is `true` iff a further row would have been delivered — one more
+/// than asked for was found, or the ceiling stopped the search before the end.
+/// It counts deliveries, never matches, so `has_more` false means there is
+/// nothing else coming and a consumer can stop asking.
+///
+/// The ceiling case is the one to know about: a drain that reaches it having
+/// delivered nothing will say the same thing on the next call, because the
+/// rows in front of it are the same rows. That is a queue with more held-back
+/// mail at its head than one drain reads, and what clears it is the retention
+/// sweep or those pages gaining a fact their addressee may read — not another
+/// poll. `has_more` is still the honest answer: the search stopped, and a
+/// consumer told «nothing here» would be told something false.
 ///
 /// `caller_is_the_operator` says the administrator is personally making this
 /// call — their own token, standing in for nobody. It opens the unaddressed
@@ -669,81 +806,66 @@ pub async fn poll_events(
     kinds: &[String],
     top_k: i64,
 ) -> Result<PollOutcome> {
-    let limit = top_k.clamp(1, MAX_POLL_TOP_K);
-    let probe_limit = limit + 1;
-
-    // Build dynamic IN-list for kinds. We bind values so SQL injection
-    // is impossible regardless of where the strings came from.
-    let kinds_placeholder = if kinds.is_empty() {
-        String::new()
-    } else {
-        let qs = std::iter::repeat_n("?", kinds.len())
-            .collect::<Vec<_>>()
-            .join(",");
-        format!(" AND kind IN ({qs})")
+    let limit = usize::try_from(top_k.clamp(1, MAX_POLL_TOP_K)).unwrap_or(1);
+    let scope = PollScope {
+        consumer_id,
+        caller_id,
+        caller_is_the_operator,
+        since,
+        kinds,
     };
-    let since_clause = if since.is_some() {
-        " AND created_at > ?"
-    } else {
-        ""
-    };
+    // One more than asked for: finding it is how `has_more` learns there is
+    // another delivery behind this window, and it is dropped.
+    let wanted = limit + 1;
 
-    let recipient_scope = &*RECIPIENT_SERVED_BY_CONSUMER;
-    let sql = format!(
-        "SELECT id, kind, wiki_id, fact_id, payload, created_at
-           FROM wiki_events
-          WHERE json_extract(acks, '$.' || ?) IS NULL
-            AND ({recipient_scope}){since_clause}{kinds_placeholder}
-          ORDER BY created_at ASC, id ASC
-          LIMIT ?"
-    );
-
-    let mut query = sqlx::query_as::<_, EventTuple>(&sql)
-        .bind(consumer_id)
-        // unaddressed: the operator in person, or a consumer running as them
-        .bind(i64::from(caller_is_the_operator))
-        .bind(consumer_id)
-        // group: the universal group by name, then the member test
-        .bind(crate::enrollment::GLOBAL_GROUP_ID)
-        .bind(caller_id)
-        .bind(consumer_id)
-        .bind(consumer_id)
-        // person
-        .bind(caller_id)
-        .bind(consumer_id)
-        .bind(consumer_id);
-    if let Some(s) = since {
-        query = query.bind(s);
-    }
-    for k in kinds {
-        query = query.bind(k);
-    }
-    let rows: Vec<EventTuple> = query.bind(probe_limit).fetch_all(pool).await?;
-
-    let has_more = i64::try_from(rows.len()).unwrap_or(i64::MAX) > limit;
-    let kept = rows.into_iter().take(usize::try_from(limit).unwrap_or(0));
-    let mut events = Vec::new();
+    let mut events: Vec<PolledEvent> = Vec::with_capacity(limit);
     let mut page_open = PageOpenToAddressee::default();
-    for (id, kind, wiki_id, fact_id, payload, created_at) in kept {
-        let payload_val = match payload {
-            Some(s) => serde_json::from_str(&s)?,
-            None => serde_json::Value::Null,
-        };
-        if !page_open
-            .allows(pool, wiki_id.as_deref(), &payload_val)
-            .await
-        {
-            continue;
+    let mut after: Option<(String, i64)> = None;
+    let mut examined: i64 = 0;
+    let mut ran_out = false;
+    while events.len() < wanted && examined < POLL_SCAN_CEILING {
+        // Ask for the shortfall plus the probe row. A batch of matches that
+        // the page pass empties costs another round trip and no correctness.
+        let batch = wanted - events.len();
+        let rows = scope.batch_after(pool, after.as_ref(), batch).await?;
+        ran_out = rows.len() < batch;
+        for (id, kind, wiki_id, fact_id, payload, created_at) in rows {
+            examined += 1;
+            // The cursor advances over every row LOOKED AT, held back or not:
+            // a held-back row is skipped for this drain and stays in the queue
+            // for the next one.
+            after = Some((created_at.clone(), id));
+            let payload_val = match payload {
+                Some(s) => serde_json::from_str(&s)?,
+                None => serde_json::Value::Null,
+            };
+            if !page_open
+                .allows(pool, wiki_id.as_deref(), &payload_val)
+                .await
+            {
+                continue;
+            }
+            events.push(PolledEvent {
+                event_id: id,
+                kind,
+                wiki_id,
+                fact_id,
+                payload: payload_val,
+                emitted_at: created_at,
+            });
+            if events.len() == wanted {
+                break;
+            }
         }
-        events.push(PolledEvent {
-            event_id: id,
-            kind,
-            wiki_id,
-            fact_id,
-            payload: payload_val,
-            emitted_at: created_at,
-        });
+        if ran_out {
+            break;
+        }
     }
+    // Two ways there is more: a delivery beyond the window, or a search that
+    // stopped early. Both mean «ask again»; only running out of queue means
+    // «nothing is coming».
+    let has_more = events.len() > limit || (!ran_out && examined >= POLL_SCAN_CEILING);
+    events.truncate(limit);
 
     touch_consumer_last_seen(pool, consumer_id).await?;
 
@@ -2065,6 +2187,162 @@ mod tests {
             vec!["gone.md"],
             "a page holding no fact at all hides nothing, so the notice about your own \
              document still reaches you; a page holding somebody else's does not"
+        );
+    }
+
+    #[tokio::test]
+    async fn a_held_back_row_at_the_head_does_not_block_the_mail_behind_it() {
+        let (_workdir, pool) = fresh_pool().await;
+        consumer(&pool, "frodo-bridge", None, &["frodo"]).await;
+        // The oldest row names a page whose only fact is somebody else's, so
+        // it is held back — and it is held back on every poll, for as long as
+        // the retention sweep leaves it there.
+        fact_on(&pool, "wikis/famiglia/hers.md", "user:galadriel", &[], 0xc1).await;
+        insert_event(
+            &pool,
+            EventKind::DocumentIngested,
+            Some("famiglia"),
+            None,
+            &serde_json::json!({ "recipient_id": "user:frodo", "document_page": "hers.md" }),
+        )
+        .await
+        .expect("insert");
+        // Two ordinary notices behind it.
+        for n in ["first", "second"] {
+            insert_event(
+                &pool,
+                EventKind::FactMintedForYou,
+                Some("frodo"),
+                None,
+                &serde_json::json!({
+                    "recipient_id": "user:frodo",
+                    "facts": [{ "fact_id": n, "wiki_id": "frodo", "body": n }],
+                }),
+            )
+            .await
+            .expect("insert");
+        }
+
+        // One at a time. The held-back row must not spend the caller's only
+        // slot: what comes back is the first notice they may actually have.
+        let first = poll_events(&pool, "frodo-bridge", CALLER, false, None, &[], 1)
+            .await
+            .expect("poll");
+        assert_eq!(
+            first.events.len(),
+            1,
+            "a poll whose window opens on a held-back row still delivers: {first:?}"
+        );
+        assert_eq!(first.events[0].payload["facts"][0]["fact_id"], "first");
+        assert!(
+            first.has_more,
+            "`has_more` counts what will actually be delivered, and one more will be"
+        );
+
+        // Ack it and ask again: the second arrives, and now there is nothing
+        // else that will ever come.
+        ack_events(&pool, "frodo-bridge", &[first.events[0].event_id])
+            .await
+            .expect("ack");
+        let second = poll_events(&pool, "frodo-bridge", CALLER, false, None, &[], 1)
+            .await
+            .expect("poll");
+        assert_eq!(second.events.len(), 1);
+        assert_eq!(second.events[0].payload["facts"][0]["fact_id"], "second");
+        assert!(
+            !second.has_more,
+            "the only row left is one that will never be delivered, so there is no more mail"
+        );
+    }
+
+    #[tokio::test]
+    async fn a_queue_of_nothing_but_held_back_rows_reads_as_empty_and_stays_reachable() {
+        let (_workdir, pool) = fresh_pool().await;
+        consumer(&pool, "frodo-bridge", None, &["frodo"]).await;
+        fact_on(&pool, "wikis/famiglia/hers.md", "user:galadriel", &[], 0xc2).await;
+        for _ in 0..3 {
+            insert_event(
+                &pool,
+                EventKind::DocumentIngested,
+                Some("famiglia"),
+                None,
+                &serde_json::json!({ "recipient_id": "user:frodo", "document_page": "hers.md" }),
+            )
+            .await
+            .expect("insert");
+        }
+        let out = poll_events(&pool, "frodo-bridge", "frodo", false, None, &[], 2)
+            .await
+            .expect("poll");
+        assert!(out.events.is_empty());
+        assert!(
+            !out.has_more,
+            "nothing is coming, and saying otherwise sends a consumer round for ever"
+        );
+    }
+
+    #[tokio::test]
+    async fn an_addressee_that_is_not_a_principal_matches_nobody() {
+        let (_workdir, pool) = fresh_pool().await;
+        // A consumer serving a person whose id is one letter. The person
+        // branch reads a `user:` recipient from the sixth byte on, so a
+        // malformed addressee of the right length would land on them.
+        consumer(&pool, "a-bridge", None, &["a"]).await;
+        for wrong in ["banana", "group", "user", "", "USER:a"] {
+            insert_event(
+                &pool,
+                EventKind::StructureApplied,
+                Some("w"),
+                None,
+                &serde_json::json!({ "recipient_id": wrong }),
+            )
+            .await
+            .expect("insert");
+        }
+        let out = poll_events(
+            &pool,
+            "a-bridge",
+            CALLER,
+            false,
+            None,
+            &[],
+            DEFAULT_POLL_TOP_K,
+        )
+        .await
+        .expect("poll");
+        assert!(
+            out.events.is_empty(),
+            "an addressee in none of the three shapes is not a person, not a group and not \
+             nobody — it matches nothing: {out:?}"
+        );
+    }
+
+    #[tokio::test]
+    async fn a_search_that_stops_early_says_so_instead_of_reporting_an_empty_queue() {
+        let (_workdir, pool) = fresh_pool().await;
+        consumer(&pool, "frodo-bridge", None, &["frodo"]).await;
+        fact_on(&pool, "wikis/famiglia/hers.md", "user:galadriel", &[], 0xc3).await;
+        // More held-back rows than one drain will look at. The queue is not
+        // empty and the caller must not be told it is — the search ran out of
+        // budget, which is a different answer.
+        for _ in 0..=POLL_SCAN_CEILING {
+            insert_event(
+                &pool,
+                EventKind::DocumentIngested,
+                Some("famiglia"),
+                None,
+                &serde_json::json!({ "recipient_id": "user:frodo", "document_page": "hers.md" }),
+            )
+            .await
+            .expect("insert");
+        }
+        let out = poll_events(&pool, "frodo-bridge", CALLER, false, None, &[], 1)
+            .await
+            .expect("poll");
+        assert!(out.events.is_empty());
+        assert!(
+            out.has_more,
+            "the drain stopped at its ceiling, which is «ask again», not «nothing here»"
         );
     }
 }
