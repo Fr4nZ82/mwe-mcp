@@ -13,6 +13,24 @@ semver-governed surface: breaking changes are called out explicitly.
 
 ### Fixed
 
+- **A page that has nothing on it for you answers like a page that is not
+  there.** Two different refusals would have told you which of the two it was,
+  and *«the page exists, but there is nothing on it for you»* is itself
+  something about the page. The exception is a page of your own: your rules
+  page, freshly made and still empty, is yours and answers.
+
+- **A defining trait of an assistant is marked as one, and only then is it
+  everyone's.** What an assistant is — its name, its voice — reaches whoever
+  talks to it; a memory of one afternoon with somebody, marked urgent because
+  it mattered that day, is not that and does not. The two are told apart by the
+  same test the rest of the product uses for what belongs on an identity card,
+  so there is one answer and not two.
+
+- **A clause is the unit.** A link you cannot follow takes its own clause with
+  it, not the rest of the line: a semicolon or a colon ends one as surely as a
+  full stop. And when the part that goes was the start of a list item, the
+  bullet comes back on what is left.
+
 - **What an assistant remembers about you is yours to read, and what it is is
   everyone's.** An assistant keeps two kinds of memory about itself: what it IS
   — *my name is Gandalf*, the voice it speaks with, the limits it works under —

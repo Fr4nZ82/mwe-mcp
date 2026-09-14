@@ -835,6 +835,32 @@ struct WikiReadArgs {
     path: Option<String>,
 }
 
+/// The refusal an unknown page name gets. One place, because the refusal a
+/// page-with-nothing-on-it gets has to be the same one word for word.
+fn no_such_page(page_rel: &str, wiki_id: &mwe_core::types::WikiId) -> ToolError {
+    ToolError::new(
+        ToolErrorClass::NotFound,
+        format!("page `{page_rel}` not found in wiki `{wiki_id:?}`"),
+    )
+}
+
+/// **Does this render leave the reader with nothing, on a page that is not
+/// theirs?** Then it answers like a page that is not there.
+///
+/// Two different refusals would say which of the two it is, and «the page
+/// exists but there is nothing on it for you» is itself something about the
+/// page — the way `wiki_forget` already answers. The exception is a page that
+/// is the reader's OWN to see: their own memory, or a markerless wiki they
+/// have been let into. A freshly seeded `@rules.md` holds nothing and is still
+/// theirs.
+fn answers_as_a_missing_page(rendered: &str, page: mwe_core::render::PageForReader) -> bool {
+    mwe_core::render::serves_nothing(rendered)
+        && !matches!(
+            page,
+            mwe_core::render::PageForReader::Whole | mwe_core::render::PageForReader::AsWritten
+        )
+}
+
 pub(super) async fn call_wiki_read(
     state: &McpState,
     identity: &IdentityProfile,
@@ -920,16 +946,10 @@ pub(super) async fn call_wiki_read(
     .await
     .map_err(|e| ToolError::new(ToolErrorClass::InternalError, e.to_string()))?
     {
-        return Err(ToolError::new(
-            ToolErrorClass::NotFound,
-            format!("page `{page_rel}` not found in wiki `{wiki_id:?}`"),
-        ));
+        return Err(no_such_page(page_rel, &wiki_id));
     }
     let raw = handle.read_page(page).map_err(|e| match e {
-        mwe_core::wiki::WikiError::PageNotFound { .. } => ToolError::new(
-            ToolErrorClass::NotFound,
-            format!("page `{page_rel}` not found in wiki `{wiki_id:?}`"),
-        ),
+        mwe_core::wiki::WikiError::PageNotFound { .. } => no_such_page(page_rel, &wiki_id),
         other => ToolError::new(ToolErrorClass::InternalError, other.to_string()),
     })?;
     // Whose category this wiki is, derived from where it sits in the tree. A
@@ -980,6 +1000,9 @@ pub(super) async fn call_wiki_read(
         }),
     };
     let rendered = mwe_core::render::render_for_sender(&raw, &db_acl, &view);
+    if answers_as_a_missing_page(&rendered.text, view.page) {
+        return Err(no_such_page(page_rel, &wiki_id));
+    }
     Ok(json!({
         "wiki_id": meta.wiki_id.as_str(),
         "page": page_rel,

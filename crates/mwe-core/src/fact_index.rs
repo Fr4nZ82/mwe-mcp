@@ -4559,22 +4559,28 @@ mod tests {
             .await
             .expect("re-sign");
         assert_eq!(n, 2, "both wikis, one answer");
-        for id in [SAMPLE_UUID_V7_1, SAMPLE_UUID_V7_2] {
-            let row = find_by_id(&pool, &FactId::parse(id).unwrap())
-                .await
-                .expect("read back")
-                .expect("row");
-            assert_eq!(
-                row.sender_id,
-                Some(crate::gdpr::removed_sender()),
-                "the name goes to nobody, whatever wiki the fact sits in"
-            );
-            assert_ne!(
-                row.sender_id,
-                Some(Principal::User("alice".into())),
-                "and never to the wiki's own person"
-            );
-        }
+
+        let on_a_persons_wiki = find_by_id(&pool, &FactId::parse(SAMPLE_UUID_V7_1).unwrap())
+            .await
+            .expect("read back")
+            .expect("the row in alice's wiki");
+        assert_eq!(
+            on_a_persons_wiki.sender_id,
+            Some(crate::gdpr::removed_sender()),
+            "in a PERSON's wiki the name goes to nobody — never to alice, who \
+             would have started reading it through the sender axis"
+        );
+
+        let on_a_topic_wiki = find_by_id(&pool, &FactId::parse(SAMPLE_UUID_V7_2).unwrap())
+            .await
+            .expect("read back")
+            .expect("the row in the topic wiki");
+        assert_eq!(
+            on_a_topic_wiki.sender_id,
+            Some(crate::gdpr::removed_sender()),
+            "and in a wiki named for its subject, which answers to nobody, the \
+             same answer rather than a second rule"
+        );
     }
 
     /// Enrol a principal, saying whether it is an assistant.

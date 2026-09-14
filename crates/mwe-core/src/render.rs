@@ -375,6 +375,18 @@ fn anchors_a_redacted_page(line: &str) -> bool {
     !line.trim().is_empty() && !crate::wiki::is_engine_furniture(line)
 }
 
+/// Did this render put anything in the reader's hands?
+///
+/// Two shapes say no and they are the same answer: an empty page — nothing on
+/// it was theirs and nothing was left to serve — and the total-redaction
+/// callout, which says the page exists and is all somebody else's. A caller
+/// that answers differently in the two cases tells the reader which of the two
+/// it was, and that is itself something about the page.
+#[must_use]
+pub fn serves_nothing(text: &str) -> bool {
+    text.trim().is_empty() || text.trim() == FULLY_PRIVATE_CALLOUT.trim()
+}
+
 /// The `See also:` line the compiler writes under a page served as its bare
 /// facts — a list of addresses and nothing else. Its entries are removed
 /// rather than flattened when the reader may not follow them, because a name
@@ -436,18 +448,20 @@ fn wikilink_alias(inner: &str) -> Option<&str> {
         .filter(|alias| !alias.is_empty())
 }
 
-/// Split one line into sentences, each keeping its own terminator.
+/// Split one line into the clauses a withheld address can be taken out of.
 ///
-/// A full stop, a question or an exclamation mark followed by a space ends
-/// one. An abbreviation («Sig. Rossi») splits a sentence in two, which errs
-/// towards keeping prose: the address is taken out either way, and only less
-/// of the line goes with it.
+/// A full stop, a question or an exclamation mark ends one; so does a
+/// SEMICOLON or a COLON, because what follows either is a clause that stands
+/// on its own and there is no reason to take the rest of the line with it.
+/// Each keeps its own terminator, and an abbreviation («Sig. Rossi») splits a
+/// sentence in two — which errs towards keeping prose: the address goes either
+/// way, and only less of the line goes with it.
 fn sentences(line: &str) -> Vec<&str> {
     let mut out = Vec::new();
     let bytes = line.as_bytes();
     let mut start = 0usize;
     for (i, ch) in line.char_indices() {
-        if !matches!(ch, '.' | '!' | '?' | '\u{2026}') {
+        if !matches!(ch, '.' | '!' | '?' | ';' | ':' | '\u{2026}') {
             continue;
         }
         let after = i + ch.len_utf8();
@@ -533,11 +547,22 @@ fn line_for_reader(line: &str, view: &ReaderView<'_>) -> Option<String> {
         let indent: String = line.chars().take_while(|c| c.is_whitespace()).collect();
         return Some(format!("{indent}{SEE_ALSO_PREFIX} {}", kept.join(", ")));
     }
-    let kept: String = sentences(line)
-        .into_iter()
-        .filter_map(|s| sentence_for_reader(s, view))
+    let clauses = sentences(line);
+    let kept: String = clauses
+        .iter()
+        .filter_map(|c| sentence_for_reader(c, view))
         .collect();
-    (!kept.trim().is_empty()).then_some(kept)
+    if kept.trim().is_empty() {
+        return None;
+    }
+    // A list item whose opening clause went takes its bullet with it, and the
+    // clause that survives is left hanging off the item above. Put the marker
+    // back on what is left: it is the line's shape, not its content.
+    let marker = list_marker(line);
+    if !marker.is_empty() && !kept.starts_with(marker) {
+        return Some(format!("{marker}{}", kept.trim_start()));
+    }
+    Some(kept)
 }
 
 /// Rewrite a run of prose for this reader, line by line.
@@ -560,6 +585,28 @@ fn prose_for_reader(prose: &str, view: &ReaderView<'_>) -> String {
         out.push_str(&line);
     }
     out
+}
+
+/// The bullet or number a list item opens with, indent included — empty when
+/// the line is not a list item.
+///
+/// What a reader sees of a list is its shape, and the shape is not content:
+/// when the clause carrying the marker goes, the marker comes back on what is
+/// left rather than leaving the rest to hang off the item above.
+fn list_marker(line: &str) -> &str {
+    let indent = line.len() - line.trim_start().len();
+    let rest = &line[indent..];
+    for m in ["- ", "* ", "+ "] {
+        if rest.starts_with(m) {
+            return &line[..indent + m.len()];
+        }
+    }
+    // `1. `, `12) ` and the like.
+    let digits = rest.chars().take_while(char::is_ascii_digit).count();
+    if digits > 0 && rest[digits..].starts_with(['.', ')']) && rest[digits + 1..].starts_with(' ') {
+        return &line[..indent + digits + 2];
+    }
+    ""
 }
 
 /// Does this line open a new section?
@@ -1249,6 +1296,53 @@ mod tests {
         );
         assert!(out.text.contains("The rest is in [[zoe/private]]."));
         assert!(out.text.contains("Both live in"));
+    }
+
+    /// **A clause is the unit, and a list keeps its bullet.**
+    ///
+    /// A semicolon and a colon end a clause as surely as a full stop does:
+    /// what follows either stands on its own, so an address on one side of it
+    /// does not take the other side with it. And when the clause that goes was
+    /// the one carrying a list item's bullet, the bullet comes back on what is
+    /// left — the shape of a list is not its content, and a clause left
+    /// hanging off the item above says something neither of them said.
+    #[tokio::test]
+    async fn a_clause_is_the_unit_and_a_list_keeps_its_bullet() {
+        let map = db_acl("global", &[], None);
+        let (_d, tree, alices) = card_over_two_pages("alice").await;
+        let view = ReaderView {
+            sender_id: "alice",
+            sender_groups: &[],
+            page: PageForReader::SectionBySection,
+            home_wiki: "famiglia",
+            may_go: Some(Destinations {
+                card: &alices,
+                tree: &tree,
+            }),
+        };
+
+        let input = format!(
+            "- The rest is in [[zoe/private]]; the list is in [[alice/shopping]].\n\
+             - Two: [[zoe/private]]: and then some.\n\n\
+             {{{{subject=global f={SAMPLE_UUID_V7}}}}}a fact{{{{/}}}}\n"
+        );
+        let out = render_for_sender(&input, &map, &view);
+        assert!(
+            out.text.contains("- the list is in [[alice/shopping]]."),
+            "the clause that survives keeps the bullet: {}",
+            out.text
+        );
+        assert!(
+            !out.text.contains("The rest is in") && !out.text.contains("zoe"),
+            "and the clause that carried the address goes: {}",
+            out.text
+        );
+        assert!(
+            out.text.contains("- Two: and then some."),
+            "a colon ends a clause too, so only the clause between the colons \
+             goes: {}",
+            out.text
+        );
     }
 
     /// **A `See also:` line loses the entry, not its brackets — and an empty

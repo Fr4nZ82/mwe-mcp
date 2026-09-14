@@ -8622,13 +8622,11 @@ async fn capture_agent_self_fact(
     let Ok(wiki_id) = WikiId::parse(agent_id) else {
         return Ok(None);
     };
-    // WHAT the fact is: identity, or something done with the person in front
-    // of the agent. `salience high` ∨ `fact_type bio` ⇒ identity — "the agent
-    // assists the household" is true of nobody in particular — and everything
-    // else is an activity WITH the served user. The two are told apart once,
-    // here, and the answer is written into the fact's audience below; the read
-    // side asks that audience and sorts the rows it gets into the two sections
-    // by the same shape ([`recall_agent_self`]).
+    // WHAT the fact is: identity — "the agent assists the household", true of
+    // nobody in particular — or something done WITH the person in front of it.
+    // Told apart once, here, and the answer written into the fact's audience
+    // below; the read side asks that audience and needs no second opinion
+    // ([`recall_agent_self`]).
     //
     // The PARTNER TAG — the served user's id in `topics` — stays as a label,
     // and a label is all it is: who may read the fact is on the fact. It
@@ -8641,7 +8639,18 @@ async fn capture_agent_self_fact(
     // mention ("advised Morgana about Matteo") is stripped. A label naming two
     // people names nobody. Only enrolled user ids are partner-capable — a
     // subject that never speaks keeps its content tag.
-    let is_identity = unit.salience == Some("high") || unit.fact_type == Some("bio");
+    //
+    // ONE definition of identity on this road, and it is the one the engine
+    // already has for card material: the KIND says who somebody is AND it is
+    // marked always-on ([`fact_index::belongs_on_an_identity_card`]). Either
+    // half alone is not it — a memory of one afternoon marked `high` because
+    // it mattered that day is not the assistant's identity, and handing it to
+    // everybody is the one mistake worth guarding against here. It decides all
+    // three things at once, because they are one question: whether the claim
+    // is about the person in front of it. Identity ⇒ no partner label, no
+    // per-user page, everybody may read it. Anything else ⇒ the served person
+    // on all three.
+    let is_identity = crate::fact_index::belongs_on_an_identity_card(unit.fact_type, unit.salience);
     let mut topics: Vec<String> = unit
         .topics
         .iter()
@@ -8658,11 +8667,15 @@ async fn capture_agent_self_fact(
         })
         .cloned()
         .collect();
-    if !is_identity
-        && !request.sender_id.is_empty()
-        && !topics.iter().any(|t| t == &request.sender_id)
+    // The person this memory is WITH, when there is one: the served user on
+    // anything that is not identity. `None` on an identity fact, and on a turn
+    // that names no sender at all.
+    let partner =
+        (!is_identity && !request.sender_id.is_empty()).then(|| request.sender_id.clone());
+    if let Some(p) = partner.as_ref()
+        && !topics.iter().any(|t| t == p)
     {
-        topics.push(request.sender_id.clone());
+        topics.push(p.clone());
     }
     let page = agent_self_fact_page(is_identity, &request.sender_id);
     let cap_req = CaptureRequest {
@@ -8682,11 +8695,18 @@ async fn capture_agent_self_fact(
         // it DID WITH SOMEBODY is that person's. The partner tag stays in
         // `topics` as a tag — the nightly passes rewrite topics, and a fact
         // whose only gate is a word in a list has no gate.
-        allow: if is_identity {
-            vec![Principal::global()]
-        } else {
-            vec![Principal::User(request.sender_id.clone())]
-        },
+        //
+        // A THIRD case, and it keeps the empty audience it has always had: a
+        // self-fact that is neither identity nor about anybody in particular,
+        // because no partner could be named. Nobody reads it, which is the
+        // right answer for a memory that says nothing about anyone.
+        allow: partner.as_ref().map_or_else(
+            // What it IS: everybody who talks to it. Nobody is the assistant,
+            // so an empty audience here would be nobody at all.
+            || vec![Principal::global()],
+            // What it did WITH somebody: that person.
+            |p| vec![Principal::User(p.clone())],
+        ),
         sender: None,
         fact_type: unit.fact_type.map(str::to_owned),
         topics,
@@ -8950,8 +8970,8 @@ struct AgentSelf {
     /// The agent wiki's `_meta.summary` — the compiled autobiography's
     /// abstract, refreshed by the compiler's abstract sync.
     summary: Option<String>,
-    /// Identity self-facts (`salience high` ∨ `fact_type bio`) — WHO IT IS,
-    /// user-agnostic, injected on every turn. Newest first.
+    /// Identity self-facts — WHO IT IS, everybody's who talks to it, injected
+    /// on every turn. Newest first.
     identity: Vec<String>,
     /// Everything else this reader may read of the agent's own memory — ITS
     /// HISTORY WITH THIS USER, which is theirs because the fact says so. One
@@ -9046,11 +9066,12 @@ async fn recall_agent_self(
         if text.is_empty() {
             continue;
         }
-        // WHICH SECTION, not whether: every row here is already one the
-        // reader may read. Identity = high salience OR a `bio`-typed
-        // self-fact — what the agent IS, and everybody's; everything else is
-        // what it did with the person in front of it.
-        if row.salience.as_deref() == Some("high") || row.fact_type.as_deref() == Some("bio") {
+        // WHICH SECTION, not whether: every row here is already one the reader
+        // may read. The AUDIENCE says which — everybody's is what the
+        // assistant IS, and a fact readable by this person in particular is
+        // what it did with them. The same answer the write side wrote there,
+        // asked of the fact rather than guessed again from its shape.
+        if row.allow_ids.iter().any(Principal::is_global) {
             identity.push(text);
         } else {
             relationship.push(text);
@@ -32039,6 +32060,9 @@ mod tests {
                 subject: Principal::User("samvisebot".to_owned()),
                 // What the assistant IS, is everybody's: nobody is the
                 // assistant, so an empty audience here would be nobody at all.
+                // The live road works it out from `fact_type` + `salience`;
+                // the fixture plants the answer, standing in for the placement
+                // pass that has already made it.
                 allow: vec![Principal::global()],
                 sender: None,
                 fact_type: Some("bio".to_owned()),
@@ -32048,7 +32072,10 @@ mod tests {
                 valid_to: None,
                 style: None,
                 page_description: None,
-                salience: Some("normal".to_owned()),
+                // A defining trait is BOTH: the kind says identity and it is
+                // marked always-on. Either half alone is a memory of an
+                // afternoon.
+                salience: Some("high".to_owned()),
                 authored_refs: Vec::new(),
             },
         )
@@ -32080,12 +32107,14 @@ mod tests {
         )
         .unwrap();
 
-        // A bio self-fact with NORMAL salience: identity by fact_type alone.
+        // A defining trait of the assistant's: the kind says identity AND it is
+        // marked always-on. Both halves, because either alone is a memory of
+        // an afternoon with the person in front of it.
         let bio_llm = FakeLlmBackend::new(
             "fake",
             "{\"intent\":\"capture\",\"extractions\":[{\"subject_id\":\"self\",\
               \"target_page\":\"preferenze.md\",\"body\":\"L'agente parla italiano e inglese.\",\
-              \"fact_type\":\"bio\",\"salience\":\"normal\"}]}",
+              \"fact_type\":\"bio\",\"salience\":\"high\"}]}",
         );
         wiki_ingest_message(
             &pool,
@@ -32351,6 +32380,69 @@ mod tests {
         assert!(
             his.relationship.is_empty(),
             "and reaches nobody else: {his:?}"
+        );
+        drop(dir);
+    }
+
+    /// **`high` alone does not make a memory of one afternoon everybody's.**
+    ///
+    /// An identity claim is the kind a card carries AND marked always-on —
+    /// `fact_index::belongs_on_an_identity_card`, the definition the engine
+    /// already had — and a memory of something done with one person is not one
+    /// however urgent it was marked. The loose test («`high` or `bio`») would
+    /// have handed it to everybody, which is the one mistake this whole change
+    /// exists to stop.
+    #[tokio::test]
+    async fn an_urgent_memory_of_one_person_is_not_the_assistants_identity() {
+        let (dir, tree, pool) = setup_agent_workdir().await;
+        let llm = FakeLlmBackend::new(
+            "fake",
+            "{\"intent\":\"capture\",\"extractions\":[{\"subject_id\":\"self\",\
+             \"salience\":\"high\",\"fact_type\":\"episode\",\
+             \"body\":\"Ho promesso ad Alice di ricordarle la visita.\"}]}",
+        );
+        wiki_ingest_message(
+            &pool,
+            &tree,
+            fake_embedder(),
+            &llm,
+            None,
+            IngestRequest {
+                author: MessageRole::Assistant,
+                ..req_consumer("promesso", "alice", "botdeploy")
+            },
+            &IngestPolicy::default(),
+        )
+        .await
+        .expect("capture");
+
+        let row = fact_index::find_by_filters(
+            &pool,
+            &fact_index::FactFilters {
+                subject_id: Some(Principal::User("samvisebot".into())),
+                ..Default::default()
+            },
+        )
+        .await
+        .expect("find")
+        .into_iter()
+        .next()
+        .expect("the self-fact");
+        assert_eq!(
+            row.allow_ids,
+            vec![Principal::User("alice".into())],
+            "the person it was with, and nobody else: {:?}",
+            row.allow_ids
+        );
+        assert!(
+            !row.allow_ids.iter().any(Principal::is_global),
+            "`high` on an episode is urgency, not identity: {:?}",
+            row.allow_ids
+        );
+        assert!(
+            row.source_path.ends_with("esperienze_alice.md"),
+            "and it goes on the page of the person it is about: {}",
+            row.source_path
         );
         drop(dir);
     }

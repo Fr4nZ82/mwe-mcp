@@ -989,18 +989,19 @@ async fn wiki_read_serves_arbitrary_page_with_per_page_acl() {
         token_sender_id: "bob".into(),
         ..identity.clone()
     };
-    let out = call(
+    let err = call(
         &state,
         &bob,
         "wiki_read",
         json!({"wiki_id": "alice", "path": "recipes/pasta.md"}),
     )
     .await
-    .expect("bob subpage read");
-    let rendered = out["content_rendered_for_sender"].as_str().unwrap();
-    assert!(!rendered.contains("Free prose anyone can read."));
-    assert!(!rendered.contains("Alice's secret sauce."));
-    assert_eq!(out["redacted_count"], json!(1));
+    .expect_err("nothing on that page is his");
+    assert!(
+        err.starts_with("not_found:"),
+        "a page with nothing on it for him answers like a page that is not \
+         there, so the refusal says nothing about what is on it: {err}"
+    );
 
     // Unsafe path → invalid_input.
     let err = call(
@@ -1080,33 +1081,11 @@ async fn wiki_read_strips_frontmatter_so_card_topics_never_leak() {
         json!({"wiki_id": "alice", "path": "salute.md"}),
     )
     .await
-    .expect("bob read");
-    let rendered = out["content_rendered_for_sender"].as_str().unwrap();
+    .expect_err("nothing on that page is his");
     assert!(
-        !rendered.contains("dal 2020."),
-        "the words around somebody else's fact are that fact's: {rendered}"
-    );
-    assert!(
-        !rendered.contains("è celiaca"),
-        "private region leaked: {rendered}"
-    );
-    assert_eq!(out["redacted_count"], json!(1));
-    // The leak that was the bug: NO frontmatter content reaches the reader.
-    assert!(
-        !rendered.contains("celiachia"),
-        "topic word leaked: {rendered}"
-    );
-    assert!(
-        !rendered.contains("intolleranze"),
-        "topic word leaked: {rendered}"
-    );
-    assert!(
-        !rendered.contains("Note di salute"),
-        "description leaked: {rendered}"
-    );
-    assert!(
-        !rendered.contains("---"),
-        "frontmatter fence leaked: {rendered}"
+        out.starts_with("not_found:"),
+        "the page holds one fact and it is hers, so he is answered as for a \
+         page that is not there — testata included, by not answering: {out}"
     );
 
     // The subject reads the same page: the fact is visible, but the raw
@@ -1674,6 +1653,98 @@ async fn seed_proposal_row(state: &McpState, proposal_id: &str, status: &str) {
     .execute(&state.pool)
     .await
     .expect("seed proposal");
+}
+
+/// **A page that gives this reader nothing answers like a page that is not
+/// there — and a page of their own answers, empty.**
+///
+/// Two different refusals would say which of the two it is, and «the page
+/// exists but holds nothing for you» is itself something about the page. So
+/// the error is the unknown-page error, word for word, the way `wiki_forget`
+/// already answers. The exception is a page that is the reader's own: a
+/// freshly seeded `@rules.md` holds nothing and is still theirs.
+#[tokio::test]
+async fn a_page_with_nothing_for_this_reader_answers_as_a_page_that_is_not_there() {
+    let (state, identity, dir) = fixture(false, None).await;
+    let wiki_dir = dir.path().join("wikis").join("alice");
+    std::fs::create_dir_all(&wiki_dir).expect("mkdir alice");
+    std::fs::write(
+        wiki_dir.join("_meta.md"),
+        "---\nwiki_id: alice\nwiki_type: wiki-user\nparent_wiki_id: null\n\
+         slug: alice\ntitle: Alice\nacl_default: 'user:alice'\n---\n",
+    )
+    .expect("write _meta.md");
+    // A page of alice's holding one fact of HERS, and a page holding none at
+    // all — her seeded rules page.
+    std::fs::write(
+        wiki_dir.join("salute.md"),
+        "# Salute\n\n{{subject=user:alice f=01900000-0000-7000-8000-0000000000d1}}\
+         Hers alone.{{/}}\n",
+    )
+    .expect("write salute.md");
+    std::fs::write(wiki_dir.join("@rules.md"), "# Rules\n").expect("write rules");
+    index_one_fact(
+        &state.pool,
+        "alice",
+        "salute.md",
+        "01900000-0000-7000-8000-0000000000d1",
+        "user:alice",
+    )
+    .await;
+    let tree = WikiTree::open(dir.path()).expect("reopen");
+    let state = McpState { tree, ..state };
+
+    let bob = IdentityProfile {
+        sender_id: "bob".into(),
+        token_sender_id: "bob".into(),
+        ..identity.clone()
+    };
+    // Bob reads a fact elsewhere in her wiki, so the wiki-level gate lets him
+    // in; the PAGE has nothing of his.
+    index_one_fact(
+        &state.pool,
+        "alice",
+        "cucina.md",
+        "01900000-0000-7000-8000-0000000000d2",
+        "global",
+    )
+    .await;
+    let err = call(
+        &state,
+        &bob,
+        "wiki_read",
+        json!({"wiki_id": "alice", "path": "salute.md"}),
+    )
+    .await
+    .expect_err("nothing there for him");
+    let missing = call(
+        &state,
+        &bob,
+        "wiki_read",
+        json!({"wiki_id": "alice", "path": "mai_esistita.md"}),
+    )
+    .await
+    .expect_err("no such page");
+    // The only difference is the page name he asked for, which is his own
+    // word: everything else about the two refusals is identical, so neither
+    // tells him which of the two it was.
+    assert_eq!(
+        err,
+        missing.replace("mai_esistita.md", "salute.md"),
+        "the two refusals must be one word for word"
+    );
+
+    // Her own page with nothing on it is still hers, and answers.
+    let out = call(
+        &state,
+        &identity,
+        "wiki_read",
+        json!({"wiki_id": "alice", "path": "@rules.md"}),
+    )
+    .await
+    .expect("her own rules page answers");
+    assert_eq!(out["content_rendered_for_sender"], json!(""));
+    drop(dir);
 }
 
 /// The one refusal `wiki_read` makes: the engine's own files.
