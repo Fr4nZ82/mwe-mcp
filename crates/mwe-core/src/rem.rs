@@ -7158,28 +7158,19 @@ async fn apply_one_page_verdict(
             // the newer copy because it carries whatever the later turn added»
             // holds only while the later turn ADDED: a claim said again in
             // fewer words is a poorer copy of itself, and merging into it takes
-            // a figure out of the memory nobody asked to lose. The same net the
-            // turn's own reconciler uses, and the same reason
-            // (`ingest::vet_supersede`, `compiler::values_of`). Figures are
-            // matched by the one way of writing them, so `350,00` and `350` are
-            // one value and not a loss and a gain.
-            let (had, says) = (
-                crate::compiler::values_of(&loser.text),
-                crate::compiler::values_of(&winner.text),
-            );
-            let lost: Vec<&str> = had
-                .iter()
-                .filter(|(canonical, _)| !says.contains_key(*canonical))
-                .map(|(_, written)| written.as_str())
-                .collect();
-            // Something lost AND nothing offered in its place. A newer copy
-            // that brings a figure of its own is DISAGREEING about the same
-            // box, which is a different act and not this one's to refuse.
-            if !lost.is_empty() && !says.keys().any(|canonical| !had.contains_key(canonical)) {
+            // a figure out of the memory nobody asked to lose. The one way a
+            // value may go is into the box it came out of — the words it stands
+            // beside — so a newer copy putting a new figure where the old one
+            // stood is DISAGREEING, which is a different act and not this one's
+            // to refuse. The same mechanism the turn's own reconciler uses, for
+            // the same reason (`ingest::vet_supersede`,
+            // `compiler::orphaned_values`).
+            let orphaned = crate::compiler::orphaned_values(&loser.text, &winner.text);
+            if !orphaned.is_empty() {
                 tracing::info!(
                     winner = winner.fact_id.as_str(),
                     loser = loser.fact_id.as_str(),
-                    lost = ?lost,
+                    lost = ?orphaned,
                     "rem: page judgement would merge into a copy that says less — refused"
                 );
                 return Ok(VerdictOutcome::Refused("the new says less than the old"));
@@ -15165,7 +15156,7 @@ mod tests {
     /// merging into it takes a figure out of the memory nobody asked to lose.
     /// The turn's own reconciler refuses the same shape for the same reason
     /// (`ingest::vet_supersede`), and the two share the net that says what a
-    /// value is (`compiler::values_of`).
+    /// value is, and what it is a value OF (`compiler::orphaned_values`).
     #[tokio::test]
     async fn the_newer_copy_wins_nothing_when_it_says_less() {
         let (dir, tree, pool) = setup_workdir().await;

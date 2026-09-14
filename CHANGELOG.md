@@ -32,15 +32,17 @@ semver-governed surface: breaking changes are called out explicitly.
   first one and took the £350 out of the memory with it. A claim that has lost
   a figure the claim it replaces carries is a poorer copy of itself, not a more
   recent one: both stand now, and the trace of the turn says so and names the
-  figure that would have gone. A replacement that brings a figure of its OWN
-  still goes through — *«the excess is now £400»* disagrees about the same
-  thing, which is what replacing is for — and so does a fact simply moving
-  forward in time, because a date is not a figure the new claim owes the old.
-  An amount restated in another notation is the same amount and not a new one:
-  *«350,00 €»* and *«350 euro»* are one figure, so rewriting the excess buys
-  nothing and the deposit stays. The nightly tidy-up asks the same question
-  before it folds two copies of one claim standing on the same page into the
-  newer one.
+  figure that would have gone. The one way a figure may disappear is by being
+  argued about: *«the ceiling budget for the kitchen is £14,000»* corrected to
+  *«has risen to £16,000»* puts the new figure exactly where the old one
+  stood, and goes through, which is what replacing is for. A number that turns
+  up somewhere else entirely buys nothing — *«the premium is £1,000»* is not a
+  new value for the excess — and neither does rewriting the same amount in
+  another notation, because *«350,00 €»* and *«350 euro»* are one figure. A
+  fact simply moving forward in time still goes through: a date is not a
+  figure the new claim owes the old. The nightly tidy-up asks the same
+  question before it folds two copies of one claim standing on the same page
+  into the newer one.
 
 - **Being in the same public fact is not having met.** The list of people an
   assistant may be told about is built from who you share a group or something

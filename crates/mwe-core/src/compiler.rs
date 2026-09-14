@@ -1143,7 +1143,8 @@ const COMPANION_DISTANCE: usize = 5;
 /// **And two shapes are never a value**, whatever stands beside them: a date,
 /// a year or a time; and the name of a thing, whether the token says so or an
 /// article in front of it does. That test is [`reads_as_a_value`], shared with
-/// [`values_of`] so that «what counts as a value» is answered in one place.
+/// [`values_in_place`] so that «what counts as a value» is answered in one
+/// place.
 ///
 /// A unit after the number is NOT one of them. «14 giorni», «3 settimane» read
 /// like the page explaining itself, and most of the time they are — but a
@@ -1196,9 +1197,10 @@ fn a_value_in_the_open(prose: &[String], fact: &[String]) -> Option<String> {
 /// something is CALLED.
 ///
 /// **A date is not a value here, and that matters twice.** On a page it is a
-/// heading. Between two claims — [`values_of`], where a replacement is weighed
-/// against what it replaces — a claim moving forward in time necessarily
-/// leaves the old date behind, so counting it as something lost would refuse
+/// heading. Between two claims — [`orphaned_values`], where a replacement is
+/// weighed against what it replaces — a claim moving forward in time
+/// necessarily leaves the old date behind, so counting it as a loss would
+/// refuse
 /// the ordinary shape of a correction. Measured on a corpus of fifty-three
 /// replacements: three say less than what they replace, and counting dates
 /// would have called it seven — the four extra being facts simply moving on.
@@ -1209,42 +1211,118 @@ fn reads_as_a_value(words: &[String], at: usize) -> bool {
         && !an_article_names_it(words, at)
 }
 
-/// Every value one claim carries, each **figure** filed under the one way of
-/// writing it and kept beside the way this claim wrote it.
+/// One value a claim carries, and the words it stands beside.
+struct ValueInPlace {
+    /// The figure under the one way of writing it ([`canonical_figure`]).
+    canonical: String,
+    /// The word as this claim wrote it, for telling somebody what went.
+    written: String,
+    /// The words within [`COMPANION_DISTANCE`] that carry meaning — what this
+    /// value is a value OF.
+    near: std::collections::BTreeSet<String>,
+}
+
+/// Every value one claim carries, each with the words it stands beside.
 ///
 /// The same net [`a_value_in_the_open`] reads a page with, asked of a sentence
 /// on its own: an identifier first, because it is a value whatever stands
-/// around it, then every figure that passes [`reads_as_a_value`]. Used to weigh
-/// a replacement against what it replaces — a successor that has lost one of
-/// the target's values is not saying the same thing more recently, it is saying
-/// less (`ingest::vet_supersede`, `rem`'s page judgement).
-///
-/// The key is [`canonical_figure`] and the value is the word as the claim
-/// wrote it, so a caller can compare two claims by their figures and still
-/// name what went in the notation the claim used — *«350,00»*, not the form
-/// the comparison happens to file it under.
-pub(crate) fn values_of(text: &str) -> std::collections::BTreeMap<String, String> {
-    // An embed marker carries a catalog id full of digits and nobody stated
-    // it: left in, it reads as a value, and a claim that merely gained a photo
-    // would look like one that brought a figure of its own.
+/// around it, then every figure that passes [`reads_as_a_value`]. Embed markers
+/// are stripped first — a catalog id is full of digits and nobody stated it, so
+/// a claim that merely gained a photo would read as one bringing a figure of
+/// its own.
+fn values_in_place(text: &str) -> Vec<ValueInPlace> {
     let words = words_of(&crate::parser::strip_embed_markers(text));
-    let mut out = std::collections::BTreeMap::new();
+    let mut out: Vec<ValueInPlace> = Vec::new();
     let mut i = 0usize;
     while i < words.len() {
-        if let Some(len) = an_identifier_at(&words, i) {
-            let end = (i + len).min(words.len());
-            let written = words[i..end].join(" ");
-            out.entry(canonical_figure(&written)).or_insert(written);
-            i = end;
-            continue;
+        let (at, written, step) = match an_identifier_at(&words, i) {
+            Some(len) => {
+                let end = (i + len).min(words.len());
+                (i, words[i..end].join(" "), end - i)
+            },
+            None if reads_as_a_value(&words, i) => (i, words[i].clone(), 1),
+            None => {
+                i += 1;
+                continue;
+            },
+        };
+        let canonical = canonical_figure(&written);
+        // One entry per amount: the first writing of it is the one a reader is
+        // told about, and a figure repeated in a sentence is one value.
+        if !out.iter().any(|v| v.canonical == canonical) {
+            out.push(ValueInPlace {
+                canonical,
+                written,
+                near: beside(&words, at)
+                    .into_iter()
+                    .filter(|w| is_a_companion(w))
+                    .collect(),
+            });
         }
-        if reads_as_a_value(&words, i) {
-            out.entry(canonical_figure(&words[i]))
-                .or_insert_with(|| words[i].clone());
-        }
-        i += 1;
+        i += step;
     }
     out
+}
+
+/// **Which of the target's values the successor would simply lose** — as the
+/// target wrote them, empty when it loses none that it does not argue about.
+///
+/// A replacement that has dropped a figure is not a more recent claim, it is a
+/// poorer copy of itself, and retiring the richer one for it takes something
+/// out of the memory nobody asked to lose. The one way a value may go is into
+/// the BOX it came out of — and the box is **the words the value stands
+/// beside**, the same companions and the same window the page check reads
+/// ([`a_value_in_the_open`]), because that is what a figure is a figure OF.
+///
+/// «the ceiling budget … is £14,000» replaced by «the ceiling budget … has
+/// risen to £16,000» puts the new figure beside `budget`, `kitchen`,
+/// `renovation` — the very words the old one stood beside — so the two are
+/// arguing about one thing and the supersede verb is exactly right for it.
+/// «the excess … £350» replaced by «the premium is £1,000» puts its figure
+/// beside other words entirely: nothing is being argued, the excess is simply
+/// gone, and an unrelated number must not buy the right to lose it.
+///
+/// **An article shared between the two is no evidence.** `the` is three
+/// letters and carries no meaning, so it passes the companion test and stands
+/// beside almost every figure in the language; counting it would make the
+/// premium look like an argument about the excess. The same list that keeps an
+/// article from turning a number into a name is what is excluded here
+/// ([`ARTICLES`]).
+///
+/// Measured on a corpus of fifty-three replacements: fifty lose nothing, three
+/// lose a value with no new figure beside its words, none is a correction this
+/// would wrongly refuse.
+pub(crate) fn orphaned_values(target: &str, successor: &str) -> Vec<String> {
+    let had = values_in_place(target);
+    let says = values_in_place(successor);
+    let says_keys: std::collections::BTreeSet<&str> =
+        says.iter().map(|v| v.canonical.as_str()).collect();
+    let had_keys: std::collections::BTreeSet<&str> =
+        had.iter().map(|v| v.canonical.as_str()).collect();
+    let gained: Vec<&ValueInPlace> = says
+        .iter()
+        .filter(|v| !had_keys.contains(v.canonical.as_str()))
+        .collect();
+    had.iter()
+        .filter(|v| !says_keys.contains(v.canonical.as_str()))
+        .filter(|v| {
+            !gained
+                .iter()
+                .any(|g| argue_about_one_thing(&v.near, &g.near))
+        })
+        .map(|v| v.written.clone())
+        .collect()
+}
+
+/// Do these two values stand beside a word that means something, and the same
+/// one?
+fn argue_about_one_thing(
+    near_the_old: &std::collections::BTreeSet<String>,
+    near_the_new: &std::collections::BTreeSet<String>,
+) -> bool {
+    near_the_old
+        .intersection(near_the_new)
+        .any(|w| !ARTICLES.contains(&w.as_str()))
 }
 
 /// The one way of writing a figure, so that two claims stating the same amount
@@ -3649,15 +3727,78 @@ mod tests {
             assert_eq!(canonical_figure(whole), whole, "`{whole}` is not a figure");
         }
         // Whole claims, which is how the net is actually asked: the currency
-        // is a word beside the figure and never part of it.
-        assert_eq!(
-            values_of("The excess is 350,00 €.")
-                .keys()
-                .collect::<Vec<&String>>(),
-            values_of("The excess is 350 euro.")
-                .keys()
-                .collect::<Vec<&String>>(),
+        // is a word beside the figure and never part of it, so neither claim
+        // loses anything to the other.
+        assert!(
+            orphaned_values("The excess is 350,00 €.", "The excess is 350 euro.").is_empty(),
             "one amount, two notations"
+        );
+    }
+
+    /// **The box a value came out of is the words it stands beside.**
+    ///
+    /// A replacement that has dropped a figure is a poorer copy of itself,
+    /// and the only value it may let go is the one it puts a new figure in
+    /// the place of. Without that test any number at all would buy the loss:
+    /// the premium arrives, the excess disappears, and the pair reads as a
+    /// correction.
+    ///
+    /// The last case is why an article is excluded. `the` is three letters
+    /// long and carries no meaning, so it passes the companion test and
+    /// stands beside nearly every figure there is — counting it would make
+    /// the premium look like an argument about the excess.
+    #[test]
+    fn a_value_may_only_go_into_the_box_it_came_out_of() {
+        // The pair the verb exists for: the new figure stands where the old
+        // one stood.
+        assert!(
+            orphaned_values(
+                "The ceiling budget for the kitchen renovation is £14,000.",
+                "The ceiling budget for the kitchen renovation has risen to £16,000.",
+            )
+            .is_empty(),
+            "one box, a new value — the pair the verb exists for"
+        );
+
+        // A figure of its own, standing somewhere else entirely.
+        assert_eq!(
+            orphaned_values(
+                "House insurance renews on 3 August 2026. The excess has increased to £350.",
+                "House insurance renews on 3 August 2026. The premium is £1,000.",
+            ),
+            vec!["350".to_owned()],
+            "a premium is not a new value for the excess, and `the` is no evidence"
+        );
+
+        // Nothing offered in its place at all.
+        assert_eq!(
+            orphaned_values(
+                "House insurance renews on 3 August 2026. The excess has increased to £350.",
+                "House insurance renews on 3 August 2026.",
+            ),
+            vec!["350".to_owned()],
+            "the excess is simply gone"
+        );
+
+        // Arguing about the excess does not pay for the deposit going quiet.
+        assert_eq!(
+            orphaned_values(
+                "The excess has increased to £350 and the deposit is £1,000.",
+                "The excess is now £400.",
+            ),
+            vec!["1,000".to_owned()],
+            "the deposit stands beside `deposit`, and nothing new stands there"
+        );
+
+        // A fact moving forward in time: the old date goes, and a date is not
+        // a value the successor owes the target.
+        assert!(
+            orphaned_values(
+                "Bins are out on the night of 30 March 2026; collection is on Tuesday.",
+                "Bin collection has moved to Wednesdays.",
+            )
+            .is_empty(),
+            "a date is not a value"
         );
     }
 

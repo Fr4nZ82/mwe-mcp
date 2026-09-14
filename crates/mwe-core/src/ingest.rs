@@ -4756,40 +4756,29 @@ fn aboutness_refusal(
 /// on 3 August» takes the £350 out of the memory, and nobody asked for that.
 /// Four demo runs out of four did exactly this.
 ///
-/// The test is the values the two carry ([`crate::compiler::values_of`], the
-/// same net that keeps a fact's figures from leaking into the prose around it,
-/// so «what counts as a value» is one answer and not two). Figures are matched
-/// by the ONE way of writing them, so «350,00» and «350» are one value and not
-/// a loss and a gain at once: a claim restating an amount in the other
-/// notation is restating it, and read as two it would retire the target on the
-/// strength of a comma. A DATE is not one of them, deliberately: a claim moving
-/// forward in time leaves the old date behind, and counting that as a loss
-/// would refuse the ordinary shape of a correction.
+/// **The one way a value may go is into the box it came out of**, and the box
+/// is the words it stands beside: a successor that puts a new figure where the
+/// old one stood is ARGUING about that thing, which is precisely what this
+/// verb is for, while one whose figure stands somewhere else entirely has
+/// simply dropped the old. That test and the net that says what a value is at
+/// all are one mechanism, [`crate::compiler::orphaned_values`], shared with
+/// the page check and with `rem`'s page judgement — so «what counts as a
+/// value», «what a value is a value OF» and «what an amount is, however it is
+/// written» are each answered in exactly one place.
 ///
-/// **A DIFFERENT value is a disagreement, not a loss, and the successor says
-/// which it is by what it carries.** «The excess is £350» replaced by «the
-/// excess is £400» drops the £350 and brings a £400: the box is the same and
-/// the two disagree about what is in it, which is what the slot machinery
-/// settles and not this. «The excess is £350» replaced by «the insurance
-/// renews on 3 August» drops the £350 and brings nothing: there is no
-/// disagreement, only a claim that has forgotten half of itself. So the test
-/// is both halves — something lost AND nothing offered in its place.
+/// A DATE is not a value there, deliberately: a claim moving forward in time
+/// leaves the old date behind, and counting that as a loss would refuse the
+/// ordinary shape of a correction.
 fn says_less_refusal(
     s: &LlmSupersede,
     prev: &RecallHit,
     successor: &TurnFact,
 ) -> Option<SupersedeRefusal> {
-    let had = crate::compiler::values_of(&prev.text);
-    let says = crate::compiler::values_of(&successor.body);
-    let lost: Vec<&str> = had
-        .iter()
-        .filter(|(canonical, _)| !says.contains_key(*canonical))
-        .map(|(_, written)| written.as_str())
-        .collect();
-    if lost.is_empty() || says.keys().any(|canonical| !had.contains_key(canonical)) {
+    let orphaned = crate::compiler::orphaned_values(&prev.text, &successor.body);
+    if orphaned.is_empty() {
         return None;
     }
-    let lost = lost.join(", ");
+    let lost = orphaned.join(", ");
     tracing::warn!(
         target = s.target.as_deref().unwrap_or_default(),
         successor = s.successor.as_deref().unwrap_or_default(),
@@ -15856,11 +15845,10 @@ mod tests {
     /// the £350 out of the memory. A claim said again in fewer words is a
     /// poorer copy of itself, not a more recent one.
     ///
-    /// The line it must not cross: a successor that brings a figure of its OWN
-    /// is disagreeing about the same box, which is what the slot machinery
-    /// settles, and the guard has to let it through. So the test is both
-    /// halves — something lost AND nothing offered in its place — and the two
-    /// cases below are the same pair with and without the new figure.
+    /// The line it must not cross: a successor that puts a new figure where the
+    /// old one stood is disagreeing about that thing, and the guard has to let
+    /// it through — the second case below is the same pair with the excess
+    /// argued about instead of dropped.
     ///
     /// A DATE is not a value here: a claim moving forward in time leaves the
     /// old date behind, and the third case is the ordinary correction that
@@ -15894,8 +15882,8 @@ mod tests {
         assert_eq!(
             verdict_on("the house insurance", &renewal, &disagrees, false),
             "applied",
-            "a figure of its own is a disagreement about the same box, and that \
-             is what a supersede is for"
+            "the new figure stands where the old one stood: that is a \
+             disagreement, and it is what a supersede is for"
         );
 
         // A fact moving forward in time: the old date goes, and that is not a
@@ -15916,6 +15904,47 @@ mod tests {
             verdict_on("the bin collection day", &bins, &moved, false),
             "applied",
             "a date is not a value the successor owes the target"
+        );
+    }
+
+    /// **A figure of its own buys nothing: the one value that may go is the
+    /// one being argued about.**
+    ///
+    /// «The successor brought a number, so it is a disagreement» lets any
+    /// number at all pay for any loss — the premium arrives, the excess
+    /// disappears, and the pair reads as a correction. What makes it a
+    /// disagreement is the new figure standing where the old one stood.
+    #[test]
+    fn a_figure_of_its_own_is_not_a_licence_to_drop_another() {
+        let excess = stored(
+            "018f1234-5678-7abc-9def-0123456789cd",
+            "House insurance renews on 3 August 2026. The excess has increased to £350.",
+            Principal::User("alice".into()),
+            &["home", "insurance"],
+        );
+        let unrelated = wrote(
+            "018f1234-5678-7abc-9def-0123456789ab",
+            "House insurance renews on 3 August 2026. The premium is £1,000.",
+            Principal::User("alice".into()),
+            &["home", "insurance"],
+        );
+        assert_eq!(
+            verdict_on("the house insurance", &excess, &unrelated, false),
+            "says_less_than_the_target",
+            "a premium is not a new value for the excess, and the £350 would have gone"
+        );
+
+        let argues = wrote(
+            "018f1234-5678-7abc-9def-0123456789ab",
+            "House insurance renews on 3 August 2026. The excess has increased to £400.",
+            Principal::User("alice".into()),
+            &["home", "insurance"],
+        );
+        assert_eq!(
+            verdict_on("the excess", &excess, &argues, false),
+            "applied",
+            "the new figure stands where the old one stood: that is a disagreement, \
+             and it is what the verb is for"
         );
     }
 
