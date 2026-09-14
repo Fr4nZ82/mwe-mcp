@@ -240,8 +240,26 @@ events_poll({ consumer_id, since?, kinds?, top_k? })
 | `reminder_due` | A dated commitment the memory already holds has come round. It is never an alarm the user set, and never a plan a later message closed | Tell them what is due |
 | `document_ingested` | A document-ingest job the user started has finished | Tell them what the memory now holds |
 | `compile_failure_streak` | The narrative compiler failed or degraded the **same page** in consecutive passes and hit a notice threshold | Operator notice, addressed to nobody in particular. Payload carries `slug`, `source_path`, `consecutive`, `last_error` and a `dashboard_path` — surface it to whoever runs the server |
-| `recall_tuning_proposed` | The same fact kept missing recall and no local repair could be proved, so the fix needs a human | Operator notice. Payload carries the fact, its home, the miss count, a sample query and the gate outcome. Never auto-applied — surface the evidence and let the operator decide |
+| `recall_tuning_proposed` | The same fact kept missing recall and no local repair could be proved, so the fix needs a human | Operator notice. Payload carries the fact, its home, the miss count and the gate outcome — never the sentence the person asked, which stays on the server. Never auto-applied: surface the evidence and let the operator decide |
 | `budget_threshold_reached` | Today's metered spend crossed the deployment's daily budget — the warning line first, then the budget itself | Operator notice, addressed to nobody in particular, at most once per threshold per day. Payload carries `threshold` (`warn` or `stop`), the `day`, `spent`, `limit`, `percent`, `currency`, a `dashboard_path`, and `stopped` — whether paid model calls are actually being refused right now. While `stopped` is true, turns still answer but come back degraded and say nothing was saved; it clears when the operator raises the budget, unlocks the day, or the day turns over |
+
+### What actually reaches you
+
+The queue is addressed mail, not a feed. A notice **for a person** comes to
+the consumers that serve them — your own system user, or anybody in your
+delegation roster — and to that person whenever they poll under their own
+name. A notice **for a group** comes to you when you serve at least one of its
+members, read at the moment you poll.
+
+The three rows marked *operator notice* are addressed to **nobody**, and they
+do not come out of `events_poll` for an ordinary consumer at all: they wait
+for whoever runs the server, in the dashboard. You see one only if your
+consumer runs as the administrator. Do not build a flow that depends on them.
+
+And a notice that **names a page** reaches a person only when that person
+reads at least one fact of that page. A page name is content — a file called
+`blood_test_june.md` has said what the document was before anybody opens it —
+so a notice that would be the only way to learn of a page stays in the queue.
 
 ### The nightly cycle is silent
 

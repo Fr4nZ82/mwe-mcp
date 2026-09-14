@@ -47,6 +47,32 @@ semver-governed surface: breaking changes are called out explicitly.
 
 ### Changed
 
+- **A notice now goes to the people it is addressed to, and stops there.** The
+  memory queues a notice when something happens somebody should hear about, and
+  an assistant collects the ones meant for the people it serves. Three kinds
+  went to every assistant instead. A notice addressed to a **group** was handed
+  to any assistant that asked, whether or not it serves anybody in that group;
+  it now reaches only an assistant serving a member, and membership is read at
+  the moment it asks, so somebody who joined this morning gets this morning's
+  notices and somebody who left stops. A notice addressed to **nobody** — a
+  page the engine keeps failing to write, a spend threshold, an archive
+  proposal — is the operator's: it stays in the dashboard and no assistant
+  collects it, unless that assistant runs as the administrator. Those notices
+  carry the path of a page of somebody's memory, and they were reaching every
+  assistant that asked, whoever it happens to serve. And a notice that **names
+  a page** now waits for a reader who reads at least one fact of that page:
+  the name of a file is often the whole of the news, so it is content like any
+  other and answers to the same permission.
+
+- **The notice about a fact the memory keeps failing to find no longer carries
+  the question that failed.** It told the operator which fact keeps going
+  missing, and quoted the sentence the person had asked, restated. That
+  sentence is the most private thing in the whole report and the notice
+  travels — out of the server, into an assistant's working memory, through
+  whatever model that assistant runs. The evidence the operator needs (which
+  fact, where it lives, how often, what was tried) is unchanged; the person's
+  own words stay on the server.
+
 - **A comment changes what its author may change, and nothing else.** A comment
   you leave on a page is read by the nightly pass and turned into changes to
   that page's facts. It was being applied with no regard for who wrote it: a

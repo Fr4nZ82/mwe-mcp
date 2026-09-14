@@ -38,6 +38,18 @@
 //! `acks` JSON map (`{ consumer_id: ack_ts }`) — a row is "pending for
 //! consumer X" iff `acks->>X` is absent. Filtering happens server-side
 //! via `SQLite`'s JSON1 `json_extract`.
+//!
+//! ## Who may receive a row
+//!
+//! The queue is addressed mail: a row is delivered to whoever its
+//! `recipient_id` names, and to nobody else. A person's notice reaches the
+//! consumers that serve them, a group's reaches the consumers that serve a
+//! member, and a row addressed to nobody is the operator's and stays in the
+//! queue. That much is [`RECIPIENT_SERVED_BY_CONSUMER`], in the SQL, so a row
+//! addressed to somebody else is never read into the process at all. The one
+//! part the SQL cannot answer — whether the addressee may know a named PAGE
+//! exists — is [`PageOpenToAddressee`], which reads the rows the query
+//! admitted and drops what it must.
 
 use serde::{Deserialize, Serialize};
 use sqlx::SqlitePool;
@@ -70,32 +82,38 @@ pub enum EventKind {
     /// row (a page whose every active fact went stale). Unlike the
     /// structural rungs above, archival still rides the proposal
     /// lifecycle — the payload carries the `proposal_id`, `path`, and
-    /// `reason` so a consumer can surface it.
+    /// `reason`. Addressed to nobody: the proposal is the operator's to
+    /// decide, and they meet it on the Proposals page.
     ArchiveProposed,
     /// A document-ingest job finished. The payload carries `job_id`, the
     /// resolved `disposition` and
     /// `title`, the anchor `document_page` (consult/dossier — absent on
     /// dissolve), `facts_buffered`, and the `source_ref`, so the consumer
     /// that enqueued the job can tell the user what the memory now holds.
+    /// The anchor page makes it the one addressed notice that names a page,
+    /// so it waits for a reader who reads a fact of that page
+    /// ([`PageOpenToAddressee`]).
     DocumentIngested,
     /// The narrative compiler failed (or degraded) the **same page** in
     /// consecutive compile passes — the per-page failure ledger
     /// ([`crate::compile_failures`]) hit a notice threshold. Emitted once
     /// per threshold per streak (at exactly 2, again at exactly 5), so a
-    /// persistently-failing page reaches the operator instead of living
-    /// only in the run's report dump. The payload carries the plan `slug`,
-    /// the workdir-relative `source_path`, the `consecutive` count, the
-    /// `last_error`, and a `dashboard_path` to the Dream console (the run
-    /// history holds the full log).
+    /// persistently-failing page is on the record instead of living only in
+    /// the run's report dump. The payload carries the plan `slug`, the
+    /// workdir-relative `source_path`, the `consecutive` count, the
+    /// `last_error`, and a `dashboard_path` to the Dream console, which is
+    /// where the operator meets it: addressed to nobody, it names a page of
+    /// somebody's wiki and does not go out to an ordinary consumer.
     CompileFailureStreak,
     /// The recall-repair sub-job found the **same fact** missing from
     /// recall repeatedly and no local (re-file) repair committed — the
     /// operator review-queue entry of self-correcting REM. Rule / prompt
     /// / recall-knob levers are the highest-blast-radius fixes in the
     /// system, so they are **never auto-applied**: this notice carries
-    /// the evidence (the fact, its home, the miss count, the sample
-    /// queries, and the gate outcome when a candidate repair was tried)
-    /// and the operator decides.
+    /// the evidence (the fact, its home, the miss count, and the gate
+    /// outcome when a candidate repair was tried) and the operator
+    /// decides. The sentence the person actually asked stays behind, in
+    /// `recall_log` with the miss — a notice is a payload that travels.
     RecallTuningProposed,
     /// Ingest filed a fact **owned by an enrolled human who was not the
     /// human of that turn** (or, on the document path, not the
@@ -171,59 +189,124 @@ pub enum EventsError {
 /// Result alias for this module.
 pub type Result<T> = std::result::Result<T, EventsError>;
 
-/// The delivery rule as a SQL predicate over a `wiki_events` row. Binds, in
-/// order: the **caller's own** user id, then `consumer_id` **twice**. A row
-/// passes when the addressee is nobody in particular, is not a `user:`
-/// principal, is the caller themselves, or is somebody this consumer serves.
+/// The people a consumer is **configured** to serve, as a sub-select over one
+/// bound `consumer_id` per occurrence: its own system user, plus everybody in
+/// its delegation roster. Two binds each time it appears.
 ///
-/// "The caller themselves" grants nothing new — a person can already read
-/// their own facts through recall, so being *told* about one is strictly
-/// less. It is what makes a smart consumer (no system user, no delegation —
-/// it authenticates *as* its human owner) receive its owner's notices with
-/// zero configuration.
+/// The same two halves [`consumers_serving`] reads in the other direction —
+/// written once here so the poll filter and the emit-time check cannot drift.
+const SERVED_BY_CONSUMER: &str = "\
+         SELECT system_user_id FROM consumers WHERE consumer_id = ? \
+          UNION \
+         SELECT j.value FROM consumer_delegations d, json_each(d.allowed_sender_ids) j \
+          WHERE d.consumer_id = ?";
+
+/// The delivery rule as a SQL predicate over a `wiki_events` row: **who the
+/// event is addressed to decides who may receive it**, and there are exactly
+/// three kinds of addressee.
+///
+/// - **A person** (`user:<id>`) — the caller themselves, or somebody this
+///   consumer serves. "The caller themselves" grants nothing new: a person can
+///   already read their own facts through recall, so being *told* about one is
+///   strictly less. It is what makes a smart consumer (no system user, no
+///   delegation — it authenticates *as* its human owner) receive its owner's
+///   notices with zero configuration.
+/// - **A group** (`group:<id>`) — a consumer that serves at least one member,
+///   or a caller who is one, membership read at poll time so a person who
+///   joined the household this morning gets this morning's notices and one who
+///   left stops. The builtin universal group is the exception the membership
+///   list cannot express: its `members` array is empty **because everybody is
+///   in it** ([`crate::enrollment::members_for`]), so it is matched by name.
+/// - **Nobody** — the event is the operator's (a compile-failure streak, a
+///   budget threshold, an archive proposal). It does not leave the poll for an
+///   ordinary consumer; the exception is a consumer running **as the admin**,
+///   which is how a deployment drains that queue through a bot.
+///
+/// An addressee in none of those shapes matches nothing, which is the safe
+/// direction: an addressee the engine cannot read is not everybody.
+///
+/// Binds, in order: `consumer_id` (unaddressed); the universal group's id, the
+/// caller, `consumer_id` twice (group); the caller, `consumer_id` twice
+/// (person). Eight.
 ///
 /// Kept as one constant so the poll filter reads as the rule instead of
 /// restating it. The configured half read in the other direction —
 /// recipient → the consumers that serve them — is [`consumers_serving`].
-const RECIPIENT_SERVED_BY_CONSUMER: &str = "\
-       json_extract(payload, '$.recipient_id') IS NULL \
-    OR json_extract(payload, '$.recipient_id') NOT LIKE 'user:%' \
-    OR substr(json_extract(payload, '$.recipient_id'), 6) = ? \
-    OR substr(json_extract(payload, '$.recipient_id'), 6) IN ( \
-         SELECT system_user_id FROM consumers WHERE consumer_id = ? \
-          UNION \
-         SELECT j.value FROM consumer_delegations d, json_each(d.allowed_sender_ids) j \
-          WHERE d.consumer_id = ? \
-       )";
+static RECIPIENT_SERVED_BY_CONSUMER: std::sync::LazyLock<String> = std::sync::LazyLock::new(|| {
+    format!(
+        "CASE \
+           WHEN json_extract(payload, '$.recipient_id') IS NULL THEN \
+             EXISTS (SELECT 1 FROM consumers c \
+                       JOIN enrollment_users u ON u.user_id = c.system_user_id \
+                      WHERE c.consumer_id = ? AND u.is_admin = 1) \
+           WHEN json_extract(payload, '$.recipient_id') LIKE 'group:%' THEN \
+             substr(json_extract(payload, '$.recipient_id'), 7) = ? \
+             OR EXISTS (SELECT 1 FROM enrollment_groups g, json_each(g.members) m \
+                         WHERE g.group_id = substr(json_extract(payload, '$.recipient_id'), 7) \
+                           AND (m.value = ? OR m.value IN ({SERVED_BY_CONSUMER}))) \
+           ELSE \
+             substr(json_extract(payload, '$.recipient_id'), 6) = ? \
+             OR substr(json_extract(payload, '$.recipient_id'), 6) IN ({SERVED_BY_CONSUMER}) \
+         END"
+    )
+});
 
 /// The consumers **configured** to receive an event addressed to
-/// `recipient_id` (a `user:`-prefixed principal, or a bare user id — both
-/// accepted).
+/// `recipient_id` — a `user:` principal (a bare user id is accepted too), or
+/// a `group:` one.
 ///
-/// The declared half of the poll's recipient scope, in the other direction:
-/// a consumer serves a person when that person is its own `system_user_id`
-/// or sits in its delegation list. It deliberately does **not** model the
-/// caller-is-the-addressee case, which is a property of a token rather than
-/// of the database — so an empty result means *nobody is configured to
-/// deliver this*, not *nobody can ever see it*: the addressee still receives
-/// it whenever they poll under their own identity.
+/// The declared half of the poll's recipient scope, in the other direction,
+/// and it has to answer for the same three shapes
+/// [`RECIPIENT_SERVED_BY_CONSUMER`] decides: a consumer serves a **person**
+/// when that person is its own `system_user_id` or sits in its delegation
+/// list, and it serves a **group** when it serves any member. The universal
+/// group is everybody's, so every registered consumer serves it.
+///
+/// It deliberately does **not** model the caller-is-the-addressee case, which
+/// is a property of a token rather than of the database — so an empty result
+/// means *nobody is configured to deliver this*, not *nobody can ever see
+/// it*: the addressee still receives it whenever they poll under their own
+/// identity.
 ///
 /// # Errors
 ///
 /// [`EventsError::Db`] for any SQL failure.
 pub async fn consumers_serving(pool: &SqlitePool, recipient_id: &str) -> Result<Vec<String>> {
-    let bare = recipient_id.strip_prefix("user:").unwrap_or(recipient_id);
-    let rows: Vec<(String,)> = sqlx::query_as(
-        "SELECT consumer_id FROM consumers WHERE system_user_id = ?
-          UNION
-         SELECT d.consumer_id
-           FROM consumer_delegations d, json_each(d.allowed_sender_ids) j
-          WHERE j.value = ?",
-    )
-    .bind(bare)
-    .bind(bare)
-    .fetch_all(pool)
-    .await?;
+    let rows: Vec<(String,)> = if let Some(group) = recipient_id.strip_prefix("group:") {
+        if crate::enrollment::is_global_group(group) {
+            sqlx::query_as("SELECT consumer_id FROM consumers")
+                .fetch_all(pool)
+                .await?
+        } else {
+            sqlx::query_as(
+                "SELECT c.consumer_id
+                   FROM consumers c, enrollment_groups g, json_each(g.members) m
+                  WHERE g.group_id = ? AND c.system_user_id = m.value
+                  UNION
+                 SELECT d.consumer_id
+                   FROM consumer_delegations d, json_each(d.allowed_sender_ids) j,
+                        enrollment_groups g, json_each(g.members) m
+                  WHERE g.group_id = ? AND j.value = m.value",
+            )
+            .bind(group)
+            .bind(group)
+            .fetch_all(pool)
+            .await?
+        }
+    } else {
+        let bare = recipient_id.strip_prefix("user:").unwrap_or(recipient_id);
+        sqlx::query_as(
+            "SELECT consumer_id FROM consumers WHERE system_user_id = ?
+              UNION
+             SELECT d.consumer_id
+               FROM consumer_delegations d, json_each(d.allowed_sender_ids) j
+              WHERE j.value = ?",
+        )
+        .bind(bare)
+        .bind(bare)
+        .fetch_all(pool)
+        .await?
+    };
     Ok(rows.into_iter().map(|r| r.0).collect())
 }
 
@@ -231,14 +314,16 @@ pub async fn consumers_serving(pool: &SqlitePool, recipient_id: &str) -> Result<
 ///
 /// `payload` is serialised to JSON; passing `&serde_json::Value::Null`
 /// stores SQL `NULL` so polling consumers can omit it from their
-/// payload shape.
+/// payload shape. A payload with no `recipient_id` is addressed to nobody,
+/// which makes the notice the operator's — see [`poll_events`].
 ///
-/// When the payload addresses a person (`recipient_id: "user:<id>"`) and no
+/// When the payload addresses somebody — a person or a group — and no
 /// consumer serves them, the row is still written — the dashboard and the
 /// audit trail keep it — but a **warning** names the recipient. Without it
 /// an undeliverable notice is indistinguishable from a delivered one: the
 /// row exists, nothing acks it, and nobody is told. The fix is operator-side
-/// (delegate a consumer for that user), so the log has to say so.
+/// (delegate a consumer for that user, or for a member of that group), so the
+/// log has to say so.
 ///
 /// # Errors
 ///
@@ -279,7 +364,7 @@ pub async fn insert_event(
     if let Some(recipient) = payload
         .get("recipient_id")
         .and_then(serde_json::Value::as_str)
-        .filter(|r| r.starts_with("user:"))
+        .filter(|r| r.starts_with("user:") || r.starts_with("group:"))
         && consumers_serving(pool, recipient).await?.is_empty()
     {
         tracing::warn!(
@@ -391,6 +476,115 @@ pub const DEFAULT_POLL_TOP_K: i64 = 20;
 /// Maximum `top_k` accepted by [`poll_events`].
 pub const MAX_POLL_TOP_K: i64 = 50;
 
+/// The payload keys that carry the name of a wiki page, in the order a
+/// payload is searched for one.
+///
+/// One list because the question is about payloads, not about kinds: a notice
+/// added later that names a page is caught by adding its key here, and a
+/// reader looking for "which notices name a page" has one place to look.
+/// `document_page` is wiki-relative (the document road names the page inside
+/// its wiki); `source_path` and `path` are workdir-relative, the way every
+/// path in `fact_index` is.
+const PAGE_NAMING_KEYS: [&str; 3] = ["document_page", "source_path", "path"];
+
+/// Does the page a notice names stand open to the person it is addressed to?
+///
+/// A page name is content. It is not a fact body, so nothing in the ACL
+/// columns covers it, and it is frequently the whole of the news — a notice
+/// naming `blood_test_june.md` has told the reader what the document was
+/// without opening it. So an event addressed to a PERSON and naming a page is
+/// delivered only when that person reads at least one live fact of that page,
+/// judged by [`crate::fact_index::readable_fact_on_page`] — the strict
+/// predicate, the one that answers *«send this person to that page»*.
+///
+/// Only a person's notice is asked about. An unaddressed one is the
+/// operator's and already fenced by [`RECIPIENT_SERVED_BY_CONSUMER`]; a
+/// group's names no page today, and answering for a group would mean picking
+/// one member to answer for, which is a different question from the one this
+/// asks.
+///
+/// Carries the answers it has already given for this poll: several notices
+/// in one drain can name the same page, and the answer costs a query.
+#[derive(Default)]
+struct PageOpenToAddressee {
+    /// `(workdir-relative path, reader)` → may the reader be told this page
+    /// exists.
+    answers: std::collections::HashMap<(String, String), bool>,
+    /// Reader → their groups, which [`crate::acl::can_read`] needs and which
+    /// cost a query each.
+    groups: std::collections::HashMap<String, Vec<String>>,
+}
+
+impl PageOpenToAddressee {
+    /// `true` when this row may go out; `false` holds it in the queue.
+    async fn allows(
+        &mut self,
+        pool: &SqlitePool,
+        wiki_id: Option<&str>,
+        payload: &serde_json::Value,
+    ) -> bool {
+        let Some(reader) = payload
+            .get("recipient_id")
+            .and_then(serde_json::Value::as_str)
+            .and_then(|r| r.strip_prefix("user:"))
+            .filter(|r| !r.is_empty())
+        else {
+            return true;
+        };
+        let Some(named) = PAGE_NAMING_KEYS
+            .iter()
+            .find_map(|k| payload.get(*k).and_then(serde_json::Value::as_str))
+            .map(str::trim)
+            .filter(|p| !p.is_empty())
+        else {
+            return true;
+        };
+        let path = if named.starts_with("wikis/") {
+            named.to_owned()
+        } else if let Some(w) = wiki_id.filter(|w| !w.is_empty()) {
+            format!("wikis/{w}/{named}")
+        } else {
+            // A page name with no wiki to resolve it against cannot be
+            // judged, and an unjudged page name is one we do not send.
+            tracing::warn!(
+                page = named,
+                "events: a notice names a page in no wiki — held back"
+            );
+            return false;
+        };
+        let key = (path, reader.to_owned());
+        if let Some(known) = self.answers.get(&key) {
+            return *known;
+        }
+        if !self.groups.contains_key(reader) {
+            let of_theirs = crate::enrollment::groups_for(pool, reader)
+                .await
+                .unwrap_or_default();
+            self.groups.insert(reader.to_owned(), of_theirs);
+        }
+        let groups = self.groups.get(reader).map_or(&[][..], Vec::as_slice);
+        let open = match crate::fact_index::readable_fact_on_page(pool, &key.0, reader, groups)
+            .await
+        {
+            Ok(open) => open,
+            Err(e) => {
+                // The gate cannot be opened by a failure to read it.
+                tracing::warn!(error = %e, path = %key.0, "events: page-reach check failed — held back");
+                false
+            },
+        };
+        if !open {
+            tracing::info!(
+                path = %key.0,
+                reader,
+                "events: a notice names a page its addressee reads no fact of — held back"
+            );
+        }
+        self.answers.insert(key, open);
+        open
+    }
+}
+
 /// Drain pending events for `consumer_id`.
 ///
 /// Selection semantics (intersected, all optional except consumer):
@@ -405,24 +599,41 @@ pub const MAX_POLL_TOP_K: i64 = 50;
 ///
 /// An addressed event carries the fact bodies inline (that is the point:
 /// the consumer's agent delivers without a recall round-trip), so the queue
-/// is **not** a broadcast bus. A consumer receives an event addressed to
-/// `user:<id>` only when it serves that person — `<id>` is its own
-/// `consumers.system_user_id` (an agent's notices about its own wiki) or one
-/// of its `consumer_delegations.allowed_sender_ids`, the same table that
-/// decides `X-MWE-Act-As` on every tool call. Unaddressed events
-/// (`recipient_id` absent) and non-`user:` principals (`group:` / `global`)
-/// stay broadcast: withholding those would silently lose operator notices.
+/// is **not** a broadcast bus. Who may receive a row is decided by its
+/// addressee, in [`RECIPIENT_SERVED_BY_CONSUMER`]: a person's notice reaches
+/// the consumers that serve them, a group's reaches the consumers that serve
+/// a member, and one addressed to nobody is the operator's and stays in the
+/// queue.
 ///
-/// The predicate lives in the query, not in the caller, so a row we may not
-/// deliver is never read into the process — and no future caller can forget
-/// it. [`consumers_serving`] is the same rule read in the other direction,
-/// and a test pins the two to agree.
+/// The predicate lives in the query, not in the caller, so a row addressed to
+/// somebody this consumer has nothing to do with is never read into the
+/// process — and no future caller can forget it. [`consumers_serving`] is the
+/// same rule read in the other direction, and two tests pin them to agree.
 ///
 /// A recipient nobody serves is a notice that cannot be delivered;
 /// [`insert_event`] warns at emit time rather than letting it sit unread.
 ///
+/// ## The page a notice names
+///
+/// What the SQL cannot ask is whether the addressee may know that a
+/// particular PAGE exists: a page name is content the same way a fact body
+/// is, and often it is the news — `blood_test.md` says what the document was
+/// before anybody opens it. So a notice addressed to a person and naming a
+/// page is held back unless that person reads at least one live fact of it
+/// ([`PageOpenToAddressee`]). It is a Rust pass over the rows the SQL
+/// admitted, because the answer is the render path's ACL map rather than a
+/// column.
+///
+/// A row held back that way stays pending: it is re-examined on the next
+/// poll — the page may gain a fact this person reads — and until then it
+/// occupies one slot of the window, for at most the queue's retention
+/// ([`crate::housekeeping`]). That is what asking a question the query cannot
+/// ask costs.
+///
 /// `has_more` is `true` iff the underlying query returned `top_k + 1`
-/// matches — the extra row is discarded.
+/// matches — the extra row is discarded. It counts what the SQL matched, so
+/// a drain that ends with fewer rows than it asked for and `has_more` false
+/// has reached the end of what this consumer may receive.
 ///
 /// # Errors
 ///
@@ -456,17 +667,26 @@ pub async fn poll_events(
         ""
     };
 
+    let recipient_scope = &*RECIPIENT_SERVED_BY_CONSUMER;
     let sql = format!(
         "SELECT id, kind, wiki_id, fact_id, payload, created_at
            FROM wiki_events
           WHERE json_extract(acks, '$.' || ?) IS NULL
-            AND ({RECIPIENT_SERVED_BY_CONSUMER}){since_clause}{kinds_placeholder}
+            AND ({recipient_scope}){since_clause}{kinds_placeholder}
           ORDER BY created_at ASC, id ASC
           LIMIT ?"
     );
 
     let mut query = sqlx::query_as::<_, EventTuple>(&sql)
         .bind(consumer_id)
+        // unaddressed: is this consumer running as the admin?
+        .bind(consumer_id)
+        // group: the universal group by name, then the member test
+        .bind(crate::enrollment::GLOBAL_GROUP_ID)
+        .bind(caller_id)
+        .bind(consumer_id)
+        .bind(consumer_id)
+        // person
         .bind(caller_id)
         .bind(consumer_id)
         .bind(consumer_id);
@@ -481,11 +701,18 @@ pub async fn poll_events(
     let has_more = i64::try_from(rows.len()).unwrap_or(i64::MAX) > limit;
     let kept = rows.into_iter().take(usize::try_from(limit).unwrap_or(0));
     let mut events = Vec::new();
+    let mut page_open = PageOpenToAddressee::default();
     for (id, kind, wiki_id, fact_id, payload, created_at) in kept {
         let payload_val = match payload {
             Some(s) => serde_json::from_str(&s)?,
             None => serde_json::Value::Null,
         };
+        if !page_open
+            .allows(pool, wiki_id.as_deref(), &payload_val)
+            .await
+        {
+            continue;
+        }
         events.push(PolledEvent {
             event_id: id,
             kind,
@@ -617,10 +844,17 @@ mod tests {
     }
 
     /// The polling caller in tests that do not exercise recipient scope.
-    /// Deliberately somebody who is nobody's addressee, so a test that
-    /// expects a row to arrive is proving the *unaddressed* path rather
-    /// than accidentally passing through "you always get your own mail".
+    /// Deliberately somebody no consumer here is configured to serve, so a
+    /// test that expects a row to arrive is proving the branch it names and
+    /// not the consumer's delegation roster.
     const CALLER: &str = "polling-agent";
+
+    /// A notice addressed to [`CALLER`] — the plainest delivery there is
+    /// ("you always get your own mail"), used by the tests whose subject is
+    /// ordering, paging or acking rather than who may receive a row.
+    fn to_the_caller() -> serde_json::Value {
+        serde_json::json!({ "recipient_id": format!("user:{CALLER}") })
+    }
 
     /// Register a consumer, optionally bound to a system user, optionally
     /// delegated for a set of humans — the two halves of "this consumer
@@ -820,7 +1054,7 @@ mod tests {
             EventKind::StructureApplied,
             Some("alice"),
             None,
-            &serde_json::Value::Null,
+            &to_the_caller(),
         )
         .await
         .unwrap();
@@ -829,7 +1063,7 @@ mod tests {
             EventKind::StructureApplied,
             Some("alice"),
             None,
-            &serde_json::Value::Null,
+            &to_the_caller(),
         )
         .await
         .unwrap();
@@ -852,7 +1086,7 @@ mod tests {
             EventKind::StructureApplied,
             None,
             None,
-            &serde_json::Value::Null,
+            &to_the_caller(),
         )
         .await
         .unwrap();
@@ -868,7 +1102,7 @@ mod tests {
             EventKind::ArchiveProposed,
             None,
             None,
-            &serde_json::Value::Null,
+            &to_the_caller(),
         )
         .await
         .unwrap();
@@ -915,7 +1149,7 @@ mod tests {
             EventKind::StructureApplied,
             None,
             None,
-            &serde_json::Value::Null,
+            &to_the_caller(),
         )
         .await
         .unwrap();
@@ -950,7 +1184,7 @@ mod tests {
                 EventKind::StructureApplied,
                 None,
                 None,
-                &serde_json::Value::Null,
+                &to_the_caller(),
             )
             .await
             .unwrap();
@@ -971,7 +1205,7 @@ mod tests {
             EventKind::StructureApplied,
             None,
             None,
-            &serde_json::Value::Null,
+            &to_the_caller(),
         )
         .await
         .unwrap();
@@ -991,7 +1225,7 @@ mod tests {
             EventKind::StructureApplied,
             None,
             None,
-            &serde_json::Value::Null,
+            &to_the_caller(),
         )
         .await
         .unwrap();
@@ -1033,7 +1267,7 @@ mod tests {
             EventKind::StructureApplied,
             None,
             None,
-            &serde_json::Value::Null,
+            &to_the_caller(),
         )
         .await
         .unwrap();
@@ -1144,7 +1378,7 @@ mod tests {
     async fn a_consumer_receives_the_notices_of_its_own_system_user() {
         let (_workdir, pool) = fresh_pool().await;
         // An agent principal: no delegation at all, but the notice is about
-        // its own wiki — 287 of the events on prod are exactly this shape.
+        // its own wiki — the commonest shape in the queue by a wide margin.
         consumer(&pool, "hermes", Some("hermes"), &[]).await;
         insert_event(
             &pool,
@@ -1191,37 +1425,6 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn an_unaddressed_or_group_notice_stays_broadcast() {
-        let (_workdir, pool) = fresh_pool().await;
-        consumer(&pool, "any-bridge", None, &[]).await;
-        // An operator notice with no addressee.
-        insert_event(
-            &pool,
-            EventKind::CompileFailureStreak,
-            Some("alice"),
-            None,
-            &serde_json::json!({ "slug": "p", "consecutive": 2 }),
-        )
-        .await
-        .expect("insert");
-        // A communal principal: not a `user:`, so withholding it would
-        // silently lose it.
-        insert_event(
-            &pool,
-            EventKind::StructureApplied,
-            Some("famiglia"),
-            None,
-            &serde_json::json!({ "recipient_id": "group:famiglia" }),
-        )
-        .await
-        .expect("insert");
-        let out = poll_events(&pool, "any-bridge", CALLER, None, &[], DEFAULT_POLL_TOP_K)
-            .await
-            .expect("poll");
-        assert_eq!(out.events.len(), 2, "both stay broadcast");
-    }
-
-    #[tokio::test]
     async fn the_poll_scope_and_the_configured_half_agree() {
         // Anti-drift: the rule is written twice — once as the poll's SQL
         // predicate, once as `consumers_serving` — so pin them to the same
@@ -1264,6 +1467,48 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn the_two_halves_agree_about_a_group_too() {
+        // The same anti-drift, for the addressee shape the emit-time warning
+        // is blind to if only the poll learns about it: an undeliverable
+        // group notice has to be as loud as an undeliverable personal one.
+        let (_workdir, pool) = fresh_pool().await;
+        group(&pool, "famiglia", &["alice", "bob"]).await;
+        consumer(&pool, "by-delegation", None, &["bob"]).await;
+        consumer(&pool, "by-system-user", Some("alice"), &[]).await;
+        consumer(&pool, "serves-nobody", None, &["carol"]).await;
+        insert_event(
+            &pool,
+            EventKind::StructureApplied,
+            Some("famiglia"),
+            None,
+            &serde_json::json!({ "recipient_id": "group:famiglia" }),
+        )
+        .await
+        .expect("insert");
+
+        let mut configured = consumers_serving(&pool, "group:famiglia")
+            .await
+            .expect("configured");
+        configured.sort();
+        assert_eq!(configured, vec!["by-delegation", "by-system-user"]);
+
+        let mut delivered = Vec::new();
+        for c in ["by-delegation", "by-system-user", "serves-nobody"] {
+            let out = poll_events(&pool, c, CALLER, None, &[], DEFAULT_POLL_TOP_K)
+                .await
+                .expect("poll");
+            if !out.events.is_empty() {
+                delivered.push(c.to_owned());
+            }
+        }
+        delivered.sort();
+        assert_eq!(
+            delivered, configured,
+            "the poll filter and the emit-time check must not drift apart on a group either"
+        );
+    }
+
+    #[tokio::test]
     async fn an_addressee_nobody_serves_is_reported_as_such() {
         let (_workdir, pool) = fresh_pool().await;
         consumer(&pool, "alice-bridge", None, &["alice"]).await;
@@ -1291,5 +1536,293 @@ mod tests {
             .await
             .expect("poll");
         assert!(out.events.is_empty());
+    }
+
+    /// Put `members` in `group_id`, the way the enrollment mirror does.
+    async fn group(pool: &SqlitePool, group_id: &str, members: &[&str]) {
+        sqlx::query("INSERT OR REPLACE INTO enrollment_groups (group_id, members) VALUES (?, ?)")
+            .bind(group_id)
+            .bind(serde_json::to_string(members).expect("members json"))
+            .execute(pool)
+            .await
+            .expect("seed group");
+    }
+
+    /// Enrol `user_id`, admin or not — the flag the unaddressed branch reads.
+    async fn enrol(pool: &SqlitePool, user_id: &str, admin: bool) {
+        sqlx::query(
+            "INSERT INTO enrollment_users (user_id, aliases, is_admin) VALUES (?, '[]', ?)",
+        )
+        .bind(user_id)
+        .bind(i64::from(admin))
+        .execute(pool)
+        .await
+        .expect("enrol");
+    }
+
+    /// One live fact on `source_path`, about `subject`, readable also by
+    /// `allow` — the material `readable_fact_on_page` judges.
+    async fn fact_on(
+        pool: &SqlitePool,
+        source_path: &str,
+        subject: &str,
+        allow: &[&str],
+        byte: u8,
+    ) {
+        crate::fact_index::insert(
+            pool,
+            &crate::fact_index::NewFact {
+                fact_id: crate::types::FactId::parse(&format!(
+                    "018f1234-5678-7abc-9def-0123456789{byte:02x}"
+                ))
+                .expect("fact id"),
+                wiki_id: source_path.split('/').nth(1).unwrap_or("w").to_owned(),
+                source_path: source_path.to_owned(),
+                region_start: Some(0),
+                region_end: Some(10),
+                text: "a thing".to_owned(),
+                embedding: vec![0.1, 0.2],
+                subject_id: subject.parse().expect("subject"),
+                allow_ids: allow.iter().map(|a| a.parse().expect("allow")).collect(),
+                sender_id: None,
+                fact_type: None,
+                topics: Vec::new(),
+                valid_from: None,
+                valid_to: None,
+                target_page: None,
+                style: None,
+                salience: None,
+                source_ref: None,
+                subject_external: None,
+                slot: None,
+                slot_value: None,
+                authored_refs: Vec::new(),
+            },
+        )
+        .await
+        .expect("seed fact");
+    }
+
+    #[tokio::test]
+    async fn a_group_notice_reaches_only_a_consumer_that_serves_a_member() {
+        let (_workdir, pool) = fresh_pool().await;
+        group(&pool, "famiglia", &["frodo", "sam"]).await;
+        consumer(&pool, "family-bridge", None, &["frodo"]).await;
+        consumer(&pool, "outsider-bridge", None, &["carol"]).await;
+        insert_event(
+            &pool,
+            EventKind::StructureApplied,
+            Some("famiglia"),
+            None,
+            &serde_json::json!({ "recipient_id": "group:famiglia", "variant": "split" }),
+        )
+        .await
+        .expect("insert");
+
+        let inside = poll_events(
+            &pool,
+            "family-bridge",
+            CALLER,
+            None,
+            &[],
+            DEFAULT_POLL_TOP_K,
+        )
+        .await
+        .expect("poll");
+        assert_eq!(
+            inside.events.len(),
+            1,
+            "a consumer serving frodo, who is in famiglia, receives the family's notice"
+        );
+
+        let outside = poll_events(
+            &pool,
+            "outsider-bridge",
+            CALLER,
+            None,
+            &[],
+            DEFAULT_POLL_TOP_K,
+        )
+        .await
+        .expect("poll");
+        assert!(
+            outside.events.is_empty(),
+            "a group notice is NOT a broadcast: a consumer serving nobody in famiglia gets nothing"
+        );
+    }
+
+    #[tokio::test]
+    async fn a_group_notice_reaches_a_member_polling_under_their_own_name() {
+        let (_workdir, pool) = fresh_pool().await;
+        group(&pool, "famiglia", &["frodo"]).await;
+        consumer(&pool, "claude-code", None, &[]).await;
+        insert_event(
+            &pool,
+            EventKind::StructureApplied,
+            Some("famiglia"),
+            None,
+            &serde_json::json!({ "recipient_id": "group:famiglia" }),
+        )
+        .await
+        .expect("insert");
+
+        let as_member = poll_events(&pool, "claude-code", "frodo", None, &[], DEFAULT_POLL_TOP_K)
+            .await
+            .expect("poll");
+        assert_eq!(as_member.events.len(), 1, "a member's own poll carries it");
+        let as_stranger = poll_events(&pool, "claude-code", "carol", None, &[], DEFAULT_POLL_TOP_K)
+            .await
+            .expect("poll");
+        assert!(
+            as_stranger.events.is_empty(),
+            "the same consumer, a caller outside the group: nothing"
+        );
+    }
+
+    #[tokio::test]
+    async fn the_universal_group_is_everybodys() {
+        let (_workdir, pool) = fresh_pool().await;
+        // `global` is the one group whose `members` array is empty by design:
+        // everybody is in it and nobody is enumerated, so membership cannot
+        // be the test.
+        group(&pool, crate::enrollment::GLOBAL_GROUP_ID, &[]).await;
+        consumer(&pool, "any-bridge", None, &["carol"]).await;
+        insert_event(
+            &pool,
+            EventKind::StructureApplied,
+            None,
+            None,
+            &serde_json::json!({ "recipient_id": "group:global" }),
+        )
+        .await
+        .expect("insert");
+        let out = poll_events(&pool, "any-bridge", CALLER, None, &[], DEFAULT_POLL_TOP_K)
+            .await
+            .expect("poll");
+        assert_eq!(
+            out.events.len(),
+            1,
+            "an empty members list means everyone, not no one"
+        );
+    }
+
+    #[tokio::test]
+    async fn an_unaddressed_notice_is_the_operators_and_no_ordinary_consumer_sees_it() {
+        let (_workdir, pool) = fresh_pool().await;
+        enrol(&pool, "boss", true).await;
+        consumer(&pool, "ordinary-bridge", None, &["carol"]).await;
+        // `consumer()` enrols a plain (non-admin) system user; this one has
+        // to be the admin, so it is enrolled first and registered after.
+        crate::consumers::register(
+            &pool,
+            &crate::consumers::RegisterRequest {
+                consumer_id: "operator-bridge",
+                display_name: None,
+                callback_url: None,
+                kinds_subscribed: None,
+                metadata: None,
+                system_user_id: Some("boss"),
+            },
+        )
+        .await
+        .expect("register");
+        // The shape that was reaching the household's assistants: addressed
+        // to nobody, and it carries the path of a page of somebody's memory.
+        insert_event(
+            &pool,
+            EventKind::CompileFailureStreak,
+            Some("frodo"),
+            None,
+            &serde_json::json!({
+                "slug": "p",
+                "source_path": "wikis/frodo/meal_prep_frodo.md",
+                "consecutive": 2,
+            }),
+        )
+        .await
+        .expect("insert");
+
+        let ordinary = poll_events(
+            &pool,
+            "ordinary-bridge",
+            CALLER,
+            None,
+            &[],
+            DEFAULT_POLL_TOP_K,
+        )
+        .await
+        .expect("poll");
+        assert!(
+            ordinary.events.is_empty(),
+            "an event with no addressee belongs to the operator: it does not leave the poll \
+             for an ordinary consumer, page path and all"
+        );
+
+        let operator = poll_events(
+            &pool,
+            "operator-bridge",
+            CALLER,
+            None,
+            &[],
+            DEFAULT_POLL_TOP_K,
+        )
+        .await
+        .expect("poll");
+        assert_eq!(
+            operator.events.len(),
+            1,
+            "a consumer whose system user is the admin still drains the operator's queue"
+        );
+    }
+
+    #[tokio::test]
+    async fn a_notice_naming_a_page_waits_for_a_reader_who_reads_a_fact_of_it() {
+        let (_workdir, pool) = fresh_pool().await;
+        consumer(&pool, "frodo-bridge", None, &["frodo"]).await;
+        // Two dossiers in the same wiki. Frodo is the subject of the first
+        // and nobody on the second.
+        fact_on(&pool, "wikis/famiglia/his.md", "user:frodo", &[], 0xa1).await;
+        fact_on(&pool, "wikis/famiglia/hers.md", "user:galadriel", &[], 0xa2).await;
+        insert_event(
+            &pool,
+            EventKind::DocumentIngested,
+            Some("famiglia"),
+            None,
+            &serde_json::json!({
+                "recipient_id": "user:frodo",
+                "document_page": "his.md",
+                "title": "a scan",
+            }),
+        )
+        .await
+        .expect("insert");
+        insert_event(
+            &pool,
+            EventKind::DocumentIngested,
+            Some("famiglia"),
+            None,
+            &serde_json::json!({
+                "recipient_id": "user:frodo",
+                "document_page": "hers.md",
+                "title": "a scan",
+            }),
+        )
+        .await
+        .expect("insert");
+
+        let out = poll_events(&pool, "frodo-bridge", CALLER, None, &[], DEFAULT_POLL_TOP_K)
+            .await
+            .expect("poll");
+        let pages: Vec<&str> = out
+            .events
+            .iter()
+            .filter_map(|e| e.payload.get("document_page").and_then(|p| p.as_str()))
+            .collect();
+        assert_eq!(
+            pages,
+            vec!["his.md"],
+            "the page name is content: a notice may name only a page the addressee reads a \
+             fact of, so `hers.md` never leaves the queue"
+        );
     }
 }

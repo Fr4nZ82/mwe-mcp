@@ -8995,6 +8995,34 @@ async fn propose_repair<'a>(
     Some((dest, dest_page, decision.reason))
 }
 
+/// The body of the recall-tuning notice: which fact keeps going missing,
+/// where it lives, how often, and what the gate said about the repair that
+/// was tried.
+///
+/// It carries no sample of what the person ASKED. The query that missed is
+/// their own sentence, restated — the most private thing in the whole miss —
+/// and a notice is a payload that travels: it leaves over MCP, sits in a
+/// consumer's context and is handed to whatever model that consumer runs. The
+/// operator needs it and has it, in `recall_log`, where it is stored with the
+/// miss and read under the operator's own eyes.
+fn recall_tuning_payload(
+    fact: &FactIndexRow,
+    fact_id: &str,
+    miss_count: i64,
+    gate_note: Option<&str>,
+) -> serde_json::Value {
+    json!({
+        "fact_id": fact_id,
+        "wiki_id": fact.wiki_id,
+        "source_path": fact.source_path,
+        "miss_count": miss_count,
+        "gate": gate_note,
+        "hint": "recurring recall miss with no provable local repair — a recall-tuning \
+                 lever (fact topics, recall knobs, navigator prompt) needs the operator; \
+                 never auto-applied",
+    })
+}
+
 /// Shared tail of every unrepaired outcome: on recurrence the operator
 /// notice queues (once per fact per cycle), otherwise the miss discards
 /// with its reason tag.
@@ -9021,17 +9049,7 @@ async fn finish_unrepaired(
             EventKind::RecallTuningProposed,
             Some(&fact.wiki_id),
             Some(miss.fact_id.as_str()),
-            &json!({
-                "fact_id": miss.fact_id,
-                "wiki_id": fact.wiki_id,
-                "source_path": fact.source_path,
-                "miss_count": count,
-                "sample_query": miss.restated_text,
-                "gate": gate_note,
-                "hint": "recurring recall miss with no provable local repair — a recall-tuning \
-                         lever (fact topics, recall knobs, navigator prompt) needs the operator; \
-                         never auto-applied",
-            }),
+            &recall_tuning_payload(fact, &miss.fact_id, count, gate_note),
         )
         .await
         .map_err(|e| e.to_string())?;
@@ -19161,5 +19179,64 @@ mod tests {
             );
         }
         drop(dir);
+    }
+
+    #[test]
+    fn the_recall_tuning_notice_names_the_fact_and_never_quotes_the_person() {
+        let fact_id = FactId::parse("018f1234-5678-7abc-9def-0123456789c1").unwrap();
+        let fact = FactIndexRow {
+            subject_external: None,
+            slot: None,
+            slot_value: None,
+            authored_refs: Vec::new(),
+            fact_id: fact_id.clone(),
+            wiki_id: "bob".to_owned(),
+            source_path: "wikis/bob/casa.md".to_owned(),
+            region_start: None,
+            region_end: None,
+            text: "The gate code is 4417.".to_owned(),
+            embedding: vec![0.1, 0.2],
+            subject_id: "user:bob".parse().unwrap(),
+            allow_ids: Vec::new(),
+            sender_id: None,
+            fact_type: Some("episode".to_owned()),
+            topics: Vec::new(),
+            created_at: "2026-03-14T18:00:00Z".to_owned(),
+            updated_at: "2026-03-14T18:00:00Z".to_owned(),
+            superseded_at: None,
+            superseded_by: None,
+            successor_fact_id: None,
+            deleted_at: None,
+            deleted_reason: None,
+            last_recall_at: None,
+            recall_count_30d: 0,
+            valid_from: None,
+            valid_to: None,
+            decay_reason: None,
+            target_page: None,
+            style: None,
+            salience: None,
+            source_ref: None,
+        };
+        let payload =
+            recall_tuning_payload(&fact, fact_id.as_str(), 4, Some("no candidate passed"));
+
+        // The operator's evidence: which fact, where it lives, how often.
+        assert_eq!(payload["fact_id"], json!(fact_id.as_str()));
+        assert_eq!(payload["source_path"], json!("wikis/bob/casa.md"));
+        assert_eq!(payload["miss_count"], json!(4));
+        assert_eq!(payload["gate"], json!("no candidate passed"));
+        // And nothing of what the person said. The notice travels — over MCP,
+        // into a consumer's context, through whatever model it runs — and the
+        // restated query is the person's own sentence.
+        assert!(
+            payload.get("sample_query").is_none(),
+            "the restated query must not ride the notice: it stays in `recall_log`"
+        );
+        let whole = payload.to_string();
+        assert!(
+            !whole.contains("gate code"),
+            "nothing quoting the person may reach the payload: {whole}"
+        );
     }
 }

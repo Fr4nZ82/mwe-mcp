@@ -262,13 +262,15 @@ async fn events_poll_admin_fallback_for_any_consumer() {
     )
     .await
     .unwrap();
-    // Plant one event so the response is non-trivial.
+    // Plant one event so the response is non-trivial. Addressed to the
+    // caller: the subject here is that an admin token may drain SOMEBODY
+    // ELSE's consumer, not which rows that consumer is entitled to.
     events::insert_event(
         &state.pool,
         EventKind::StructureApplied,
         None,
         None,
-        &serde_json::Value::Null,
+        &json!({ "recipient_id": "user:alice" }),
     )
     .await
     .unwrap();
