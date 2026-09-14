@@ -639,7 +639,8 @@ pub mod decay {
 /// started being true. Then the honest answer is when the correction was MADE,
 /// which every caller knows and none of them is the wall clock: the ingest
 /// weld has the turn's own instant (a backlog replay re-lives it at utterance
-/// time), the light dream has the capture's. Passing it is not optional
+/// time), the light dream has the capture's start, and a background pass has
+/// the instant the memory is at ([`memory_now`]). Passing it is not optional
 /// precisely because reaching for `now()` here is the mistake — it dates a
 /// June correction to the August evening the engine caught up.
 ///
@@ -676,8 +677,9 @@ pub async fn mark_superseded(
     //
     // The successor may still be buffered (the light dream applies a staged
     // hint before promotion), so both stores are asked. No `valid_from`
-    // anywhere — an undated successor — leaves the wall clock, which is the
-    // best available answer and the live case.
+    // anywhere — an undated successor — leaves the instant the caller handed
+    // in, which every night and hourly caller reads off the memory's own clock
+    // ([`memory_now`]) and not the wall's.
     let now = chrono::Utc::now().to_rfc3339();
     let proposed = successor_valid_from(pool, new_fact_id)
         .await?
@@ -815,6 +817,67 @@ pub(crate) async fn successor_valid_from(
 ///
 /// Public because a caller of [`close_validity`] has to hand it the instant
 /// the closure is being made, and that instant is usually a bound it already
+/// The key the memory's own clock is kept under in `engine_meta`.
+const MEMORY_CLOCK: &str = "memory.last_turn_at";
+
+/// Stamp the memory's clock with the instant of the turn just seen.
+///
+/// The instant the CONSUMER declares (`metadata.occurred_at`), never later
+/// than the wall clock: a consumer that dates a message in the future must not
+/// be able to push the memory's clock past today and have a background pass
+/// close facts at a date that has not happened.
+///
+/// Best-effort on purpose. A turn whose clock fails to record is a turn that
+/// happened, and refusing it to keep a bookkeeping row would trade the thing
+/// for the note about the thing.
+pub(crate) async fn saw_a_turn_at(pool: &SqlitePool, at: chrono::DateTime<chrono::Utc>) {
+    let at = at.min(chrono::Utc::now());
+    if let Err(e) = crate::db::meta_set(pool, MEMORY_CLOCK, &at.to_rfc3339()).await {
+        tracing::warn!(error = %e, "fact_index: the memory's clock was not stamped");
+    }
+}
+
+/// **The instant the memory is AT** — the most recent turn it has seen.
+///
+/// The «now» a background pass means when it has to date a closure it was not
+/// given a date for. On a live installation it is the wall clock to within
+/// minutes; on a replayed backlog it is the date of the STORY, which is the
+/// whole point: a night catching up on a week in June must not stamp the
+/// facts it closes with the September evening it happens to run on. Measured
+/// on one such replay: nine facts closed «12 September» inside a story that
+/// ends on 18 July.
+///
+/// Three answers, in order:
+/// 1. the clock the turns stamp ([`saw_a_turn_at`]) — exact, and the only one
+///    that knows a turn happened without writing anything;
+/// 2. otherwise the latest start among the facts still standing, capped at the
+///    wall clock. It is what the memory can infer about itself from what is
+///    in it, and the cap is what keeps a fact that BEGINS in the future — a
+///    job starting in October — from carrying the clock forward with it. This
+///    is the answer for a memory written before the clock existed, which is
+///    every memory on the day this ships;
+/// 3. otherwise the wall clock, for a memory that holds nothing at all.
+pub(crate) async fn memory_now(pool: &SqlitePool) -> chrono::DateTime<chrono::Utc> {
+    let wall = chrono::Utc::now();
+    if let Ok(Some(raw)) = crate::db::meta_get(pool, MEMORY_CLOCK).await
+        && let Some(at) = instant_of(&raw)
+    {
+        return at.min(wall);
+    }
+    let latest: Option<String> = sqlx::query_scalar(
+        "SELECT MAX(valid_from) FROM fact_index
+          WHERE deleted_at IS NULL AND valid_from IS NOT NULL",
+    )
+    .fetch_optional(pool)
+    .await
+    .ok()
+    .flatten();
+    latest
+        .as_deref()
+        .and_then(instant_of)
+        .map_or(wall, |at| at.min(wall))
+}
+
 /// holds as a string — the evidence's start, the seed's end.
 #[must_use]
 pub fn instant_of(bound: &str) -> Option<chrono::DateTime<chrono::Utc>> {
@@ -3895,7 +3958,71 @@ fn decode_row(raw: RawFactRow) -> Result<FactIndexRow> {
 
 #[cfg(test)]
 mod tests {
-    use super::{DayEdge, canonical_bound};
+    use super::{DayEdge, canonical_bound, memory_now, saw_a_turn_at};
+
+    /// **The night means «now» as the memory means it.**
+    ///
+    /// A background pass that has to date a closure nobody dated must not
+    /// reach for the wall clock: replaying a backlog of a week in June on a
+    /// September evening stamped nine facts «12 September» inside a story that
+    /// ends on 18 July. The three answers, in the order they are asked.
+    #[tokio::test]
+    async fn the_memory_is_at_the_instant_of_the_last_turn_it_saw() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let pool = crate::db::open_or_init(dir.path()).await.expect("open");
+
+        // (3) A memory holding nothing is at the wall clock: there is no
+        // story to be at the date of.
+        let wall = chrono::Utc::now();
+        assert!(
+            (memory_now(&pool).await - wall).num_seconds().abs() <= 5,
+            "an empty memory is at the real clock"
+        );
+
+        // (2) No clock stamped yet — every memory written before this existed
+        // — and the latest start among the facts standing is the best the
+        // memory can say about itself.
+        sqlx::query(
+            "INSERT INTO fact_index (fact_id, wiki_id, source_path, \"text\", subject_id, \
+                                     allow_ids, embedding, embedding_dim, created_at, \
+                                     updated_at, valid_from) \
+             VALUES (?, 'famiglia', 'casa.md', 'x', 'user:alice', '[]', ?, 1, ?, ?, ?)",
+        )
+        .bind("0190f3c2-7a4e-7c31-9b02-2f6a1c8e5e01")
+        .bind(vec![0u8; 4])
+        .bind(wall.to_rfc3339())
+        .bind(wall.to_rfc3339())
+        .bind("2026-07-18T18:15:00Z")
+        .execute(&pool)
+        .await
+        .expect("plant");
+        assert_eq!(
+            memory_now(&pool).await.to_rfc3339(),
+            "2026-07-18T18:15:00+00:00",
+            "with no clock stamped, the memory is at the latest fact it holds"
+        );
+
+        // (1) A turn stamps the clock, and that is the answer from then on —
+        // the date of the STORY on a replay, whatever the wall says.
+        let uttered = chrono::DateTime::parse_from_rfc3339("2026-06-11T18:00:00Z")
+            .unwrap()
+            .to_utc();
+        saw_a_turn_at(&pool, uttered).await;
+        assert_eq!(
+            memory_now(&pool).await,
+            uttered,
+            "the memory is where its last turn left it, not where the calendar is"
+        );
+
+        // A consumer dating a message in the future may not carry the clock
+        // past today: a pass would then close facts at a date that has not
+        // happened.
+        saw_a_turn_at(&pool, wall + chrono::Duration::days(30)).await;
+        assert!(
+            (memory_now(&pool).await - wall).num_seconds().abs() <= 5,
+            "a turn from the future is read as now"
+        );
+    }
 
     /// A bare `YYYY-MM-DD` is the shape a writer produces whenever the source
     /// named a DAY, which is most sentences that carry a date. It has to reach

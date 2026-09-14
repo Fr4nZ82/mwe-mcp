@@ -1621,7 +1621,11 @@ async fn apply_slot_conflict(
         .map(crate::types::FactId::parse)
         .transpose()
         .map_err(|e| ApplyError::InvalidPayload(format!("slot_conflict successor: {e}")))?;
-    let now = chrono::Utc::now();
+    // The night's auto-apply sweep reaches here too, past the timeout, so the
+    // instant a closure is dated by is the memory's and not the wall's
+    // ([`crate::fact_index::memory_now`]). On a live installation, and when a
+    // person applies this from the dashboard, the two are the same instant.
+    let now = crate::fact_index::memory_now(pool).await;
     let retired = match &successor {
         Some(new_fact) => crate::fact_index::mark_superseded(pool, &kept, new_fact, now)
             .await

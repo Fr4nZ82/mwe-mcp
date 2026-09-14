@@ -13,6 +13,19 @@ semver-governed surface: breaking changes are called out explicitly.
 
 ### Fixed
 
+- **A tidy-up catching up on old messages dates what it closes by the story,
+  not by the evening it runs on.** When a background pass has to close a fact
+  and nothing in the conversation said when it stopped being true, it has to
+  pick a moment itself — and it was picking the moment it happened to be
+  running. Feeding a memory a backlog of messages from June on a September
+  evening therefore left nine facts marked as having ended *«12 September»*
+  inside a story that finishes in July, which reads back as a thing three
+  months over. The «now» a nightly or hourly pass means is now the memory's
+  own: the instant of the most recent message it has seen. On a live setup
+  that is the real clock to within minutes, so nothing changes; on a replayed
+  backlog it is the date of the story. A message dated in the future cannot
+  push it past today.
+
 - **Something said again in fewer words replaces nothing.** *«The house
   insurance renews on 3 August; the excess has gone up to £350»*, said again a
   week later as just *«The house insurance renews on 3 August»*, retired the

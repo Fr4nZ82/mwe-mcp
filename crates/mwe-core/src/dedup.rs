@@ -143,9 +143,14 @@ pub(crate) async fn apply_dedup_merge(
         )));
     }
 
-    // A merge is the engine's own bookkeeping, not a claim that stopped being
-    // true at some moment in the world: the wall clock IS when it happened.
-    let touched = fact_index::mark_superseded(pool, &loser, &winner, chrono::Utc::now())
+    // WHEN the merge was made is bookkeeping and reads the wall clock inside
+    // `mark_superseded`. What travels from here is the other clock: the instant
+    // a closure is dated by when the winner carries no start of its own, and
+    // that one is the memory's — a night folding a backlog stamps what it
+    // closes with the story it is reading, not with the evening it runs on
+    // ([`fact_index::memory_now`]).
+    let closed_when = fact_index::memory_now(pool).await;
+    let touched = fact_index::mark_superseded(pool, &loser, &winner, closed_when)
         .await
         .map_err(|e| ApplyError::HandlerIo(e.to_string()))?;
     if touched == 0 {

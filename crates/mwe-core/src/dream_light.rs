@@ -540,9 +540,21 @@ async fn screen_one(
 /// When the capture was filed — the turn's own instant, which is what a
 /// correction happened AT. The light dream runs later, sometimes much later on
 /// a backlog, and its clock is about the engine rather than the world.
-fn captured_instant(cap: &capture_buffer::BufferedCapture) -> chrono::DateTime<chrono::Utc> {
-    chrono::DateTime::parse_from_rfc3339(&cap.captured_at)
-        .map_or_else(|_| chrono::Utc::now(), |t| t.to_utc())
+/// The instant a staged claim's correction is dated by.
+///
+/// The claim's own START where it has one — a correction happened when it was
+/// SAID, and the light dream may be reading it hours later — and otherwise the
+/// instant the memory is at, which on a replayed backlog is the date of the
+/// story rather than the evening the dream runs on
+/// ([`fact_index::memory_now`]).
+async fn captured_instant(
+    pool: &SqlitePool,
+    cap: &capture_buffer::BufferedCapture,
+) -> chrono::DateTime<chrono::Utc> {
+    match cap.valid_from.as_deref().and_then(fact_index::instant_of) {
+        Some(at) => at,
+        None => fact_index::memory_now(pool).await,
+    }
 }
 
 async fn write_placed(
@@ -622,7 +634,9 @@ async fn write_placed(
         && row.deleted_at.is_none()
         // The capture's own instant, not the dream's: the correction happened
         // when it was said, and the light dream may be running hours later.
-        && fact_index::mark_superseded(pool, old, &cap.capture_id, captured_instant(cap)).await? > 0
+        && fact_index::mark_superseded(pool, old, &cap.capture_id, captured_instant(pool, cap).await)
+            .await?
+            > 0
     {
         report.superseded += 1;
         // Disk half of the supersede (same pattern as

@@ -5449,6 +5449,9 @@ async fn judge_completion_case(
     .await?;
     let evidence_began = fact_began(case.evidence);
     let mut applied: Vec<promote::AppliedClosure> = Vec::new();
+    // Read once for the sweep, not once per item: it is the same instant for
+    // every closure this pass makes ([`fact_index::memory_now`]).
+    let memory_now = fact_index::memory_now(pool).await;
     for item in &decision.completions {
         // Anti-hallucination: only ids from the candidate list close.
         let Some(target) = case
@@ -5483,7 +5486,7 @@ async fn judge_completion_case(
         // item ever began ([`fact_index::end_not_before_start`]). The evidence
         // is what closed the item, so its start is that instant; the wall
         // clock would put a June closure in the September night that read it.
-        let closed_when = fact_index::instant_of(evidence_began).unwrap_or_else(chrono::Utc::now);
+        let closed_when = fact_index::instant_of(evidence_began).unwrap_or(memory_now);
         let Some(prev) = fact_index::close_validity(
             pool,
             &target.fact_id,
@@ -6076,7 +6079,6 @@ async fn run_page_judgement(
             page,
             &decision,
             cycle_id,
-            now,
             depth,
             llm.model_id(),
             &mut report,
@@ -6617,7 +6619,7 @@ async fn ask_the_judge(
 /// Apply one page's verdicts in marker order, act-first.
 #[allow(
     clippy::too_many_arguments,
-    reason = "one page's verdicts: what was decided, about which page, by whom, when, how deeply"
+    reason = "one page's verdicts: what was decided, about which page, by whom, how deeply"
 )]
 async fn apply_page_decision(
     pool: &SqlitePool,
@@ -6626,7 +6628,6 @@ async fn apply_page_decision(
     page: &JudgedPage,
     decision: &PageDecision,
     cycle_id: &str,
-    now: DateTime<Utc>,
     depth: JudgementDepth,
     model_id: &str,
     report: &mut PageJudgementReport,
@@ -6644,6 +6645,9 @@ async fn apply_page_decision(
     // deciding from a picture that is already out of date. The engine takes
     // the first and says so about the rest.
     let mut decided: std::collections::BTreeSet<String> = std::collections::BTreeSet::new();
+    // Read once for the page, not once per verdict: it is the same instant for
+    // every fact on it ([`fact_index::memory_now`]).
+    let memory_now = fact_index::memory_now(pool).await;
     for (marker, spelling, verdict) in ordered {
         let outcome = match page.fact_at(marker) {
             None => VerdictOutcome::Refused("no such marker on this page"),
@@ -6652,7 +6656,7 @@ async fn apply_page_decision(
             },
             Some(row) => {
                 apply_one_page_verdict(
-                    pool, tree, embedder, page, row, verdict, cycle_id, now, depth,
+                    pool, tree, embedder, page, row, verdict, cycle_id, memory_now, depth,
                 )
                 .await?
             },
@@ -6844,13 +6848,17 @@ async fn apply_one_page_verdict(
     row: &FactIndexRow,
     verdict: &LlmPageVerdict,
     cycle_id: &str,
-    now: DateTime<Utc>,
+    memory_now: DateTime<Utc>,
     depth: JudgementDepth,
 ) -> Result<VerdictOutcome> {
     // The instant a judgement acts on is the FACT's own, not the clock the
     // pass runs on: a night catching up on a backlog is not the day the errand
-    // happened ([`fact_index::end_not_before_start`]).
-    let said_at = fact_index::instant_of(&row.created_at).unwrap_or(now);
+    // happened ([`fact_index::end_not_before_start`]). Which of the row's two
+    // clocks that is, is [`fact_began`]'s answer and not this function's — on
+    // a replay `created_at` is the run's own evening — and where the row
+    // carries neither readably, the instant the memory is at
+    // ([`fact_index::memory_now`]).
+    let said_at = fact_index::instant_of(fact_began(row)).unwrap_or(memory_now);
     match verdict.verdict.trim() {
         "keep" | "" => Ok(VerdictOutcome::Kept),
 
@@ -8496,7 +8504,11 @@ async fn judge_contradiction_case(
     // and `find_due_between` matches on exactly that — which would push the
     // just-cancelled satellite INTO the due-soon slot the closure exists to get
     // it out of.
-    let now = chrono::Utc::now();
+    // The pass's own «now» is the memory's, not the wall's: a night catching
+    // up on a backlog dates what it closes by the story it is reading
+    // ([`fact_index::memory_now`]). On a live installation the two are the
+    // same instant to within minutes.
+    let now = fact_index::memory_now(pool).await;
     let seed_closed_at = seed
         .valid_to
         .clone()

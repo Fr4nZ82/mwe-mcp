@@ -145,8 +145,9 @@ pub fn engine_db_path(workdir: &Path) -> PathBuf {
 /// Read a value from the engine-level key/value table (`engine_meta`,
 /// migration 0041). `None` when the key is absent.
 ///
-/// `engine_meta` holds state that is neither per-fact nor per-wiki — today
-/// the embedder-identity guard.
+/// `engine_meta` holds state that is neither per-fact nor per-wiki: the
+/// embedder-identity guard, and the instant of the most recent turn the memory
+/// has seen ([`crate::fact_index::memory_now`]).
 ///
 /// # Errors
 ///

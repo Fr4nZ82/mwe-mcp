@@ -11367,6 +11367,11 @@ pub async fn wiki_ingest_message(
     // reads this single instant, so a backlog replay that sets
     // `metadata.occurred_at` re-lives the turn at utterance time.
     let turn_now = request.turn_now();
+    // And the memory's own clock is this instant, for every background pass
+    // that later has to date a closure nobody dated: the night means «now» as
+    // the memory means it, which on a replayed backlog is the date of the
+    // story ([`crate::fact_index::memory_now`]).
+    crate::fact_index::saw_a_turn_at(pool, turn_now).await;
 
     // THE SAME TURN DELIVERED TWICE IS WRITTEN ONCE AND READ TWICE. What the
     // first delivery DECIDED is kept and handed back — the intent, the seed,
