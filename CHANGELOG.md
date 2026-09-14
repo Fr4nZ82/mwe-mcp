@@ -25,6 +25,16 @@ semver-governed surface: breaking changes are called out explicitly.
   own, which it does not yet: until then the two birthdays stay two, and it
   says so rather than guessing.
 
+- **"And don't tell her" reaches the thing you already said.** Somebody adding
+  that to something the memory already holds means the thing it holds — so the
+  restriction is written onto the claim that is there, and nothing is stored
+  twice. Written as a second claim it would have sat beside a copy she could
+  still read, which is not keeping it from her at all. It only ever narrows,
+  and only when the person saying it could have changed that claim anyway:
+  somebody who can merely read a claim of yours does not get to put a
+  restriction on it by saying something similar — they get their own claim,
+  with their own wish on it, and yours is left exactly as it was.
+
 - **"I'd rather she didn't know" is something a fact carries.** Asking for one
   claim to be kept from one person was being recorded as a narrower audience,
   and an audience cannot say it: a fact about *the parents* is readable by

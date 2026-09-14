@@ -380,6 +380,29 @@ impl Audience<'_> {
         self.same_read_set_as(row) && row.sender_id.as_ref() == self.sender
     }
 
+    /// The same claim, told to the same people, **except that this one is
+    /// kept from somebody the stored one is not**.
+    ///
+    /// «I'd rather Zoe didn't know» almost always means the thing said
+    /// yesterday too. Written as a second fact, the wish would sit beside a
+    /// copy she can still read, which is the shape of not being kept at all —
+    /// so this pair is not two facts, it is the old one with something added
+    /// to it ([`Audience::restricts`]).
+    ///
+    /// Strictly a RESTRICTION: the incoming exclusion has to contain
+    /// everything the row already keeps it from, and at least one name more.
+    /// A capture that keeps it from FEWER people is not this — lifting a
+    /// restriction is something somebody says of that fact, not something a
+    /// resemblance may do on their behalf.
+    fn restricts(&self, row: &FactIndexRow) -> bool {
+        &row.subject_id == self.subject
+            && row.sender_id.as_ref() == self.sender
+            && crate::acl::reader_set(self.subject, self.allow, None, &[])
+                == crate::acl::reader_set(&row.subject_id, &row.allow_ids, None, &[])
+            && row.excluded_ids.iter().all(|p| self.excluded.contains(p))
+            && self.excluded.iter().any(|p| !row.excluded_ids.contains(p))
+    }
+
     /// Whether `row` is readable by exactly the same people — subject plus
     /// `allow` set, order-insensitive — with the reporter left out of it.
     ///
@@ -451,6 +474,85 @@ impl<'a> ChannelScope<'a> {
     fn holds(&self, row: &FactIndexRow) -> bool {
         row.wiki_id == self.wiki_id && crate::wiki::names_page(&row.source_path, self.page)
     }
+}
+
+/// **Put the exclusion on the fact that is already there, and fold into it.**
+///
+/// Somebody saying «and don't tell her» about something the memory already
+/// holds means the thing it already holds. Written as a new fact, the wish
+/// would sit beside a copy she can still read — which is not being kept from
+/// her at all, and nobody would be told.
+///
+/// Three conditions, and each one is a way of not overstepping. The claim has
+/// to be the same claim (the same dedup threshold every other fold uses); the
+/// change has to NARROW ([`Audience::restricts`]); and this speaker has to be
+/// somebody who could have rewritten that fact anyway
+/// ([`crate::acl::sender_may_rewrite`]) — otherwise a resemblance would let
+/// one person add a restriction to another person's memory, and the answer
+/// there is the ordinary one: their own fact, with their own wish on it, and
+/// the other left alone.
+///
+/// **The authority test is asked with no groups**, because this path does not
+/// carry the speaker's: a fact a group answers for, which the speaker answers
+/// for through that group, is left alone rather than rewritten on a guess. It
+/// is the same predicate asked with less, and it errs towards touching
+/// nothing.
+async fn apply_exclusion_to_the_fact_already_there(
+    pool: &SqlitePool,
+    candidates: &[FactIndexRow],
+    audience: &Audience<'_>,
+    channel: Option<ChannelScope<'_>>,
+    req: &CaptureRequest,
+    threshold: f32,
+) -> Result<Option<CaptureOutcome>> {
+    if audience.excluded.is_empty() {
+        return Ok(None);
+    }
+    let restricting: Vec<FactIndexRow> = candidates
+        .iter()
+        .filter(|row| audience.restricts(row))
+        .cloned()
+        .collect();
+    let widened = Audience {
+        excluded: &[],
+        ..*audience
+    };
+    let Some((row, similarity)) =
+        best_dedup_candidate(&restricting, &widened, channel, &req.body, None)
+    else {
+        return Ok(None);
+    };
+    if similarity < threshold {
+        return Ok(None);
+    }
+    let speaker = match req.sender.as_ref().unwrap_or(&req.subject) {
+        Principal::User(id) => id.clone(),
+        Principal::Group(_) => return Ok(None),
+    };
+    if !crate::acl::sender_may_rewrite(&row.subject_id, row.sender_id.as_ref(), &speaker, &[]) {
+        return Ok(None);
+    }
+    let mut excluded = row.excluded_ids.clone();
+    for p in audience.excluded {
+        if !excluded.contains(p) {
+            excluded.push(p.clone());
+        }
+    }
+    if !fact_index::restrict_to(pool, &row.fact_id, &excluded).await? {
+        return Ok(None);
+    }
+    tracing::info!(
+        fact_id = row.fact_id.as_str(),
+        similarity,
+        "capture: exclusion applied to an existing fact — the capture folds into it"
+    );
+    Ok(Some(CaptureOutcome {
+        fact_id: new_fact_id()?,
+        action: CaptureAction::Skipped {
+            matched_fact_id: row.fact_id.clone(),
+            similarity,
+        },
+    }))
 }
 
 pub(crate) fn best_dedup_candidate<'a>(
@@ -850,6 +952,25 @@ pub async fn wiki_capture_with_source(
         excluded: &req.excluded,
         sender: req.sender.as_ref(),
     };
+    // **The wish reaches the fact that is already there.** A claim that
+    // matches one in the memory in everything but being kept from somebody is
+    // that claim with the wish added, not a second copy of it: written anew,
+    // the restriction would stand beside a copy she can still read. The old
+    // row takes the exclusion and the capture folds into it as any duplicate
+    // does — but only when this speaker could have rewritten it anyway, and
+    // only ever NARROWING ([`Audience::restricts`]).
+    if let Some(outcome) = apply_exclusion_to_the_fact_already_there(
+        pool,
+        &candidates,
+        &audience,
+        channel,
+        &req,
+        threshold,
+    )
+    .await?
+    {
+        return Ok(outcome);
+    }
     let best = best_dedup_candidate(&candidates, &audience, channel, &req.body, None);
     tracing::debug!(
         wiki_id = %wiki_id_str,
@@ -2168,35 +2289,40 @@ mod tests {
         );
     }
 
-    /// **A claim somebody asked to keep from one person is not the claim
-    /// already stored without that wish.**
+    /// **«And don't tell her» reaches the thing already said.**
     ///
-    /// The write-time gate folds a near-identical claim into the fact already
-    /// there when the two are readable by the same people. An exclusion is
-    /// part of who reads it: folded in, the wish would land nowhere at all —
-    /// the second capture returns `Skipped`, nothing is written, and nobody is
-    /// told the memory did not keep it.
+    /// Somebody adding a restriction to something the memory already holds
+    /// means the thing it holds. Written as a second fact, the wish would sit
+    /// beside a copy she can still read — not kept from her at all, and nobody
+    /// told. So the old row takes the exclusion and the capture folds into it,
+    /// exactly as a duplicate does.
+    ///
+    /// The second half is the limit: one person may not add a restriction to
+    /// another person's memory on a resemblance. Alice saying it about a fact
+    /// of Bob's that she can only read gets her own fact, with her own wish on
+    /// it, and Bob's is left exactly as it was.
     #[tokio::test]
-    async fn the_same_claim_kept_from_somebody_is_not_a_duplicate() {
+    async fn the_wish_reaches_the_fact_that_is_already_there() {
         let dir = tempdir().unwrap();
         let tree = WikiTree::open(dir.path()).unwrap();
         seed_alice(&tree);
         let pool = make_pool().await;
 
+        // Bob says the ceiling, then says to keep it from Zoe.
         let mut first = sample_request("andiamo in Norvegia a luglio");
         first.allow = vec!["group:famiglia".parse().unwrap()];
-        wiki_capture(&tree, &pool, embedder(), first).await.unwrap();
+        let stored = wiki_capture(&tree, &pool, embedder(), first).await.unwrap();
 
-        let mut kept_from_zoe = sample_request("Andiamo in Norvegia a luglio.");
-        kept_from_zoe.allow = vec!["group:famiglia".parse().unwrap()];
-        kept_from_zoe.excluded = vec!["user:zoe".parse().unwrap()];
-        let second = wiki_capture(&tree, &pool, embedder(), kept_from_zoe)
+        let mut and_not_her = sample_request("Andiamo in Norvegia a luglio.");
+        and_not_her.allow = vec!["group:famiglia".parse().unwrap()];
+        and_not_her.excluded = vec!["user:zoe".parse().unwrap()];
+        let second = wiki_capture(&tree, &pool, embedder(), and_not_her)
             .await
             .unwrap();
 
         assert!(
-            !matches!(second.action, CaptureAction::Skipped { .. }),
-            "same words, but one of them is kept from Zoe: {:?}",
+            matches!(second.action, CaptureAction::Skipped { .. }),
+            "it folds into the fact already there: {:?}",
             second.action
         );
         assert_eq!(
@@ -2204,8 +2330,105 @@ mod tests {
                 .fetch_one(&pool)
                 .await
                 .unwrap(),
+            1,
+            "no second copy of the claim"
+        );
+        let row = fact_index::find_by_id(&pool, &stored.fact_id)
+            .await
+            .unwrap()
+            .expect("row");
+        assert_eq!(
+            row.excluded_ids,
+            vec!["user:zoe".parse::<Principal>().unwrap()],
+            "and the wish is on the fact that was already there"
+        );
+    }
+
+    /// The other half: somebody who could not have rewritten that fact does
+    /// not get to restrict it by saying something similar.
+    #[tokio::test]
+    async fn a_reader_may_not_restrict_somebody_elses_fact() {
+        let dir = tempdir().unwrap();
+        let tree = WikiTree::open(dir.path()).unwrap();
+        seed_alice(&tree);
+        let pool = make_pool().await;
+
+        let mut bobs = sample_request("andiamo in Norvegia a luglio");
+        bobs.subject = "user:bob".parse().unwrap();
+        bobs.sender = Some("user:bob".parse().unwrap());
+        bobs.allow = vec!["group:famiglia".parse().unwrap()];
+        let stored = wiki_capture(&tree, &pool, embedder(), bobs).await.unwrap();
+
+        let mut alices = sample_request("Andiamo in Norvegia a luglio.");
+        alices.subject = "user:bob".parse().unwrap();
+        alices.sender = Some("user:alice".parse().unwrap());
+        alices.allow = vec!["group:famiglia".parse().unwrap()];
+        alices.excluded = vec!["user:zoe".parse().unwrap()];
+        wiki_capture(&tree, &pool, embedder(), alices)
+            .await
+            .unwrap();
+
+        let row = fact_index::find_by_id(&pool, &stored.fact_id)
+            .await
+            .unwrap()
+            .expect("row");
+        assert!(
+            row.excluded_ids.is_empty(),
+            "Bob's fact is exactly as it was"
+        );
+        assert_eq!(
+            sqlx::query_scalar::<_, i64>("SELECT COUNT(*) FROM fact_index")
+                .fetch_one(&pool)
+                .await
+                .unwrap(),
             2,
-            "both stand, or the wish is lost with nobody told"
+            "and Alice's own wish is written as her own fact"
+        );
+    }
+
+    /// **Lifting a restriction is not something a resemblance may do.**
+    ///
+    /// The fold in the other direction: a claim that is kept from FEWER people
+    /// than the one already stored is not that claim with something added, it
+    /// is a claim that would quietly hand her back what somebody asked to keep
+    /// from her. Taking a restriction off is something a person says of that
+    /// fact, and it comes with a receipt — so this one is written as its own
+    /// fact and the stored wish stands.
+    #[tokio::test]
+    async fn a_resemblance_does_not_lift_a_restriction() {
+        let dir = tempdir().unwrap();
+        let tree = WikiTree::open(dir.path()).unwrap();
+        seed_alice(&tree);
+        let pool = make_pool().await;
+
+        let mut kept_from_zoe = sample_request("andiamo in Norvegia a luglio");
+        kept_from_zoe.allow = vec!["group:famiglia".parse().unwrap()];
+        kept_from_zoe.excluded = vec!["user:zoe".parse().unwrap()];
+        let stored = wiki_capture(&tree, &pool, embedder(), kept_from_zoe)
+            .await
+            .unwrap();
+
+        // The same claim again, this time with nothing kept from anybody.
+        let mut open = sample_request("Andiamo in Norvegia a luglio.");
+        open.allow = vec!["group:famiglia".parse().unwrap()];
+        wiki_capture(&tree, &pool, embedder(), open).await.unwrap();
+
+        let row = fact_index::find_by_id(&pool, &stored.fact_id)
+            .await
+            .unwrap()
+            .expect("row");
+        assert_eq!(
+            row.excluded_ids,
+            vec!["user:zoe".parse::<Principal>().unwrap()],
+            "the wish stands: nothing here says it was taken back"
+        );
+        assert_eq!(
+            sqlx::query_scalar::<_, i64>("SELECT COUNT(*) FROM fact_index")
+                .fetch_one(&pool)
+                .await
+                .unwrap(),
+            2,
+            "two audiences, two facts"
         );
     }
 

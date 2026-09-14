@@ -1329,6 +1329,38 @@ pub async fn set_acl(
     Ok(Some(prev))
 }
 
+/// **Narrow a fact's exclusions to `excluded`** — nothing else on the row
+/// moves, and `updated_at` is bumped.
+///
+/// The write half of «and don't tell her» about something the memory already
+/// holds ([`crate::capture`]'s dedup gate). It only ever NARROWS in practice,
+/// because the one caller unions the new names onto the ones already there:
+/// lifting a restriction is something a person says of that fact, with a
+/// receipt, and not something a resemblance may do on their behalf.
+///
+/// Returns `false` when `fact_id` has no active row.
+///
+/// # Errors
+///
+/// `sqlx::Error` + JSON serialization failures on `excluded_ids`.
+pub async fn restrict_to(
+    pool: &SqlitePool,
+    fact_id: &FactId,
+    excluded: &[Principal],
+) -> Result<bool> {
+    let excluded_json = principals_to_json(excluded)?;
+    let res = sqlx::query(
+        "UPDATE fact_index SET excluded_ids = ?, updated_at = ?
+          WHERE fact_id = ? AND deleted_at IS NULL",
+    )
+    .bind(&excluded_json)
+    .bind(chrono::Utc::now().to_rfc3339())
+    .bind(fact_id.as_str())
+    .execute(pool)
+    .await?;
+    Ok(res.rows_affected() > 0)
+}
+
 /// Replace **only** a fact's `allow_ids`, leaving `subject_id` and `sender_id`
 /// untouched, and bump `updated_at`.
 ///
@@ -3342,6 +3374,15 @@ fn readable_by_sql(table: &str, n: usize) -> String {
 /// job, and it needs the relation to be a stored fact first (card 96i) — until
 /// then the two stay two, and this only stops the split from being offered as
 /// a third thing.
+///
+/// **What it costs, said plainly.** Some of these words are also names:
+/// «Nan» is a woman in England, and an Italian surname can be a kinship word.
+/// Somebody actually called one of them is not offered back as a known entity,
+/// so the model re-decides their spelling each time and their facts scatter
+/// instead of gathering — the opposite of what this is for, for that one
+/// person. It is the narrow case and it is the price of the wide one: the
+/// appellative is common, the name is rare, and scattered facts are
+/// recoverable while a memory that has silently merged two women is not.
 #[must_use]
 pub fn reads_as_a_relation(name: &str) -> bool {
     const KINSHIP: &[&str] = &[
