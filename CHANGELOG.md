@@ -51,6 +51,22 @@ semver-governed surface: breaking changes are called out explicitly.
 
 ### Fixed
 
+- **The identity cards handed to the assistant are fitted to a budget, and it
+  is told what did not fit.** The cards of everybody a turn is about go to the
+  assistant whole, and on a memory with a few people that block grows with the
+  scene: two people is the ordinary turn, and their two cards together are
+  already most of what the assistant reads before it reads the message. There
+  is now a budget **per person** — not for the block, which would have taken
+  from whoever came last rather than from whoever is long. **The card of
+  whoever is speaking is never trimmed**, and neither is anything about health
+  or safety: *«Zoe is coeliac and cannot eat gluten»* is not a line that
+  can be dropped to make room, because its absence makes an answer wrong
+  rather than thinner. What goes is the oldest of somebody else's card, and
+  the assistant is told on that person's own line that something did not fit,
+  so it never reads an absence as an empty space. The trace of the turn says
+  the same, per person. On the memory as it stands today nothing is trimmed at
+  all — the budget is a guard against a card that grows, not a curation.
+
 - **A claim that names who it is about no longer opens somebody's identity
   card.** An identity card holds who one person is. A claim that names its own
   subject — *«Mum's birthday is on the 15th»* — is about somebody else, and the

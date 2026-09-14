@@ -264,6 +264,14 @@ pub struct RecallTrace {
     /// What the classifier wrote that the engine corrected on its way in —
     /// stored, but not as the model said it ([`TraceCorrectedExtraction`]).
     pub corrected_extractions: Vec<TraceCorrectedExtraction>,
+    /// Identity-card lines the block had no room for, one sentence per person
+    /// it took from. Empty on a turn that trimmed nothing, which is most.
+    ///
+    /// A cut nobody announced would be the worst of both: the model reads a
+    /// card as complete, and the person reading the trace cannot tell it was
+    /// not. It is written into the classifier's block too, on the person's own
+    /// line.
+    pub identity_core_withheld: Vec<String>,
     /// Milliseconds of [`took_ms`] spent on the recall itself: the searches,
     /// the slots and the walk, summed as the turn ran.
     ///

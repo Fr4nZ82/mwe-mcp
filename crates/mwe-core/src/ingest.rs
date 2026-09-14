@@ -681,6 +681,24 @@ pub struct IngestPolicy {
     /// link destination (`compiler::recommended_link_targets`), so no walk
     /// arrives at one.
     pub max_mentioned_cards: usize,
+    /// Character cap on **one person's** lines inside the `identity_core`
+    /// block — not on the block, and never on the speaker's own card.
+    ///
+    /// Per person because that is where the growth is: the block's size is the
+    /// scene's size times a card, and a cap on the whole would take from
+    /// whoever came last rather than from whoever is long. Measured on the
+    /// live memory: a card renders at 894–1522 characters, and two people in
+    /// scene is the ordinary turn, so a single block cap of 2 000 would have
+    /// cut something on every turn — including the speaker's own card, which
+    /// is the one thing the block exists to carry.
+    ///
+    /// **The speaker is never cut**, and neither is anything named
+    /// [`an_always_served_topic`] or filling a card slot: those are outside
+    /// the count entirely. What the cap takes is the tail of somebody else's
+    /// card, oldest first, and the block SAYS how many lines it took and
+    /// whose — a silent cut would leave the model believing an absence meant
+    /// an empty slot.
+    pub max_identity_core_chars_per_person: usize,
     /// Canned `suggested_seed` for a turn the classifier filed as
     /// nothing to keep, or a capture turn that filed nothing new. Short
     /// on purpose — the agent will rewrite it.
@@ -780,6 +798,9 @@ impl Default for IngestPolicy {
             // turns name more people than that and the extra card earns its
             // characters.
             max_mentioned_cards: 3,
+            // A whole card of the live memory is 894–1522 characters; 1 200
+            // carries a typical one entire and trims only a long one.
+            max_identity_core_chars_per_person: 1_200,
             fallback_suggested_seed: "I've noted that.".to_owned(),
             degraded_suggested_seed: "Something went wrong on my side and I could not save that. \
                                       Please tell me again in a moment."
@@ -9899,6 +9920,10 @@ struct StoredValue {
     slot_value: Option<String>,
     /// Its audience, so a replacement can inherit it.
     allow: Vec<Principal>,
+    /// Its topics as the classifier wrote them. Carried for one question: is
+    /// this a line the block may never drop for room
+    /// ([`an_always_served_topic`]).
+    topics: Vec<String>,
 }
 
 /// Ceiling on one stored value quoted back to a model or to a person.
@@ -9919,6 +9944,7 @@ impl StoredValue {
             slot: row.slot.clone(),
             slot_value: row.slot_value.clone(),
             allow: row.allow_ids.clone(),
+            topics: row.topics.clone(),
         }
     }
 
@@ -9936,6 +9962,7 @@ impl StoredValue {
             slot: None,
             slot_value: None,
             allow: hit.allow_ids.clone(),
+            topics: hit.topics.clone(),
         }
     }
 
@@ -10114,7 +10141,88 @@ struct IdentityCore {
     /// since a value nobody may read and nothing may compare is one the engine
     /// can say nothing about.
     hidden: Vec<StoredValue>,
+    /// What the per-person cap left out, ready to be read: one sentence per
+    /// person it took from ([`IngestPolicy::max_identity_core_chars_per_person`]).
+    ///
+    /// It is written into the BLOCK as well as the trace. The block promises
+    /// the model that an absence proves nothing, and a cut nobody announced
+    /// would make that promise false in a second way the model could not see.
+    withheld: Vec<String>,
 }
+
+/// Topics whose line is served whatever the room, and the reason.
+///
+/// A card's tail can be trimmed for room because what is on a card is who
+/// somebody is, and knowing less of that makes an answer thinner. These are
+/// the lines where knowing less makes an answer WRONG in a way that hurts:
+/// «Zoe è celiaca e non può consumare glutine» left out for room is an
+/// assistant that helps plan a dinner. They are recognised by the topic the
+/// classifier wrote — a constant, not a guess at the words — so a memory in
+/// either language is covered and nothing is inferred from a sentence.
+const ALWAYS_SERVED_TOPICS: &[&str] = &[
+    "salute",
+    "salute-mentale",
+    "allergie",
+    "allergia",
+    "intolleranze",
+    "sicurezza",
+    "health",
+    "mental-health",
+    "allergy",
+    "allergies",
+    "intolerance",
+    "safety",
+];
+
+/// Is this a line the block may never drop for room ([`ALWAYS_SERVED_TOPICS`])?
+fn an_always_served_topic(topics: &[String]) -> bool {
+    topics
+        .iter()
+        .any(|t| ALWAYS_SERVED_TOPICS.contains(&t.to_lowercase().trim()))
+}
+
+/// **Fit one person's card into the room there is**, newest first, and say
+/// what was left out.
+///
+/// The speaker's card is never passed here: theirs is the one the block exists
+/// to carry, and a turn that trimmed it would be answering about everybody but
+/// the person asking. For everybody else the tail goes — oldest first, because
+/// a card grows by what was learned most recently and the oldest line is the
+/// one the turn is least likely to be about.
+///
+/// **Two kinds of line are outside the count entirely**: one that fills a card
+/// slot, because a slot is the box a new claim is compared against and an
+/// absent one reads as a box nobody has filled; and one whose topic says
+/// health or safety ([`an_always_served_topic`]).
+fn fit_one_card(values: Vec<StoredValue>, cap: usize) -> (Vec<StoredValue>, usize) {
+    let (always, rest): (Vec<StoredValue>, Vec<StoredValue>) = values
+        .into_iter()
+        .partition(|v| v.slot.is_some() || an_always_served_topic(&v.topics));
+    let mut rest: Vec<StoredValue> = rest;
+    // Newest first: `said_on` is a day, and the ISO spelling sorts as time.
+    rest.sort_by(|a, b| b.said_on.cmp(&a.said_on));
+    let mut kept = always;
+    let mut used = 0usize;
+    let mut withheld = 0usize;
+    for value in rest {
+        // CHARACTERS, not bytes: the budget is named in characters and the
+        // memory is written in a language where an accent costs two bytes —
+        // counted in bytes, an Italian card would get a smaller budget than
+        // the number says, and a German or Greek one smaller still.
+        let cost = value.text.chars().count() + STORED_VALUE_LINE_OVERHEAD;
+        if used + cost <= cap {
+            used += cost;
+            kept.push(value);
+        } else {
+            withheld += 1;
+        }
+    }
+    (kept, withheld)
+}
+
+/// What one line costs beyond its text: the indent, the bracketed `fact_id`,
+/// and the «(said by … on …)» tail.
+const STORED_VALUE_LINE_OVERHEAD: usize = 45;
 
 async fn identity_core_roster(
     pool: &SqlitePool,
@@ -10145,7 +10253,11 @@ async fn identity_core_roster(
     // card slot excludes them (`WHO IS SPEAKING` serves theirs).
     subjects.truncate(policy.max_mentioned_cards.saturating_add(1));
     let mut out = IdentityCore::default();
+    let speaker = sender.sender_id.to_lowercase();
     for subject in subjects {
+        // One person's readable lines, gathered before they are fitted: the
+        // cap is per person, so the fitting cannot happen line by line.
+        let mut mine: Vec<StoredValue> = Vec::new();
         let Some(handle) = WikiId::parse(&subject)
             .ok()
             .and_then(|id| tree.locate(&id).ok())
@@ -10176,7 +10288,7 @@ async fn identity_core_roster(
                 row.sender_id.as_ref(),
             );
             if readable {
-                out.served.push(StoredValue::from_row(row));
+                mine.push(StoredValue::from_row(row));
             } else if row.slot.as_deref().is_some_and(|s| !s.trim().is_empty()) {
                 // Kept apart, never shown. The classifier sees only `served`,
                 // because the question it sets up quotes the stored value back
@@ -10185,6 +10297,24 @@ async fn identity_core_roster(
                 // reading it out.
                 out.hidden.push(StoredValue::from_row(row));
             }
+        }
+        // **The speaker's card is never cut.** It is the one the block exists
+        // to carry, and a turn that trimmed it would be answering about
+        // everybody except the person asking.
+        if subject == speaker {
+            out.served.append(&mut mine);
+            continue;
+        }
+        let (kept, withheld) = fit_one_card(mine, policy.max_identity_core_chars_per_person);
+        out.served.extend(kept);
+        if withheld > 0 {
+            let line = format!("{withheld} line(s) of {subject} withheld for room");
+            tracing::info!(
+                subject = subject.as_str(),
+                withheld,
+                "identity core: {line}"
+            );
+            out.withheld.push(line);
         }
     }
     out
@@ -10207,24 +10337,33 @@ async fn identity_core_roster(
 /// compared by the engine instead
 /// ([`value_filling_the_same_slot`]), which reads neither value out to
 /// anybody.
-fn push_identity_core_section(out: &mut String, facts: &[StoredValue]) {
+fn push_identity_core_section(out: &mut String, facts: &[StoredValue], withheld: &[String]) {
     if facts.is_empty() {
         return;
     }
     out.push_str(
-        "\nidentity_core (every fact on these people's identity cards that you are allowed to \
-         read — complete among those, not a sample; a value whose audience excludes you is left \
-         out, so a slot missing here is one you cannot act on and never one you know to be \
-         empty. A fact that fills one of the card's slots shows it in {braces}; reuse that exact \
-         name when your own fact fills the same slot. If an extraction of yours states a \
-         DIFFERENT value for a slot one of these already fills, set that extraction's \
-         conflicts_with to its fact_id and name the slot and its value; do not write it \
-         beside):\n",
+        "\nidentity_core (the identity-card facts of these people that you may read, each with \
+         its fact_id and, where it fills a card slot, the slot in {braces}. Absence proves \
+         nothing here: a value whose audience excludes you is left out, and so is anything a \
+         person's line says was not shown for room):\n",
     );
     let mut current: Option<&Principal> = None;
     for fact in facts {
         if current != Some(&fact.subject) {
-            let _ = writeln!(out, "  - {}", fact.subject);
+            // The person's line carries what the room cost them, because the
+            // block tells the model an absence proves nothing and a cut
+            // nobody announced would be a second, invisible kind of absence.
+            let cut = withheld
+                .iter()
+                .find(|w| w.contains(&fact.subject.to_string()));
+            match cut {
+                Some(line) => {
+                    let _ = writeln!(out, "  - {} ({line})", fact.subject);
+                },
+                None => {
+                    let _ = writeln!(out, "  - {}", fact.subject);
+                },
+            }
             current = Some(&fact.subject);
         }
         let _ = write!(out, "    - [{}] ", fact.fact_id.as_str());
@@ -11317,6 +11456,8 @@ struct IngestTraceParts<'a> {
     refused_changes: &'a [crate::recall_trace::TraceRefusedChange],
     /// What the classifier wrote that the engine corrected on its way in.
     corrected_extractions: &'a [crate::recall_trace::TraceCorrectedExtraction],
+    /// Identity-card lines the block had no room for.
+    identity_core_withheld: &'a [String],
     recall_clock: RecallClock,
     took: std::time::Duration,
 }
@@ -11423,6 +11564,7 @@ async fn record_ingest_trace(
         reconcile_verdict: parts.reconcile_verdict.map(recall_trace::cap_turn_text),
         refused_changes: parts.refused_changes.to_vec(),
         corrected_extractions: parts.corrected_extractions.to_vec(),
+        identity_core_withheld: parts.identity_core_withheld.to_vec(),
         recall_ms: parts.recall_clock.ms(),
         took_ms: u64::try_from(parts.took.as_millis()).unwrap_or(u64::MAX),
     };
@@ -11535,6 +11677,8 @@ pub async fn wiki_ingest_message(
     // so without this the only sign would be that the fact came out slightly
     // different from what the model said.
     let mut corrected_extractions: Vec<crate::recall_trace::TraceCorrectedExtraction> = Vec::new();
+    // Identity-card lines the block had no room for, one sentence per person.
+    let mut identity_core_withheld: Vec<String> = Vec::new();
 
     // THE SAME TURN DELIVERED TWICE IS WRITTEN ONCE AND READ TWICE. What the
     // first delivery DECIDED is kept and handed back — the intent, the seed,
@@ -11841,6 +11985,7 @@ pub async fn wiki_ingest_message(
                     reconcile_verdict: None,
                     refused_changes: &[],
                     corrected_extractions: &[],
+                    identity_core_withheld: &[],
                     recall_clock,
                     took: start.elapsed(),
                 },
@@ -12070,7 +12215,8 @@ pub async fn wiki_ingest_message(
         policy,
     );
     push_behaviour_rules_section(&mut prompt, &behaviour_rules);
-    push_identity_core_section(&mut prompt, &identity_core.served);
+    push_identity_core_section(&mut prompt, &identity_core.served, &identity_core.withheld);
+    identity_core_withheld.clone_from(&identity_core.withheld);
     // Media riding the turn: stamp late-arriving caption/description on
     // the catalog rows (fill-only), then load the bytes of undescribed
     // photos so the classifier *looks at them* — the consumer-supplied
@@ -14403,6 +14549,7 @@ pub async fn wiki_ingest_message(
                 reconcile_verdict: reconcile_verdict.as_deref(),
                 refused_changes: &refused_changes,
                 corrected_extractions: &corrected_extractions,
+                identity_core_withheld: &identity_core_withheld,
                 recall_clock,
                 took: start.elapsed(),
             },
@@ -16118,6 +16265,77 @@ mod tests {
             VettedSupersede::NotTheirs { .. } => "asked".to_owned(),
             VettedSupersede::Unsound(r) => r.as_str().to_owned(),
         }
+    }
+
+    /// **A card is fitted to the room there is, and the block says so.**
+    ///
+    /// Measured on the live memory: a card renders at 894–1522 characters and
+    /// two people in scene is the ordinary turn, so a budget for the whole
+    /// block would cut something on every one of them — including the
+    /// speaker's own card, which is the one thing the block exists to carry.
+    /// The budget is therefore per person, the speaker is never cut, and two
+    /// kinds of line are outside the count: one that fills a card slot, and
+    /// one whose topic says health or safety.
+    ///
+    /// The last case is the one with teeth. Trimming by date alone would have
+    /// dropped «Zoe è celiaca e non può consumare glutine» — a line whose
+    /// absence makes an answer wrong rather than thin.
+    #[test]
+    fn a_card_is_fitted_to_the_room_and_health_is_never_the_part_that_goes() {
+        let line = |text: &str, day: &str, topics: &[&str]| StoredValue {
+            fact_id: FactId::parse("018f1234-5678-7abc-9def-0123456789ab").unwrap(),
+            subject: Principal::User("zoe".into()),
+            text: text.to_owned(),
+            sender: None,
+            said_on: Some(day.to_owned()),
+            slot: None,
+            slot_value: None,
+            allow: Vec::new(),
+            topics: topics.iter().map(|t| (*t).to_owned()).collect(),
+        };
+        let card = vec![
+            line(
+                "Zoe è celiaca e non può consumare glutine.",
+                "2024-01-01",
+                &["salute", "celiachia"],
+            ),
+            line(
+                "Zoe Brandybuck è conosciuta anche come Zo.",
+                "2026-09-01",
+                &["identità", "nome"],
+            ),
+            line(
+                "Zoe parla italiano e inglese.",
+                "2026-08-01",
+                &["identità", "lingua"],
+            ),
+            line(
+                "Zoe vive a Northgate.",
+                "2026-07-01",
+                &["identità", "residenza"],
+            ),
+        ];
+
+        // Room for one ordinary line beside the health one.
+        let (kept, withheld) = fit_one_card(card.clone(), 90);
+        assert_eq!(withheld, 2, "two of the three ordinary lines had no room");
+        assert!(
+            kept.iter().any(|v| v.text.contains("celiaca")),
+            "the health line is outside the count and never the part that goes"
+        );
+        assert!(
+            kept.iter().any(|v| v.text.contains("Zo.")),
+            "and what is kept for room is the newest: {kept:?}"
+        );
+        assert!(
+            !kept.iter().any(|v| v.text.contains("Northgate")),
+            "the oldest is what goes"
+        );
+
+        // Room for everything: nothing is withheld and nothing is announced.
+        let (kept, withheld) = fit_one_card(card, 10_000);
+        assert_eq!(kept.len(), 4);
+        assert_eq!(withheld, 0);
     }
 
     /// **A claim that names who it is about is not what a card carries.**
@@ -28048,6 +28266,7 @@ mod tests {
     #[test]
     fn the_served_side_acts_only_where_there_is_nothing_left_to_judge() {
         let stored = |slot: &str, value: Option<&str>| StoredValue {
+            topics: Vec::new(),
             fact_id: FactId::parse(CARD_FACT_ID).unwrap(),
             subject: Principal::User("bob".to_owned()),
             text: "bob was born on 12 March 2014".to_owned(),

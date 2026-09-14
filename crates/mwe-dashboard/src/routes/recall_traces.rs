@@ -881,6 +881,24 @@ fn render_reconcile(trace: &RecallTrace) -> Markup {
             }
         }
         (render_corrections(trace))
+        @if !trace.identity_core_withheld.is_empty() {
+            section class="term-panel mt-4 p-4" {
+                h2 class="mt-0" { "Card lines there was no room for" }
+                p.muted {
+                    "The identity cards handed to the classifier are fitted to a "
+                    "budget per person. The speaker's own card is never trimmed, "
+                    "and neither is anything about health or safety; what goes is "
+                    "the oldest of somebody else's. The classifier is told as "
+                    "well, on that person's line, so it never reads an absence "
+                    "here as an empty slot."
+                }
+                ul {
+                    @for line in &trace.identity_core_withheld {
+                        li { (line) }
+                    }
+                }
+            }
+        }
         @if !trace.refused_changes.is_empty() {
             section class="term-panel mt-4 p-4" {
                 h2 class="mt-0" { "Changes it asked for and did not get" }

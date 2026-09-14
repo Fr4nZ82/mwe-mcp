@@ -66,6 +66,11 @@ the same recall as text:
   instead. A row each: **The claim**, **What changed**, **It wrote**, **Stored
   as** and **Why**. Nothing was thrown away — this panel is about the
   difference, not about a loss.
+- **Card lines there was no room for** — the identity cards handed to the
+  classifier are fitted to a budget per person. Your own card is never trimmed
+  when you are the one speaking, and neither is anything about health or
+  safety; what goes is the oldest of somebody else's. The classifier is told as
+  well, on that person's line, so it never reads an absence as an empty space.
 - **Handed to the consumer** — the text that actually reached your assistant
   (a deep search shows **Answered to the caller** instead).
 - **Standing rules handed over** — your standing rules as they went with it,
