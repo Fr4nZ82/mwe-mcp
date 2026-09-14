@@ -817,6 +817,14 @@ pub(crate) async fn successor_valid_from(
 ///
 /// Public because a caller of [`close_validity`] has to hand it the instant
 /// the closure is being made, and that instant is usually a bound it already
+/// holds as a string — the evidence's start, the seed's end.
+#[must_use]
+pub fn instant_of(bound: &str) -> Option<chrono::DateTime<chrono::Utc>> {
+    chrono::DateTime::parse_from_rfc3339(bound)
+        .ok()
+        .map(|t| t.to_utc())
+}
+
 /// The key the memory's own clock is kept under in `engine_meta`.
 const MEMORY_CLOCK: &str = "memory.last_turn_at";
 
@@ -827,11 +835,23 @@ const MEMORY_CLOCK: &str = "memory.last_turn_at";
 /// be able to push the memory's clock past today and have a background pass
 /// close facts at a date that has not happened.
 ///
+/// **And the clock never runs backwards.** A memory can be fed two streams at
+/// once — a bridge delivering today while a backlog of June is replayed beside
+/// it — and an old turn arriving second would otherwise walk the clock back to
+/// June and date tonight's closures there. The clock is where the FURTHEST
+/// turn left it, so a replay can only ever teach it about a past it had not
+/// reached.
+///
 /// Best-effort on purpose. A turn whose clock fails to record is a turn that
 /// happened, and refusing it to keep a bookkeeping row would trade the thing
 /// for the note about the thing.
 pub(crate) async fn saw_a_turn_at(pool: &SqlitePool, at: chrono::DateTime<chrono::Utc>) {
     let at = at.min(chrono::Utc::now());
+    if let Ok(Some(raw)) = crate::db::meta_get(pool, MEMORY_CLOCK).await
+        && instant_of(&raw).is_some_and(|stored| stored >= at)
+    {
+        return;
+    }
     if let Err(e) = crate::db::meta_set(pool, MEMORY_CLOCK, &at.to_rfc3339()).await {
         tracing::warn!(error = %e, "fact_index: the memory's clock was not stamped");
     }
@@ -850,12 +870,14 @@ pub(crate) async fn saw_a_turn_at(pool: &SqlitePool, at: chrono::DateTime<chrono
 /// Three answers, in order:
 /// 1. the clock the turns stamp ([`saw_a_turn_at`]) — exact, and the only one
 ///    that knows a turn happened without writing anything;
-/// 2. otherwise the latest start among the facts still standing, capped at the
-///    wall clock. It is what the memory can infer about itself from what is
-///    in it, and the cap is what keeps a fact that BEGINS in the future — a
-///    job starting in October — from carrying the clock forward with it. This
-///    is the answer for a memory written before the clock existed, which is
-///    every memory on the day this ships;
+/// 2. otherwise the latest start among the facts still standing **that have
+///    already begun**. It is what the memory can infer about itself from what
+///    is in it, and it is the answer for a memory written before the clock
+///    existed, which is every memory on the day this ships. A fact that begins
+///    in the FUTURE — a job starting in October — is left out of the maximum
+///    rather than capping it afterwards: one such commitment would otherwise
+///    take the whole answer to the wall clock and throw away everything the
+///    memory does know about where its story has got to;
 /// 3. otherwise the wall clock, for a memory that holds nothing at all.
 pub(crate) async fn memory_now(pool: &SqlitePool) -> chrono::DateTime<chrono::Utc> {
     let wall = chrono::Utc::now();
@@ -866,24 +888,14 @@ pub(crate) async fn memory_now(pool: &SqlitePool) -> chrono::DateTime<chrono::Ut
     }
     let latest: Option<String> = sqlx::query_scalar(
         "SELECT MAX(valid_from) FROM fact_index
-          WHERE deleted_at IS NULL AND valid_from IS NOT NULL",
+          WHERE deleted_at IS NULL AND valid_from IS NOT NULL AND valid_from <= ?",
     )
+    .bind(bound_from_instant(wall))
     .fetch_optional(pool)
     .await
     .ok()
     .flatten();
-    latest
-        .as_deref()
-        .and_then(instant_of)
-        .map_or(wall, |at| at.min(wall))
-}
-
-/// holds as a string — the evidence's start, the seed's end.
-#[must_use]
-pub fn instant_of(bound: &str) -> Option<chrono::DateTime<chrono::Utc>> {
-    chrono::DateTime::parse_from_rfc3339(bound)
-        .ok()
-        .map(|t| t.to_utc())
+    latest.as_deref().and_then(instant_of).unwrap_or(wall)
 }
 
 /// The `valid_to` a closure may actually write: **never before the fact's own
@@ -4021,6 +4033,85 @@ mod tests {
         assert!(
             (memory_now(&pool).await - wall).num_seconds().abs() <= 5,
             "a turn from the future is read as now"
+        );
+    }
+
+    /// **The clock never runs backwards.**
+    ///
+    /// A memory can be fed two streams at once — a bridge delivering today
+    /// while a backlog of June is replayed beside it. An old turn arriving
+    /// second would walk the clock back to June, and tonight's closures would
+    /// be dated there: the memory would say a thing ended three months ago
+    /// because a message about June arrived late.
+    #[tokio::test]
+    async fn an_old_turn_arriving_late_does_not_walk_the_clock_back() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let pool = crate::db::open_or_init(dir.path()).await.expect("open");
+        let july = chrono::DateTime::parse_from_rfc3339("2026-07-18T18:15:00Z")
+            .unwrap()
+            .to_utc();
+        let june = chrono::DateTime::parse_from_rfc3339("2026-06-11T18:00:00Z")
+            .unwrap()
+            .to_utc();
+
+        saw_a_turn_at(&pool, july).await;
+        saw_a_turn_at(&pool, june).await;
+        assert_eq!(
+            memory_now(&pool).await,
+            july,
+            "the clock is where the furthest turn left it"
+        );
+    }
+
+    /// **A commitment that has not begun does not answer for where the story
+    /// has got to.**
+    ///
+    /// Before any turn stamps the clock — every memory on the day this ships —
+    /// the answer is the latest start among the facts standing. One fact that
+    /// BEGINS in the future, a job starting in October, is not evidence about
+    /// today, and capping the maximum afterwards would throw the whole answer
+    /// away and fall back to the wall clock: the memory would forget what it
+    /// does know about its own story because of one commitment ahead of it.
+    #[tokio::test]
+    async fn a_commitment_ahead_of_the_story_does_not_move_the_clock() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let pool = crate::db::open_or_init(dir.path()).await.expect("open");
+        let wall = chrono::Utc::now();
+        let plant = |id: &'static str, from: String| {
+            let pool = pool.clone();
+            let now = wall.to_rfc3339();
+            async move {
+                sqlx::query(
+                    "INSERT INTO fact_index (fact_id, wiki_id, source_path, \"text\", \
+                                             subject_id, allow_ids, embedding, embedding_dim, \
+                                             created_at, updated_at, valid_from) \
+                     VALUES (?, 'famiglia', 'casa.md', 'x', 'user:alice', '[]', ?, 1, ?, ?, ?)",
+                )
+                .bind(id)
+                .bind(vec![0u8; 4])
+                .bind(&now)
+                .bind(&now)
+                .bind(from)
+                .execute(&pool)
+                .await
+                .expect("plant");
+            }
+        };
+        plant(
+            "0190f3c2-7a4e-7c31-9b02-2f6a1c8e5e01",
+            "2026-07-18T18:15:00Z".to_owned(),
+        )
+        .await;
+        plant(
+            "0190f3c2-7a4e-7c31-9b02-2f6a1c8e5e02",
+            (wall + chrono::Duration::days(45)).to_rfc3339(),
+        )
+        .await;
+
+        assert_eq!(
+            memory_now(&pool).await.to_rfc3339(),
+            "2026-07-18T18:15:00+00:00",
+            "the job starting in October is left out, and what the memory knows stands"
         );
     }
 

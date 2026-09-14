@@ -24,7 +24,9 @@ semver-governed surface: breaking changes are called out explicitly.
   own: the instant of the most recent message it has seen. On a live setup
   that is the real clock to within minutes, so nothing changes; on a replayed
   backlog it is the date of the story. A message dated in the future cannot
-  push it past today.
+  push it past today, and an old message arriving late cannot walk it back:
+  the clock stands where the furthest message left it, so replaying a backlog
+  beside a live conversation does not drag tonight into June.
 
 - **Something said again in fewer words replaces nothing.** *«The house
   insurance renews on 3 August; the excess has gone up to £350»*, said again a

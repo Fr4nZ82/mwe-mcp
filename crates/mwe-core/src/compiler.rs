@@ -1282,12 +1282,12 @@ fn values_in_place(text: &str) -> Vec<ValueInPlace> {
 /// beside other words entirely: nothing is being argued, the excess is simply
 /// gone, and an unrelated number must not buy the right to lose it.
 ///
-/// **An article shared between the two is no evidence.** `the` is three
-/// letters and carries no meaning, so it passes the companion test and stands
-/// beside almost every figure in the language; counting it would make the
-/// premium look like an argument about the excess. The same list that keeps an
-/// article from turning a number into a name is what is excluded here
-/// ([`ARTICLES`]).
+/// **A word that carries grammar is no evidence**, and it never reaches here:
+/// `the`, `and`, `per`, `con` are long enough to pass a length test and stand
+/// beside almost every figure in either language, so counting them would make
+/// the premium look like an argument about the excess. They are not companions
+/// at all ([`is_a_companion`]), which is why what remains is a plain question:
+/// do the two stand beside the same word.
 ///
 /// Measured on a corpus of fifty-three replacements: fifty lose nothing, three
 /// lose a value with no new figure beside its words, none is a correction this
@@ -1308,21 +1308,10 @@ pub(crate) fn orphaned_values(target: &str, successor: &str) -> Vec<String> {
         .filter(|v| {
             !gained
                 .iter()
-                .any(|g| argue_about_one_thing(&v.near, &g.near))
+                .any(|g| v.near.intersection(&g.near).next().is_some())
         })
         .map(|v| v.written.clone())
         .collect()
-}
-
-/// Do these two values stand beside a word that means something, and the same
-/// one?
-fn argue_about_one_thing(
-    near_the_old: &std::collections::BTreeSet<String>,
-    near_the_new: &std::collections::BTreeSet<String>,
-) -> bool {
-    near_the_old
-        .intersection(near_the_new)
-        .any(|w| !ARTICLES.contains(&w.as_str()))
 }
 
 /// The one way of writing a figure, so that two claims stating the same amount
@@ -1451,10 +1440,441 @@ fn beside(words: &[String], at: usize) -> Vec<String> {
         .collect()
 }
 
-/// A word long enough to carry meaning rather than grammar, and not a number
-/// itself.
+/// A word that says what a number is a number OF — long enough to carry
+/// meaning, not grammar, and not a number itself.
+///
+/// **Length alone was not enough.** `and`, `was`, `per`, `con`, `dal`, `the`
+/// are three letters or more and carry nothing, yet they stand beside almost
+/// every figure in either language: counted as companions, two figures sharing
+/// only a filler read as two claims arguing about one thing, and «the excess
+/// is £350» replaced by «the premium is £1,000» passed as a correction
+/// ([`orphaned_values`]). So a word that carries grammar is not a companion,
+/// whatever its length ([`GRAMMAR`]).
 fn is_a_companion(word: &str) -> bool {
-    word.len() >= 3 && !word.chars().any(|c| c.is_ascii_digit())
+    word.len() >= 3 && !word.chars().any(|c| c.is_ascii_digit()) && !carries_grammar(word)
+}
+
+/// One word that carries grammar rather than meaning, and whether it is one of
+/// the ones that make the number AFTER it a name.
+struct GrammarWord {
+    /// The word, lower-case, as [`words_of`] leaves it.
+    word: &'static str,
+    /// `true` for a definite singular article or articulated preposition:
+    /// «il 730», «al 118», «the 730» name a thing rather than state a value.
+    names: bool,
+}
+
+/// **The words that carry grammar and not meaning**, in one list, because the
+/// two questions asked of them are two readings of the same fact about a word.
+///
+/// A number is a NAME when one of the naming words stands in front of it, and
+/// none of these is ever a COMPANION — the word that says what a figure is a
+/// figure of. Writing them twice would let the two answers drift, and the one
+/// that drifted would be the one nobody was testing.
+///
+/// **Naming is singular and definite only.** A thing has one name: «il 730»,
+/// «al 118», «the 730». What follows a PLURAL article is a quantity far more
+/// often than a name — «i 21.000 euro di stipendio» is the value itself — and
+/// what follows an indefinite one («un 730») is a quantity too. Either marked
+/// `names` would open a hole the size of the check.
+///
+/// Two languages, because two are what the product writes pages in. A grammar
+/// word of a third language is not in the list, so it reads as a companion:
+/// the check is then no worse than length alone was, which is where it stood.
+const GRAMMAR: &[GrammarWord] = &[
+    // Italian, naming.
+    GrammarWord {
+        word: "il",
+        names: true,
+    },
+    GrammarWord {
+        word: "lo",
+        names: true,
+    },
+    GrammarWord {
+        word: "la",
+        names: true,
+    },
+    GrammarWord {
+        word: "l",
+        names: true,
+    },
+    GrammarWord {
+        word: "del",
+        names: true,
+    },
+    GrammarWord {
+        word: "dello",
+        names: true,
+    },
+    GrammarWord {
+        word: "della",
+        names: true,
+    },
+    GrammarWord {
+        word: "dell",
+        names: true,
+    },
+    GrammarWord {
+        word: "al",
+        names: true,
+    },
+    GrammarWord {
+        word: "allo",
+        names: true,
+    },
+    GrammarWord {
+        word: "alla",
+        names: true,
+    },
+    GrammarWord {
+        word: "all",
+        names: true,
+    },
+    GrammarWord {
+        word: "dal",
+        names: true,
+    },
+    GrammarWord {
+        word: "dallo",
+        names: true,
+    },
+    GrammarWord {
+        word: "dalla",
+        names: true,
+    },
+    GrammarWord {
+        word: "dall",
+        names: true,
+    },
+    GrammarWord {
+        word: "nel",
+        names: true,
+    },
+    GrammarWord {
+        word: "nello",
+        names: true,
+    },
+    GrammarWord {
+        word: "nella",
+        names: true,
+    },
+    GrammarWord {
+        word: "nell",
+        names: true,
+    },
+    GrammarWord {
+        word: "sul",
+        names: true,
+    },
+    GrammarWord {
+        word: "sullo",
+        names: true,
+    },
+    GrammarWord {
+        word: "sulla",
+        names: true,
+    },
+    GrammarWord {
+        word: "sull",
+        names: true,
+    },
+    GrammarWord {
+        word: "col",
+        names: true,
+    },
+    // English, naming.
+    GrammarWord {
+        word: "the",
+        names: true,
+    },
+    // Italian, grammar but not naming.
+    GrammarWord {
+        word: "un",
+        names: false,
+    },
+    GrammarWord {
+        word: "una",
+        names: false,
+    },
+    GrammarWord {
+        word: "uno",
+        names: false,
+    },
+    GrammarWord {
+        word: "gli",
+        names: false,
+    },
+    GrammarWord {
+        word: "dei",
+        names: false,
+    },
+    GrammarWord {
+        word: "degli",
+        names: false,
+    },
+    GrammarWord {
+        word: "delle",
+        names: false,
+    },
+    GrammarWord {
+        word: "agli",
+        names: false,
+    },
+    GrammarWord {
+        word: "alle",
+        names: false,
+    },
+    GrammarWord {
+        word: "dagli",
+        names: false,
+    },
+    GrammarWord {
+        word: "dalle",
+        names: false,
+    },
+    GrammarWord {
+        word: "negli",
+        names: false,
+    },
+    GrammarWord {
+        word: "nelle",
+        names: false,
+    },
+    GrammarWord {
+        word: "sugli",
+        names: false,
+    },
+    GrammarWord {
+        word: "sulle",
+        names: false,
+    },
+    GrammarWord {
+        word: "che",
+        names: false,
+    },
+    GrammarWord {
+        word: "chi",
+        names: false,
+    },
+    GrammarWord {
+        word: "con",
+        names: false,
+    },
+    GrammarWord {
+        word: "per",
+        names: false,
+    },
+    GrammarWord {
+        word: "tra",
+        names: false,
+    },
+    GrammarWord {
+        word: "fra",
+        names: false,
+    },
+    GrammarWord {
+        word: "non",
+        names: false,
+    },
+    GrammarWord {
+        word: "più",
+        names: false,
+    },
+    GrammarWord {
+        word: "già",
+        names: false,
+    },
+    GrammarWord {
+        word: "anche",
+        names: false,
+    },
+    GrammarWord {
+        word: "come",
+        names: false,
+    },
+    GrammarWord {
+        word: "questo",
+        names: false,
+    },
+    GrammarWord {
+        word: "questa",
+        names: false,
+    },
+    GrammarWord {
+        word: "quello",
+        names: false,
+    },
+    GrammarWord {
+        word: "quella",
+        names: false,
+    },
+    GrammarWord {
+        word: "sono",
+        names: false,
+    },
+    GrammarWord {
+        word: "era",
+        names: false,
+    },
+    GrammarWord {
+        word: "erano",
+        names: false,
+    },
+    GrammarWord {
+        word: "hanno",
+        names: false,
+    },
+    GrammarWord {
+        word: "essere",
+        names: false,
+    },
+    GrammarWord {
+        word: "stato",
+        names: false,
+    },
+    GrammarWord {
+        word: "stata",
+        names: false,
+    },
+    // English, grammar but not naming.
+    GrammarWord {
+        word: "and",
+        names: false,
+    },
+    GrammarWord {
+        word: "are",
+        names: false,
+    },
+    GrammarWord {
+        word: "but",
+        names: false,
+    },
+    GrammarWord {
+        word: "for",
+        names: false,
+    },
+    GrammarWord {
+        word: "from",
+        names: false,
+    },
+    GrammarWord {
+        word: "had",
+        names: false,
+    },
+    GrammarWord {
+        word: "has",
+        names: false,
+    },
+    GrammarWord {
+        word: "have",
+        names: false,
+    },
+    GrammarWord {
+        word: "her",
+        names: false,
+    },
+    GrammarWord {
+        word: "his",
+        names: false,
+    },
+    GrammarWord {
+        word: "its",
+        names: false,
+    },
+    GrammarWord {
+        word: "not",
+        names: false,
+    },
+    GrammarWord {
+        word: "now",
+        names: false,
+    },
+    GrammarWord {
+        word: "into",
+        names: false,
+    },
+    GrammarWord {
+        word: "onto",
+        names: false,
+    },
+    GrammarWord {
+        word: "over",
+        names: false,
+    },
+    GrammarWord {
+        word: "than",
+        names: false,
+    },
+    GrammarWord {
+        word: "that",
+        names: false,
+    },
+    GrammarWord {
+        word: "them",
+        names: false,
+    },
+    GrammarWord {
+        word: "then",
+        names: false,
+    },
+    GrammarWord {
+        word: "there",
+        names: false,
+    },
+    GrammarWord {
+        word: "these",
+        names: false,
+    },
+    GrammarWord {
+        word: "they",
+        names: false,
+    },
+    GrammarWord {
+        word: "this",
+        names: false,
+    },
+    GrammarWord {
+        word: "those",
+        names: false,
+    },
+    GrammarWord {
+        word: "under",
+        names: false,
+    },
+    GrammarWord {
+        word: "was",
+        names: false,
+    },
+    GrammarWord {
+        word: "were",
+        names: false,
+    },
+    GrammarWord {
+        word: "will",
+        names: false,
+    },
+    GrammarWord {
+        word: "with",
+        names: false,
+    },
+    GrammarWord {
+        word: "been",
+        names: false,
+    },
+    GrammarWord {
+        word: "being",
+        names: false,
+    },
+    GrammarWord {
+        word: "about",
+        names: false,
+    },
+];
+
+/// Does this word carry grammar rather than meaning?
+fn carries_grammar(word: &str) -> bool {
+    GRAMMAR.iter().any(|g| g.word == word)
 }
 
 /// Is this the NAME of something rather than a value?
@@ -1482,23 +1902,14 @@ const NAMED_THING_CHARS: usize = 4;
 /// something is CALLED — a form, an emergency line, a bus — and the prose
 /// naming it is naming the subject of its sentence. A value is written the
 /// other way round: the number follows what it measures, «lo stipendio era
-/// 21.000», and no article precedes it.
+/// 21.000», and no article precedes it. Which words name is written in
+/// [`GRAMMAR`], beside the ones that merely carry grammar.
 fn an_article_names_it(words: &[String], at: usize) -> bool {
-    at > 0 && ARTICLES.contains(&words[at - 1].as_str())
+    at > 0
+        && GRAMMAR
+            .iter()
+            .any(|g| g.names && g.word == words[at - 1].as_str())
 }
-
-/// The words that make the number after them a name.
-///
-/// **Singular only, and definite only.** A thing has one name: «il 730», «al
-/// 118», «the 730». What follows a PLURAL article is a quantity far more often
-/// than a name — «i 21.000 euro di stipendio» is the value itself — and what
-/// follows an indefinite one («un 730») is a quantity too. Either in this list
-/// would open a hole the size of the check.
-const ARTICLES: &[&str] = &[
-    "il", "lo", "la", "l", "del", "dello", "della", "dell", "al", "allo", "alla", "all", "dal",
-    "dallo", "dalla", "dall", "nel", "nello", "nella", "nell", "sul", "sullo", "sulla", "sull",
-    "col", "the",
-];
 
 /// Does this number read as a date, a year or a time?
 ///
@@ -3768,6 +4179,15 @@ mod tests {
             ),
             vec!["350".to_owned()],
             "a premium is not a new value for the excess, and `the` is no evidence"
+        );
+
+        // A filler is no evidence: `di`, `the`, `and`, `per` stand beside
+        // almost every figure there is, and counted as companions they make a
+        // premium read as an argument about the excess.
+        assert_eq!(
+            orphaned_values("La franchigia di £350.", "Il premio di £1.000."),
+            vec!["350".to_owned()],
+            "`di` and `la` carry no meaning, so the two share nothing"
         );
 
         // Nothing offered in its place at all.
