@@ -13,6 +13,12 @@ semver-governed surface: breaking changes are called out explicitly.
 
 ### Fixed
 
+- **Being in the same public fact is not having met.** The list of people an
+  assistant may be told about is built from who you share a group or something
+  readable with — and anything readable by *everybody* is readable by every
+  pair, so one public fact put the whole household back in everybody's list.
+  What counts now is something held between you.
+
 - **An assistant is told about a third person only when the turn is about
   them.** What the memory knows about somebody — their whole identity card —
   was handed to the assistant whenever the search happened to return one of

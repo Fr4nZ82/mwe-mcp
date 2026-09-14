@@ -601,6 +601,12 @@ pub async fn roster_for(
     // A fact either of them may read, read the same way everything else is:
     // subject ∪ allow ∪ narrator. A row this reader cannot read says nothing
     // about who else has met them.
+    //
+    // **A PUBLIC fact is not a meeting.** One readable by everybody is readable
+    // by every PAIR, so a single `global` row would put the whole enrolment in
+    // everybody's roster and this question would stop being asked at all.
+    // Having met somebody inside a memory means holding something between you.
+    //
     // A fact-index read failure leaves the roster as the groups alone: a
     // narrower answer, never a wider one.
     let rows = crate::fact_index::active_card_acl_rows(pool)
@@ -608,6 +614,12 @@ pub async fn roster_for(
         .unwrap_or_default();
     let mut theirs: Vec<&crate::fact_index::CardAclRow> = Vec::new();
     for row in &rows {
+        if row.subject_id.is_global()
+            || row.allow_ids.iter().any(crate::types::Principal::is_global)
+            || row.sender_id.as_ref().is_some_and(Principal::is_global)
+        {
+            continue;
+        }
         if crate::acl::can_read(
             &crate::types::Acl {
                 subject: Some(row.subject_id.clone()),

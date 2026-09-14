@@ -9293,6 +9293,7 @@ async fn people_mentioned_section(
     turn_text: &str,
     completed: Option<&str>,
     hits: &[recall::RecallHit],
+    roster: &[enrollment::EnrolledUserLite],
     asked_full_recall: bool,
     intent: IntentKind,
     policy: &IngestPolicy,
@@ -9300,13 +9301,6 @@ async fn people_mentioned_section(
     if policy.max_mentioned_cards == 0 {
         return None;
     }
-    let roster = match enrollment::list_users(pool).await {
-        Ok(r) => r,
-        Err(err) => {
-            tracing::warn!(error = %err, "ingest: roster unavailable, no mentioned cards");
-            return None;
-        },
-    };
     // THE COMPLETION COUNTS HERE AND NOWHERE ELSE. «Zoe said so» arrives from
     // the classifier as the sentence the speaker meant, and a person named only
     // there is named. The identity-core roster cannot read it — it is built
@@ -9323,7 +9317,7 @@ async fn people_mentioned_section(
     let subjects = card_subjects(
         &named_in,
         &sender.sender_id,
-        &roster,
+        roster,
         hits,
         asked_full_recall && intent == IntentKind::Recall,
     );
@@ -9384,10 +9378,21 @@ async fn people_mentioned_section(
 /// cards to the consumer, and the identity-core roster
 /// ([`identity_core_roster`]) the classifier compares a new claim against.
 ///
-/// **The invariant is containment, not equality**: what reaches the consumer
-/// must be inside what the classifier was shown, or a card arrives in front of
-/// somebody whose facts the classifier never saw. A reader may therefore narrow
-/// on its own — the card slot does — and may never widen.
+/// **The invariant is containment, not equality, and it holds on three of the
+/// four ways in.** The speaker, the names the TURN carries and the recalled
+/// facts give both readers the same answer — same roster, same predicate, same
+/// asked depth — so what reaches the consumer by those is inside what the
+/// classifier was shown, which is what stops a card arriving in front of
+/// somebody whose facts the classifier never compared. A reader may narrow on
+/// its own, and the card slot does.
+///
+/// **The completion is the one widening, and it is the card slot's alone.** A
+/// person named only in the sentence the classifier wrote out gets their card
+/// served without their identity core having been in the comparison set — the
+/// classifier had already been asked by then. The cost is that one turn: their
+/// card is read, and a claim about them filed that turn is checked against the
+/// cards the classifier did hold. It is taken deliberately, because a person
+/// the speaker plainly meant is worse lost than late.
 fn card_subjects(
     turn_text: &str,
     sender_id: &str,
@@ -13528,6 +13533,11 @@ pub async fn wiki_ingest_message(
             &request.text,
             completed_message,
             &recall_hits,
+            // THE SAME roster the classifier was given, never the enrolment:
+            // the invariant below is a containment, and a list this slot built
+            // for itself would be free to hold somebody the classifier never
+            // saw.
+            &known_users,
             request.metadata.recall == RecallDepth::Full,
             intent,
             policy,
@@ -19518,7 +19528,13 @@ mod tests {
                     timezone: None,
                 })
                 .collect(),
-            groups: Vec::new(),
+            // They share a household, which is what puts each of them in the
+            // other's roster at all (`enrollment::roster_for`).
+            groups: vec![crate::enrollment::GroupEntry {
+                id: "famiglia".to_owned(),
+                members: vec!["alice".to_owned(), "franz".to_owned()],
+                scope: None,
+            }],
         };
         crate::enrollment::mirror_to_db(&pool, &file)
             .await
@@ -19532,6 +19548,7 @@ mod tests {
             "cosa cucino stasera per alice?",
             None,
             &[],
+            &roster_of(&pool).await,
             true,
             IntentKind::Recall,
             &IngestPolicy::default(),
@@ -19581,7 +19598,13 @@ mod tests {
                 locale: None,
                 timezone: None,
             }],
-            groups: Vec::new(),
+            // They share a household, which is what puts each of them in the
+            // other's roster at all (`enrollment::roster_for`).
+            groups: vec![crate::enrollment::GroupEntry {
+                id: "famiglia".to_owned(),
+                members: vec!["alice".to_owned(), "franz".to_owned()],
+                scope: None,
+            }],
         };
         crate::enrollment::mirror_to_db(&pool, &file)
             .await
@@ -19597,6 +19620,7 @@ mod tests {
                 "cosa mangio stasera?",
                 None,
                 &[],
+                &roster_of(&pool).await,
                 true,
                 IntentKind::Recall,
                 &policy,
@@ -19613,6 +19637,7 @@ mod tests {
                 "ricordami di chiamare l'idraulico",
                 None,
                 &[],
+                &roster_of(&pool).await,
                 true,
                 IntentKind::Recall,
                 &policy,
@@ -19621,6 +19646,108 @@ mod tests {
             .is_none(),
             "a turn naming nobody opens no slot"
         );
+    }
+
+    /// The roster these slot tests hand the section — the same list the
+    /// classifier is given on a live turn (`enrollment::roster_for`), so a test
+    /// cannot accidentally prove the slot right on a wider one.
+    async fn roster_of(pool: &SqlitePool) -> Vec<enrollment::EnrolledUserLite> {
+        enrollment::roster_for(pool, "franz", &["famiglia".to_owned()])
+            .await
+            .expect("roster")
+    }
+
+    /// **A card is served out of the roster the CLASSIFIER was given, never out
+    /// of the enrolment.**
+    ///
+    /// The two must agree — what reaches the consumer has to be inside what the
+    /// classifier was shown — and that is a property of the list, not of the
+    /// predicate: a slot that fetched its own would be free to name somebody
+    /// the classifier never saw, and serve their card the moment one of their
+    /// facts is public enough to render. Seventeen card facts in the live
+    /// memory are `global`, so it is not a shape that needs inventing.
+    #[tokio::test]
+    async fn a_stranger_with_a_public_card_never_reaches_the_consumer() {
+        let (dir, _, pool) = setup_workdir().await;
+        seed_alice_card(&dir, &pool).await;
+        // Alice's card renders for anybody — and she is a stranger to franz.
+        sqlx::query("UPDATE fact_index SET subject_id = 'global' WHERE fact_id = ?")
+            .bind(ALICE_FACT_A)
+            .execute(&pool)
+            .await
+            .expect("publish the card");
+        let file = crate::enrollment::EnrollmentFile {
+            version: 1,
+            users: ["alice", "franz"]
+                .into_iter()
+                .map(|id| crate::enrollment::UserEntry {
+                    id: id.to_owned(),
+                    aliases: Vec::new(),
+                    is_admin: false,
+                    locale: None,
+                    timezone: None,
+                })
+                .collect(),
+            groups: Vec::new(),
+        };
+        crate::enrollment::mirror_to_db(&pool, &file)
+            .await
+            .expect("mirror");
+        let tree = WikiTree::open(dir.path()).expect("reopen tree");
+
+        // The turn NAMES her, so nothing but the roster can withhold her.
+        let narrowed = enrollment::roster_for(&pool, "franz", &[])
+            .await
+            .expect("roster");
+        assert!(
+            people_mentioned_section(
+                &pool,
+                &tree,
+                &SenderContext::user("franz"),
+                "cosa cucino stasera per alice?",
+                None,
+                &[],
+                &narrowed,
+                true,
+                IntentKind::Recall,
+                &IngestPolicy::default(),
+            )
+            .await
+            .is_none(),
+            "she is a stranger to him, so she is in neither list"
+        );
+
+        // Once they share a household she is in both, and the card arrives.
+        sqlx::query(
+            "INSERT INTO enrollment_groups (group_id, members) \
+             VALUES ('famiglia', '[\"alice\",\"franz\"]')",
+        )
+        .execute(&pool)
+        .await
+        .unwrap();
+        let shared = enrollment::roster_for(&pool, "franz", &["famiglia".to_owned()])
+            .await
+            .expect("roster");
+        let out = people_mentioned_section(
+            &pool,
+            &tree,
+            &SenderContext::user("franz"),
+            "cosa cucino stasera per alice?",
+            None,
+            &[],
+            &shared,
+            true,
+            IntentKind::Recall,
+            &IngestPolicy::default(),
+        )
+        .await
+        .expect("named, and now somebody he has met");
+        assert!(
+            out.section.contains("Alice lives in Bologna."),
+            "{out:?}",
+            out = out.section
+        );
+        drop(dir);
     }
 
     /// **A fact about somebody, found by the search, is not by itself a reason
@@ -19659,7 +19786,13 @@ mod tests {
                     timezone: None,
                 })
                 .collect(),
-            groups: Vec::new(),
+            // They share a household, which is what puts each of them in the
+            // other's roster at all (`enrollment::roster_for`).
+            groups: vec![crate::enrollment::GroupEntry {
+                id: "famiglia".to_owned(),
+                members: vec!["alice".to_owned(), "franz".to_owned()],
+                scope: None,
+            }],
         };
         crate::enrollment::mirror_to_db(&pool, &file)
             .await
@@ -19682,6 +19815,7 @@ mod tests {
                     printer,
                     None,
                     &hits,
+                    &roster_of(&pool).await,
                     true,
                     intent,
                     &policy,
@@ -19702,6 +19836,7 @@ mod tests {
             "cosa può mangiare mia moglie?",
             None,
             &hits,
+            &roster_of(&pool).await,
             true,
             IntentKind::Recall,
             &policy,
@@ -19723,6 +19858,7 @@ mod tests {
             "lei cosa può mangiare?",
             Some("cosa può mangiare alice?"),
             &[],
+            &roster_of(&pool).await,
             false,
             IntentKind::Capture,
             &policy,
@@ -19764,7 +19900,13 @@ mod tests {
                     timezone: None,
                 })
                 .collect(),
-            groups: Vec::new(),
+            // They share a household, which is what puts each of them in the
+            // other's roster at all (`enrollment::roster_for`).
+            groups: vec![crate::enrollment::GroupEntry {
+                id: "famiglia".to_owned(),
+                members: vec!["alice".to_owned(), "franz".to_owned()],
+                scope: None,
+            }],
         };
         crate::enrollment::mirror_to_db(&pool, &file)
             .await
@@ -19781,6 +19923,7 @@ mod tests {
                 turn,
                 None,
                 &[],
+                &roster_of(&pool).await,
                 true,
                 IntentKind::Recall,
                 &policy,
@@ -19798,6 +19941,7 @@ mod tests {
             turn,
             None,
             &hits,
+            &roster_of(&pool).await,
             true,
             IntentKind::Recall,
             &policy,
@@ -19830,7 +19974,13 @@ mod tests {
                 locale: None,
                 timezone: None,
             }],
-            groups: Vec::new(),
+            // They share a household, which is what puts each of them in the
+            // other's roster at all (`enrollment::roster_for`).
+            groups: vec![crate::enrollment::GroupEntry {
+                id: "famiglia".to_owned(),
+                members: vec!["alice".to_owned(), "franz".to_owned()],
+                scope: None,
+            }],
         };
         crate::enrollment::mirror_to_db(&pool, &file)
             .await
@@ -19849,6 +19999,7 @@ mod tests {
                 "cosa mangio stasera?",
                 None,
                 &[group_hit, own_hit],
+                &roster_of(&pool).await,
                 true,
                 IntentKind::Recall,
                 &IngestPolicy::default(),
@@ -33524,7 +33675,13 @@ mod tests {
                 locale: Some("en-US".to_owned()),
                 timezone: None,
             }],
-            groups: Vec::new(),
+            // They share a household, which is what puts each of them in the
+            // other's roster at all (`enrollment::roster_for`).
+            groups: vec![crate::enrollment::GroupEntry {
+                id: "famiglia".to_owned(),
+                members: vec!["alice".to_owned(), "franz".to_owned()],
+                scope: None,
+            }],
         };
         crate::enrollment::mirror_to_db(&pool, &file)
             .await
@@ -33580,7 +33737,13 @@ mod tests {
                 locale: Some("it-IT".to_owned()),
                 timezone: None,
             }],
-            groups: Vec::new(),
+            // They share a household, which is what puts each of them in the
+            // other's roster at all (`enrollment::roster_for`).
+            groups: vec![crate::enrollment::GroupEntry {
+                id: "famiglia".to_owned(),
+                members: vec!["alice".to_owned(), "franz".to_owned()],
+                scope: None,
+            }],
         };
         crate::enrollment::mirror_to_db(&pool, &file)
             .await
