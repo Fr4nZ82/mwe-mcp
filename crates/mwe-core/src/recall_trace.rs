@@ -325,6 +325,16 @@ pub struct TraceRefusedChange {
     /// Why it did not happen — one of the verb's stable tokens, so a reader
     /// can count the same reason across many turns.
     pub reason: String,
+    /// What the refusal saved, where the reason has something concrete to
+    /// name: the values the successor would have dropped, as the target
+    /// wrote them. Empty for every reason that costs nothing nameable.
+    ///
+    /// The token alone says a replacement was refused for saying less; this
+    /// says WHAT it would have taken, which is the difference between a
+    /// reader believing the engine and a reader checking it. It discloses
+    /// nothing: the refusal is only reached for a target the speaker was
+    /// already shown.
+    pub lost: String,
 }
 
 /// One page the identity slot served whole, as journaled.

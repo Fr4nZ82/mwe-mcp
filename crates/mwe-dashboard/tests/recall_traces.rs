@@ -136,6 +136,7 @@ fn refused_changes() -> Vec<TraceRefusedChange> {
             target: "0197fa00-0000-7000-8000-000000000001".to_owned(),
             successor: "0197fa00-0000-7000-8000-000000000002".to_owned(),
             reason: "successor_is_the_target_restated".to_owned(),
+            lost: String::new(),
         },
         TraceRefusedChange {
             verb: "close".to_owned(),
@@ -143,6 +144,17 @@ fn refused_changes() -> Vec<TraceRefusedChange> {
             target: "0197fa00-0000-7000-8000-000000000001".to_owned(),
             successor: String::new(),
             reason: "target_restated_this_turn".to_owned(),
+            lost: String::new(),
+        },
+        // The one refusal that has something to name: the panel has to show
+        // WHAT the replacement would have taken, not only that it was refused.
+        TraceRefusedChange {
+            verb: "replace".to_owned(),
+            slot: "the excess".to_owned(),
+            target: "0197fa00-0000-7000-8000-000000000003".to_owned(),
+            successor: "0197fa00-0000-7000-8000-000000000004".to_owned(),
+            reason: "says_less_than_the_target".to_owned(),
+            lost: "350,00".to_owned(),
         },
     ]
 }
@@ -365,6 +377,9 @@ async fn journal_lists_and_viewer_replays_a_recorded_trace() {
         "Changes it asked for and did not get",
         "successor_is_the_target_restated",
         "target_restated_this_turn",
+        "says_less_than_the_target",
+        "What it would have taken",
+        "350,00",
         "what the shopping list needs",
         "Handed to the consumer",
         "celiaca",

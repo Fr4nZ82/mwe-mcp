@@ -1199,9 +1199,9 @@ fn a_value_in_the_open(prose: &[String], fact: &[String]) -> Option<String> {
 /// heading. Between two claims — [`values_of`], where a replacement is weighed
 /// against what it replaces — a claim moving forward in time necessarily
 /// leaves the old date behind, so counting it as something lost would refuse
-/// the ordinary shape of a correction. Measured on a corpus of nineteen
-/// replacements: two say less than what they replace, and counting dates would
-/// have called it seven, five of them a fact simply moving on.
+/// the ordinary shape of a correction. Measured on a corpus of fifty-three
+/// replacements: three say less than what they replace, and counting dates
+/// would have called it seven — the four extra being facts simply moving on.
 fn reads_as_a_value(words: &[String], at: usize) -> bool {
     words[at].chars().any(|c| c.is_ascii_digit())
         && !reads_as_a_date(words, at)
@@ -1209,7 +1209,8 @@ fn reads_as_a_value(words: &[String], at: usize) -> bool {
         && !an_article_names_it(words, at)
 }
 
-/// Every value one claim carries.
+/// Every value one claim carries, each **figure** filed under the one way of
+/// writing it and kept beside the way this claim wrote it.
 ///
 /// The same net [`a_value_in_the_open`] reads a page with, asked of a sentence
 /// on its own: an identifier first, because it is a value whatever stands
@@ -1217,26 +1218,91 @@ fn reads_as_a_value(words: &[String], at: usize) -> bool {
 /// a replacement against what it replaces — a successor that has lost one of
 /// the target's values is not saying the same thing more recently, it is saying
 /// less (`ingest::vet_supersede`, `rem`'s page judgement).
-pub(crate) fn values_of(text: &str) -> std::collections::BTreeSet<String> {
+///
+/// The key is [`canonical_figure`] and the value is the word as the claim
+/// wrote it, so a caller can compare two claims by their figures and still
+/// name what went in the notation the claim used — *«350,00»*, not the form
+/// the comparison happens to file it under.
+pub(crate) fn values_of(text: &str) -> std::collections::BTreeMap<String, String> {
     // An embed marker carries a catalog id full of digits and nobody stated
     // it: left in, it reads as a value, and a claim that merely gained a photo
     // would look like one that brought a figure of its own.
     let words = words_of(&crate::parser::strip_embed_markers(text));
-    let mut out = std::collections::BTreeSet::new();
+    let mut out = std::collections::BTreeMap::new();
     let mut i = 0usize;
     while i < words.len() {
         if let Some(len) = an_identifier_at(&words, i) {
             let end = (i + len).min(words.len());
-            out.insert(words[i..end].join(" "));
+            let written = words[i..end].join(" ");
+            out.entry(canonical_figure(&written)).or_insert(written);
             i = end;
             continue;
         }
         if reads_as_a_value(&words, i) {
-            out.insert(words[i].clone());
+            out.entry(canonical_figure(&words[i]))
+                .or_insert_with(|| words[i].clone());
         }
         i += 1;
     }
     out
+}
+
+/// The one way of writing a figure, so that two claims stating the same amount
+/// in two notations state the same value.
+///
+/// «350,00» and «350» are one number, «1.200» and «1200» are one number, and a
+/// claim that restates a figure in another notation is restating it — not
+/// bringing one of its own. Currency and brackets never reach here:
+/// [`words_of`] has already trimmed everything that is not a letter or a digit
+/// off both ends, so «£350» arrives as `350`.
+///
+/// **A token that is not a plain figure comes back untouched**, which is what
+/// keeps an identifier whole: `ab12cd`, `600x600mm` and a postcode spanning two
+/// words carry letters or spaces, and a value that is the whole of what
+/// somebody could act on must not be filed under a fragment of itself.
+///
+/// **Where a single separator is ambiguous, three digits after it mean
+/// thousands** — `1.200` is twelve hundred, not one point two. That is the
+/// reading that makes the two notations of a round figure agree, which is what
+/// this is for; a genuine `1.200` meaning one-point-two would be read as the
+/// larger number and the two claims would look like one. The opposite default
+/// costs more: it makes a figure restated in the other notation look like a new
+/// one, and a new figure is what tells a replacement apart from a claim that
+/// has simply forgotten half of itself.
+fn canonical_figure(word: &str) -> String {
+    if !word.starts_with(|c: char| c.is_ascii_digit())
+        || !word.ends_with(|c: char| c.is_ascii_digit())
+        || word
+            .chars()
+            .any(|c| !c.is_ascii_digit() && c != '.' && c != ',')
+    {
+        return word.to_owned();
+    }
+    let ends_a_group = |at: usize| word.len() - at - 1 == 3;
+    let decimal_at = match (word.rfind('.'), word.rfind(',')) {
+        (Some(d), Some(c)) => Some(d.max(c)),
+        (Some(d), None) if word.matches('.').count() == 1 && !ends_a_group(d) => Some(d),
+        (None, Some(c)) if word.matches(',').count() == 1 && !ends_a_group(c) => Some(c),
+        _ => None,
+    };
+    let mut whole = String::new();
+    let mut fraction = String::new();
+    for (at, ch) in word.char_indices() {
+        if !ch.is_ascii_digit() {
+            continue;
+        }
+        if decimal_at.is_some_and(|d| at > d) {
+            fraction.push(ch);
+        } else {
+            whole.push(ch);
+        }
+    }
+    let fraction = fraction.trim_end_matches('0');
+    if fraction.is_empty() {
+        whole
+    } else {
+        format!("{whole}.{fraction}")
+    }
 }
 
 /// How many words from `at` are an identifier — a value that is the whole of
@@ -3539,6 +3605,59 @@ mod tests {
             prose_restates_fact(&with_the_hour, &hours),
             None,
             "a clock time is a date, and the page may say when"
+        );
+    }
+
+    /// **One amount, however it is written.**
+    ///
+    /// A claim restating a figure in another notation is restating it, not
+    /// bringing one of its own — and «bringing one of its own» is what tells a
+    /// disagreement from a claim that has forgotten half of itself, so getting
+    /// this wrong retires a fact on the strength of a comma.
+    ///
+    /// The middle group is the ambiguous one and the decision it records:
+    /// three digits after a lone separator mean THOUSANDS. `1.200` is twelve
+    /// hundred.
+    #[test]
+    fn one_amount_however_it_is_written() {
+        for (a, b) in [
+            ("350,00", "350"),
+            ("350.00", "350"),
+            ("1.200", "1200"),
+            ("1,200", "1200"),
+            ("1.200,50", "1200.5"),
+            ("1,200.50", "1200.5"),
+            ("1.200.000", "1200000"),
+        ] {
+            assert_eq!(
+                canonical_figure(a),
+                canonical_figure(b),
+                "`{a}` and `{b}` are one amount"
+            );
+        }
+        for (a, b) in [("350", "400"), ("0,5", "5"), ("1.200", "1.300")] {
+            assert_ne!(
+                canonical_figure(a),
+                canonical_figure(b),
+                "`{a}` and `{b}` are two amounts"
+            );
+        }
+        // A value that is the whole of what somebody could act on is never
+        // filed under a fragment of itself: letters and spaces make a token
+        // something other than a figure, and it comes back untouched.
+        for whole in ["ab12cd", "600x600mm", "07700 900275"] {
+            assert_eq!(canonical_figure(whole), whole, "`{whole}` is not a figure");
+        }
+        // Whole claims, which is how the net is actually asked: the currency
+        // is a word beside the figure and never part of it.
+        assert_eq!(
+            values_of("The excess is 350,00 €.")
+                .keys()
+                .collect::<Vec<&String>>(),
+            values_of("The excess is 350 euro.")
+                .keys()
+                .collect::<Vec<&String>>(),
+            "one amount, two notations"
         );
     }
 

@@ -4398,8 +4398,9 @@ impl TurnFact {
 ///
 /// One stable token each, written to the recall trace beside the raw verdict
 /// so the pair the engine refused can be read back next to the pair the model
-/// asked for.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+/// asked for — and, where the reason has something concrete to name, what the
+/// refusal saved travels with it.
+#[derive(Debug, Clone, PartialEq, Eq)]
 enum SupersedeRefusal {
     /// The entry named no target, or no successor.
     Incomplete,
@@ -4436,7 +4437,15 @@ enum SupersedeRefusal {
     /// amount, a percentage. Said again in fewer words, a claim is a poorer
     /// copy of itself, and retiring the richer one for it takes something out
     /// of the memory nobody asked to lose. Both stand.
-    SaysLessThanTheTarget,
+    ///
+    /// It carries WHAT would have gone, as the target wrote it: a row saying a
+    /// replacement was refused is worth little beside one saying what the
+    /// refusal saved.
+    SaysLessThanTheTarget {
+        /// The target's values the successor drops, as the target wrote them,
+        /// `, `-joined.
+        lost: String,
+    },
     /// The pair is sound, and the sender is not entitled to rewrite the
     /// target: the question went to whoever is.
     NotTheSendersToRewrite,
@@ -4447,8 +4456,8 @@ enum SupersedeRefusal {
 
 impl SupersedeRefusal {
     /// The token the recall trace stores.
-    const fn as_str(self) -> &'static str {
-        match self {
+    const fn as_str(&self) -> &'static str {
+        match *self {
             Self::Incomplete => "incomplete",
             Self::NoSlot => "no_slot",
             Self::UnparseableId => "unparseable_id",
@@ -4461,9 +4470,17 @@ impl SupersedeRefusal {
             Self::NotAboutTheSameThing => "not_about_the_same_thing",
             Self::ReassignsTheSubjectUnasked => "reassigns_the_subject_unasked",
             Self::ChangesWhoAnswersForIt => "changes_who_answers_for_it",
-            Self::SaysLessThanTheTarget => "says_less_than_the_target",
+            Self::SaysLessThanTheTarget { .. } => "says_less_than_the_target",
             Self::NotTheSendersToRewrite => "not_the_senders_to_rewrite",
             Self::WeldFailed => "weld_failed",
+        }
+    }
+
+    /// What the refusal saved, for the reason that has something to name.
+    fn lost(&self) -> &str {
+        match self {
+            Self::SaysLessThanTheTarget { lost } => lost,
+            _ => "",
         }
     }
 }
@@ -4741,10 +4758,13 @@ fn aboutness_refusal(
 ///
 /// The test is the values the two carry ([`crate::compiler::values_of`], the
 /// same net that keeps a fact's figures from leaking into the prose around it,
-/// so «what counts as a value» is one answer and not two). A DATE is not one of
-/// them, deliberately: a claim moving forward in time leaves the old date
-/// behind, and counting that as a loss would refuse the ordinary shape of a
-/// correction.
+/// so «what counts as a value» is one answer and not two). Figures are matched
+/// by the ONE way of writing them, so «350,00» and «350» are one value and not
+/// a loss and a gain at once: a claim restating an amount in the other
+/// notation is restating it, and read as two it would retire the target on the
+/// strength of a comma. A DATE is not one of them, deliberately: a claim moving
+/// forward in time leaves the old date behind, and counting that as a loss
+/// would refuse the ordinary shape of a correction.
 ///
 /// **A DIFFERENT value is a disagreement, not a loss, and the successor says
 /// which it is by what it carries.** «The excess is £350» replaced by «the
@@ -4761,18 +4781,23 @@ fn says_less_refusal(
 ) -> Option<SupersedeRefusal> {
     let had = crate::compiler::values_of(&prev.text);
     let says = crate::compiler::values_of(&successor.body);
-    let lost: Vec<&String> = had.difference(&says).collect();
-    if lost.is_empty() || says.difference(&had).next().is_some() {
+    let lost: Vec<&str> = had
+        .iter()
+        .filter(|(canonical, _)| !says.contains_key(*canonical))
+        .map(|(_, written)| written.as_str())
+        .collect();
+    if lost.is_empty() || says.keys().any(|canonical| !had.contains_key(canonical)) {
         return None;
     }
+    let lost = lost.join(", ");
     tracing::warn!(
         target = s.target.as_deref().unwrap_or_default(),
         successor = s.successor.as_deref().unwrap_or_default(),
-        lost = ?lost,
+        lost = lost.as_str(),
         "ingest: reconcile supersede successor drops a value the target carries — refused \
          (the new says less than the old, and both stand)"
     );
-    Some(SupersedeRefusal::SaysLessThanTheTarget)
+    Some(SupersedeRefusal::SaysLessThanTheTarget { lost })
 }
 
 /// Vet one requested supersede, refusing rather than guessing.
@@ -5206,10 +5231,11 @@ struct AppliedChanges {
 }
 
 /// Journal one refused pair **as the model wrote it** — unparsed ids included,
-/// since one of the reasons is that an id was invented.
+/// since one of the reasons is that an id was invented — and beside it what
+/// the refusal saved, where the reason has something concrete to name.
 fn refused_pair(
     s: &LlmSupersede,
-    reason: SupersedeRefusal,
+    reason: &SupersedeRefusal,
 ) -> crate::recall_trace::TraceRefusedChange {
     crate::recall_trace::TraceRefusedChange {
         verb: "replace".to_owned(),
@@ -5217,6 +5243,7 @@ fn refused_pair(
         target: s.target.clone().unwrap_or_default(),
         successor: s.successor.clone().unwrap_or_default(),
         reason: reason.as_str().to_owned(),
+        lost: reason.lost().to_owned(),
     }
 }
 
@@ -5230,6 +5257,7 @@ fn refused_acl(c: &LlmAclChange, reason: &str) -> crate::recall_trace::TraceRefu
         target: c.target.clone().unwrap_or_default(),
         successor: String::new(),
         reason: reason.to_owned(),
+        lost: String::new(),
     }
 }
 
@@ -5246,6 +5274,7 @@ fn refused_closure(
         target: c.target.clone().unwrap_or_default(),
         successor: String::new(),
         reason: err.as_token().to_owned(),
+        lost: String::new(),
     }
 }
 
@@ -5304,7 +5333,7 @@ async fn apply_reconciled_supersedes(
             // changes nothing.
             VettedSupersede::NotTheirs { successor, prev } => {
                 out.refused
-                    .push(refused_pair(s, SupersedeRefusal::NotTheSendersToRewrite));
+                    .push(refused_pair(s, &SupersedeRefusal::NotTheSendersToRewrite));
                 let asserted = turn_facts
                     .iter()
                     .find(|f| f.id == successor)
@@ -5333,7 +5362,7 @@ async fn apply_reconciled_supersedes(
                 continue;
             },
             VettedSupersede::Unsound(reason) => {
-                out.refused.push(refused_pair(s, reason));
+                out.refused.push(refused_pair(s, &reason));
                 continue;
             },
         };
@@ -5350,7 +5379,7 @@ async fn apply_reconciled_supersedes(
             out.applied += 1;
         } else {
             out.refused
-                .push(refused_pair(s, SupersedeRefusal::WeldFailed));
+                .push(refused_pair(s, &SupersedeRefusal::WeldFailed));
         }
     }
     out
@@ -15882,6 +15911,70 @@ mod tests {
             verdict_on("the bin collection day", &bins, &moved, false),
             "applied",
             "a date is not a value the successor owes the target"
+        );
+    }
+
+    /// **One figure written two ways is one figure.**
+    ///
+    /// «350,00 €» and «350 euro» are the same amount. Read as two values they
+    /// are a loss and a gain at once, which is the shape that lets a
+    /// replacement through — so a successor that restates the excess in the
+    /// other notation would have bought the right to drop the deposit, and the
+    /// £1,000 would have gone on the strength of a comma.
+    #[test]
+    fn one_figure_written_two_ways_is_one_figure() {
+        let two_amounts = stored(
+            "018f1234-5678-7abc-9def-0123456789cd",
+            "The excess is 350,00 € and the deposit is £1,000.",
+            Principal::User("alice".into()),
+            &["home", "insurance"],
+        );
+        let restates_one = wrote(
+            "018f1234-5678-7abc-9def-0123456789ab",
+            "The excess is 350 euro.",
+            Principal::User("alice".into()),
+            &["home", "insurance"],
+        );
+        assert_eq!(
+            verdict_on("the excess", &two_amounts, &restates_one, false),
+            "says_less_than_the_target",
+            "350 euro is not a figure of its own, and the deposit would have gone with it"
+        );
+    }
+
+    /// **The trace row says what the refusal saved.**
+    ///
+    /// A token saying a replacement was refused for saying less is worth
+    /// little beside one that names the figure that would have gone: it is the
+    /// difference between a reader believing the engine and a reader checking
+    /// it. It discloses nothing — the refusal is only ever reached for a
+    /// target the speaker was already shown as a candidate.
+    #[test]
+    fn the_refusal_names_what_it_saved() {
+        let renewal = stored(
+            "018f1234-5678-7abc-9def-0123456789cd",
+            "House insurance renews on 3 August 2026. The excess has increased to £350.",
+            Principal::User("alice".into()),
+            &["home", "insurance"],
+        );
+        let poorer = wrote(
+            "018f1234-5678-7abc-9def-0123456789ab",
+            "House insurance renews on 3 August 2026.",
+            Principal::User("alice".into()),
+            &["home", "insurance"],
+        );
+        let pair = LlmSupersede {
+            slot: Some("the house insurance".to_owned()),
+            target: Some(renewal.fact_id.as_str().to_owned()),
+            successor: Some(poorer.id.as_str().to_owned()),
+            reassigns_subject: false,
+        };
+        let reason = says_less_refusal(&pair, &renewal, &poorer).expect("refused");
+        let row = refused_pair(&pair, &reason);
+        assert_eq!(row.reason, "says_less_than_the_target");
+        assert_eq!(
+            row.lost, "350",
+            "the row names the figure, not only the verdict"
         );
     }
 

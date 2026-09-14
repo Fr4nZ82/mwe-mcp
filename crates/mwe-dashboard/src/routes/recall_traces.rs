@@ -843,7 +843,8 @@ fn render_reconcile(trace: &RecallTrace) -> Markup {
                     "Replacing a stored fact and closing one both take it out of what "
                     "the memory answers with, so every one is checked before it is "
                     "carried out. These did not pass, and the stored fact is exactly "
-                    "as it was."
+                    "as it was. Where the check has something to name, the last "
+                    "column says what the change would have taken away."
                 }
                 table class="config-table" {
                     thead {
@@ -853,6 +854,7 @@ fn render_reconcile(trace: &RecallTrace) -> Markup {
                             th { "Replaced by" }
                             th { "Over" }
                             th { "Why not" }
+                            th { "What it would have taken" }
                         }
                     }
                     tbody {
@@ -863,6 +865,7 @@ fn render_reconcile(trace: &RecallTrace) -> Markup {
                                 td { code { (r.successor) } }
                                 td { (r.slot) }
                                 td { code { (r.reason) } }
+                                td { (r.lost) }
                             }
                         }
                     }

@@ -7152,16 +7152,22 @@ async fn apply_one_page_verdict(
             // fewer words is a poorer copy of itself, and merging into it takes
             // a figure out of the memory nobody asked to lose. The same net the
             // turn's own reconciler uses, and the same reason
-            // (`ingest::vet_supersede`, `compiler::values_of`).
+            // (`ingest::vet_supersede`, `compiler::values_of`). Figures are
+            // matched by the one way of writing them, so `350,00` and `350` are
+            // one value and not a loss and a gain.
             let (had, says) = (
                 crate::compiler::values_of(&loser.text),
                 crate::compiler::values_of(&winner.text),
             );
-            let lost: Vec<String> = had.difference(&says).cloned().collect();
+            let lost: Vec<&str> = had
+                .iter()
+                .filter(|(canonical, _)| !says.contains_key(*canonical))
+                .map(|(_, written)| written.as_str())
+                .collect();
             // Something lost AND nothing offered in its place. A newer copy
             // that brings a figure of its own is DISAGREEING about the same
             // box, which is a different act and not this one's to refuse.
-            if !lost.is_empty() && says.difference(&had).next().is_none() {
+            if !lost.is_empty() && !says.keys().any(|canonical| !had.contains_key(canonical)) {
                 tracing::info!(
                     winner = winner.fact_id.as_str(),
                     loser = loser.fact_id.as_str(),
