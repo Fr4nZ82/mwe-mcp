@@ -261,6 +261,9 @@ pub struct RecallTrace {
     /// refused into the log only. So is a closure the CLASSIFIER asked for:
     /// this list is the one call that reads the memory before it judges.
     pub refused_changes: Vec<TraceRefusedChange>,
+    /// What the classifier wrote that the engine corrected on its way in —
+    /// stored, but not as the model said it ([`TraceCorrectedExtraction`]).
+    pub corrected_extractions: Vec<TraceCorrectedExtraction>,
     /// Milliseconds of [`took_ms`] spent on the recall itself: the searches,
     /// the slots and the walk, summed as the turn ran.
     ///
@@ -335,6 +338,31 @@ pub struct TraceRefusedChange {
     /// nothing: the refusal is only reached for a target the speaker was
     /// already shown.
     pub lost: String,
+}
+
+/// One thing the classifier wrote that the engine **changed** before storing
+/// it.
+///
+/// The sibling of [`TraceRefusedChange`], and a different record: that one is
+/// a change the model ASKED FOR and did not get, this one is something the
+/// model WROTE that the engine corrected on its way in. The claim is still
+/// stored — it is not a refusal — which is exactly why it needs a receipt:
+/// without one the only trace of the correction is that the fact came out
+/// slightly different from what the model said, and nobody would know to look.
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[serde(default)]
+pub struct TraceCorrectedExtraction {
+    /// The claim, capped, as the model wrote it.
+    pub claim: String,
+    /// The field the engine changed (`salience`, …).
+    pub field: String,
+    /// What the model put there.
+    pub was: String,
+    /// What the engine stored instead.
+    pub now: String,
+    /// Why — one stable token, so a reader can count the same correction
+    /// across many turns.
+    pub reason: String,
 }
 
 /// One page the identity slot served whole, as journaled.

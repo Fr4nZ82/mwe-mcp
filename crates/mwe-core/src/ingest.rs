@@ -2456,6 +2456,50 @@ fn subject_of_the_claim(
     )
 }
 
+/// The salience this claim is stored with — the classifier's, unless the claim
+/// **names what it is about**.
+///
+/// A card carries who ONE person is, so a claim that names its own subject is
+/// not card material: the prompt says so and the planner enforces it, refusing
+/// such a fact from an identity page ([`crate::planner`]). But the row stayed
+/// `high`, and that is the OTHER half of what always-on means — the engine's
+/// own definition reads the kind and the mark together
+/// ([`crate::fact_index::belongs_on_an_identity_card`]), so the claim went on
+/// answering «yes, I am card material» to everything except the one road that
+/// checked. In the September demo corpus «Mum's birthday is on the 15th» sat
+/// there marked always-on, on the parents' shared memory, placed nowhere and
+/// unplaceable: the card refused it and nothing else did.
+///
+/// Demoted to `normal`, which is what it is: ordinary knowledge about somebody
+/// who has no account here. The claim is kept, the kind is untouched, and the
+/// turn's trace says what moved ([`crate::recall_trace::TraceCorrectedExtraction`]).
+fn salience_for(unit: &CaptureUnit<'_>) -> Option<String> {
+    let said = unit.salience.map(str::to_owned);
+    if named_or_absent(unit.subject_external).is_some()
+        && crate::fact_index::belongs_on_an_identity_card(unit.fact_type, unit.salience)
+    {
+        return Some("normal".to_owned());
+    }
+    said
+}
+
+/// The receipt for [`salience_for`], when it moved something.
+fn salience_correction(
+    unit: &CaptureUnit<'_>,
+) -> Option<crate::recall_trace::TraceCorrectedExtraction> {
+    let stored = salience_for(unit);
+    if stored.as_deref() == unit.salience {
+        return None;
+    }
+    Some(crate::recall_trace::TraceCorrectedExtraction {
+        claim: truncate(unit.body.unwrap_or_default(), 160),
+        field: "salience".to_owned(),
+        was: unit.salience.unwrap_or_default().to_owned(),
+        now: stored.unwrap_or_default(),
+        reason: "a_claim_that_names_its_subject_is_not_card_material".to_owned(),
+    })
+}
+
 /// **Who this claim must not reach**, as the classifier heard it said.
 ///
 /// A name it cannot read is dropped rather than failing the turn: an
@@ -2715,9 +2759,10 @@ fn validate_capture_plan(
         page_description: names_its_page
             .then(|| unit.page_description.map(str::to_owned))
             .flatten(),
-        // Thread the per-fact salience the classifier
-        // deduced through to the capture row (`high` is routed to the card).
-        salience: unit.salience.map(str::to_owned),
+        // Thread the per-fact salience the classifier deduced through to the
+        // capture row (`high` is routed to the card) — corrected where the
+        // claim names what it is about ([`salience_for`]).
+        salience: salience_for(unit),
         // Turn-level provenance breadcrumbs: the project-wiki
         // pages this conversation turn authored, carried in via
         // `metadata.authored_refs`. Attached to every capture from the turn;
@@ -11270,6 +11315,8 @@ struct IngestTraceParts<'a> {
     reconcile_verdict: Option<&'a str>,
     /// The changes that answer asked for and the engine did not make.
     refused_changes: &'a [crate::recall_trace::TraceRefusedChange],
+    /// What the classifier wrote that the engine corrected on its way in.
+    corrected_extractions: &'a [crate::recall_trace::TraceCorrectedExtraction],
     recall_clock: RecallClock,
     took: std::time::Duration,
 }
@@ -11375,6 +11422,7 @@ async fn record_ingest_trace(
         reconcile_candidates: parts.reconcile_candidates.to_vec(),
         reconcile_verdict: parts.reconcile_verdict.map(recall_trace::cap_turn_text),
         refused_changes: parts.refused_changes.to_vec(),
+        corrected_extractions: parts.corrected_extractions.to_vec(),
         recall_ms: parts.recall_clock.ms(),
         took_ms: u64::try_from(parts.took.as_millis()).unwrap_or(u64::MAX),
     };
@@ -11482,6 +11530,11 @@ pub async fn wiki_ingest_message(
     // the memory means it, which on a replayed backlog is the date of the
     // story ([`crate::fact_index::memory_now`]).
     crate::fact_index::saw_a_turn_at(pool, turn_now).await;
+    // What the engine corrected about what the classifier wrote, filled as
+    // the extractions are planned. It is not a refusal — the claim is stored —
+    // so without this the only sign would be that the fact came out slightly
+    // different from what the model said.
+    let mut corrected_extractions: Vec<crate::recall_trace::TraceCorrectedExtraction> = Vec::new();
 
     // THE SAME TURN DELIVERED TWICE IS WRITTEN ONCE AND READ TWICE. What the
     // first delivery DECIDED is kept and handed back — the intent, the seed,
@@ -11787,6 +11840,7 @@ pub async fn wiki_ingest_message(
                     reconcile_candidates: &[],
                     reconcile_verdict: None,
                     refused_changes: &[],
+                    corrected_extractions: &[],
                     recall_clock,
                     took: start.elapsed(),
                 },
@@ -12980,7 +13034,22 @@ pub async fn wiki_ingest_message(
                     legacy,
                     &groups,
                 ) {
-                    Ok(req) => req,
+                    Ok(req) => {
+                        // What the engine corrected about this extraction, in
+                        // the turn's own trace: the claim is stored, so
+                        // without a receipt the only sign is that it came out
+                        // slightly different from what the model said.
+                        if let Some(note) = salience_correction(&unit) {
+                            tracing::info!(
+                                field = note.field.as_str(),
+                                was = note.was.as_str(),
+                                now = note.now.as_str(),
+                                "ingest: a claim that names its subject is not card material"
+                            );
+                            corrected_extractions.push(note);
+                        }
+                        req
+                    },
                     Err(err) => {
                         // Name what was lost. One bad extraction is dropped on
                         // its own and the rest of the turn files (the `continue`
@@ -14333,6 +14402,7 @@ pub async fn wiki_ingest_message(
                 reconcile_candidates: &reconcile_journal,
                 reconcile_verdict: reconcile_verdict.as_deref(),
                 refused_changes: &refused_changes,
+                corrected_extractions: &corrected_extractions,
                 recall_clock,
                 took: start.elapsed(),
             },
@@ -16048,6 +16118,74 @@ mod tests {
             VettedSupersede::NotTheirs { .. } => "asked".to_owned(),
             VettedSupersede::Unsound(r) => r.as_str().to_owned(),
         }
+    }
+
+    /// **A claim that names who it is about is not what a card carries.**
+    ///
+    /// The demo corpus's own fact: «Mum's birthday is on the 15th», written
+    /// `bio` + always-on, with `subject_external: "Mum"`, on the parents'
+    /// shared memory. A card holds who ONE person is, and the planner already
+    /// refused it from one — but the row stayed always-on, so the engine's own
+    /// definition of card material went on saying yes to it everywhere else,
+    /// and the claim sat unplaced and unplaceable for ever.
+    ///
+    /// It is kept, and kept as what it is: ordinary knowledge about somebody
+    /// with no account here. The KIND is untouched — it really is a `bio`
+    /// claim, about her — and the turn's trace says what moved and why.
+    #[test]
+    fn a_claim_that_names_its_subject_is_not_card_material() {
+        let no_ids: [String; 0] = [];
+        let mum = |salience: Option<&'static str>, external: Option<&'static str>| CaptureUnit {
+            target_wiki_id: None,
+            target_page: None,
+            subject_id: Some("group:parents"),
+            subject_external: external,
+            excluded_ids: &no_ids,
+            allow_ids: &no_ids,
+            fact_type: Some("bio"),
+            valid_from: None,
+            valid_to: None,
+            style: None,
+            page_description: None,
+            requested_container: false,
+            salience,
+            behaviour_rule: false,
+            behaviour_scope: None,
+            behaviour_about: None,
+            topics: &no_ids,
+            body: Some("Mum's birthday is on the 15th."),
+            supersede_target: None,
+            conflicts_with: None,
+            slot: None,
+            slot_value: None,
+            attachments: &no_ids,
+        };
+
+        let named = mum(Some("high"), Some("Mum"));
+        assert_eq!(
+            salience_for(&named).as_deref(),
+            Some("normal"),
+            "it names who it is about, so it is not a card claim"
+        );
+        let note = salience_correction(&named).expect("a receipt");
+        assert_eq!(note.field, "salience");
+        assert_eq!((note.was.as_str(), note.now.as_str()), ("high", "normal"));
+        assert!(
+            note.claim.contains("Mum's birthday"),
+            "the receipt names the claim: {note:?}"
+        );
+
+        // The same claim about the person whose card it IS keeps its mark:
+        // nothing here narrows what a card may carry about its own subject.
+        let about_the_subject = mum(Some("high"), None);
+        assert_eq!(salience_for(&about_the_subject).as_deref(), Some("high"));
+        assert!(salience_correction(&about_the_subject).is_none());
+
+        // And an ordinary claim that names its subject is left alone: only
+        // the always-on mark is the engine's to correct here.
+        let ordinary = mum(Some("normal"), Some("Mum"));
+        assert_eq!(salience_for(&ordinary).as_deref(), Some("normal"));
+        assert!(salience_correction(&ordinary).is_none());
     }
 
     /// **A group named in the audience is frozen into its people, and the

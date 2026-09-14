@@ -59,6 +59,13 @@ the same recall as text:
   by**, **Over** (what the two were said to have in common) and **Why not**.
   It appears only on a turn that had one, and the fact that would have been
   taken away is exactly as it was.
+- **What it wrote and the engine corrected** — a claim can be stored without
+  being stored exactly as the classifier wrote it, when a rule of the memory
+  says otherwise: a claim that names who it is about, for instance, is not
+  something an identity card carries, so it is filed as ordinary knowledge
+  instead. A row each: **The claim**, **What changed**, **It wrote**, **Stored
+  as** and **Why**. Nothing was thrown away — this panel is about the
+  difference, not about a loss.
 - **Handed to the consumer** — the text that actually reached your assistant
   (a deep search shows **Answered to the caller** instead).
 - **Standing rules handed over** — your standing rules as they went with it,

@@ -13,6 +13,18 @@ semver-governed surface: breaking changes are called out explicitly.
 
 ### Added
 
+- **A word for a relation is not a name.** *«Mum»* is what somebody is to the
+  person speaking, not what they are called, and two people in a household mean
+  two different women by it. Recorded as if it were a name it became a person
+  of its own, and the memory split: on the demo corpus one woman was *«Mum»*
+  with a birthday on the 15th and *«Nora»* with a birthday on the 14th, four
+  facts each. A relation word is no longer offered back as somebody the memory
+  knows, so nothing more gathers under it, and the assistant is told to write
+  the real name whenever the conversation makes plain who is meant. Bringing
+  the two together needs the memory to hold the family tie as a fact of its
+  own, which it does not yet: until then the two birthdays stay two, and it
+  says so rather than guessing.
+
 - **"I'd rather she didn't know" is something a fact carries.** Asking for one
   claim to be kept from one person was being recorded as a narrower audience,
   and an audience cannot say it: a fact about *the parents* is readable by
@@ -28,6 +40,16 @@ semver-governed surface: breaking changes are called out explicitly.
   shows it in a **Not for** column to everyone who may read the fact.
 
 ### Fixed
+
+- **A claim that names who it is about no longer opens somebody's identity
+  card.** An identity card holds who one person is. A claim that names its own
+  subject — *«Mum's birthday is on the 15th»* — is about somebody else, and the
+  memory already refused to put it on a card; but it went on being marked as
+  card material everywhere else, so it sat there unplaced and unplaceable, and
+  on the shared memory of a couple it was the first thing their card tried to
+  open with. It is kept, and kept as what it is: ordinary knowledge about
+  somebody with no account here. The trace of the turn shows what the engine
+  changed and why, in a panel of its own.
 
 - **A page that comes out in the wrong language is asked for again.** The
   instruction naming the language is in front of the page writer every time,

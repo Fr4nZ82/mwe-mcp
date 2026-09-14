@@ -803,6 +803,50 @@ fn render_hop(i: usize, hop: &HopTrace) -> Markup {
 /// The only call in a turn that can retire a stored fact, and the only one
 /// whose answer is worth reading raw — beside it, the refusals, because a
 /// change the engine threw out reads in the verdict exactly like one it made.
+/// The panel beside the refusals: what the classifier wrote and the engine
+/// corrected on its way in.
+///
+/// Its own function for the same reason the refusals panel is its own block —
+/// two records, two questions, and one of them is not a refusal at all: the
+/// claim is stored, only not exactly as it was written.
+fn render_corrections(trace: &RecallTrace) -> Markup {
+    html! {
+        @if !trace.corrected_extractions.is_empty() {
+
+            section class="term-panel mt-4 p-4" {
+                h2 class="mt-0" { "What it wrote and the engine corrected" }
+                p.muted {
+                    "These claims were stored, but not exactly as the classifier "
+                    "wrote them: a rule of the memory said otherwise and the engine "
+                    "applied it. Nothing was thrown away."
+                }
+                table class="config-table" {
+                    thead {
+                        tr {
+                            th { "The claim" }
+                            th { "What changed" }
+                            th { "It wrote" }
+                            th { "Stored as" }
+                            th { "Why" }
+                        }
+                    }
+                    tbody {
+                        @for c in &trace.corrected_extractions {
+                            tr {
+                                td { (c.claim) }
+                                td { (c.field) }
+                                td { code { (c.was) } }
+                                td { code { (c.now) } }
+                                td { code { (c.reason) } }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+}
+
 fn render_reconcile(trace: &RecallTrace) -> Markup {
     if trace.reconcile_candidates.is_empty() && trace.reconcile_verdict.is_none() {
         return html! {};
@@ -836,6 +880,7 @@ fn render_reconcile(trace: &RecallTrace) -> Markup {
                 p.muted { "It gave no answer: the model was unreachable, or no call was made." }
             }
         }
+        (render_corrections(trace))
         @if !trace.refused_changes.is_empty() {
             section class="term-panel mt-4 p-4" {
                 h2 class="mt-0" { "Changes it asked for and did not get" }

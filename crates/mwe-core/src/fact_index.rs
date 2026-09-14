@@ -3320,6 +3320,102 @@ fn readable_by_sql(table: &str, n: usize) -> String {
     )
 }
 
+/// **Is this `subject_external` a word for a RELATION rather than a name?**
+///
+/// «Mum» is not what somebody is called, it is what they are to the person
+/// speaking — and two people in a household mean two different women by it.
+/// Treated as a name it becomes an entity of its own, and the memory splits:
+/// in the September demo corpus «Mum» carried four facts and «Nora» four,
+/// with two different birthdays, the 14th and the 15th, for what is almost
+/// certainly one person.
+///
+/// So a fact may still be filed under the word the speaker used — losing it
+/// would lose the claim — but the word is never offered back as a person. The
+/// mark is DERIVED from the word rather than stored: a stored one would need
+/// back-filling and could disagree with this list, and there is nothing a
+/// column would know that the word does not.
+///
+/// **Two languages, and only the plain kinship words.** A name that merely
+/// contains one («Mummy Pig») is not this; the whole value has to be the word,
+/// or the word behind a possessive the speaker wrote («my mother», «mia
+/// madre»). Reconciling the appellative to the person it means is a different
+/// job, and it needs the relation to be a stored fact first (card 96i) — until
+/// then the two stay two, and this only stops the split from being offered as
+/// a third thing.
+#[must_use]
+pub fn reads_as_a_relation(name: &str) -> bool {
+    const KINSHIP: &[&str] = &[
+        // English
+        "mum",
+        "mummy",
+        "mom",
+        "mommy",
+        "mother",
+        "dad",
+        "daddy",
+        "pa",
+        "father",
+        "gran",
+        "granny",
+        "grandma",
+        "grandmother",
+        "grandad",
+        "grandpa",
+        "grandfather",
+        "nan",
+        "nanna",
+        "auntie",
+        "aunt",
+        "uncle",
+        "sister",
+        "brother",
+        "cousin",
+        "wife",
+        "husband",
+        "son",
+        "daughter",
+        "grandson",
+        "granddaughter",
+        "nephew",
+        "niece",
+        "in-law",
+        // Italian
+        "mamma",
+        "madre",
+        "papà",
+        "papa",
+        "babbo",
+        "padre",
+        "nonna",
+        "nonno",
+        "zia",
+        "zio",
+        "sorella",
+        "fratello",
+        "cugino",
+        "cugina",
+        "moglie",
+        "marito",
+        "figlio",
+        "figlia",
+        "nipote",
+        "suocera",
+        "suocero",
+        "cognata",
+        "cognato",
+    ];
+    // A possessive the speaker wrote is part of the relation, not of a name:
+    // «my mother», «mia madre», «mio zio» all mean the relation.
+    const POSSESSIVES: &[&str] = &["my", "mia", "mio", "la mia", "il mio", "our", "la nostra"];
+    let word = name.trim().trim_end_matches(['.', '!', '?']).to_lowercase();
+    let bare = POSSESSIVES
+        .iter()
+        .find_map(|p| word.strip_prefix(&format!("{p} ")))
+        .unwrap_or(&word)
+        .trim();
+    KINSHIP.contains(&bare)
+}
+
 /// One named thing the memory already holds facts about, with the principal
 /// those facts are filed under.
 ///
@@ -3389,6 +3485,11 @@ pub async fn known_entities(
     let rows = q.bind(limit).fetch_all(pool).await?;
     Ok(rows
         .into_iter()
+        // A word for a relation is not a person to be shown back
+        // ([`reads_as_a_relation`]): offered in this list it becomes an entity
+        // of its own and the model files more facts under it, which is how one
+        // woman ends up as «Mum» with one birthday and «Nora» with another.
+        .filter(|(name, _, _)| !reads_as_a_relation(name))
         .map(|(name, subject_id, facts)| KnownEntity {
             name,
             subject_id,
@@ -4040,6 +4141,49 @@ fn decode_row(raw: RawFactRow) -> Result<FactIndexRow> {
 #[cfg(test)]
 mod tests {
     use super::{DayEdge, canonical_bound, memory_now, saw_a_turn_at};
+
+    /// **A word for a relation is not a person to be offered back.**
+    ///
+    /// «Mum» is what somebody IS to the speaker, not what they are called, and
+    /// two people in a household mean two different women by it. Listed as a
+    /// known entity it becomes a person of its own and the model files more
+    /// facts under it: in the September demo corpus «Mum» carried four facts
+    /// and «Nora» four, with two birthdays for one woman.
+    ///
+    /// The list is short and plain on purpose. A name that merely CONTAINS a
+    /// kinship word is a name — «Mummy Pig» is a character — and reconciling
+    /// the word to the person it means is a different job that needs the
+    /// relation stored as a fact first (card 96i).
+    #[test]
+    fn a_word_for_a_relation_is_not_a_name() {
+        for word in [
+            "Mum",
+            "mum",
+            "mamma",
+            "papà",
+            "Nonna",
+            "my mother",
+            "mia madre",
+            "Dad",
+            "zio",
+            "my sister",
+            "Grandma",
+            "mum.",
+        ] {
+            assert!(reads_as_a_relation(word), "`{word}` is a relation");
+        }
+        for name in [
+            "Nora",
+            "Marco",
+            "Pepper",
+            "Mummy Pig",
+            "Nonna Papera",
+            "Bob's mother",
+            "Sam",
+        ] {
+            assert!(!reads_as_a_relation(name), "`{name}` is a name");
+        }
+    }
 
     /// **The night means «now» as the memory means it.**
     ///
