@@ -140,6 +140,21 @@ pub mod kind {
     /// with its reason; the ops that were allowed are applied either way.
     pub const COMMENT_REFUSED: &str = "comment_refused";
 
+    /// A fact the memory keeps failing to find, that no local repair fixed.
+    ///
+    /// The one kind here that is about the ENGINE rather than about anybody's
+    /// facts: the recall-repair pass saw the same fact miss over and over and
+    /// could prove no re-filing that would have caught it, so what is left are
+    /// the levers with the widest blast radius — a fact's topics, the recall
+    /// knobs, the navigator's own prompt. Those are never moved automatically,
+    /// so this is evidence and not a question: born applied, addressed to
+    /// nobody, and read by whoever runs the server.
+    ///
+    /// It carries which fact, where it lives, how many times, and what the
+    /// gate said about the repair that was tried. It does not carry what the
+    /// person asked — that sentence stays in `recall_log` with the miss.
+    pub const RECALL_TUNING: &str = "recall_tuning";
+
     /// Every canonical kind.
     pub const ALL: &[&str] = &[
         WIKI_PROMOTE,
@@ -151,6 +166,7 @@ pub mod kind {
         PAGE_JUDGED,
         CARD_RETYPE,
         COMMENT_REFUSED,
+        RECALL_TUNING,
     ];
 
     /// `true` when `s` matches one of the canonical kinds.
@@ -2900,7 +2916,7 @@ mod tests {
     // ---- kind constants ----
 
     #[test]
-    fn kind_constants_are_the_nine_the_engine_emits() {
+    fn kind_constants_are_the_ten_the_engine_emits() {
         assert_eq!(kind::WIKI_PROMOTE, "wiki_promote");
         assert_eq!(kind::DEDUP_MERGE, "dedup_merge");
         assert_eq!(kind::FACT_FORGET, "fact_forget");
@@ -2910,13 +2926,15 @@ mod tests {
         assert_eq!(kind::PAGE_JUDGED, "page_judged");
         assert_eq!(kind::CARD_RETYPE, "card_retype");
         assert_eq!(kind::COMMENT_REFUSED, "comment_refused");
-        // Four questionnaire kinds, the fact-forget vote, and four
+        assert_eq!(kind::RECALL_TUNING, "recall_tuning");
+        // Four questionnaire kinds, the fact-forget vote, and five
         // receipt-only kinds — never `pending`, emitted born-applied so what
         // the engine decided about the shape of the memory (a page it
         // invented, a link it required, a page it read back) leaves a record
-        // the owner can read — and, for the last of them, what somebody asked
-        // for that was not theirs to ask.
-        assert_eq!(kind::ALL.len(), 9);
+        // the owner can read; for one of them, what somebody asked for that
+        // was not theirs to ask; and for the last, what the engine cannot fix
+        // about its own recall without a human moving a lever.
+        assert_eq!(kind::ALL.len(), 10);
         assert!(kind::is_canonical("wiki_promote"));
         assert!(kind::is_canonical("fact_forget"));
         assert!(kind::is_canonical("page_create"));
@@ -2925,6 +2943,7 @@ mod tests {
         assert!(kind::is_canonical("page_judged"));
         assert!(kind::is_canonical("card_retype"));
         assert!(kind::is_canonical("comment_refused"));
+        assert!(kind::is_canonical("recall_tuning"));
         // Plausible names that are not kinds: the list above is the whole
         // list, and a canonical check that quietly accepted one of these
         // would let a proposal through with nothing to apply it.

@@ -714,11 +714,14 @@ pub(super) async fn call_events_poll(
 
     // `sender_id` is the caller's verified identity: it widens the recipient
     // scope to their own notices, which is what lets a smart consumer (no
-    // system user, no delegation) receive its owner's mail unconfigured.
+    // system user, no delegation) receive its owner's mail unconfigured. The
+    // operator flag is the narrower question — whose TOKEN this is — and it
+    // opens the notices addressed to nobody.
     let outcome = events::poll_events(
         &state.pool,
         &args.consumer_id,
         &identity.sender_id,
+        identity.is_the_operator(),
         args.since.as_deref(),
         &args.kinds,
         args.top_k.unwrap_or(events::DEFAULT_POLL_TOP_K),

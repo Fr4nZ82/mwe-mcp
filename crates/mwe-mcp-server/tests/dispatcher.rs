@@ -78,6 +78,7 @@ async fn fixture_with_llm(
     };
     let identity = IdentityProfile {
         sender_id: "alice".into(),
+        token_sender_id: "alice".into(),
         device_label: "test-cli".into(),
         rate_limit_id: "default".into(),
         token_jti: "test-token".into(),
@@ -283,6 +284,74 @@ async fn events_poll_admin_fallback_for_any_consumer() {
     .await
     .expect("poll");
     assert_eq!(out["events"].as_array().unwrap().len(), 1);
+}
+
+/// An operator notice is the operator's, and a bot standing in for them is
+/// still a bot.
+///
+/// `X-MWE-Act-As` moves `sender_id` to the person a consumer is speaking for
+/// and leaves the token's own identity alone, so the two disagreeing is the
+/// whole signal. Without it the queue would hand a household assistant the
+/// path of a page of somebody's memory for as long as the administrator
+/// happened to be the one talking to it.
+#[tokio::test]
+async fn an_unaddressed_notice_is_the_operators_own_and_not_a_delegates() {
+    let (state, admin, _dir) = fixture(true, Some("telegram-bot")).await;
+    consumers::register(
+        &state.pool,
+        &consumers::RegisterRequest {
+            consumer_id: "telegram-bot",
+            display_name: None,
+            callback_url: None,
+            kinds_subscribed: None,
+            metadata: None,
+            system_user_id: None,
+        },
+    )
+    .await
+    .unwrap();
+    events::insert_event(
+        &state.pool,
+        EventKind::CompileFailureStreak,
+        Some("frodo"),
+        None,
+        &json!({ "slug": "p", "source_path": "wikis/frodo/meal_prep_frodo.md" }),
+    )
+    .await
+    .unwrap();
+
+    let out = call(
+        &state,
+        &admin,
+        "events_poll",
+        json!({"consumer_id": "telegram-bot"}),
+    )
+    .await
+    .expect("poll");
+    assert_eq!(
+        out["events"].as_array().unwrap().len(),
+        1,
+        "the administrator's own token drains the operator's queue"
+    );
+
+    // The same token, now speaking for somebody: a delegated call carries the
+    // person, not the office.
+    let delegated = IdentityProfile {
+        sender_id: "bob".into(),
+        ..admin
+    };
+    let out = call(
+        &state,
+        &delegated,
+        "events_poll",
+        json!({"consumer_id": "telegram-bot"}),
+    )
+    .await
+    .expect("poll");
+    assert!(
+        out["events"].as_array().unwrap().is_empty(),
+        "acting for somebody else is not being the operator: {out}"
+    );
 }
 
 #[tokio::test]
@@ -558,6 +627,7 @@ async fn wiki_read_projects_acl_per_sender() {
     //      misses alice's subject-only region ----
     let bob_identity = IdentityProfile {
         sender_id: "bob".into(),
+        token_sender_id: "bob".into(),
         ..alice_identity.clone()
     };
     let out = call(
@@ -580,6 +650,7 @@ async fn wiki_read_projects_acl_per_sender() {
     // ---- carol (not subject, not in `famiglia`) sees only the global region ----
     let carol_identity = IdentityProfile {
         sender_id: "carol".into(),
+        token_sender_id: "carol".into(),
         ..alice_identity
     };
     let out = call(
@@ -664,6 +735,7 @@ async fn wiki_read_serves_arbitrary_page_with_per_page_acl() {
     // redacted — i.e. the page's *own* ACL is applied, not the wiki's.
     let bob = IdentityProfile {
         sender_id: "bob".into(),
+        token_sender_id: "bob".into(),
         ..identity.clone()
     };
     let out = call(
@@ -738,6 +810,7 @@ async fn wiki_read_strips_frontmatter_so_card_topics_never_leak() {
     // frontmatter (description + topic words) never reaches the reader.
     let bob = IdentityProfile {
         sender_id: "bob".into(),
+        token_sender_id: "bob".into(),
         ..identity.clone()
     };
     let out = call(
@@ -2192,6 +2265,7 @@ async fn wiki_forget_unrelated_caller_is_refused() {
     let fid = insert_forget_fact(&state.pool, "03", "user:bob", &[], Some("user:carol")).await;
     let alice = IdentityProfile {
         sender_id: "alice".into(),
+        token_sender_id: "alice".into(),
         ..base
     };
     let err = call(&state, &alice, "wiki_forget", json!({"fact_id": fid}))

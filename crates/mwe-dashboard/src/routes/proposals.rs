@@ -691,6 +691,7 @@ fn label(row: &ProposalRow) -> &'static str {
         kind::PAGE_JUDGED => "A page read again",
         kind::CARD_RETYPE => "A line on your card",
         kind::COMMENT_REFUSED => "Part of your comment was not done",
+        kind::RECALL_TUNING => "A fact the memory keeps failing to find",
         // A row written by a newer engine shows as itself rather than
         // being swallowed into a wrong label.
         _ => "Something changed",
@@ -743,6 +744,15 @@ fn headline(row: &ProposalRow) -> String {
              nothing was written and the question went to the person it is about.",
             slot = str_at(c, "slot").unwrap_or("something there can only be one of"),
             subject = str_at(c, "subject_id").map_or("somebody", principal_in_words),
+        ),
+        kind::RECALL_TUNING => format!(
+            "A fact on {path} was searched for and not found {n} times, and the memory \
+             could not prove a move that would have caught it. Nothing was changed: the \
+             things that would fix this \u{ab}how facts are tagged, how widely recall \
+             reaches, what the navigator is told\u{bb} change the answers everybody gets, \
+             so they are yours to decide.",
+            path = str_at(c, "source_path").unwrap_or("a page"),
+            n = num_at(c, "miss_count"),
         ),
         other => format!("The memory recorded a change of kind `{other}`."),
     }

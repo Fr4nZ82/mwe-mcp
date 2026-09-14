@@ -38,6 +38,16 @@ use sqlx::SqlitePool;
 pub struct IdentityProfile {
     /// `sender_id` claim — the user the call acts on behalf of.
     pub sender_id: String,
+    /// The identity the TOKEN was minted for, which `X-MWE-Act-As` never
+    /// rewrites — so `token_sender_id != sender_id` is exactly *«this call is
+    /// being made for somebody else»* ([`Self::speaks_for_itself`]).
+    ///
+    /// Two different questions hang on the pair, and answering the second with
+    /// `sender_id` gets it wrong: *who is this about* (the effective sender,
+    /// everywhere) versus *whose token is this* (here). A delegated call is a
+    /// bot acting for a person; whatever the person is entitled to, the bot is
+    /// not thereby the operator.
+    pub token_sender_id: String,
     /// `device_label` claim — for audit (`tool_executions.device_label`).
     pub device_label: String,
     /// `rate_limit_id` claim — names the `rate_limits:` profile in
@@ -71,6 +81,7 @@ impl IdentityProfile {
     #[must_use]
     pub fn from_claims(claims: mwe_core::jwt::TokenClaims) -> Self {
         Self {
+            token_sender_id: claims.sender_id.clone(),
             sender_id: claims.sender_id,
             device_label: claims.device_label,
             rate_limit_id: claims.rate_limit_id,
@@ -80,6 +91,30 @@ impl IdentityProfile {
             consumer_class: claims.consumer_class,
             profile: claims.profile,
         }
+    }
+
+    /// Is this call the token's own, rather than one made for somebody else?
+    ///
+    /// `X-MWE-Act-As` moves `sender_id` to the person a bot is speaking for
+    /// and leaves [`Self::token_sender_id`] alone, so the two agreeing is what
+    /// *«nobody is being spoken for»* looks like.
+    #[must_use]
+    fn speaks_for_itself(&self) -> bool {
+        self.token_sender_id == self.sender_id
+    }
+
+    /// Is the operator personally on the other end of this call?
+    ///
+    /// Not *«is this call entitled to an admin's reach»* — that is
+    /// [`Self::is_admin`] and it is a property of the token. This is the
+    /// narrower question the engine's own notices ask: the token belongs to
+    /// the administrator AND is not standing in for anybody, which is
+    /// [`Self::token_sender_id`] still agreeing with `sender_id`. A bot
+    /// delegated for the admin is a bot, and what belongs to the operator is
+    /// not thereby its business.
+    #[must_use]
+    pub fn is_the_operator(&self) -> bool {
+        self.is_admin && self.speaks_for_itself()
     }
 }
 

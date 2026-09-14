@@ -2297,9 +2297,10 @@ pub async fn readable_fact_on_page(
 /// anybody. A page whose facts have all been superseded or tombstoned still
 /// carries the prose the Cronista wrote around them — [`page_acl_map_active`]
 /// drops the retired rows, so this answers `true` while the file still reads
-/// as a page. That prose is served to whoever opens it, and closing it is
-/// P5's business, not this predicate's: a page with no active facts should
-/// serve prose to nobody but the engine.
+/// as a page. That prose is served to whoever opens it, and shutting it off
+/// belongs to the render path rather than to this predicate: what a page with
+/// no active fact should show is a question about prose, and this answers
+/// only about facts.
 ///
 /// The strict twin is the one to ask when the question is «send this person
 /// to that page»; this one is for «is this page's door shut in their face».

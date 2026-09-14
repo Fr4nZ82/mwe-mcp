@@ -218,16 +218,21 @@ const SERVED_BY_CONSUMER: &str = "\
 ///   list cannot express: its `members` array is empty **because everybody is
 ///   in it** ([`crate::enrollment::members_for`]), so it is matched by name.
 /// - **Nobody** — the event is the operator's (a compile-failure streak, a
-///   budget threshold, an archive proposal). It does not leave the poll for an
-///   ordinary consumer; the exception is a consumer running **as the admin**,
-///   which is how a deployment drains that queue through a bot.
+///   budget threshold, an archive proposal). It reaches the operator through
+///   whatever they happen to be holding, and nobody else: a consumer running
+///   **as the admin**, which is how a deployment drains that queue through a
+///   bot, or a poll the **administrator is personally making**, which is the
+///   smart consumer signed in as its owner. It is the second that needs
+///   saying: what counts is whose token this is, not who it is speaking for,
+///   so a bot delegated for the admin is still a bot
+///   ([`caller_is_the_operator`](poll_events)).
 ///
 /// An addressee in none of those shapes matches nothing, which is the safe
 /// direction: an addressee the engine cannot read is not everybody.
 ///
-/// Binds, in order: `consumer_id` (unaddressed); the universal group's id, the
-/// caller, `consumer_id` twice (group); the caller, `consumer_id` twice
-/// (person). Eight.
+/// Binds, in order: the operator flag and `consumer_id` (unaddressed); the
+/// universal group's id, the caller, `consumer_id` twice (group); the caller,
+/// `consumer_id` twice (person). Nine.
 ///
 /// Kept as one constant so the poll filter reads as the rule instead of
 /// restating it. The configured half read in the other direction —
@@ -236,9 +241,10 @@ static RECIPIENT_SERVED_BY_CONSUMER: std::sync::LazyLock<String> = std::sync::La
     format!(
         "CASE \
            WHEN json_extract(payload, '$.recipient_id') IS NULL THEN \
-             EXISTS (SELECT 1 FROM consumers c \
-                       JOIN enrollment_users u ON u.user_id = c.system_user_id \
-                      WHERE c.consumer_id = ? AND u.is_admin = 1) \
+             ? = 1 \
+             OR EXISTS (SELECT 1 FROM consumers c \
+                          JOIN enrollment_users u ON u.user_id = c.system_user_id \
+                         WHERE c.consumer_id = ? AND u.is_admin = 1) \
            WHEN json_extract(payload, '$.recipient_id') LIKE 'group:%' THEN \
              substr(json_extract(payload, '$.recipient_id'), 7) = ? \
              OR EXISTS (SELECT 1 FROM enrollment_groups g, json_each(g.members) m \
@@ -493,9 +499,18 @@ const PAGE_NAMING_KEYS: [&str; 3] = ["document_page", "source_path", "path"];
 /// columns covers it, and it is frequently the whole of the news — a notice
 /// naming `blood_test_june.md` has told the reader what the document was
 /// without opening it. So an event addressed to a PERSON and naming a page is
-/// delivered only when that person reads at least one live fact of that page,
-/// judged by [`crate::fact_index::readable_fact_on_page`] — the strict
-/// predicate, the one that answers *«send this person to that page»*.
+/// held back when that page's door is shut in their face:
+/// [`crate::fact_index::page_visible_to`].
+///
+/// The **lenient** predicate of the pair, and deliberately. What it refuses is
+/// a page whose facts are all out of this person's reach — the real case, and
+/// the leak. What it lets through is a page with no active fact at all, which
+/// keeps nothing from anybody, and which is what a page looks like once the
+/// night has refiled it or its facts have retired. A notice addressed to you
+/// is about something you did, and losing it because the memory moved the page
+/// afterwards is a worse answer than the name of a page that holds nothing.
+/// The strict twin ([`crate::fact_index::readable_fact_on_page`]) is for
+/// *«send this person to that page»*, which is `/cite`, not this.
 ///
 /// Only a person's notice is asked about. An unaddressed one is the
 /// operator's and already fenced by [`RECIPIENT_SERVED_BY_CONSUMER`]; a
@@ -563,9 +578,7 @@ impl PageOpenToAddressee {
             self.groups.insert(reader.to_owned(), of_theirs);
         }
         let groups = self.groups.get(reader).map_or(&[][..], Vec::as_slice);
-        let open = match crate::fact_index::readable_fact_on_page(pool, &key.0, reader, groups)
-            .await
-        {
+        let open = match crate::fact_index::page_visible_to(pool, &key.0, reader, groups).await {
             Ok(open) => open,
             Err(e) => {
                 // The gate cannot be opened by a failure to read it.
@@ -635,6 +648,13 @@ impl PageOpenToAddressee {
 /// a drain that ends with fewer rows than it asked for and `has_more` false
 /// has reached the end of what this consumer may receive.
 ///
+/// `caller_is_the_operator` says the administrator is personally making this
+/// call — their own token, standing in for nobody. It opens the unaddressed
+/// arm and nothing else. The transport answers it, because whose token this is
+/// is a property of the token rather than of the database (the MCP road asks
+/// `IdentityProfile::is_the_operator`); a caller that cannot tell passes
+/// `false` and loses only the operator's own notices.
+///
 /// # Errors
 ///
 /// - [`EventsError::Db`] for any SQL failure.
@@ -644,6 +664,7 @@ pub async fn poll_events(
     pool: &SqlitePool,
     consumer_id: &str,
     caller_id: &str,
+    caller_is_the_operator: bool,
     since: Option<&str>,
     kinds: &[String],
     top_k: i64,
@@ -679,7 +700,8 @@ pub async fn poll_events(
 
     let mut query = sqlx::query_as::<_, EventTuple>(&sql)
         .bind(consumer_id)
-        // unaddressed: is this consumer running as the admin?
+        // unaddressed: the operator in person, or a consumer running as them
+        .bind(i64::from(caller_is_the_operator))
         .bind(consumer_id)
         // group: the universal group by name, then the member test
         .bind(crate::enrollment::GLOBAL_GROUP_ID)
@@ -1068,9 +1090,17 @@ mod tests {
         .await
         .unwrap();
 
-        let out = poll_events(&pool, "samvise", CALLER, None, &[], DEFAULT_POLL_TOP_K)
-            .await
-            .expect("poll");
+        let out = poll_events(
+            &pool,
+            "samvise",
+            CALLER,
+            false,
+            None,
+            &[],
+            DEFAULT_POLL_TOP_K,
+        )
+        .await
+        .expect("poll");
         assert_eq!(out.events.len(), 2);
         assert_eq!(out.events[0].kind, "structure_applied");
         assert_eq!(out.events[1].kind, "structure_applied");
@@ -1112,6 +1142,7 @@ mod tests {
             &pool,
             "samvise",
             CALLER,
+            false,
             Some(&since),
             &[],
             DEFAULT_POLL_TOP_K,
@@ -1129,6 +1160,7 @@ mod tests {
             &pool,
             "samvise",
             CALLER,
+            false,
             None,
             &["archive_proposed".to_owned()],
             DEFAULT_POLL_TOP_K,
@@ -1156,17 +1188,32 @@ mod tests {
 
         let _ = ack_events(&pool, "samvise", &[id]).await.unwrap();
 
-        let out_samvise = poll_events(&pool, "samvise", CALLER, None, &[], DEFAULT_POLL_TOP_K)
-            .await
-            .unwrap();
+        let out_samvise = poll_events(
+            &pool,
+            "samvise",
+            CALLER,
+            false,
+            None,
+            &[],
+            DEFAULT_POLL_TOP_K,
+        )
+        .await
+        .unwrap();
         assert!(
             out_samvise.events.is_empty(),
             "acked event invisible to samvise"
         );
-        let out_telegram =
-            poll_events(&pool, "telegram-bot", CALLER, None, &[], DEFAULT_POLL_TOP_K)
-                .await
-                .unwrap();
+        let out_telegram = poll_events(
+            &pool,
+            "telegram-bot",
+            CALLER,
+            false,
+            None,
+            &[],
+            DEFAULT_POLL_TOP_K,
+        )
+        .await
+        .unwrap();
         assert_eq!(
             out_telegram.events.len(),
             1,
@@ -1189,7 +1236,7 @@ mod tests {
             .await
             .unwrap();
         }
-        let out = poll_events(&pool, "samvise", CALLER, None, &[], 2)
+        let out = poll_events(&pool, "samvise", CALLER, false, None, &[], 2)
             .await
             .unwrap();
         assert_eq!(out.events.len(), 2);
@@ -1234,9 +1281,17 @@ mod tests {
         assert_eq!(first.acked, 1);
         assert_eq!(second.acked, 1);
         assert!(second.unknown.is_empty());
-        let out = poll_events(&pool, "samvise", CALLER, None, &[], DEFAULT_POLL_TOP_K)
-            .await
-            .unwrap();
+        let out = poll_events(
+            &pool,
+            "samvise",
+            CALLER,
+            false,
+            None,
+            &[],
+            DEFAULT_POLL_TOP_K,
+        )
+        .await
+        .unwrap();
         assert!(out.events.is_empty());
     }
 
@@ -1310,9 +1365,17 @@ mod tests {
         assert!(out.unknown.is_empty());
 
         // And the stamp actually landed: nothing pending for the consumer.
-        let pending = poll_events(&pool, "samvise", CALLER, None, &[], DEFAULT_POLL_TOP_K)
-            .await
-            .unwrap();
+        let pending = poll_events(
+            &pool,
+            "samvise",
+            CALLER,
+            false,
+            None,
+            &[],
+            DEFAULT_POLL_TOP_K,
+        )
+        .await
+        .unwrap();
         assert!(pending.events.is_empty());
     }
 
@@ -1360,14 +1423,30 @@ mod tests {
         .await
         .expect("insert");
 
-        let mine = poll_events(&pool, "alice-bridge", CALLER, None, &[], DEFAULT_POLL_TOP_K)
-            .await
-            .expect("poll");
+        let mine = poll_events(
+            &pool,
+            "alice-bridge",
+            CALLER,
+            false,
+            None,
+            &[],
+            DEFAULT_POLL_TOP_K,
+        )
+        .await
+        .expect("poll");
         assert_eq!(mine.events.len(), 1, "the delegated consumer receives it");
 
-        let theirs = poll_events(&pool, "bob-bridge", CALLER, None, &[], DEFAULT_POLL_TOP_K)
-            .await
-            .expect("poll");
+        let theirs = poll_events(
+            &pool,
+            "bob-bridge",
+            CALLER,
+            false,
+            None,
+            &[],
+            DEFAULT_POLL_TOP_K,
+        )
+        .await
+        .expect("poll");
         assert!(
             theirs.events.is_empty(),
             "a consumer delegated for somebody else must not see the body"
@@ -1389,9 +1468,17 @@ mod tests {
         )
         .await
         .expect("insert");
-        let out = poll_events(&pool, "hermes", CALLER, None, &[], DEFAULT_POLL_TOP_K)
-            .await
-            .expect("poll");
+        let out = poll_events(
+            &pool,
+            "hermes",
+            CALLER,
+            false,
+            None,
+            &[],
+            DEFAULT_POLL_TOP_K,
+        )
+        .await
+        .expect("poll");
         assert_eq!(out.events.len(), 1);
     }
 
@@ -1411,13 +1498,29 @@ mod tests {
         )
         .await
         .expect("insert");
-        let as_alice = poll_events(&pool, "claude-code", "alice", None, &[], DEFAULT_POLL_TOP_K)
-            .await
-            .expect("poll");
+        let as_alice = poll_events(
+            &pool,
+            "claude-code",
+            "alice",
+            false,
+            None,
+            &[],
+            DEFAULT_POLL_TOP_K,
+        )
+        .await
+        .expect("poll");
         assert_eq!(as_alice.events.len(), 1, "your own mail arrives");
-        let as_bob = poll_events(&pool, "claude-code", "bob", None, &[], DEFAULT_POLL_TOP_K)
-            .await
-            .expect("poll");
+        let as_bob = poll_events(
+            &pool,
+            "claude-code",
+            "bob",
+            false,
+            None,
+            &[],
+            DEFAULT_POLL_TOP_K,
+        )
+        .await
+        .expect("poll");
         assert!(
             as_bob.events.is_empty(),
             "the same consumer, a different caller: not their mail"
@@ -1452,7 +1555,7 @@ mod tests {
 
         let mut delivered = Vec::new();
         for c in ["by-delegation", "by-system-user", "serves-nobody"] {
-            let out = poll_events(&pool, c, CALLER, None, &[], DEFAULT_POLL_TOP_K)
+            let out = poll_events(&pool, c, CALLER, false, None, &[], DEFAULT_POLL_TOP_K)
                 .await
                 .expect("poll");
             if !out.events.is_empty() {
@@ -1494,7 +1597,7 @@ mod tests {
 
         let mut delivered = Vec::new();
         for c in ["by-delegation", "by-system-user", "serves-nobody"] {
-            let out = poll_events(&pool, c, CALLER, None, &[], DEFAULT_POLL_TOP_K)
+            let out = poll_events(&pool, c, CALLER, false, None, &[], DEFAULT_POLL_TOP_K)
                 .await
                 .expect("poll");
             if !out.events.is_empty() {
@@ -1532,9 +1635,17 @@ mod tests {
             "nobody is configured to deliver to dave"
         );
         // And it does not fall out of the queue for the wrong consumer.
-        let out = poll_events(&pool, "alice-bridge", CALLER, None, &[], DEFAULT_POLL_TOP_K)
-            .await
-            .expect("poll");
+        let out = poll_events(
+            &pool,
+            "alice-bridge",
+            CALLER,
+            false,
+            None,
+            &[],
+            DEFAULT_POLL_TOP_K,
+        )
+        .await
+        .expect("poll");
         assert!(out.events.is_empty());
     }
 
@@ -1561,7 +1672,7 @@ mod tests {
     }
 
     /// One live fact on `source_path`, about `subject`, readable also by
-    /// `allow` — the material `readable_fact_on_page` judges.
+    /// `allow` — the material [`PageOpenToAddressee`] judges a page by.
     async fn fact_on(
         pool: &SqlitePool,
         source_path: &str,
@@ -1623,6 +1734,7 @@ mod tests {
             &pool,
             "family-bridge",
             CALLER,
+            false,
             None,
             &[],
             DEFAULT_POLL_TOP_K,
@@ -1639,6 +1751,7 @@ mod tests {
             &pool,
             "outsider-bridge",
             CALLER,
+            false,
             None,
             &[],
             DEFAULT_POLL_TOP_K,
@@ -1666,13 +1779,29 @@ mod tests {
         .await
         .expect("insert");
 
-        let as_member = poll_events(&pool, "claude-code", "frodo", None, &[], DEFAULT_POLL_TOP_K)
-            .await
-            .expect("poll");
+        let as_member = poll_events(
+            &pool,
+            "claude-code",
+            "frodo",
+            false,
+            None,
+            &[],
+            DEFAULT_POLL_TOP_K,
+        )
+        .await
+        .expect("poll");
         assert_eq!(as_member.events.len(), 1, "a member's own poll carries it");
-        let as_stranger = poll_events(&pool, "claude-code", "carol", None, &[], DEFAULT_POLL_TOP_K)
-            .await
-            .expect("poll");
+        let as_stranger = poll_events(
+            &pool,
+            "claude-code",
+            "carol",
+            false,
+            None,
+            &[],
+            DEFAULT_POLL_TOP_K,
+        )
+        .await
+        .expect("poll");
         assert!(
             as_stranger.events.is_empty(),
             "the same consumer, a caller outside the group: nothing"
@@ -1696,9 +1825,17 @@ mod tests {
         )
         .await
         .expect("insert");
-        let out = poll_events(&pool, "any-bridge", CALLER, None, &[], DEFAULT_POLL_TOP_K)
-            .await
-            .expect("poll");
+        let out = poll_events(
+            &pool,
+            "any-bridge",
+            CALLER,
+            false,
+            None,
+            &[],
+            DEFAULT_POLL_TOP_K,
+        )
+        .await
+        .expect("poll");
         assert_eq!(
             out.events.len(),
             1,
@@ -1746,6 +1883,7 @@ mod tests {
             &pool,
             "ordinary-bridge",
             CALLER,
+            false,
             None,
             &[],
             DEFAULT_POLL_TOP_K,
@@ -1762,6 +1900,7 @@ mod tests {
             &pool,
             "operator-bridge",
             CALLER,
+            false,
             None,
             &[],
             DEFAULT_POLL_TOP_K,
@@ -1810,9 +1949,17 @@ mod tests {
         .await
         .expect("insert");
 
-        let out = poll_events(&pool, "frodo-bridge", CALLER, None, &[], DEFAULT_POLL_TOP_K)
-            .await
-            .expect("poll");
+        let out = poll_events(
+            &pool,
+            "frodo-bridge",
+            CALLER,
+            false,
+            None,
+            &[],
+            DEFAULT_POLL_TOP_K,
+        )
+        .await
+        .expect("poll");
         let pages: Vec<&str> = out
             .events
             .iter()
@@ -1823,6 +1970,101 @@ mod tests {
             vec!["his.md"],
             "the page name is content: a notice may name only a page the addressee reads a \
              fact of, so `hers.md` never leaves the queue"
+        );
+    }
+
+    #[tokio::test]
+    async fn the_operator_in_person_drains_the_unaddressed_queue() {
+        let (_workdir, pool) = fresh_pool().await;
+        // A smart consumer: no system user, so the consumer arm of the rule
+        // says nothing about it. What says something is whose token this is.
+        consumer(&pool, "claude-code", None, &[]).await;
+        insert_event(
+            &pool,
+            EventKind::CompileFailureStreak,
+            Some("frodo"),
+            None,
+            &serde_json::json!({ "slug": "p", "source_path": "wikis/frodo/meal_prep_frodo.md" }),
+        )
+        .await
+        .expect("insert");
+
+        let as_operator = poll_events(
+            &pool,
+            "claude-code",
+            "alice",
+            true,
+            None,
+            &[],
+            DEFAULT_POLL_TOP_K,
+        )
+        .await
+        .expect("poll");
+        assert_eq!(
+            as_operator.events.len(),
+            1,
+            "an operator notice reaches the operator through whatever they are holding"
+        );
+
+        let as_anybody = poll_events(
+            &pool,
+            "claude-code",
+            "alice",
+            false,
+            None,
+            &[],
+            DEFAULT_POLL_TOP_K,
+        )
+        .await
+        .expect("poll");
+        assert!(
+            as_anybody.events.is_empty(),
+            "the same consumer and the same person, a call that is not the operator's own: nothing"
+        );
+    }
+
+    #[tokio::test]
+    async fn a_notice_survives_the_page_moving_out_from_under_it() {
+        let (_workdir, pool) = fresh_pool().await;
+        consumer(&pool, "frodo-bridge", None, &["frodo"]).await;
+        // Two pages neither of which holds a fact frodo reads, for opposite
+        // reasons. `gone.md` holds nothing at all — the shape a page takes
+        // once the night refiles it — and keeps nothing from anybody.
+        // `hers.md` holds somebody else's, and that is the withholding case.
+        fact_on(&pool, "wikis/famiglia/hers.md", "user:galadriel", &[], 0xb2).await;
+        for page in ["gone.md", "hers.md"] {
+            insert_event(
+                &pool,
+                EventKind::DocumentIngested,
+                Some("famiglia"),
+                None,
+                &serde_json::json!({ "recipient_id": "user:frodo", "document_page": page }),
+            )
+            .await
+            .expect("insert");
+        }
+
+        let out = poll_events(
+            &pool,
+            "frodo-bridge",
+            CALLER,
+            false,
+            None,
+            &[],
+            DEFAULT_POLL_TOP_K,
+        )
+        .await
+        .expect("poll");
+        let pages: Vec<&str> = out
+            .events
+            .iter()
+            .filter_map(|e| e.payload.get("document_page").and_then(|p| p.as_str()))
+            .collect();
+        assert_eq!(
+            pages,
+            vec!["gone.md"],
+            "a page holding no fact at all hides nothing, so the notice about your own \
+             document still reaches you; a page holding somebody else's does not"
         );
     }
 }

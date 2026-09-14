@@ -57,21 +57,30 @@ semver-governed surface: breaking changes are called out explicitly.
   notices and somebody who left stops. A notice addressed to **nobody** — a
   page the engine keeps failing to write, a spend threshold, an archive
   proposal — is the operator's: it stays in the dashboard and no assistant
-  collects it, unless that assistant runs as the administrator. Those notices
-  carry the path of a page of somebody's memory, and they were reaching every
-  assistant that asked, whoever it happens to serve. And a notice that **names
-  a page** now waits for a reader who reads at least one fact of that page:
-  the name of a file is often the whole of the news, so it is content like any
-  other and answers to the same permission.
+  collects it. Two of those three carry the path of a page of somebody's
+  memory, and they were reaching every assistant that asked, whoever it
+  happens to serve. It still reaches the operator through whatever they are holding —
+  an assistant that runs as the administrator, or the administrator signed in
+  on their own — but an assistant standing in for somebody is standing in for
+  them, and does not inherit the office by doing so. And a notice that **names
+  a page** now waits for a page that is open to its reader: a page whose facts
+  are all out of their reach holds the notice back, because the name of a file
+  is often the whole of the news. A page with no facts left on it keeps nothing
+  from anybody, so a notice about it still arrives — that is what a page looks
+  like after the night has moved its contents elsewhere, and losing your own
+  notice over it would be the wrong answer.
 
-- **The notice about a fact the memory keeps failing to find no longer carries
-  the question that failed.** It told the operator which fact keeps going
-  missing, and quoted the sentence the person had asked, restated. That
-  sentence is the most private thing in the whole report and the notice
-  travels — out of the server, into an assistant's working memory, through
+- **The notice about a fact the memory keeps failing to find is on the
+  Proposals page, and no longer carries the question that failed.** It told the
+  operator which fact keeps going missing and quoted the sentence the person
+  had asked, restated — the most private thing in the whole report, on a notice
+  that travels out of the server, into an assistant's working memory, through
   whatever model that assistant runs. The evidence the operator needs (which
-  fact, where it lives, how often, what was tried) is unchanged; the person's
-  own words stay on the server.
+  fact, where it lives, how often, what was tried) is unchanged and the
+  person's own words stay on the server. And because that notice is addressed
+  to nobody, an operator who works the dashboard would have met it nowhere: it
+  now also appears under Proposals, as something to look at rather than
+  something to decide.
 
 - **A comment changes what its author may change, and nothing else.** A comment
   you leave on a page is read by the nightly pass and turned into changes to

@@ -253,13 +253,19 @@ members, read at the moment you poll.
 
 The three rows marked *operator notice* are addressed to **nobody**, and they
 do not come out of `events_poll` for an ordinary consumer at all: they wait
-for whoever runs the server, in the dashboard. You see one only if your
-consumer runs as the administrator. Do not build a flow that depends on them.
+for whoever runs the server, on the Proposals page of the dashboard. You see
+one only if your consumer runs as the administrator, or the administrator is
+personally making the call on their own token — standing in for somebody, even
+for the administrator, is not the same thing. Do not build a flow that depends
+on them.
 
-And a notice that **names a page** reaches a person only when that person
-reads at least one fact of that page. A page name is content — a file called
-`blood_test_june.md` has said what the document was before anybody opens it —
-so a notice that would be the only way to learn of a page stays in the queue.
+And a notice that **names a page** reaches a person only when that page is open
+to them: it is held back when the page holds facts and none of them is theirs
+to read. A page name is content — a file called `blood_test_june.md` has said
+what the document was before anybody opens it. A page holding no active fact at
+all keeps nothing from anybody, so a notice about it still arrives; that is
+what a page looks like after the night has moved its facts elsewhere, and
+losing your own notice over it would be the wrong answer.
 
 ### The nightly cycle is silent
 

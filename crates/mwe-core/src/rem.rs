@@ -8999,6 +8999,11 @@ async fn propose_repair<'a>(
 /// where it lives, how often, and what the gate said about the repair that
 /// was tried.
 ///
+/// Written once and read twice, because the notice has two homes and they
+/// must say the same thing: the event a consumer running as the operator can
+/// drain, and the Proposals row the operator meets in the dashboard
+/// ([`file_recall_tuning_notice`]).
+///
 /// It carries no sample of what the person ASKED. The query that missed is
 /// their own sentence, restated — the most private thing in the whole miss —
 /// and a notice is a payload that travels: it leaves over MCP, sits in a
@@ -9023,6 +9028,36 @@ fn recall_tuning_payload(
     })
 }
 
+/// Give the recall-tuning notice its home in the dashboard: one Proposals row
+/// carrying the same body the event carries.
+///
+/// The event on its own reaches nobody who is not holding a token: a notice
+/// addressed to nobody comes out of `events_poll` only for the operator's own
+/// one, so an operator who works the dashboard — which is the ordinary way —
+/// would meet this nowhere. The Proposals page is where the engine already
+/// puts what it wants a human to look at.
+///
+/// **Born applied and addressed to nobody.** There is nothing to apply: the
+/// levers this points at are never moved automatically, so the row is evidence
+/// for a person to read, and it reaches its final state the moment it is
+/// written. Unaddressed because it is about the engine's own recall rather
+/// than about anybody's facts.
+///
+/// Best-effort: a failure here is logged and the cycle carries on. The notice
+/// is a prompt to a human, and losing one is not worth failing a REM pass for.
+async fn file_recall_tuning_notice(pool: &SqlitePool, body: &serde_json::Value) {
+    let params = crate::proposals::EmitParams::new(
+        crate::proposals::kind::RECALL_TUNING,
+        body.clone(),
+        json!([]),
+    );
+    if let Err(e) =
+        crate::proposals::emit_applied_proposal(pool, params, body.clone(), Some("rem")).await
+    {
+        tracing::warn!(error = %e, "rem: recall-tuning notice not recorded on the proposals page");
+    }
+}
+
 /// Shared tail of every unrepaired outcome: on recurrence the operator
 /// notice queues (once per fact per cycle), otherwise the miss discards
 /// with its reason tag.
@@ -9044,15 +9079,17 @@ async fn finish_unrepaired(
         .await
         .map_err(|e| e.to_string())?;
     if count >= policy.recall_tuning_recurrence && !noticed.contains(&miss.fact_id) {
+        let body = recall_tuning_payload(fact, &miss.fact_id, count, gate_note);
         events::insert_event(
             pool,
             EventKind::RecallTuningProposed,
             Some(&fact.wiki_id),
             Some(miss.fact_id.as_str()),
-            &recall_tuning_payload(fact, &miss.fact_id, count, gate_note),
+            &body,
         )
         .await
         .map_err(|e| e.to_string())?;
+        file_recall_tuning_notice(pool, &body).await;
         noticed.insert(miss.fact_id.clone());
         recall_log::set_miss_status(pool, miss.miss_id, "queued", Some("recall_tuning_proposed"))
             .await
@@ -18144,6 +18181,37 @@ mod tests {
             notices, 1,
             "a recall miss the engine cannot repair is the OPERATOR's problem, \
              and that notice stays"
+        );
+        // And it has a home an operator can actually reach. The event comes
+        // out of `events_poll`, which hands a notice addressed to nobody only
+        // to the operator's own token; an operator who works the dashboard
+        // would otherwise never meet this at all.
+        let rows = crate::proposals::list(&pool, &crate::proposals::ListFilters::default())
+            .await
+            .expect("list");
+        let row = rows
+            .iter()
+            .find(|r| r.kind == crate::proposals::kind::RECALL_TUNING)
+            .expect("the notice has a row on the proposals page");
+        // Born applied: nothing here is anybody's to apply, so it never joins
+        // the queue of things waiting on a decision. Addressed to nobody:
+        // it is about the engine's own recall rather than about anybody's
+        // facts, which is what puts it in front of the administrator without
+        // the reveal lens.
+        assert_eq!(row.status, crate::proposals::ProposalStatus::Applied);
+        assert!(
+            row.recipient_id.is_none(),
+            "an engine notice is addressed to nobody, not to a person"
+        );
+        assert_eq!(row.context["miss_count"], serde_json::json!(3));
+        assert!(
+            row.context.get("sample_query").is_none(),
+            "the sentence the person asked stays in `recall_log`, not on a row a page renders"
+        );
+        assert!(
+            !row.context.to_string().contains("codice del cancello"),
+            "nothing quoting the person reaches the row: {}",
+            row.context
         );
         let misses = crate::recall_log::recent_misses(&pool, 10).await.unwrap();
         assert!(misses.iter().any(|m| m.status == "queued"));
