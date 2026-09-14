@@ -1141,9 +1141,9 @@ const COMPANION_DISTANCE: usize = 5;
 /// it.
 ///
 /// **And two shapes are never a value**, whatever stands beside them: a date,
-/// a year or a time ([`reads_as_a_date`]); and the name of a thing, whether
-/// the token says so ([`names_a_thing_rather_than_a_value`]) or an article in
-/// front of it does ([`an_article_names_it`]).
+/// a year or a time; and the name of a thing, whether the token says so or an
+/// article in front of it does. That test is [`reads_as_a_value`], shared with
+/// [`values_of`] so that «what counts as a value» is answered in one place.
 ///
 /// A unit after the number is NOT one of them. «14 giorni», «3 settimane» read
 /// like the page explaining itself, and most of the time they are — but a
@@ -1166,10 +1166,7 @@ fn a_value_in_the_open(prose: &[String], fact: &[String]) -> Option<String> {
         {
             return Some(prose[i..(i + len).min(prose.len())].join(" "));
         }
-        if reads_as_a_date(prose, i)
-            || names_a_thing_rather_than_a_value(word)
-            || an_article_names_it(prose, i)
-        {
+        if !reads_as_a_value(prose, i) {
             continue;
         }
         for (j, same) in fact.iter().enumerate() {
@@ -1186,6 +1183,60 @@ fn a_value_in_the_open(prose: &[String], fact: &[String]) -> Option<String> {
         }
     }
     None
+}
+
+/// Is the word at `at` a VALUE — a figure somebody could act on — rather than
+/// a name, a date or the label of a section?
+///
+/// The two shapes that are never one, in the single place that decides it, so
+/// that «what counts as a value» has ONE answer in the product: a date is how
+/// a page organises itself and not something it states; and the name of a
+/// thing, whether the token says so (vitamin B12, code E01) or a definite
+/// article in front of it does — a number introduced that way is what
+/// something is CALLED.
+///
+/// **A date is not a value here, and that matters twice.** On a page it is a
+/// heading. Between two claims — [`values_of`], where a replacement is weighed
+/// against what it replaces — a claim moving forward in time necessarily
+/// leaves the old date behind, so counting it as something lost would refuse
+/// the ordinary shape of a correction. Measured on a corpus of nineteen
+/// replacements: two say less than what they replace, and counting dates would
+/// have called it seven, five of them a fact simply moving on.
+fn reads_as_a_value(words: &[String], at: usize) -> bool {
+    words[at].chars().any(|c| c.is_ascii_digit())
+        && !reads_as_a_date(words, at)
+        && !names_a_thing_rather_than_a_value(&words[at])
+        && !an_article_names_it(words, at)
+}
+
+/// Every value one claim carries.
+///
+/// The same net [`a_value_in_the_open`] reads a page with, asked of a sentence
+/// on its own: an identifier first, because it is a value whatever stands
+/// around it, then every figure that passes [`reads_as_a_value`]. Used to weigh
+/// a replacement against what it replaces — a successor that has lost one of
+/// the target's values is not saying the same thing more recently, it is saying
+/// less (`ingest::vet_supersede`, `rem`'s page judgement).
+pub(crate) fn values_of(text: &str) -> std::collections::BTreeSet<String> {
+    // An embed marker carries a catalog id full of digits and nobody stated
+    // it: left in, it reads as a value, and a claim that merely gained a photo
+    // would look like one that brought a figure of its own.
+    let words = words_of(&crate::parser::strip_embed_markers(text));
+    let mut out = std::collections::BTreeSet::new();
+    let mut i = 0usize;
+    while i < words.len() {
+        if let Some(len) = an_identifier_at(&words, i) {
+            let end = (i + len).min(words.len());
+            out.insert(words[i..end].join(" "));
+            i = end;
+            continue;
+        }
+        if reads_as_a_value(&words, i) {
+            out.insert(words[i].clone());
+        }
+        i += 1;
+    }
+    out
 }
 
 /// How many words from `at` are an identifier — a value that is the whole of

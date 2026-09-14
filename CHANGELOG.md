@@ -13,6 +13,19 @@ semver-governed surface: breaking changes are called out explicitly.
 
 ### Fixed
 
+- **Something said again in fewer words replaces nothing.** *«The house
+  insurance renews on 3 August; the excess has gone up to £350»*, said again a
+  week later as just *«The house insurance renews on 3 August»*, retired the
+  first one and took the £350 out of the memory with it. A claim that has lost
+  a figure the claim it replaces carries is a poorer copy of itself, not a more
+  recent one: both stand now, and the refusal is written into the trace of the
+  turn. A replacement that brings a figure of its OWN still goes through —
+  *«the excess is now £400»* disagrees about the same thing, which is what
+  replacing is for — and so does a fact simply moving forward in time, because
+  a date is not a figure the new claim owes the old. The nightly tidy-up asks
+  the same question before it folds two copies of one claim standing on the
+  same page into the newer one.
+
 - **Being in the same public fact is not having met.** The list of people an
   assistant may be told about is built from who you share a group or something
   readable with — and anything readable by *everybody* is readable by every

@@ -4432,6 +4432,11 @@ enum SupersedeRefusal {
     /// between two groups: it widens or narrows who answers for the claim and
     /// who may read it, which `acl_changes` does and this verb does not.
     ChangesWhoAnswersForIt,
+    /// The successor has lost a VALUE the target carries — a figure, an
+    /// amount, a percentage. Said again in fewer words, a claim is a poorer
+    /// copy of itself, and retiring the richer one for it takes something out
+    /// of the memory nobody asked to lose. Both stand.
+    SaysLessThanTheTarget,
     /// The pair is sound, and the sender is not entitled to rewrite the
     /// target: the question went to whoever is.
     NotTheSendersToRewrite,
@@ -4456,6 +4461,7 @@ impl SupersedeRefusal {
             Self::NotAboutTheSameThing => "not_about_the_same_thing",
             Self::ReassignsTheSubjectUnasked => "reassigns_the_subject_unasked",
             Self::ChangesWhoAnswersForIt => "changes_who_answers_for_it",
+            Self::SaysLessThanTheTarget => "says_less_than_the_target",
             Self::NotTheSendersToRewrite => "not_the_senders_to_rewrite",
             Self::WeldFailed => "weld_failed",
         }
@@ -4724,9 +4730,54 @@ fn aboutness_refusal(
     }
 }
 
+/// **A replacement that has lost one of the target's values is not a
+/// replacement.**
+///
+/// Said again in fewer words, a claim is a poorer copy of itself, and the
+/// supersede verb would retire the richer one for it: «the insurance renews on
+/// 3 August; the excess has gone up to £350» replaced by «the insurance renews
+/// on 3 August» takes the £350 out of the memory, and nobody asked for that.
+/// Four demo runs out of four did exactly this.
+///
+/// The test is the values the two carry ([`crate::compiler::values_of`], the
+/// same net that keeps a fact's figures from leaking into the prose around it,
+/// so «what counts as a value» is one answer and not two). A DATE is not one of
+/// them, deliberately: a claim moving forward in time leaves the old date
+/// behind, and counting that as a loss would refuse the ordinary shape of a
+/// correction.
+///
+/// **A DIFFERENT value is a disagreement, not a loss, and the successor says
+/// which it is by what it carries.** «The excess is £350» replaced by «the
+/// excess is £400» drops the £350 and brings a £400: the box is the same and
+/// the two disagree about what is in it, which is what the slot machinery
+/// settles and not this. «The excess is £350» replaced by «the insurance
+/// renews on 3 August» drops the £350 and brings nothing: there is no
+/// disagreement, only a claim that has forgotten half of itself. So the test
+/// is both halves — something lost AND nothing offered in its place.
+fn says_less_refusal(
+    s: &LlmSupersede,
+    prev: &RecallHit,
+    successor: &TurnFact,
+) -> Option<SupersedeRefusal> {
+    let had = crate::compiler::values_of(&prev.text);
+    let says = crate::compiler::values_of(&successor.body);
+    let lost: Vec<&String> = had.difference(&says).collect();
+    if lost.is_empty() || says.difference(&had).next().is_some() {
+        return None;
+    }
+    tracing::warn!(
+        target = s.target.as_deref().unwrap_or_default(),
+        successor = s.successor.as_deref().unwrap_or_default(),
+        lost = ?lost,
+        "ingest: reconcile supersede successor drops a value the target carries — refused \
+         (the new says less than the old, and both stand)"
+    );
+    Some(SupersedeRefusal::SaysLessThanTheTarget)
+}
+
 /// Vet one requested supersede, refusing rather than guessing.
 ///
-/// Six guards, and each one answers a different way of being wrong:
+/// Seven guards, and each one answers a different way of being wrong:
 /// - the pair must name the **slot** both facts fill. A supersede is one slot
 ///   holding a new value, so the old and the new cannot both hold; two claims
 ///   that are true together are two facts, and superseding either deletes
@@ -4762,6 +4813,10 @@ fn aboutness_refusal(
 ///   at a successor that never mentions it. Where the successor is about
 ///   somebody ELSE the bar is different and higher: only the message saying
 ///   the old fact was about the wrong person admits it;
+/// - the successor must not **say less than the target**
+///   ([`says_less_refusal`]). A claim said again in fewer words is a poorer
+///   copy of itself, and retiring the richer one for it takes a figure out of
+///   the memory nobody asked to lose;
 /// - the sender must be entitled to **rewrite** the target, through
 ///   [`crate::acl::sender_may_rewrite`] — its subject, or whoever said it,
 ///   with a group answered for by its members. Reading a fact is not authority
@@ -4772,11 +4827,12 @@ fn aboutness_refusal(
 ///   while an ACL change discloses the subject's data and stays with the
 ///   subject alone ([`crate::acl::sender_is_subject`]).
 ///
-/// The first five drop the entry. The last does not: the pair is real and
+/// The first six drop the entry. The last does not: the pair is real and
 /// only the speaker is wrong for it, so it comes back as
 /// [`VettedSupersede::NotTheirs`] and the caller puts it to somebody who can
-/// answer. The aboutness guard stands AHEAD of it deliberately: a pair that is
-/// not about one thing is not a disagreement between two people either, and
+/// answer. The two guards on the pair ITSELF stand AHEAD of it deliberately: a
+/// pair that is not about one thing, or that has simply forgotten half of
+/// what it replaces, is not a disagreement between two people either, and
 /// putting it to the target's owner would ask them to settle a question nobody
 /// asked.
 fn vet_supersede<'a>(
@@ -4887,6 +4943,9 @@ fn vet_supersede<'a>(
     // `completed`, and that road is deliberately left wide open
     // ([`speaks_of_the_same_thing`]).
     if let Some(refusal) = aboutness_refusal(s, prev, successor) {
+        return VettedSupersede::Unsound(refusal);
+    }
+    if let Some(refusal) = says_less_refusal(s, prev, successor) {
         return VettedSupersede::Unsound(refusal);
     }
     if !crate::acl::sender_may_rewrite(
@@ -15753,6 +15812,77 @@ mod tests {
             VettedSupersede::NotTheirs { .. } => "asked".to_owned(),
             VettedSupersede::Unsound(r) => r.as_str().to_owned(),
         }
+    }
+
+    /// **The poorer sentence does not drive out the richer one.**
+    ///
+    /// Four demo runs out of four: «House insurance renews on 3 August 2026.
+    /// The excess has increased to £350.» said again as «House insurance
+    /// renews on 3 August 2026.» — and the second retired the first, taking
+    /// the £350 out of the memory. A claim said again in fewer words is a
+    /// poorer copy of itself, not a more recent one.
+    ///
+    /// The line it must not cross: a successor that brings a figure of its OWN
+    /// is disagreeing about the same box, which is what the slot machinery
+    /// settles, and the guard has to let it through. So the test is both
+    /// halves — something lost AND nothing offered in its place — and the two
+    /// cases below are the same pair with and without the new figure.
+    ///
+    /// A DATE is not a value here: a claim moving forward in time leaves the
+    /// old date behind, and the third case is the ordinary correction that
+    /// would be refused if it were.
+    #[test]
+    fn a_successor_that_says_less_replaces_nothing() {
+        let renewal = stored(
+            "018f1234-5678-7abc-9def-0123456789cd",
+            "House insurance renews on 3 August 2026. The excess has increased to £350.",
+            Principal::User("alice".into()),
+            &["home", "insurance"],
+        );
+        let poorer = wrote(
+            "018f1234-5678-7abc-9def-0123456789ab",
+            "House insurance renews on 3 August 2026.",
+            Principal::User("alice".into()),
+            &["home", "insurance"],
+        );
+        assert_eq!(
+            verdict_on("the house insurance", &renewal, &poorer, false),
+            "says_less_than_the_target",
+            "the £350 would have gone with it"
+        );
+
+        let disagrees = wrote(
+            "018f1234-5678-7abc-9def-0123456789ab",
+            "House insurance renews on 3 August 2026. The excess is now £400.",
+            Principal::User("alice".into()),
+            &["home", "insurance"],
+        );
+        assert_eq!(
+            verdict_on("the house insurance", &renewal, &disagrees, false),
+            "applied",
+            "a figure of its own is a disagreement about the same box, and that \
+             is what a supersede is for"
+        );
+
+        // A fact moving forward in time: the old date goes, and that is not a
+        // loss — it is what a correction looks like.
+        let bins = stored(
+            "018f1234-5678-7abc-9def-0123456789cd",
+            "Bins are out on the night of 30 March 2026; collection is on Tuesday.",
+            Principal::User("alice".into()),
+            &["home", "bins"],
+        );
+        let moved = wrote(
+            "018f1234-5678-7abc-9def-0123456789ab",
+            "Bin collection has moved to Wednesdays.",
+            Principal::User("alice".into()),
+            &["home", "bins"],
+        );
+        assert_eq!(
+            verdict_on("the bin collection day", &bins, &moved, false),
+            "applied",
+            "a date is not a value the successor owes the target"
+        );
     }
 
     /// **A supersede says one claim stands in for another, and that has to be

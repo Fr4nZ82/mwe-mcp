@@ -7126,7 +7126,8 @@ async fn apply_one_page_verdict(
             }
             // Which survives is not the model's to choose, and never has been:
             // the newer copy wins, as in the dedup revisor, because it carries
-            // whatever the later turn added.
+            // whatever the later turn added — and the check below is what makes
+            // that sentence true rather than assumed.
             let (winner, loser) = if row.created_at >= twin.created_at {
                 (row, twin)
             } else {
@@ -7145,6 +7146,30 @@ async fn apply_one_page_verdict(
             // survivor addressing the other's readers — something handed to
             // somebody who was never told it, and unrecoverable once the
             // loser's bytes are off the page.
+            // **And the newer one has to actually carry it.** «The winner is
+            // the newer copy because it carries whatever the later turn added»
+            // holds only while the later turn ADDED: a claim said again in
+            // fewer words is a poorer copy of itself, and merging into it takes
+            // a figure out of the memory nobody asked to lose. The same net the
+            // turn's own reconciler uses, and the same reason
+            // (`ingest::vet_supersede`, `compiler::values_of`).
+            let (had, says) = (
+                crate::compiler::values_of(&loser.text),
+                crate::compiler::values_of(&winner.text),
+            );
+            let lost: Vec<String> = had.difference(&says).cloned().collect();
+            // Something lost AND nothing offered in its place. A newer copy
+            // that brings a figure of its own is DISAGREEING about the same
+            // box, which is a different act and not this one's to refuse.
+            if !lost.is_empty() && says.difference(&had).next().is_none() {
+                tracing::info!(
+                    winner = winner.fact_id.as_str(),
+                    loser = loser.fact_id.as_str(),
+                    lost = ?lost,
+                    "rem: page judgement would merge into a copy that says less — refused"
+                );
+                return Ok(VerdictOutcome::Refused("the new says less than the old"));
+            }
             if reader_sets_differ(winner, loser) {
                 return Ok(VerdictOutcome::Refused(
                     "these two are told to different people, so they are two facts",
@@ -15110,6 +15135,72 @@ mod tests {
         assert_eq!(
             closed.decay_reason.as_deref(),
             Some(fact_index::decay::CONTRADICTED)
+        );
+        drop(dir);
+    }
+
+    /// **The newer copy wins because it carries what the later turn added —
+    /// and when it does not, it wins nothing.**
+    ///
+    /// The rule that picks the survivor rests on a sentence that has to be
+    /// true: a claim said again in fewer words is a POORER copy of itself, and
+    /// merging into it takes a figure out of the memory nobody asked to lose.
+    /// The turn's own reconciler refuses the same shape for the same reason
+    /// (`ingest::vet_supersede`), and the two share the net that says what a
+    /// value is (`compiler::values_of`).
+    #[tokio::test]
+    async fn the_newer_copy_wins_nothing_when_it_says_less() {
+        let (dir, tree, pool) = setup_workdir().await;
+        write_wiki(&tree, "alice", "Alice", "wiki-user");
+        let richer = plant_on_page_of_kind(
+            &tree,
+            &pool,
+            "alice",
+            "casa.md",
+            "House insurance renews on 3 August. The excess has increased to £350.",
+            "alice",
+            "state",
+            None,
+        )
+        .await;
+        let poorer = plant_on_page_of_kind(
+            &tree,
+            &pool,
+            "alice",
+            "casa.md",
+            "House insurance renews on 3 August.",
+            "alice",
+            "state",
+            None,
+        )
+        .await;
+        written_at(&pool, &richer, "2026-09-11T08:00:00Z").await;
+        written_at(&pool, &poorer, "2026-09-12T08:00:00Z").await;
+
+        let llm = FakeLlmBackend::new(
+            "judge",
+            "{\"verdicts\":{\"f2\":{\"verdict\":\"duplicate_of\",\"target\":\"f1\"}}}",
+        );
+        let report = judge_the_page(
+            &pool,
+            &tree,
+            &llm,
+            std::slice::from_ref(&poorer),
+            JudgementDepth::Nightly,
+            &RemPolicy::default(),
+        )
+        .await;
+        assert!(
+            report.changed.is_empty(),
+            "nothing is merged: the newer copy has lost the £350 — {report:?}"
+        );
+        let still_there = fact_index::find_by_id(&pool, &richer)
+            .await
+            .unwrap()
+            .expect("row");
+        assert!(
+            still_there.superseded_at.is_none() && still_there.deleted_at.is_none(),
+            "the richer claim stands"
         );
         drop(dir);
     }
