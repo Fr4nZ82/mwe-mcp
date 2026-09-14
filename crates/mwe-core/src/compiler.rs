@@ -2464,13 +2464,20 @@ async fn write_it_in_the_asked_language(
     still
 }
 
-/// Everything on the page a reader reads, marked regions included.
+/// Everything on the page a reader reads, marked regions included, with the
+/// link ADDRESSES taken out.
 ///
 /// Not [`prose_outside_markers`]: the Cronista writes BOTH halves, and a page
 /// whose connective lines are right while every fact's sentence is in the
 /// other language is exactly the shape that has to be caught.
+///
+/// **A slug is not prose.** `[[household/outdoor_meals_in_the_garden]]` is an
+/// address, written in no grammar at all and usually in English whatever the
+/// page is in; counted among the words it lowers every language's share and
+/// pushes the check into abstaining. An alias stays: it is already part of the
+/// sentence, in the sentence's own grammar.
 fn all_the_prose(body: &str) -> String {
-    crate::parser::parse(body)
+    let whole = crate::parser::parse(body)
         .events
         .into_iter()
         .filter_map(|e| match e {
@@ -2479,7 +2486,25 @@ fn all_the_prose(body: &str) -> String {
             crate::parser::ParseEvent::Embed { .. } => None,
         })
         .collect::<Vec<_>>()
-        .join(" ")
+        .join(" ");
+    let mut out = String::with_capacity(whole.len());
+    let mut rest = whole.as_str();
+    while let Some(open) = rest.find("[[") {
+        out.push_str(&rest[..open]);
+        let after = &rest[open + 2..];
+        let Some(close) = after.find("]]") else {
+            rest = after;
+            break;
+        };
+        // The alias is prose and stays; the address is not and goes.
+        if let Some((_, alias)) = after[..close].split_once('|') {
+            out.push_str(alias);
+        }
+        out.push(' ');
+        rest = &after[close + 2..];
+    }
+    out.push_str(rest);
+    out
 }
 
 /// One rewrite that names the language again and asks for the same page in it.
@@ -4083,6 +4108,37 @@ mod tests {
         std::fs::write(wikis.join("alice/cucina.md"), "# alice\n").unwrap();
         let tree = WikiTree::open(dir.path()).expect("tree");
         (dir, tree, pool)
+    }
+
+    /// **An address is not prose, and it must not vote on the language.**
+    ///
+    /// A page slug is written in no grammar at all and is usually English
+    /// whatever the page is in. Counted among the words it lowers every
+    /// language's share and pushes the language check into saying nothing —
+    /// the safe direction, but not the property the check claims. An alias
+    /// stays: it is already part of the sentence, in the sentence's grammar.
+    #[test]
+    fn a_link_address_is_not_part_of_the_page_prose() {
+        let body = "Una sera in giardino, come racconta \
+                    [[alice/weather_and_seasonal_notes]], e il gatto \
+                    [[household/pepper_pet_care|Pepper]] è rimasto sul tavolo.";
+        let prose = all_the_prose(body);
+        assert!(
+            !prose.contains("weather_and_seasonal_notes"),
+            "the address is gone: {prose}"
+        );
+        assert!(
+            !prose.contains("pepper_pet_care"),
+            "the address is gone even when an alias stands beside it: {prose}"
+        );
+        assert!(
+            prose.contains("Pepper"),
+            "the alias is prose and stays: {prose}"
+        );
+        assert!(
+            prose.contains("giardino") && prose.contains("tavolo"),
+            "and the sentence around them is untouched: {prose}"
+        );
     }
 
     /// **A page written in the wrong language is asked again, once, and then

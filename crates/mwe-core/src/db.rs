@@ -176,6 +176,35 @@ pub async fn meta_set(pool: &SqlitePool, key: &str, value: &str) -> sqlx::Result
     Ok(())
 }
 
+/// Upsert a value into the engine-level key/value table **only when it sorts
+/// after what is stored**, in one statement.
+///
+/// For a key that holds a high-water mark rather than a setting. Reading and
+/// then writing is two statements and two turns can interleave between them:
+/// the one that read the older value writes last and wins, and the mark goes
+/// backwards. The comparison belongs inside the write, where the store
+/// serialises it.
+///
+/// The caller is responsible for a spelling that sorts as the values do —
+/// for an instant, the one fixed-width form
+/// ([`crate::fact_index::bound_from_instant`]).
+///
+/// # Errors
+///
+/// As [`sqlx::Error`].
+pub async fn meta_set_if_later(pool: &SqlitePool, key: &str, value: &str) -> sqlx::Result<()> {
+    sqlx::query(
+        "INSERT INTO engine_meta (key, value) VALUES (?, ?) \
+         ON CONFLICT(key) DO UPDATE SET value = excluded.value \
+          WHERE engine_meta.value < excluded.value",
+    )
+    .bind(key)
+    .bind(value)
+    .execute(pool)
+    .await?;
+    Ok(())
+}
+
 /// Begin a **write** transaction that takes the WAL write lock up front
 /// (`BEGIN IMMEDIATE`) instead of sqlx's default `BEGIN DEFERRED`.
 ///

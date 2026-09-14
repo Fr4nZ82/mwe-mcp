@@ -333,15 +333,22 @@ pub async fn memory_directive_for_wiki_meta(
 /// [`crate::enrollment::locale_for_principal`] applies to a group's members,
 /// and `None` renders the ordinary mirror fallback.
 ///
-/// **An assistant is not asked.** A language is a fact about the people a
-/// memory is for, not about the programs that talk to them: an assistant is
-/// enrolled so it can be addressed and answered for, and its row carries no
-/// declared language because nobody declares one for it. Counting it made a
-/// single empty row say the household agrees on nothing — measured on the live
-/// memory, four people all `it` and one agent with an empty row, which left
-/// four topic wikis answering to nobody writing 23 pages of English inside an
-/// Italian memory, among them a pregnancy record and a father's clinical
-/// notes.
+/// **Only those who said so are counted, and an assistant is never asked.**
+/// A language is a fact about the people a memory is for, not about the
+/// programs that talk to them: an assistant is enrolled so it can be addressed
+/// and answered for, and nobody declares a language for it. Neither does a
+/// person who left the field empty — they have not disagreed with anything,
+/// they have said nothing, and treating silence as disagreement is what made
+/// a single empty row mean «this household agrees on nothing». Measured on the
+/// live memory: four people all `it` and one agent with an empty row, and the
+/// four wikis answering to nobody held 23 pages of English inside an Italian
+/// memory, a pregnancy record and a father's clinical notes among them.
+///
+/// So the rule is unanimity **among those who declared one**. Nobody declared:
+/// no language, and the English fallback stands — which is a fixed language an
+/// operator can recognise and correct, not a guess. Two declared and different:
+/// no language either, because the memory genuinely has no one language and
+/// picking a side would be one person's locale winning a vote it was never in.
 ///
 /// # Errors
 ///
@@ -349,16 +356,14 @@ pub async fn memory_directive_for_wiki_meta(
 /// safe answer — no compile should die over a locale.
 pub async fn memory_wide_locale(pool: &sqlx::SqlitePool) -> Option<String> {
     let users = crate::enrollment::list_users(pool).await.ok()?;
-    let mut locales = Vec::new();
+    let mut declared = Vec::new();
     for u in users.iter().filter(|u| !u.is_agent) {
-        locales.push(
-            crate::enrollment::locale_for(pool, &u.user_id)
-                .await
-                .ok()??,
-        );
+        if let Ok(Some(locale)) = crate::enrollment::locale_for(pool, &u.user_id).await {
+            declared.push(locale);
+        }
     }
-    let first = locales.first()?.clone();
-    locales.iter().all(|l| *l == first).then_some(first)
+    let first = declared.first()?.clone();
+    declared.iter().all(|l| *l == first).then_some(first)
 }
 
 /// Mirror clause used when no explicit locale is known: it tells the
@@ -553,16 +558,40 @@ mod tests {
             "the people agree, and the assistant was not asked"
         );
 
-        // And a PERSON with no language still means no agreement: the rule is
-        // unanimity among the people, not «ignore whoever is inconvenient».
+        // A PERSON who left the field empty has not disagreed — they have said
+        // nothing — so the language the others declared still stands. Silence
+        // read as disagreement is what sent a whole memory to English.
         sqlx::query("UPDATE enrollment_users SET locale = '' WHERE user_id = 'bob'")
+            .execute(&pool)
+            .await
+            .unwrap();
+        assert_eq!(
+            memory_wide_locale(&pool).await.as_deref(),
+            Some("it"),
+            "one empty field does not overrule the people who did say"
+        );
+
+        // Two people who DID declare, and differently: the memory genuinely
+        // has no one language, and it says so rather than picking a side.
+        sqlx::query("UPDATE enrollment_users SET locale = 'fr' WHERE user_id = 'bob'")
             .execute(&pool)
             .await
             .unwrap();
         assert_eq!(
             memory_wide_locale(&pool).await,
             None,
-            "a person without a declared language is still a person"
+            "two declared and different is no agreement"
+        );
+
+        // And nobody having said anything is no language either.
+        sqlx::query("UPDATE enrollment_users SET locale = '' WHERE is_agent = 0")
+            .execute(&pool)
+            .await
+            .unwrap();
+        assert_eq!(
+            memory_wide_locale(&pool).await,
+            None,
+            "nobody declared: the English fallback stands"
         );
         drop(dir);
     }

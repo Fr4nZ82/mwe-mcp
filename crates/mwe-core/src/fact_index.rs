@@ -847,12 +847,12 @@ const MEMORY_CLOCK: &str = "memory.last_turn_at";
 /// for the note about the thing.
 pub(crate) async fn saw_a_turn_at(pool: &SqlitePool, at: chrono::DateTime<chrono::Utc>) {
     let at = at.min(chrono::Utc::now());
-    if let Ok(Some(raw)) = crate::db::meta_get(pool, MEMORY_CLOCK).await
-        && instant_of(&raw).is_some_and(|stored| stored >= at)
+    // One statement, so that two turns arriving together cannot interleave a
+    // read and a write between them and let the older one land last. The
+    // spelling is the fixed-width one, so the store's own string comparison
+    // IS the comparison of instants ([`crate::db::meta_set_if_later`]).
+    if let Err(e) = crate::db::meta_set_if_later(pool, MEMORY_CLOCK, &bound_from_instant(at)).await
     {
-        return;
-    }
-    if let Err(e) = crate::db::meta_set(pool, MEMORY_CLOCK, &at.to_rfc3339()).await {
         tracing::warn!(error = %e, "fact_index: the memory's clock was not stamped");
     }
 }
@@ -4043,6 +4043,11 @@ mod tests {
     /// second would walk the clock back to June, and tonight's closures would
     /// be dated there: the memory would say a thing ended three months ago
     /// because a message about June arrived late.
+    ///
+    /// The comparison is inside the write and not around it, so two turns
+    /// arriving together cannot interleave a read and a write between them
+    /// and let the older one land last. What this drives is the ordering; the
+    /// atomicity is the single statement's.
     #[tokio::test]
     async fn an_old_turn_arriving_late_does_not_walk_the_clock_back() {
         let dir = tempfile::tempdir().expect("tempdir");
