@@ -8582,8 +8582,9 @@ pub async fn file_behaviour_rule(
 /// agent ever did for anybody, which is a page nobody can find a thing in. A
 /// relationship fact with no served user carries no page either.
 ///
-/// Recall is page-agnostic (`recall_agent_self` buckets by the served-user
-/// topic tag, not the page), so this write-time routing is invisible to reads.
+/// Recall is page-agnostic — `recall_agent_self` asks who may read the fact,
+/// not where it sits — so this write-time routing is invisible to reads, and
+/// so is the night moving a self-fact somewhere else entirely.
 fn agent_self_fact_page(is_identity: bool, sender_id: &str) -> Option<PathBuf> {
     if is_identity || sender_id.is_empty() {
         None
@@ -8621,27 +8622,25 @@ async fn capture_agent_self_fact(
     let Ok(wiki_id) = WikiId::parse(agent_id) else {
         return Ok(None);
     };
-    // Tag the self-fact with the served user so the read side can pull "your
-    // history with THIS user" by topic — but ONLY for a relationship/activity
-    // fact. An IDENTITY fact ("the agent assists Franz's household") is
-    // user-agnostic and stays UNTAGGED, so it injects as the always-on
-    // identity for every interaction and never leaks into another user's
-    // relationship slot. The discriminator matches the read-side bucket
-    // ([`recall_agent_self`]): `salience high` ∨ `fact_type bio` ⇒ identity
-    // ⇒ no user tag; otherwise ⇒ relationship ⇒ tag with the served user.
+    // WHAT the fact is: identity, or something done with the person in front
+    // of the agent. `salience high` ∨ `fact_type bio` ⇒ identity — "the agent
+    // assists the household" is true of nobody in particular — and everything
+    // else is an activity WITH the served user. The two are told apart once,
+    // here, and the answer is written into the fact's audience below; the read
+    // side asks that audience and sorts the rows it gets into the two sections
+    // by the same shape ([`recall_agent_self`]).
     //
-    // The partner tag shares `topics` with the two words and is not one of
-    // them: `topic_rank::count_words` leaves every enrolled user's id out of
-    // the ranking, or an agent that talks to one person a lot would see that
-    // person's id take a macrotopic slot from a real subject.
-    //
-    // The partner tag is EXCLUSIVE: on an agent self-fact a
-    // user-id topic means "an action WITH that user", so any *other*
-    // enrolled user's id the classifier put in `topics` (a mere mention —
-    // "advised Morgana about Matteo") is stripped. Without this, the
-    // mentioned user's turns would inherit another user's history. Only
-    // enrolled user ids are partner-capable — a subject that never speaks
-    // keeps its content tag.
+    // The PARTNER TAG — the served user's id in `topics` — stays as a label,
+    // and a label is all it is: who may read the fact is on the fact. It
+    // shares `topics` with the two topic words and is not one of them
+    // (`topic_rank::count_words` leaves every enrolled user's id out of the
+    // ranking, or an agent that talks to one person a lot would see that
+    // person's id take a macrotopic slot from a real subject), and it is
+    // EXCLUSIVE: a user-id topic on a self-fact means "an action WITH that
+    // user", so another enrolled user's id the classifier put there as a mere
+    // mention ("advised Morgana about Matteo") is stripped. A label naming two
+    // people names nobody. Only enrolled user ids are partner-capable — a
+    // subject that never speaks keeps its content tag.
     let is_identity = unit.salience == Some("high") || unit.fact_type == Some("bio");
     let mut topics: Vec<String> = unit
         .topics
@@ -8677,7 +8676,17 @@ async fn capture_agent_self_fact(
         // OWNED BY THE AGENT — this is its own self-knowledge, not about the
         // user. subject == the agent ⇒ no separate sender attribution.
         subject: Principal::User(agent_id.to_owned()),
-        allow: Vec::new(),
+        // WHO MAY READ IT, said here and not left to the label. Nobody is the
+        // assistant, so an empty audience on a fact whose subject IS the
+        // assistant reaches nobody at all: what it IS is everybody's, and what
+        // it DID WITH SOMEBODY is that person's. The partner tag stays in
+        // `topics` as a tag — the nightly passes rewrite topics, and a fact
+        // whose only gate is a word in a list has no gate.
+        allow: if is_identity {
+            vec![Principal::global()]
+        } else {
+            vec![Principal::User(request.sender_id.clone())]
+        },
         sender: None,
         fact_type: unit.fact_type.map(str::to_owned),
         topics,
@@ -8928,13 +8937,15 @@ fn format_recent_window(
 }
 
 /// Cap on agent self-facts pulled per turn for the self-context block — a
-/// safety bound; the identity core + one user's relationship are few.
+/// safety bound; the identity core plus one person's history are few. What
+/// survives it is bounded again, in characters, by the two sections'
+/// budgets ([`format_who_you_are`], [`format_history_with_user`]).
 const AGENT_SELF_RECALL_CAP: usize = 100;
 
 /// The agent's self-context pulled for one turn: the agent wiki's one-line
 /// abstract plus the two self-fact buckets. All empty for a smart consumer
 /// (no distinct agent wiki) or when the bot acts as itself.
-#[derive(Default)]
+#[derive(Debug, Default)]
 struct AgentSelf {
     /// The agent wiki's `_meta.summary` — the compiled autobiography's
     /// abstract, refreshed by the compiler's abstract sync.
@@ -8942,16 +8953,26 @@ struct AgentSelf {
     /// Identity self-facts (`salience high` ∨ `fact_type bio`) — WHO IT IS,
     /// user-agnostic, injected on every turn. Newest first.
     identity: Vec<String>,
-    /// Self-facts tagged with the served sender — ITS HISTORY WITH THIS
-    /// USER, scoped so one user's relationship never surfaces in another's
-    /// turn. Newest first.
+    /// Everything else this reader may read of the agent's own memory — ITS
+    /// HISTORY WITH THIS USER, which is theirs because the fact says so. One
+    /// person's history never surfaces in another's turn. Newest first.
     relationship: Vec<String>,
 }
 
 /// Recall the agent's OWN memory for the self-context sections — the read
-/// side of agent-authored memory. Best-effort on a DB miss; the summary is
-/// read from the agent wiki's `_meta.md` ([`wiki::meta_summary`]).
-/// Mirrors [`recall_behaviour_rules`], for the agent's own facts.
+/// side of agent-authored memory, and one question: **which of THIS
+/// assistant's memories of itself may the person speaking read?**
+///
+/// Per assistant, like the standing rules, and per reader like everything
+/// else: `subject = this agent` ∩ `can_read`. Not its WIKI — the nightly
+/// placement moves a self-fact onto the page its subject-matter belongs to,
+/// and where a memory is filed says nothing about whose it is. Not the partner
+/// tag either: the label survives as a label, and the audience on the fact is
+/// the answer.
+///
+/// Best-effort on a DB miss; the summary is read from the agent wiki's
+/// `_meta.md` ([`wiki::meta_summary`]). Mirrors [`recall_behaviour_rules`],
+/// for the agent's own facts.
 async fn recall_agent_self(
     pool: &SqlitePool,
     tree: &WikiTree,
@@ -8975,9 +8996,20 @@ async fn recall_agent_self(
         .ok()
         .and_then(|id| tree.locate(&id).ok())
         .and_then(|h| crate::wiki::meta_summary(h.meta()));
+    let groups = crate::enrollment::groups_for(pool, request.sender_id.as_str())
+        .await
+        .unwrap_or_default();
+    // THIS assistant's own memory, wherever it sits, and only what the person
+    // speaking may read of it. Not the agent's WIKI: the nightly placement
+    // moves a self-fact onto the page its subject-matter belongs to, and where
+    // a memory is filed says nothing about whose it is. Not the partner tag
+    // either — that is a label, and the answer is the audience on the fact.
     let filters = fact_index::FactFilters {
-        wiki_id: Some(agent_wiki.clone()),
         subject_id: Some(Principal::User(agent_wiki)),
+        readable_by: Some(crate::acl::reader_principals(
+            request.sender_id.as_str(),
+            &groups,
+        )),
         limit: AGENT_SELF_RECALL_CAP,
         ..Default::default()
     };
@@ -9014,16 +9046,16 @@ async fn recall_agent_self(
         if text.is_empty() {
             continue;
         }
-        // Identity = high salience OR a `bio`-typed self-fact: what the agent
-        // IS, not what it did. Everything else scopes by the served sender's
-        // partner tag (exclusive at capture — `capture_agent_self_fact`).
+        // WHICH SECTION, not whether: every row here is already one the
+        // reader may read. Identity = high salience OR a `bio`-typed
+        // self-fact — what the agent IS, and everybody's; everything else is
+        // what it did with the person in front of it.
         if row.salience.as_deref() == Some("high") || row.fact_type.as_deref() == Some("bio") {
             identity.push(text);
-            surfaced.push(row.fact_id.clone());
-        } else if row.topics.iter().any(|t| t == &request.sender_id) {
+        } else {
             relationship.push(text);
-            surfaced.push(row.fact_id.clone());
         }
+        surfaced.push(row.fact_id.clone());
     }
     // Best-effort: a recall-tracking miss must never break the recall block.
     if let Err(e) = fact_index::bump_recall_hits(pool, &surfaced).await {
@@ -32005,7 +32037,9 @@ mod tests {
                 page: Some(PathBuf::from("preferenze.md")),
                 body: "L'agente parla italiano e inglese.".to_owned(),
                 subject: Principal::User("samvisebot".to_owned()),
-                allow: Vec::new(),
+                // What the assistant IS, is everybody's: nobody is the
+                // assistant, so an empty audience here would be nobody at all.
+                allow: vec![Principal::global()],
                 sender: None,
                 fact_type: Some("bio".to_owned()),
                 topics: Vec::new(),
@@ -32119,10 +32153,11 @@ mod tests {
         drop(dir);
     }
 
-    /// The partner tag is exclusive: on an agent self-fact,
-    /// another enrolled user's id in the classifier's `topics` is a mere
-    /// mention and is stripped, so the mentioned user's turns never inherit
-    /// someone else's history. Content tags survive.
+    /// The partner tag is exclusive: on an agent self-fact, another enrolled
+    /// user's id in the classifier's `topics` is a mere mention and is
+    /// stripped. A label naming two people names nobody — and the label is
+    /// what the one-off pass over the facts already stored reads to decide
+    /// whose they are (migration 0084). Content tags survive.
     #[tokio::test]
     async fn ingest_self_fact_strips_other_enrolled_users_from_topics() {
         let (dir, tree, pool) = setup_agent_workdir().await;
@@ -32237,6 +32272,112 @@ mod tests {
                 .is_some(),
             "and it names a row that exists"
         );
+        drop(dir);
+    }
+
+    /// **What the assistant did WITH somebody is that person's to read, and the
+    /// answer is on the fact — not in a label, and not in where it was filed.**
+    ///
+    /// The partner tag steered this for a long time: the person's id dropped
+    /// into `topics`, and the channel matching on it. A label is not a
+    /// permission — the nightly passes rewrite `topics` — and the same passes
+    /// MOVE a self-fact onto the page its subject-matter belongs to, so a
+    /// channel that also asked for the agent's own wiki lost it the night it
+    /// was placed. Ninety-six of them sat outside their assistant's wiki in
+    /// the live memory, readable by nobody at all.
+    ///
+    /// Now the fact carries its own audience and the channel asks `can_read`,
+    /// so neither the label nor the filing decides anything.
+    #[tokio::test]
+    async fn what_the_assistant_did_with_you_reaches_you_wherever_it_is_filed() {
+        let (dir, tree, pool) = setup_agent_workdir().await;
+        sqlx::query("INSERT INTO enrollment_users (user_id, is_admin) VALUES ('bilbo', 0)")
+            .execute(&pool)
+            .await
+            .unwrap();
+        let llm = FakeLlmBackend::new(
+            "fake",
+            "{\"intent\":\"capture\",\"extractions\":[{\"subject_id\":\"self\",\
+             \"body\":\"Ho aiutato Alice con i sacchetti del congelatore.\"}]}",
+        );
+        wiki_ingest_message(
+            &pool,
+            &tree,
+            fake_embedder(),
+            &llm,
+            None,
+            IngestRequest {
+                author: MessageRole::Assistant,
+                ..req_consumer("fatto", "alice", "botdeploy")
+            },
+            &IngestPolicy::default(),
+        )
+        .await
+        .expect("capture the self-fact");
+
+        // The night moves it onto the page its subject-matter belongs to.
+        let row = fact_index::find_by_filters(
+            &pool,
+            &fact_index::FactFilters {
+                subject_id: Some(Principal::User("samvisebot".into())),
+                ..Default::default()
+            },
+        )
+        .await
+        .expect("find")
+        .into_iter()
+        .next()
+        .expect("the self-fact");
+        assert!(
+            row.allow_ids.contains(&Principal::User("alice".into())),
+            "the person it is about is written on the fact: {:?}",
+            row.allow_ids
+        );
+        sqlx::query("UPDATE fact_index SET wiki_id = 'alice', source_path = ? WHERE fact_id = ?")
+            .bind("wikis/alice/cucina.md")
+            .bind(row.fact_id.as_str())
+            .execute(&pool)
+            .await
+            .unwrap();
+
+        let hers = recall_agent_self(&pool, &tree, &req_consumer("?", "alice", "botdeploy")).await;
+        assert!(
+            hers.relationship
+                .iter()
+                .any(|t| t.contains("sacchetti del congelatore")),
+            "it reaches her from wherever it was filed: {hers:?}"
+        );
+        let his = recall_agent_self(&pool, &tree, &req_consumer("?", "bilbo", "botdeploy")).await;
+        assert!(
+            his.relationship.is_empty(),
+            "and reaches nobody else: {his:?}"
+        );
+        drop(dir);
+    }
+
+    /// **What the assistant IS reaches whoever talks to it.**
+    ///
+    /// Nobody is the assistant, so an identity self-fact filed with an empty
+    /// audience would be readable by the assistant alone and by nothing else —
+    /// the same hole an assistant's standing rules had, and the same answer:
+    /// its identity is everybody's who speaks to it.
+    #[tokio::test]
+    async fn what_the_assistant_is_reaches_whoever_talks_to_it() {
+        let (dir, tree, pool) = setup_agent_workdir().await;
+        sqlx::query("INSERT INTO enrollment_users (user_id, is_admin) VALUES ('bilbo', 0)")
+            .execute(&pool)
+            .await
+            .unwrap();
+        plant_agent_bio(&tree, &pool).await;
+        for who in ["alice", "bilbo"] {
+            let seen = recall_agent_self(&pool, &tree, &req_consumer("?", who, "botdeploy")).await;
+            assert!(
+                seen.identity
+                    .iter()
+                    .any(|t| t.contains("parla italiano e inglese")),
+                "{who} is told what the assistant is: {seen:?}"
+            );
+        }
         drop(dir);
     }
 

@@ -13,6 +13,26 @@ semver-governed surface: breaking changes are called out explicitly.
 
 ### Fixed
 
+- **What an assistant remembers about you is yours to read, and what it is is
+  everyone's.** An assistant keeps two kinds of memory about itself: what it IS
+  — *my name is Gandalf*, the voice it speaks with, the limits it works under —
+  and what it DID WITH SOMEBODY — *I helped Alice with the freezer bags*. Both
+  were filed as the assistant's own, readable by the assistant and nobody else,
+  and what stood in for the second answer was a **label**: the person's name
+  dropped into the fact's topic words, with the memory served to whoever
+  matched it.
+
+  A label is not a permission. The nightly passes rewrite topic words, and the
+  same passes MOVE a memory onto the page its subject belongs to — so a memory
+  of what an assistant did with you was lost the night it was filed somewhere
+  else. In the live memory, 96 of them had gone that way and could be read by
+  nobody at all.
+
+  Both kinds now say who may read them, on the fact. What the assistant did
+  with you reaches you wherever it ends up filed; what it is reaches whoever
+  talks to it. The label stays a label. The memories already stored are given
+  the same answer once, on the next start.
+
 - **A link you cannot follow no longer writes out the page's name.** Serving
   the plain name in its place looked harmless and was not: without the words
   an author chose, the only thing left to write is the file's own name —
