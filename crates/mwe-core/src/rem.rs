@@ -1027,10 +1027,13 @@ pub async fn run_cycle(
     // two different questions, and they must not share one answer.
     //
     // `will_be_read` is the SELECTION: the pages the reading intends to open.
-    // The completion and contradiction sweeps run BEFORE the reading does, so
-    // the selection is all that can be known when they choose their pairs, and
-    // it is the right list for them — they only stand aside for a pair that
-    // lives wholly on one of those pages, and being wrong costs a night.
+    // THREE passes run BEFORE the reading does and take this one, because the
+    // selection is all that can be known when they choose: the completion and
+    // contradiction sweeps, which stand aside only for a pair that lives
+    // wholly on one of those pages, and the per-page split inside
+    // [`run_auto_promote`], which stands aside for the page itself. Being
+    // wrong costs each of them a night — a page whose reading then fails is
+    // theirs again at the next round, and nothing is lost meanwhile.
     //
     // `were_read` is the READINGS THAT LANDED, filled in after the pass. The
     // passes that would carry a page to a model again key on that one: a page
@@ -1784,12 +1787,27 @@ fn accepted_choice<'c>(
 /// cannot answer — and the answer to that changes when the page's facts
 /// change, not when a new neighbour appears somewhere else. So a page that has
 /// answered «nowhere» is not asked again until it says something different.
+///
+/// **What a fact says includes when it stopped being true.** Each one is
+/// written down the way [`JudgedPage::memo_subject`] writes it — id, kind, end,
+/// words — because a page that loses half its facts to a closure is a page
+/// saying something different, and a key that read only the words would hold
+/// the old answer until somebody typed a new sentence. The end comes from the
+/// plan, so a closure reaches this key at the compile that follows it, which
+/// is the same moment the prose itself catches up.
 fn rails_memo_subject(slug: &str, page: &crate::planner::PagePlan) -> String {
     use std::fmt::Write as _;
 
     let mut out = format!("rails|{slug}");
     for f in &page.primary_facts {
-        let _ = write!(out, "|{}:{}", f.fact_id.as_str(), f.text);
+        let _ = write!(
+            out,
+            "|{}:{}:{}:{}",
+            f.fact_id.as_str(),
+            f.fact_type.as_deref().unwrap_or(""),
+            f.valid_to.as_deref().unwrap_or(""),
+            f.text,
+        );
     }
     out
 }
@@ -16372,6 +16390,75 @@ mod tests {
                 .last_prompt()
                 .is_some_and(|p| p.contains("intolleranze —") && !p.contains("casa —")),
             "and the call bought was about the other page"
+        );
+        drop(dir);
+    }
+
+    /// **A page that loses a fact is a page saying something different.**
+    ///
+    /// «Nowhere» is remembered against what the page says, and what a fact says
+    /// includes when it stopped being true. A page that answers «no link
+    /// needed» and then has half its facts closed would otherwise hold that
+    /// answer until somebody typed a new sentence on it.
+    #[tokio::test]
+    async fn closing_a_fact_reopens_the_question_of_where_the_page_leads() {
+        let (dir, tree, pool) = setup_workdir().await;
+        write_wiki(&tree, "bob", "Bob", "wiki-user");
+        let fact = plant_on_page_of_kind(
+            &tree,
+            &pool,
+            "bob",
+            "casa.md",
+            "Bob cooks without peanuts when Carol eats here",
+            "bob",
+            "state",
+            None,
+        )
+        .await;
+        let mut plan = a_plan_of(&["casa", "intolleranze"], "bob");
+        crate::planner::save_plan(&tree, &plan).expect("save plan");
+
+        let judge = FakeLlmBackend::new("pro", "{\"verdicts\":{},\"links\":[]}");
+        judge_the_page(
+            &pool,
+            &tree,
+            &judge,
+            std::slice::from_ref(&fact),
+            JudgementDepth::Nightly,
+            &RemPolicy::default(),
+        )
+        .await;
+
+        // The compile that follows the closure writes the end into the plan,
+        // which is the same moment the page's own prose catches up.
+        plan.pages
+            .get_mut("casa")
+            .expect("casa")
+            .primary_facts
+            .get_mut(0)
+            .expect("a fact")
+            .valid_to = Some("2026-09-14T00:00:00Z".to_owned());
+        crate::planner::save_plan(&tree, &plan).expect("save plan again");
+
+        let rails = FakeLlmBackend::new("pro", "{\"links\":[]}");
+        let after = run_rail_writer(
+            &pool,
+            &tree,
+            Some(&rails),
+            "cycle-rails",
+            &day::DayPerimeter::default(),
+            &RemPolicy::default(),
+            &BTreeSet::new(),
+        )
+        .await
+        .expect("rail writer");
+
+        // Both: the other page has never answered, and this one says something
+        // different. The sibling above is the same fixture with the fact left
+        // alone, and there the count is one.
+        assert_eq!(
+            after.nominated, 2,
+            "the page is asked again, because it says something different: {after:?}"
         );
         drop(dir);
     }
