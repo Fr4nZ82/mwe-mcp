@@ -114,7 +114,7 @@ async fn capture_fact(
 
 #[tokio::test]
 async fn page_view_linkifies_canonical_wikilinks_and_leaves_dangling_literal() {
-    let (app, _pool, tree, _dir) = make_app_with_memory().await;
+    let (app, pool, tree, _dir) = make_app_with_memory().await;
     let cookie = login_as_admin(&app).await; // auto-creates wiki `alice`
     seed_bob_wiki(&tree);
     let alice_dir = tree.wikis_dir().join("alice");
@@ -126,6 +126,24 @@ async fn page_view_linkifies_canonical_wikilinks_and_leaves_dangling_literal() {
          and the mutant [[famiglia_carol/referto_oculistica]].\n",
     )
     .unwrap();
+    // Both pages need a fact alice may read: a page with none serves nothing,
+    // and an address she reads no fact behind is not served as an address.
+    capture_fact(
+        &pool,
+        &tree,
+        "links.md",
+        "the page holds something",
+        "user:alice",
+    )
+    .await;
+    capture_fact(
+        &pool,
+        &tree,
+        "appunti.md",
+        "and so does this one",
+        "user:alice",
+    )
+    .await;
 
     let response = send(
         &app,
@@ -157,12 +175,22 @@ async fn page_view_linkifies_canonical_wikilinks_and_leaves_dangling_literal() {
         ),
         "alias must render as the label: {html}"
     );
-    // Dangling targets stay literal prose — never a broken link.
-    assert!(html.contains("[[ghost]]"), "{html}");
-    assert!(html.contains("[[alice/missing]]"), "{html}");
+    // A bare name is not an address: it says one word, and that word is what
+    // it would say flattened — so it stays literal prose, never a broken link.
     assert!(
-        html.contains("[[famiglia_carol/referto_oculistica]]"),
-        "the mutant grammar must stay literal: {html}"
+        html.contains("[[ghost]]"),
+        "a bare dangling name stays: {html}"
+    );
+    // A QUALIFIED address the reader may not use is not shown as an address at
+    // all. It becomes the page name the sentence was about, and nothing says
+    // whose memory it was in.
+    assert!(
+        !html.contains("alice/missing") && html.contains("a missing missing"),
+        "an address behind no readable fact is flattened to its name: {html}"
+    );
+    assert!(
+        !html.contains("famiglia_carol") && html.contains("the mutant referto_oculistica"),
+        "and so is one whose grammar the dashboard could not resolve: {html}"
     );
     assert!(
         !html.contains(r#"href="/dashboard/wiki/ghost"#),

@@ -1273,12 +1273,12 @@ async fn rendered_index_for(
 /// [`render::render_admin_reveal_segments`],
 /// so retired residue stays visible to the supervision lens.
 ///
-/// Like `wiki_read` (and the recall navigator), the **testata is stripped
-/// before rendering**: the frontmatter card (`keywords`/`description`) is
-/// owner-tier metadata, not prose, so leaving it in would leak the themes of a
-/// wiki the operator is not the default reader of (the ACL card
-/// boundary, dashboard half). The structured fields the viewer needs
-/// (`title`/`type`/`acl_default`) are shown separately from `meta`.
+/// The **testata is taken off inside the render**, on every road that serves a
+/// page: the frontmatter card (`keywords`/`description`) is owner-tier
+/// metadata, not prose, and leaving it in would hand over the themes of a wiki
+/// the operator is not the default reader of (the ACL card boundary, dashboard
+/// half). The structured fields the viewer needs (`title`/`type`/`acl_default`)
+/// are shown separately from `meta`.
 async fn project_page(
     state: &DashboardState,
     tree: &mwe_core::wiki::WikiTree,
@@ -1292,22 +1292,41 @@ async fn project_page(
         .await
         .map_err(|e| DashboardError::Internal(format!("enrollment::groups_for: {e}")))?;
     let db_acl = page_acl_map_for(state, tree, wiki_id, page, reveal).await?;
-    // Drop the testata so neither render path carries the owner-tier card.
-    let body =
-        mwe_core::wiki::MarkdownDoc::parse(raw).map_or_else(|| raw.to_owned(), |doc| doc.body);
     // `reveal` is only ever true when the caller already confirmed the
     // admin role (see `reveal_active`); it picks the operator override
-    // that shows every region. Non-reveal is the normal consumer-equivalent
+    // that shows every region — and the page whole, which is what the
+    // supervision lens is for. Non-reveal is the normal consumer-equivalent
     // declassified view. Both come back **segmented** (the dashboard-only
     // sibling of the plain render — same text when joined): each shown,
     // DB-known region carries its fact id so the HTML render can drop the
     // region → fact-record anchor after it.
-    let rendered = if reveal {
-        render::render_admin_reveal_segments(&body, &db_acl, sender_id, &sender_groups)
-    } else {
-        render::render_for_sender_segments(&body, &db_acl, sender_id, &sender_groups)
+    if reveal {
+        return Ok(render::render_admin_reveal_segments(
+            raw,
+            &db_acl,
+            sender_id,
+            &sender_groups,
+        ));
+    }
+    let handle = tree
+        .locate(wiki_id)
+        .map_err(|e| DashboardError::Internal(format!("locate {wiki_id:?}: {e}")))?;
+    let meta = handle.meta();
+    // Where this reader may be sent from here: a page NAME is content like any
+    // other, so a `[[link]]` to a page they read no fact of arrives as plain
+    // text. One card answers for every link on the page.
+    let reader_card =
+        mwe_core::meta_annotate::build_reader_card(&state.pool, tree, sender_id, &sender_groups)
+            .await
+            .map_err(|e| DashboardError::Internal(format!("build_reader_card: {e}")))?;
+    let view = render::ReaderView {
+        sender_id,
+        sender_groups: &sender_groups,
+        page: render::page_for_reader(meta, sender_id),
+        home_wiki: meta.wiki_id.as_str(),
+        may_go: Some(&reader_card),
     };
-    Ok(rendered)
+    Ok(render::render_for_sender_segments(raw, &db_acl, &view))
 }
 
 /// Rebuild the markdown handed to [`md_render`] from the segmented

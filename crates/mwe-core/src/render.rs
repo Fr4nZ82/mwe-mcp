@@ -21,19 +21,6 @@
 //!
 //! ## What gets filtered and what does not
 //!
-//! - **Free prose outside markers passes through verbatim, always.** It
-//!   is the file's narrative scaffolding — headings, paragraph
-//!   separators, the connective tissue between fact regions. The LLM
-//!   that ingests this file needs that context to understand a region it
-//!   later extracts or supersedes; the human reader needs it to
-//!   understand the sentence around a redacted block. The subject-of-last-
-//!   resort never filters prose. This was the source of an early
-//!   misimplementation —.
-//! - **Standalone embeds in prose pass through with the prose** for the
-//!   same reason — an embed sitting between two paragraphs is part of
-//!   the file context, not a fact-region in the redaction sense. Embeds
-//!   *inside* a region inherit that region's fate (the whole body —
-//!   embed included — gets kept or replaced wholesale).
 //! - **Region body** is included verbatim when visible, otherwise
 //!   replaced by the inline marker `[redacted]`. The marker sits exactly
 //!   where the region body was, so an inline region inside a sentence
@@ -42,6 +29,29 @@
 //!   paragraph on its own. This intentionally diverges from the literal
 //!   "callout" wording — the inline form preserves sentence flow,
 //!   which was the original intent (.
+//! - **Free prose outside markers is filtered too, by how much of the page
+//!   this reader is served** ([`PageForReader`], decided once by
+//!   [`page_for_reader`]). Headings, the connective tissue between regions,
+//!   a `See also:` line: none of it was said by a person, all of it was
+//!   written by the engine ABOUT somebody, and it restates what the facts on
+//!   the page say. On a PERSON's own page it goes whole to that person and
+//!   not at all to anybody else; on a group's or a subject's page a heading
+//!   and its paragraph go with the facts under them; on a markerless page
+//!   there is nothing to gate and it passes.
+//! - **`[[links]]` are filtered with it.** A qualified `[[wiki/page]]` is an
+//!   address, and an address names a page, whose memory it is in, and what it
+//!   is about — so it survives only where the reader reads a fact of the page
+//!   it points at. A bare `[[name]]` is not an address: it says the one word
+//!   flattening it would leave, so it is left alone.
+//! - **Standalone embeds in prose go where that prose goes** — an embed
+//!   sitting between two paragraphs is part of the file context, not a
+//!   fact-region in the redaction sense. Embeds *inside* a region inherit
+//!   that region's fate (the whole body — embed included — gets kept or
+//!   replaced wholesale).
+//! - **A page with no ACTIVE fact serves nothing at all.** What is left on it
+//!   is prose written around facts that are retired, forgotten, or were never
+//!   there. The night reads the file itself and the operator's reveal is its
+//!   own render, so neither is affected.
 //!
 //! ## Subject-of-last-resort semantics
 //!
@@ -66,8 +76,8 @@
 //! ## Total redaction
 //!
 //! When the file has at least one region, every region was redacted,
-//! and there is no prose with non-whitespace content to anchor the
-//! output, the result collapses internally to the single callout
+//! and no prose SURVIVED the filter above with non-whitespace content to
+//! anchor the output, the result collapses internally to the single callout
 //! "This entire page is private." What the collapse withholds is the
 //! **shape** of the page: a body of bare `[redacted]` markers would show
 //! the sender how many private fragments there are and where each sits,
@@ -242,6 +252,98 @@ fn segment_fact_id(attrs: &RegionAttrs, db_acl: &FactAclMap) -> Option<FactId> {
         .cloned()
 }
 
+/// How much of a page, beside the facts they may read, one reader is served.
+///
+/// The question is whose memory the page is in, and it is answered once by
+/// [`page_for_reader`] so the four surfaces that serve a page cannot drift.
+/// Everything a page carries and is not a fact — its headings, the prose
+/// between the facts, a `See also:` line — was written by the engine ABOUT
+/// somebody, and it restates what the facts say. Serving it to a reader who
+/// may not read those facts hands them the thing the ACL was holding back
+/// (founder, 2026-09-14).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum PageForReader {
+    /// Every word of the page, with the facts on it gated one by one and
+    /// nothing else withheld. A markerless page — a smart wiki's, where the
+    /// gate was the wiki and has already been passed — and any text gated
+    /// from its own inline markers rather than from the index.
+    AsWritten,
+    /// The whole page, and nothing at all once its last active fact is gone:
+    /// what is left then is the prose the engine wrote around facts that are
+    /// not there. The person whose memory it is, reading their own.
+    Whole,
+    /// The facts this reader may read, one per line, and nothing else.
+    /// Somebody ELSE's memory.
+    FactsAlone,
+    /// Section by section: a heading and the prose under it are served when
+    /// the reader may read a fact of that section, and vanish with it when
+    /// they may not. A group's memory, or a subject's.
+    SectionBySection,
+}
+
+/// Which of the four [`PageForReader`] a page in `meta` is for `sender_id`.
+///
+/// A PERSON's own memory is the one wiki whose prose is about one person: the
+/// person reads it whole, and anybody else reads its facts alone. Everything
+/// else a standard wiki can be — a group's, a subject's, an assistant's — is
+/// written about many, and there a SECTION is the unit: whoever reads a fact
+/// of it reads the words around it.
+#[must_use]
+pub fn page_for_reader(meta: &crate::wiki::WikiMeta, sender_id: &str) -> PageForReader {
+    if meta.smart {
+        return PageForReader::AsWritten;
+    }
+    let a_persons_own = meta.wiki_type == crate::wiki::IDENTITY_WIKI_TYPE
+        && meta.parent_wiki_id.is_none()
+        && !meta.is_agent;
+    if a_persons_own {
+        if meta.wiki_id.as_str() == sender_id {
+            return PageForReader::Whole;
+        }
+        return PageForReader::FactsAlone;
+    }
+    PageForReader::SectionBySection
+}
+
+/// Everything the render needs about the reader and the page they asked for.
+///
+/// The permissions are worked out by the caller, which is the half that may
+/// touch the database; the render itself stays pure.
+#[derive(Clone, Copy)]
+pub struct ReaderView<'a> {
+    /// Who is reading.
+    pub sender_id: &'a str,
+    /// The groups they belong to, for [`can_read`].
+    pub sender_groups: &'a [String],
+    /// How much of the page they are served.
+    pub page: PageForReader,
+    /// The wiki this page lives in, so a bare `[[page]]` resolves against it.
+    pub home_wiki: &'a str,
+    /// Where this reader may be sent. A `[[link]]` to a page they read no
+    /// fact of becomes the name it points at, because a page's NAME is
+    /// content like any other prose. `None` leaves every link as written —
+    /// for a markerless page, and for an injected copy that has nothing to
+    /// navigate from anyway.
+    pub may_go: Option<&'a crate::meta_annotate::ReaderCard>,
+}
+
+impl<'a> ReaderView<'a> {
+    /// The view of a page whose only gate is its facts: every word of it is
+    /// served, each region asked of [`can_read`], and every `[[link]]` left as
+    /// written. What a markerless page gets, and what a fragment gated from
+    /// its own inline markers gets.
+    #[must_use]
+    pub const fn as_written(sender_id: &'a str, sender_groups: &'a [String]) -> Self {
+        Self {
+            sender_id,
+            sender_groups,
+            page: PageForReader::AsWritten,
+            home_wiki: "",
+            may_go: None,
+        }
+    }
+}
+
 /// Does this line of prose give a redacted page something to stand on?
 ///
 /// The total-redaction collapse asks whether anything outside the fact regions
@@ -259,31 +361,189 @@ fn anchors_a_redacted_page(line: &str) -> bool {
     !line.trim().is_empty() && !crate::wiki::is_engine_furniture(line)
 }
 
-/// Render `text` for `sender_id`, applying the redaction policy.
+/// The `See also:` line the compiler writes under a page served as its bare
+/// facts — a list of addresses and nothing else. Its entries are removed
+/// rather than flattened when the reader may not follow them, because a name
+/// with no sentence around it is not holding any sentence together.
+const SEE_ALSO_PREFIX: &str = "See also:";
+
+/// May this reader be sent where this link points?
 ///
-/// `db_acl` is the page's authoritative fact-key → ACL map loaded from
-/// the engine DB ([`crate::fact_index::page_acl_map`]); a region whose
-/// fact key is in the map is gated by the DB record alone, the inline
-/// attributes only gate the regions the map does not cover (see module
-/// docs). Pass an empty map to render from inline attributes only —
-/// e.g. for text that never went through capture.
+/// **A qualified `[[wiki/page]]` is an ADDRESS**, and an address the reader
+/// may not use tells them a page exists, in whose memory, and what it is
+/// about. So it survives only where they demonstrably read a fact of the page
+/// it names — which a page of a markerless wiki never does, since it holds no
+/// facts at all.
+///
+/// **A bare `[[name]]` is not an address and is left alone.** It carries one
+/// word, and that word is exactly what flattening it would leave behind
+/// ([`crate::ingest::wikilink_label`] takes the last path segment), so taking
+/// the brackets off tells the reader nothing it did not already say — while
+/// costing the navigator the rail it walks on. Which page a bare name resolves
+/// to is a question only the tree can answer, and the answer is asked again,
+/// against this same reader, before any page is opened.
+fn may_follow(inner: &str, view: &ReaderView<'_>) -> bool {
+    let Some(card) = view.may_go else {
+        return true;
+    };
+    let target = inner.split('|').next().unwrap_or(inner).trim();
+    let Some((wiki, page)) = target.split_once('/') else {
+        return true;
+    };
+    let page = page.trim();
+    let stem = page.strip_suffix(".md").unwrap_or(page);
+    let wiki = wiki.trim();
+    card.reader_can_read_page(wiki, &format!("wikis/{wiki}/{stem}.md"))
+}
+
+/// Rewrite one line of prose so it names only what this reader may open.
+///
+/// A link they may follow is left exactly as written. One they may not becomes
+/// the name it points at ([`crate::ingest::wikilink_label`], the same rule an
+/// injected copy uses): deleting it outright would leave the sentence
+/// mutilated, and leaving it would hand them an address they cannot use and a
+/// page name they were not to be told.
+///
+/// Returns `None` when the line was a `See also:` list and nothing on it
+/// survived — an empty list of addresses is not a line, it is a leftover.
+fn line_for_reader(line: &str, view: &ReaderView<'_>) -> Option<String> {
+    if view.may_go.is_none() {
+        return Some(line.to_owned());
+    }
+    let see_also = line.trim_start().starts_with(SEE_ALSO_PREFIX);
+    let mut out = String::with_capacity(line.len());
+    let mut kept: Vec<String> = Vec::new();
+    let mut rest = line;
+    while let Some(open) = rest.find("[[") {
+        let (before, from_open) = rest.split_at(open);
+        let Some(close) = from_open.find("]]") else {
+            break;
+        };
+        let inner = &from_open[2..close];
+        if see_also {
+            if may_follow(inner, view) {
+                kept.push(format!("[[{inner}]]"));
+            }
+        } else {
+            out.push_str(before);
+            if may_follow(inner, view) {
+                out.push_str(&from_open[..=close + 1]);
+            } else {
+                out.push_str(crate::ingest::wikilink_label(inner));
+            }
+        }
+        rest = &from_open[close + 2..];
+    }
+    if see_also {
+        if kept.is_empty() {
+            return None;
+        }
+        let indent: String = line.chars().take_while(|c| c.is_whitespace()).collect();
+        return Some(format!("{indent}{SEE_ALSO_PREFIX} {}", kept.join(", ")));
+    }
+    out.push_str(rest);
+    Some(out)
+}
+
+/// Rewrite a run of prose for this reader, line by line.
+fn prose_for_reader(prose: &str, view: &ReaderView<'_>) -> String {
+    if view.may_go.is_none() || !prose.contains("[[") {
+        return prose.to_owned();
+    }
+    let mut out = String::with_capacity(prose.len());
+    let mut rest = prose;
+    while let Some(nl) = rest.find('\n') {
+        if let Some(line) = line_for_reader(&rest[..nl], view) {
+            out.push_str(&line);
+            out.push('\n');
+        }
+        rest = &rest[nl + 1..];
+    }
+    if !rest.is_empty()
+        && let Some(line) = line_for_reader(rest, view)
+    {
+        out.push_str(&line);
+    }
+    out
+}
+
+/// Does this line open a new section?
+///
+/// An ATX heading of any level. The section it opens runs to the next one, and
+/// it is the unit [`PageForReader::SectionBySection`] serves or withholds.
+fn opens_a_section(line: &str) -> bool {
+    let t = line.trim_start();
+    t.starts_with('#') && t.trim_start_matches('#').starts_with(' ')
+}
+
+/// One run of the page, tagged with the section it belongs to.
+enum Piece {
+    /// Prose, already rewritten for the reader.
+    Prose(String),
+    /// A region: its body, whether this reader may read it, and its fact id.
+    Region {
+        body: String,
+        visible: bool,
+        fact_id: Option<FactId>,
+    },
+}
+
+/// Split one run of prose into the sections it spans.
+///
+/// Each item is `(opens a new section, the run)`. A heading line starts a run
+/// and flags it; everything before the first heading belongs to the run that
+/// was already open.
+fn split_at_headings(chunk: &str) -> Vec<(bool, &str)> {
+    let mut runs: Vec<(bool, &str)> = Vec::new();
+    let mut run_start = 0usize;
+    let mut run_is_new = false;
+    let mut at = 0usize;
+    for line in chunk.split_inclusive('\n') {
+        if opens_a_section(line) {
+            if at > run_start {
+                runs.push((run_is_new, &chunk[run_start..at]));
+            }
+            run_start = at;
+            run_is_new = true;
+        }
+        at += line.len();
+    }
+    if at > run_start || runs.is_empty() {
+        runs.push((run_is_new, &chunk[run_start..]));
+    }
+    runs
+}
+
+/// Render a page for one reader, applying the redaction policy and serving
+/// only as much of what is NOT a fact as [`ReaderView::page`] allows.
+///
+/// The page's own testata (its `description`, its keys) is taken off here, in
+/// the one place that serves a page to a reader, so no surface has to remember
+/// to do it.
+///
+/// `db_acl` is the page's authoritative fact-key → ACL map loaded from the
+/// engine DB ([`crate::fact_index::page_acl_map_active`]); a region whose fact
+/// key is in the map is gated **entirely** by the DB record (subject, allow,
+/// sender — the inline attributes are ignored, and the subject is always
+/// explicit there). The inline marker attributes remain the fallback for
+/// regions the map does not know — a file not yet indexed, or a marker without
+/// `f=` — with the region's own `sender` as the subject of last resort (see
+/// "Subject-of-last-resort semantics" in the module docs).
+///
+/// **An EMPTY map means the page has no active fact left**, and then nothing
+/// of it is served: what remains on disk is the prose the engine wrote around
+/// facts that are retired, forgotten, or were never there, and that prose
+/// restates what they said. The exception is [`PageForReader::AsWritten`], a
+/// markerless page, which has no facts by construction and whose gate was the
+/// wiki.
 ///
 /// A region with no inline `subject=` and not covered by `db_acl` falls back to
 /// its own captured `sender`, and is left unreadable when it has neither —
 /// never to the wiki's scope principal, which is why that principal is not a
-/// parameter. It does **not** filter prose or standalone embeds — those always
-/// pass through (see module docs).
-///
-/// `sender_groups` is the list of group ids the sender belongs to (used
-/// by `acl::can_read` for group-membership checks).
+/// parameter.
 #[must_use]
-pub fn render_for_sender(
-    text: &str,
-    db_acl: &FactAclMap,
-    sender_id: &str,
-    sender_groups: &[String],
-) -> RenderOutput {
-    render_for_sender_segments(text, db_acl, sender_id, sender_groups).into_output()
+pub fn render_for_sender(text: &str, db_acl: &FactAclMap, view: &ReaderView<'_>) -> RenderOutput {
+    render_for_sender_segments(text, db_acl, view).into_output()
 }
 
 /// Segment-emitting sibling of [`render_for_sender`].
@@ -298,63 +558,126 @@ pub fn render_for_sender(
 pub fn render_for_sender_segments(
     text: &str,
     db_acl: &FactAclMap,
-    sender_id: &str,
-    sender_groups: &[String],
+    view: &ReaderView<'_>,
 ) -> SegmentedRenderOutput {
-    let parsed = parse(text);
+    let doc = crate::wiki::MarkdownDoc::parse(text);
+    let body: &str = doc.as_ref().map_or(text, |d| d.body.as_str());
 
-    let mut out = SegmentedRenderOutput::default();
+    // The map IS the page's active facts, so an empty one says the page has
+    // none left and nothing of it is served — see the doc comment. A
+    // markerless page never had any and is the one exception.
+    if view.page != PageForReader::AsWritten && db_acl.is_empty() {
+        return SegmentedRenderOutput::default();
+    }
+
+    let parsed = parse(body);
+    let mut pieces: Vec<(usize, Piece)> = Vec::new();
+    let mut section = 0usize;
     let mut n_regions = 0usize;
-    let mut visible_regions = 0usize;
-    let mut has_meaningful_prose = false;
-
     for ev in &parsed.events {
         match ev {
-            ParseEvent::Prose { text: body, .. } => {
-                // Prose always passes through — it is the narrative
-                // scaffolding of the file (headings, sentence connective
-                // tissue around inline regions, paragraph separators).
-                // Both the consumer LLM and the human reader need this
-                // context to interpret the surrounding regions.
-                out.push_plain(body);
-                if body.lines().any(anchors_a_redacted_page) {
-                    has_meaningful_prose = true;
+            ParseEvent::Prose { text: chunk, .. } => {
+                for (opens, run) in split_at_headings(chunk) {
+                    if opens {
+                        section += 1;
+                    }
+                    pieces.push((section, Piece::Prose(prose_for_reader(run, view))));
                 }
             },
-            ParseEvent::Region { attrs, body, .. } => {
+            ParseEvent::Region {
+                attrs,
+                body: region,
+                ..
+            } => {
                 n_regions += 1;
                 let (resolved, sender_of_region) = resolve_region_acl(attrs, db_acl);
-                // Cross-user attribution: pass the full principal — it
-                // may be User (Galadriel wrote about Gollum), Group
-                // (family microphone), or Global (public capture
-                // device). `can_read` treats it as an extra principal
-                // in the effective ACL.
-                if can_read(&resolved, sender_id, sender_groups, sender_of_region) {
-                    out.push_region(body, segment_fact_id(attrs, db_acl));
-                    visible_regions += 1;
-                } else {
-                    out.push_plain(REDACTED_INLINE_MARKER);
-                    out.blocks_redacted += 1;
-                }
+                // Cross-user attribution: pass the full principal — it may be
+                // User (Galadriel wrote about Gollum), Group (family
+                // microphone), or Global (public capture device). `can_read`
+                // treats it as an extra principal in the effective ACL.
+                let visible = can_read(
+                    &resolved,
+                    view.sender_id,
+                    view.sender_groups,
+                    sender_of_region,
+                );
+                pieces.push((
+                    section,
+                    Piece::Region {
+                        body: region.clone(),
+                        visible,
+                        fact_id: segment_fact_id(attrs, db_acl),
+                    },
+                ));
             },
             ParseEvent::Embed { start, end, .. } => {
-                // A standalone embed sits in the surrounding prose: it
-                // is part of the file context, not a fact-region. An
-                // embed *inside* a region is already part of that
-                // region's body (which we either kept or replaced
-                // wholesale above), so this branch only fires for the
-                // standalone case.
-                out.push_plain(&text[*start..*end]);
+                // A standalone embed sits in the surrounding prose: it is part
+                // of the file context, not a fact-region, and it goes wherever
+                // that prose goes. An embed *inside* a region is already part
+                // of that region's body.
+                pieces.push((section, Piece::Prose(body[*start..*end].to_owned())));
             },
         }
     }
 
-    // An internal detection, deliberately not a field on `RenderOutput`: it
-    // decides whether to collapse the output to the single callout, and the
-    // caller observes the collapse through the text itself. Count-privacy is
-    // preserved either way, and one fewer boolean is one fewer thing a caller
-    // can branch on.
-    let collapse_to_callout = n_regions > 0 && visible_regions == 0 && !has_meaningful_prose;
+    let sections_with_a_readable_fact: std::collections::BTreeSet<usize> = pieces
+        .iter()
+        .filter_map(|(sec, piece)| {
+            matches!(piece, Piece::Region { visible: true, .. }).then_some(*sec)
+        })
+        .collect();
+
+    let mut out = SegmentedRenderOutput::default();
+    let mut visible_regions = 0usize;
+    let mut kept_prose = false;
+    for (sec, piece) in &pieces {
+        match piece {
+            Piece::Prose(run) => {
+                let serve = match view.page {
+                    PageForReader::AsWritten | PageForReader::Whole => true,
+                    PageForReader::FactsAlone => false,
+                    PageForReader::SectionBySection => sections_with_a_readable_fact.contains(sec),
+                };
+                if serve {
+                    out.push_plain(run);
+                    if run.lines().any(anchors_a_redacted_page) {
+                        kept_prose = true;
+                    }
+                }
+            },
+            Piece::Region {
+                body: region,
+                visible,
+                fact_id,
+            } => {
+                if *visible {
+                    if view.page == PageForReader::FactsAlone {
+                        out.push_region(region.trim(), fact_id.clone());
+                        out.push_plain("\n");
+                    } else {
+                        out.push_region(region, fact_id.clone());
+                    }
+                    visible_regions += 1;
+                } else {
+                    // Served facts alone, a withheld one leaves no mark: the
+                    // reader is being shown the facts that are theirs to read,
+                    // not the shape of somebody else's page. The count still
+                    // reaches them — `blocks_redacted` is not a secret, the
+                    // layout is.
+                    if view.page != PageForReader::FactsAlone {
+                        out.push_plain(REDACTED_INLINE_MARKER);
+                    }
+                    out.blocks_redacted += 1;
+                }
+            },
+        }
+    }
+
+    // Asked of what SURVIVED, not of what was on disk: a page whose prose was
+    // withheld has nothing left to stand on, whatever the file says. An
+    // internal detection, deliberately not a field on `RenderOutput` — the
+    // caller observes the collapse through the text itself.
+    let collapse_to_callout = n_regions > 0 && visible_regions == 0 && !kept_prose;
     if collapse_to_callout {
         out.segments = vec![RenderSegment {
             text: FULLY_PRIVATE_CALLOUT.to_owned(),
@@ -399,7 +722,9 @@ pub fn render_admin_reveal_segments(
     sender_id: &str,
     sender_groups: &[String],
 ) -> SegmentedRenderOutput {
-    let parsed = parse(text);
+    let doc = crate::wiki::MarkdownDoc::parse(text);
+    let body: &str = doc.as_ref().map_or(text, |d| d.body.as_str());
+    let parsed = parse(body);
 
     let mut out = SegmentedRenderOutput::default();
 
@@ -438,7 +763,7 @@ pub fn render_admin_reveal_segments(
                     out.blocks_revealed += 1;
                 }
             },
-            ParseEvent::Embed { start, end, .. } => out.push_plain(&text[*start..*end]),
+            ParseEvent::Embed { start, end, .. } => out.push_plain(&body[*start..*end]),
         }
     }
 
@@ -541,6 +866,304 @@ mod tests {
         map
     }
 
+    /// Two facts on one page, with prose between them and a heading over them.
+    fn two_facts_and_prose() -> String {
+        format!(
+            "# Health\n\nThe doctor was seen in May.\n\n\
+             {{{{subject=global f={SAMPLE_UUID_V7}}}}}anybody may read this{{{{/}}}}\n\n\
+             ## Private\n\nAnd this paragraph explains the next one.\n\n\
+             {{{{subject=user:alice f=018f1234-5678-7abc-9def-0123456789cd}}}}\
+             hers alone{{{{/}}}}\n"
+        )
+    }
+
+    /// The map both facts of [`two_facts_and_prose`] are known by.
+    fn two_facts_map() -> FactAclMap {
+        let mut map = db_acl("global", &[], None);
+        map.insert(
+            FactId::parse("018f1234-5678-7abc-9def-0123456789cd").unwrap(),
+            RegionAcl {
+                subject: "user:alice".parse().unwrap(),
+                allow: Vec::new(),
+                sender: None,
+            },
+        );
+        map
+    }
+
+    fn view(
+        page: PageForReader,
+        sender: &'static str,
+        groups: &'static [String],
+    ) -> ReaderView<'static> {
+        ReaderView {
+            sender_id: sender,
+            sender_groups: groups,
+            page,
+            home_wiki: "alice",
+            may_go: None,
+        }
+    }
+
+    /// **Somebody else's memory is served as the facts you may read, and the
+    /// words around them stay where they were written.**
+    ///
+    /// The prose on a person's page was written ABOUT that person, and it
+    /// restates what their facts say — so handing it to another reader hands
+    /// them the thing the ACL was holding back. Nor is the SHAPE of the page
+    /// theirs to see: no `[redacted]` marks the spot, because knowing there
+    /// was something there, and where, is knowing something.
+    #[test]
+    fn somebody_elses_memory_is_served_as_the_facts_they_may_read() {
+        let input = two_facts_and_prose();
+        let out = render_for_sender(
+            &input,
+            &two_facts_map(),
+            &view(PageForReader::FactsAlone, "bob", &[]),
+        );
+        assert!(out.text.contains("anybody may read this"));
+        assert!(!out.text.contains("hers alone"));
+        assert!(!out.text.contains("The doctor was seen in May."));
+        assert!(!out.text.contains("# Health"));
+        assert!(!out.text.contains("## Private"));
+        assert!(!out.text.contains("[redacted]"), "{}", out.text);
+        assert_eq!(out.blocks_redacted, 1, "the count is still hers to have");
+    }
+
+    /// The same page read by the person whose memory it is: whole.
+    #[test]
+    fn your_own_memory_comes_back_as_it_was_written() {
+        let input = two_facts_and_prose();
+        let out = render_for_sender(
+            &input,
+            &two_facts_map(),
+            &view(PageForReader::Whole, "alice", &[]),
+        );
+        assert!(out.text.contains("The doctor was seen in May."));
+        assert!(out.text.contains("## Private"));
+        assert!(out.text.contains("hers alone"));
+        assert_eq!(out.blocks_redacted, 0);
+    }
+
+    /// **On a page nobody owns alone, a heading and its prose go with the
+    /// facts under them.**
+    ///
+    /// A group's page, or a subject's, is written about many people, so the
+    /// unit is the SECTION: whoever reads a fact of it reads the words around
+    /// it, and whoever reads none of them gets neither the heading nor the
+    /// paragraph — only the mark that says a fact stood here.
+    #[test]
+    fn a_section_goes_with_the_facts_under_it() {
+        let input = two_facts_and_prose();
+        let out = render_for_sender(
+            &input,
+            &two_facts_map(),
+            &view(PageForReader::SectionBySection, "bob", &[]),
+        );
+        assert!(out.text.contains("# Health"));
+        assert!(out.text.contains("The doctor was seen in May."));
+        assert!(out.text.contains("anybody may read this"));
+        assert!(
+            !out.text.contains("## Private")
+                && !out
+                    .text
+                    .contains("And this paragraph explains the next one."),
+            "the section he reads no fact of goes with it: {}",
+            out.text
+        );
+        assert!(out.text.contains("[redacted]"), "{}", out.text);
+    }
+
+    /// **A page whose last active fact is gone serves nothing to anybody.**
+    ///
+    /// What is left on it is the prose the engine wrote around facts that are
+    /// not there — retired, forgotten, or never written — and that prose still
+    /// says what they said. The page's own reader gets it no more than a
+    /// stranger does; the night reads the file itself, and the operator's
+    /// reveal is its own render.
+    #[test]
+    fn a_page_with_no_active_fact_serves_nothing() {
+        let input = two_facts_and_prose();
+        for page in [
+            PageForReader::Whole,
+            PageForReader::FactsAlone,
+            PageForReader::SectionBySection,
+        ] {
+            let out = render_for_sender(&input, &no_db(), &view(page, "alice", &[]));
+            assert_eq!(out.text, "", "{page:?} served something: {}", out.text);
+        }
+        // A markerless page is the exception, and it is not one: it never had
+        // facts to lose, and the gate it passed was the wiki.
+        let out = render_for_sender(
+            &input,
+            &no_db(),
+            &view(PageForReader::AsWritten, "alice", &[]),
+        );
+        assert!(out.text.contains("The doctor was seen in May."));
+    }
+
+    /// A reader card built over two pages: one the reader may read a fact of,
+    /// one they may not.
+    async fn card_over_two_pages(
+        reader: &str,
+    ) -> (tempfile::TempDir, crate::meta_annotate::ReaderCard) {
+        use sqlx::sqlite::SqlitePoolOptions;
+        let pool = SqlitePoolOptions::new()
+            .max_connections(1)
+            .connect("sqlite::memory:")
+            .await
+            .expect("pool");
+        sqlx::migrate!("../../migrations")
+            .run(&pool)
+            .await
+            .expect("migrations");
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::create_dir_all(dir.path().join("wikis")).unwrap();
+        let tree = crate::wiki::WikiTree::open(dir.path()).unwrap();
+        for who in ["alice", "zoe"] {
+            crate::wiki::create_identity_wiki(
+                &tree,
+                &crate::types::WikiId::parse(who).unwrap(),
+                who,
+                crate::wiki::IdentityKind::User,
+            )
+            .unwrap();
+        }
+        let tree = crate::wiki::WikiTree::open(dir.path()).unwrap();
+        for (n, wiki, page, subject) in [
+            (1u8, "alice", "shopping.md", "global"),
+            (2, "zoe", "private.md", "user:zoe"),
+        ] {
+            crate::fact_index::insert(
+                &pool,
+                &crate::fact_index::NewFact {
+                    fact_id: FactId::parse(&format!("018f1234-5678-7abc-9def-01234567{n:02x}00"))
+                        .unwrap(),
+                    wiki_id: wiki.to_owned(),
+                    source_path: format!("wikis/{wiki}/{page}"),
+                    region_start: None,
+                    region_end: None,
+                    text: "body".to_owned(),
+                    embedding: vec![0.0; 4],
+                    subject_id: subject.parse().unwrap(),
+                    allow_ids: Vec::new(),
+                    sender_id: None,
+                    subject_external: None,
+                    slot: None,
+                    slot_value: None,
+                    authored_refs: Vec::new(),
+                    fact_type: None,
+                    topics: Vec::new(),
+                    valid_from: None,
+                    valid_to: None,
+                    salience: None,
+                    target_page: None,
+                    style: None,
+                    source_ref: None,
+                },
+            )
+            .await
+            .unwrap();
+        }
+        let card = crate::meta_annotate::build_reader_card(&pool, &tree, reader, &[])
+            .await
+            .unwrap();
+        (dir, card)
+    }
+
+    /// **An address the reader cannot use is not served as an address.**
+    ///
+    /// `[[zoe/private]]` says three things at once: that a page exists, whose
+    /// memory it is in, and what it is about. A reader who may read no fact of
+    /// it has been told all three. So the address becomes the name the
+    /// sentence was already about, and the sentence still reads.
+    ///
+    /// Zoe herself follows it, on the very same page — the rule is about the
+    /// reader, not about the link.
+    #[tokio::test]
+    async fn an_address_the_reader_may_not_use_is_not_served_as_one() {
+        let input = format!(
+            "The list is in [[alice/shopping]] and the rest in [[zoe/private]].\n\n\
+             {{{{subject=global f={SAMPLE_UUID_V7}}}}}a fact{{{{/}}}}\n"
+        );
+        let map = db_acl("global", &[], None);
+
+        let (_d, alices) = card_over_two_pages("alice").await;
+        let out = render_for_sender(
+            &input,
+            &map,
+            &ReaderView {
+                sender_id: "alice",
+                sender_groups: &[],
+                page: PageForReader::SectionBySection,
+                home_wiki: "famiglia",
+                may_go: Some(&alices),
+            },
+        );
+        assert!(out.text.contains("[[alice/shopping]]"), "{}", out.text);
+        assert!(
+            !out.text.contains("zoe/private") && out.text.contains("the rest in private."),
+            "zoe's page is named to alice as a bare noun, not as an address: {}",
+            out.text
+        );
+
+        let (_d, zoes) = card_over_two_pages("zoe").await;
+        let out = render_for_sender(
+            &input,
+            &map,
+            &ReaderView {
+                sender_id: "zoe",
+                sender_groups: &[],
+                page: PageForReader::SectionBySection,
+                home_wiki: "famiglia",
+                may_go: Some(&zoes),
+            },
+        );
+        assert!(out.text.contains("[[zoe/private]]"), "{}", out.text);
+    }
+
+    /// **A `See also:` line loses the entry, not its brackets — and an empty
+    /// one goes.**
+    ///
+    /// That line is a list of addresses and nothing else, so a name with no
+    /// sentence around it is holding nothing together: flattening it would
+    /// leave a bare word pretending to be a destination.
+    #[tokio::test]
+    async fn a_see_also_line_loses_what_the_reader_may_not_follow() {
+        let map = db_acl("global", &[], None);
+        let (_d, alices) = card_over_two_pages("alice").await;
+        let view = ReaderView {
+            sender_id: "alice",
+            sender_groups: &[],
+            page: PageForReader::SectionBySection,
+            home_wiki: "famiglia",
+            may_go: Some(&alices),
+        };
+
+        let input = format!(
+            "{{{{subject=global f={SAMPLE_UUID_V7}}}}}a fact{{{{/}}}}\n\n\
+             See also: [[alice/shopping]], [[zoe/private]]\n"
+        );
+        let out = render_for_sender(&input, &map, &view);
+        assert!(
+            out.text.contains("See also: [[alice/shopping]]"),
+            "{}",
+            out.text
+        );
+        assert!(!out.text.contains("zoe"), "{}", out.text);
+
+        let only_hers = format!(
+            "{{{{subject=global f={SAMPLE_UUID_V7}}}}}a fact{{{{/}}}}\n\n\
+             See also: [[zoe/private]]\n"
+        );
+        let out = render_for_sender(&only_hers, &map, &view);
+        assert!(
+            !out.text.contains("See also"),
+            "an empty list is not a line: {}",
+            out.text
+        );
+    }
+
     /// Canonical 3-region scenario (adapted
     /// to `UUIDv7`-format `fact_id`s).
     ///
@@ -565,7 +1188,7 @@ l'edit composition\" parla di questa cosa.\n{{{{/}}}}\n"
     #[test]
     fn alice_sees_everything_in_her_own_file() {
         let input = modello_memoria_5_input();
-        let out = render_for_sender(&input, &no_db(), "alice", &[]);
+        let out = render_for_sender(&input, &no_db(), &ReaderView::as_written("alice", &[]));
         assert_ne!(out.text, FULLY_PRIVATE_CALLOUT);
         assert_eq!(out.blocks_redacted, 0);
         assert!(out.text.contains("Endpoint del Widget Pro"));
@@ -576,7 +1199,11 @@ l'edit composition\" parla di questa cosa.\n{{{{/}}}}\n"
     #[test]
     fn bob_in_team_sees_global_and_team_with_callout_for_alice_region() {
         let input = modello_memoria_5_input();
-        let out = render_for_sender(&input, &no_db(), "bob", &groups(&["team"]));
+        let out = render_for_sender(
+            &input,
+            &no_db(),
+            &ReaderView::as_written("bob", &groups(&["team"])),
+        );
         assert_ne!(out.text, FULLY_PRIVATE_CALLOUT);
         // Region with owner=user:alice is redacted → 1 block redacted.
         assert_eq!(out.blocks_redacted, 1);
@@ -595,7 +1222,11 @@ l'edit composition\" parla di questa cosa.\n{{{{/}}}}\n"
     #[test]
     fn carol_outsider_sees_scaffolding_and_global_with_two_callouts() {
         let input = modello_memoria_5_input();
-        let out = render_for_sender(&input, &no_db(), "carol", &groups(&["sales"]));
+        let out = render_for_sender(
+            &input,
+            &no_db(),
+            &ReaderView::as_written("carol", &groups(&["sales"])),
+        );
         assert_ne!(
             out.text, FULLY_PRIVATE_CALLOUT,
             "scaffolding prose keeps it from total"
@@ -629,7 +1260,7 @@ l'edit composition\" parla di questa cosa.\n{{{{/}}}}\n"
             "Alice pesa {{{{subject=user:alice f={SAMPLE_UUID_V7}}}}}72 kg{{{{/}}}} \
 al 10 maggio, ha {{{{subject=global f={SAMPLE_UUID_V7}}}}}tagliato i capelli{{{{/}}}} ieri."
         );
-        let out = render_for_sender(&input, &no_db(), "bob", &[]);
+        let out = render_for_sender(&input, &no_db(), &ReaderView::as_written("bob", &[]));
         assert!(out.text.contains("Alice pesa"));
         assert!(out.text.contains("al 10 maggio, ha"));
         assert!(out.text.contains("tagliato i capelli"));
@@ -652,7 +1283,7 @@ al 10 maggio, ha {{{{subject=global f={SAMPLE_UUID_V7}}}}}tagliato i capelli{{{{
             "before {{{{sender=user:alice f={SAMPLE_UUID_V7}}}}}private body{{{{/}}}} after"
         );
         // Alice (the sender) sees the body.
-        let out = render_for_sender(&input, &no_db(), "alice", &[]);
+        let out = render_for_sender(&input, &no_db(), &ReaderView::as_written("alice", &[]));
         assert!(out.text.contains("private body"));
         assert!(out.text.contains("before "));
         assert!(out.text.contains(" after"));
@@ -660,7 +1291,7 @@ al 10 maggio, ha {{{{subject=global f={SAMPLE_UUID_V7}}}}}tagliato i capelli{{{{
         assert_ne!(out.text, FULLY_PRIVATE_CALLOUT);
         // Bob does not see the body, but he still sees the surrounding prose —
         // and the callout in the body's place.
-        let out = render_for_sender(&input, &no_db(), "bob", &[]);
+        let out = render_for_sender(&input, &no_db(), &ReaderView::as_written("bob", &[]));
         assert!(!out.text.contains("private body"));
         assert!(out.text.contains("before "));
         assert!(out.text.contains(" after"));
@@ -679,7 +1310,7 @@ al 10 maggio, ha {{{{subject=global f={SAMPLE_UUID_V7}}}}}tagliato i capelli{{{{
         // alice here is that principal: a fact's ACL is the fact's, not the
         // category's.
         let input = format!("before {{{{f={SAMPLE_UUID_V7}}}}}orphan body{{{{/}}}} after");
-        let out = render_for_sender(&input, &no_db(), "alice", &[]);
+        let out = render_for_sender(&input, &no_db(), &ReaderView::as_written("alice", &[]));
         assert!(
             !out.text.contains("orphan body"),
             "no subject, no sender ⇒ invisible"
@@ -706,7 +1337,7 @@ al 10 maggio, ha {{{{subject=global f={SAMPLE_UUID_V7}}}}}tagliato i capelli{{{{
         // exercised through the whole render path and not only in the parser.
         let input =
             format!("before {{{{owner=user:bob f={SAMPLE_UUID_V7}}}}}bob's weight{{{{/}}}} after");
-        let for_alice = render_for_sender(&input, &no_db(), "alice", &[]);
+        let for_alice = render_for_sender(&input, &no_db(), &ReaderView::as_written("alice", &[]));
         assert!(
             !for_alice.text.contains("bob's weight"),
             "the wiki's proprietor is not a reader of every fact filed in it"
@@ -714,7 +1345,7 @@ al 10 maggio, ha {{{{subject=global f={SAMPLE_UUID_V7}}}}}tagliato i capelli{{{{
         assert_eq!(for_alice.blocks_redacted, 1);
 
         // …and the fact is not lost, only withheld: its own subject reads it.
-        let for_bob = render_for_sender(&input, &no_db(), "bob", &[]);
+        let for_bob = render_for_sender(&input, &no_db(), &ReaderView::as_written("bob", &[]));
         assert!(for_bob.text.contains("bob's weight"));
         assert_eq!(for_bob.blocks_redacted, 0);
     }
@@ -732,18 +1363,30 @@ al 10 maggio, ha {{{{subject=global f={SAMPLE_UUID_V7}}}}}tagliato i capelli{{{{
 Sméagol stamattina ha brontolato a colazione.{{{{/}}}}"
         );
         // Galadriel ∈ famiglia → reads via sender shortcut.
-        let out = render_for_sender(&input, &no_db(), "galadriel", &groups(&["famiglia"]));
+        let out = render_for_sender(
+            &input,
+            &no_db(),
+            &ReaderView::as_written("galadriel", &groups(&["famiglia"])),
+        );
         assert!(out.text.contains("Sméagol stamattina"));
         assert_eq!(out.blocks_redacted, 0);
 
         // Frodo ∈ famiglia → also reads.
-        let out = render_for_sender(&input, &no_db(), "frodo", &groups(&["famiglia"]));
+        let out = render_for_sender(
+            &input,
+            &no_db(),
+            &ReaderView::as_written("frodo", &groups(&["famiglia"])),
+        );
         assert!(out.text.contains("Sméagol stamattina"));
 
         // Bilbo ∈ amici only → does NOT read (still hits the inline
         // `[redacted]` marker but the file collapses to total-redaction
         // because there is no prose to anchor the output).
-        let out = render_for_sender(&input, &no_db(), "bilbo", &groups(&["amici"]));
+        let out = render_for_sender(
+            &input,
+            &no_db(),
+            &ReaderView::as_written("bilbo", &groups(&["amici"])),
+        );
         assert!(!out.text.contains("Sméagol stamattina"));
         assert_eq!(out.blocks_redacted, 1);
         // The total-redaction signal is observable as the
@@ -770,7 +1413,11 @@ Il secondo fatto.{{{{/}}}}"
         );
 
         // The reader who may read none of it is told one thing and no more.
-        let out = render_for_sender(&private, &no_db(), "bilbo", &groups(&["amici"]));
+        let out = render_for_sender(
+            &private,
+            &no_db(),
+            &ReaderView::as_written("bilbo", &groups(&["amici"])),
+        );
         assert_eq!(
             out.text, FULLY_PRIVATE_CALLOUT,
             "a separator must not keep the page from collapsing: {}",
@@ -779,7 +1426,11 @@ Il secondo fatto.{{{{/}}}}"
         assert_eq!(out.blocks_redacted, 2, "and the count is still carried");
 
         // The reader who may read it gets the page, separator included.
-        let out = render_for_sender(&private, &no_db(), "frodo", &groups(&["famiglia"]));
+        let out = render_for_sender(
+            &private,
+            &no_db(),
+            &ReaderView::as_written("frodo", &groups(&["famiglia"])),
+        );
         assert!(out.text.contains("Il primo fatto."));
         assert!(out.text.contains("Il secondo fatto."));
         assert!(
@@ -792,7 +1443,11 @@ Il secondo fatto.{{{{/}}}}"
         // floor's bare line of addresses, written when the prose declined to
         // carry them. It names no claim either, so it holds nothing up.
         let with_rails = format!("{private}\n\n[[alice/spesa]] · [[bob/hobbies]]\n");
-        let out = render_for_sender(&with_rails, &no_db(), "bilbo", &groups(&["amici"]));
+        let out = render_for_sender(
+            &with_rails,
+            &no_db(),
+            &ReaderView::as_written("bilbo", &groups(&["amici"])),
+        );
         assert_eq!(
             out.text, FULLY_PRIVATE_CALLOUT,
             "a line of bare links must not keep the page from collapsing: {}",
@@ -805,7 +1460,11 @@ Il secondo fatto.{{{{/}}}}"
             "{private}\n\n{}\n",
             crate::wiki::withdrawn_note("10 September 2026 (UTC)")
         );
-        let out = render_for_sender(&with_a_note, &no_db(), "bilbo", &groups(&["amici"]));
+        let out = render_for_sender(
+            &with_a_note,
+            &no_db(),
+            &ReaderView::as_written("bilbo", &groups(&["amici"])),
+        );
         assert_eq!(
             out.text, FULLY_PRIVATE_CALLOUT,
             "a withdrawal note must not keep the page from collapsing: {}",
@@ -815,7 +1474,11 @@ Il secondo fatto.{{{{/}}}}"
         // Real prose still anchors: one heading is enough, and it should be —
         // a heading names what is withheld, which is the author's decision.
         let with_heading = format!("# Il titolo\n\n{private}");
-        let out = render_for_sender(&with_heading, &no_db(), "bilbo", &groups(&["amici"]));
+        let out = render_for_sender(
+            &with_heading,
+            &no_db(),
+            &ReaderView::as_written("bilbo", &groups(&["amici"])),
+        );
         assert_ne!(
             out.text, FULLY_PRIVATE_CALLOUT,
             "a page with real prose does not collapse"
@@ -825,7 +1488,11 @@ Il secondo fatto.{{{{/}}}}"
         // And a sentence that merely BEGINS with a link is prose, not a rail
         // line: the discriminator is that the line says nothing of its own.
         let prose_with_a_link = format!("{private}\n\n[[alice/spesa]] è dove teniamo la lista.\n");
-        let out = render_for_sender(&prose_with_a_link, &no_db(), "bilbo", &groups(&["amici"]));
+        let out = render_for_sender(
+            &prose_with_a_link,
+            &no_db(),
+            &ReaderView::as_written("bilbo", &groups(&["amici"])),
+        );
         assert_ne!(
             out.text, FULLY_PRIVATE_CALLOUT,
             "a sentence carrying a link is still a sentence"
@@ -840,7 +1507,11 @@ Il secondo fatto.{{{{/}}}}"
             "{{{{subject=user:gollum sender=user:galadriel allow=group:famiglia f={SAMPLE_UUID_V7}}}}}\
 Sméagol oggi era stanco.{{{{/}}}}"
         );
-        let out = render_for_sender(&input, &no_db(), "galadriel", &groups(&["amici"]));
+        let out = render_for_sender(
+            &input,
+            &no_db(),
+            &ReaderView::as_written("galadriel", &groups(&["amici"])),
+        );
         assert!(out.text.contains("Sméagol oggi era stanco"));
         assert_eq!(out.blocks_redacted, 0);
     }
@@ -857,7 +1528,7 @@ Sméagol oggi era stanco.{{{{/}}}}"
             "{{{{subject=user:alice f={SAMPLE_UUID_V7}}}}}body 1{{{{/}}}}\n\n\
 {{{{subject=user:alice f={SAMPLE_UUID_V7}}}}}body 2{{{{/}}}}\n"
         );
-        let out = render_for_sender(&input, &no_db(), "bob", &[]);
+        let out = render_for_sender(&input, &no_db(), &ReaderView::as_written("bob", &[]));
         assert_eq!(out.text, FULLY_PRIVATE_CALLOUT);
         assert_eq!(out.text, "> [!redacted] This entire page is private.\n");
         // blocks_redacted still reflects how many regions were
@@ -875,7 +1546,7 @@ Sméagol oggi era stanco.{{{{/}}}}"
             "# Heading\n\n{{{{subject=user:alice f={SAMPLE_UUID_V7}}}}}body 1{{{{/}}}}\n\n\
 {{{{subject=user:alice f={SAMPLE_UUID_V7}}}}}body 2{{{{/}}}}\n"
         );
-        let out = render_for_sender(&input, &no_db(), "bob", &[]);
+        let out = render_for_sender(&input, &no_db(), &ReaderView::as_written("bob", &[]));
         assert_ne!(out.text, FULLY_PRIVATE_CALLOUT);
         assert!(out.text.contains("# Heading"));
         assert!(out.text.contains("[redacted]"));
@@ -886,7 +1557,7 @@ Sméagol oggi era stanco.{{{{/}}}}"
 
     #[test]
     fn empty_input_is_empty_output_not_fully_redacted() {
-        let out = render_for_sender("", &no_db(), "anyone", &[]);
+        let out = render_for_sender("", &no_db(), &ReaderView::as_written("anyone", &[]));
         assert_eq!(out.text, "");
         assert_eq!(out.blocks_redacted, 0);
         assert_ne!(out.text, FULLY_PRIVATE_CALLOUT);
@@ -895,7 +1566,7 @@ Sméagol oggi era stanco.{{{{/}}}}"
     #[test]
     fn pure_visible_prose_passes_through_byte_for_byte() {
         let input = "just some prose without any markers.\nSecond line.\n";
-        let out = render_for_sender(input, &no_db(), "anyone", &[]);
+        let out = render_for_sender(input, &no_db(), &ReaderView::as_written("anyone", &[]));
         assert_eq!(out.text, input);
         assert_eq!(out.blocks_redacted, 0);
         assert_ne!(out.text, FULLY_PRIVATE_CALLOUT);
@@ -911,7 +1582,7 @@ Sméagol oggi era stanco.{{{{/}}}}"
         // ACL excludes the sender.
         let input = "see this: {{embed=c-2026-05-10-foto-001.jpg}}";
         for sender in ["anyone", "bob", "carol"] {
-            let out = render_for_sender(input, &no_db(), sender, &[]);
+            let out = render_for_sender(input, &no_db(), &ReaderView::as_written(sender, &[]));
             assert!(
                 out.text.contains("{{embed=c-2026-05-10-foto-001.jpg}}"),
                 "embed missing for sender={sender}: {:?}",
@@ -930,7 +1601,7 @@ Sméagol oggi era stanco.{{{{/}}}}"
             "prose before {{{{subject=user:alice f={SAMPLE_UUID_V7}}}}}\
 caption {{{{embed=c-2026-05-10-foto-001.jpg}}}}{{{{/}}}} prose after"
         );
-        let out = render_for_sender(&input, &no_db(), "bob", &[]);
+        let out = render_for_sender(&input, &no_db(), &ReaderView::as_written("bob", &[]));
         assert!(!out.text.contains("c-2026-05-10-foto-001.jpg"));
         assert!(!out.text.contains("caption"));
         assert!(out.text.contains("[redacted]"));
@@ -949,7 +1620,7 @@ caption {{{{embed=c-2026-05-10-foto-001.jpg}}}}{{{{/}}}} prose after"
         let input =
             format!("anchor {{{{subject=global f={SAMPLE_UUID_V7}}}}}the body{{{{/}}}} prose");
         let map = db_acl("user:alice", &[], None);
-        let out = render_for_sender(&input, &map, "bob", &[]);
+        let out = render_for_sender(&input, &map, &ReaderView::as_written("bob", &[]));
         assert!(!out.text.contains("the body"));
         assert!(out.text.contains("[redacted]"));
         assert_eq!(out.blocks_redacted, 1);
@@ -960,7 +1631,7 @@ caption {{{{embed=c-2026-05-10-foto-001.jpg}}}}{{{{/}}}} prose after"
         let input =
             format!("anchor {{{{subject=user:alice f={SAMPLE_UUID_V7}}}}}the body{{{{/}}}} prose");
         let map = db_acl("global", &[], None);
-        let out = render_for_sender(&input, &map, "bob", &[]);
+        let out = render_for_sender(&input, &map, &ReaderView::as_written("bob", &[]));
         assert!(out.text.contains("the body"));
         assert_eq!(out.blocks_redacted, 0);
     }
@@ -972,13 +1643,17 @@ caption {{{{embed=c-2026-05-10-foto-001.jpg}}}}{{{{/}}}} prose after"
         let input = format!("anchor {{{{f={SAMPLE_UUID_V7}}}}}private body{{{{/}}}} prose");
         let map = db_acl("user:alice", &["group:team"], None);
 
-        let out = render_for_sender(&input, &map, "alice", &[]);
+        let out = render_for_sender(&input, &map, &ReaderView::as_written("alice", &[]));
         assert!(out.text.contains("private body"));
 
-        let out = render_for_sender(&input, &map, "bob", &groups(&["team"]));
+        let out = render_for_sender(
+            &input,
+            &map,
+            &ReaderView::as_written("bob", &groups(&["team"])),
+        );
         assert!(out.text.contains("private body"), "allow= from the DB");
 
-        let out = render_for_sender(&input, &map, "carol", &[]);
+        let out = render_for_sender(&input, &map, &ReaderView::as_written("carol", &[]));
         assert!(
             !out.text.contains("private body"),
             "a reader outside the DB record's audience is refused"
@@ -992,10 +1667,18 @@ caption {{{{embed=c-2026-05-10-foto-001.jpg}}}}{{{{/}}}} prose after"
         // family microphone's capture stays readable to the family.
         let input = format!("anchor {{{{f={SAMPLE_UUID_V7}}}}}Sméagol brontola{{{{/}}}} prose");
         let map = db_acl("user:gollum", &[], Some("group:famiglia"));
-        let out = render_for_sender(&input, &map, "galadriel", &groups(&["famiglia"]));
+        let out = render_for_sender(
+            &input,
+            &map,
+            &ReaderView::as_written("galadriel", &groups(&["famiglia"])),
+        );
         assert!(out.text.contains("Sméagol brontola"));
 
-        let out = render_for_sender(&input, &map, "bilbo", &groups(&["amici"]));
+        let out = render_for_sender(
+            &input,
+            &map,
+            &ReaderView::as_written("bilbo", &groups(&["amici"])),
+        );
         assert!(!out.text.contains("Sméagol brontola"));
     }
 
@@ -1008,12 +1691,12 @@ caption {{{{embed=c-2026-05-10-foto-001.jpg}}}}{{{{/}}}} prose after"
         let input =
             format!("anchor {{{{subject=user:alice f={other_key}}}}}inline body{{{{/}}}} prose");
         let map = db_acl("global", &[], None); // keyed on SAMPLE_UUID_V7, not other_key
-        let out = render_for_sender(&input, &map, "bob", &[]);
+        let out = render_for_sender(&input, &map, &ReaderView::as_written("bob", &[]));
         assert!(
             !out.text.contains("inline body"),
             "an inline subject must still gate an unindexed region"
         );
-        let out = render_for_sender(&input, &map, "alice", &[]);
+        let out = render_for_sender(&input, &map, &ReaderView::as_written("alice", &[]));
         assert!(out.text.contains("inline body"));
     }
 
@@ -1028,21 +1711,29 @@ caption {{{{embed=c-2026-05-10-foto-001.jpg}}}}{{{{/}}}} prose after"
     #[test]
     fn snapshot_alice_full() {
         let input = modello_memoria_5_input();
-        let out = render_for_sender(&input, &no_db(), "alice", &[]);
+        let out = render_for_sender(&input, &no_db(), &ReaderView::as_written("alice", &[]));
         insta::assert_snapshot!(out.text);
     }
 
     #[test]
     fn snapshot_bob_team_member() {
         let input = modello_memoria_5_input();
-        let out = render_for_sender(&input, &no_db(), "bob", &groups(&["team"]));
+        let out = render_for_sender(
+            &input,
+            &no_db(),
+            &ReaderView::as_written("bob", &groups(&["team"])),
+        );
         insta::assert_snapshot!(out.text);
     }
 
     #[test]
     fn snapshot_carol_outsider() {
         let input = modello_memoria_5_input();
-        let out = render_for_sender(&input, &no_db(), "carol", &groups(&["sales"]));
+        let out = render_for_sender(
+            &input,
+            &no_db(),
+            &ReaderView::as_written("carol", &groups(&["sales"])),
+        );
         insta::assert_snapshot!(out.text);
     }
 
@@ -1150,7 +1841,7 @@ al 10 maggio, ha {{{{subject=global f={SAMPLE_UUID_V7}}}}}tagliato i capelli{{{{
             "Alice pesa {{{{subject=user:alice f={SAMPLE_UUID_V7}}}}}72 kg{{{{/}}}} al 10 maggio."
         );
         let map = db_acl("user:alice", &[], None);
-        let seg = render_for_sender_segments(&input, &map, "alice", &[]);
+        let seg = render_for_sender_segments(&input, &map, &ReaderView::as_written("alice", &[]));
         let fid = FactId::parse(SAMPLE_UUID_V7).unwrap();
         assert_eq!(
             seg.segments,
@@ -1170,7 +1861,7 @@ al 10 maggio, ha {{{{subject=global f={SAMPLE_UUID_V7}}}}}tagliato i capelli{{{{
             ]
         );
         // The joined text is byte-identical to the plain render.
-        let plain = render_for_sender(&input, &map, "alice", &[]);
+        let plain = render_for_sender(&input, &map, &ReaderView::as_written("alice", &[]));
         assert_eq!(seg.text(), plain.text);
         assert_eq!(seg.blocks_redacted, plain.blocks_redacted);
     }
@@ -1181,7 +1872,7 @@ al 10 maggio, ha {{{{subject=global f={SAMPLE_UUID_V7}}}}}tagliato i capelli{{{{
             "Alice pesa {{{{subject=user:alice f={SAMPLE_UUID_V7}}}}}72 kg{{{{/}}}} al 10 maggio."
         );
         let map = db_acl("user:alice", &[], None);
-        let seg = render_for_sender_segments(&input, &map, "bob", &[]);
+        let seg = render_for_sender_segments(&input, &map, &ReaderView::as_written("bob", &[]));
         // Prose + placeholder + prose merge into one fact-less slice: no
         // segment carries a fact id, so no click-through can be offered
         // on a region the viewer cannot read.
@@ -1193,7 +1884,7 @@ al 10 maggio, ha {{{{subject=global f={SAMPLE_UUID_V7}}}}}tagliato i capelli{{{{
             }]
         );
         assert_eq!(seg.blocks_redacted, 1);
-        let plain = render_for_sender(&input, &map, "bob", &[]);
+        let plain = render_for_sender(&input, &map, &ReaderView::as_written("bob", &[]));
         assert_eq!(seg.text(), plain.text);
     }
 
@@ -1204,7 +1895,8 @@ al 10 maggio, ha {{{{subject=global f={SAMPLE_UUID_V7}}}}}tagliato i capelli{{{{
         // to and the segment stays fact-less.
         let input =
             format!("anchor {{{{subject=global f={SAMPLE_UUID_V7}}}}}public body{{{{/}}}} prose");
-        let seg = render_for_sender_segments(&input, &no_db(), "carol", &[]);
+        let seg =
+            render_for_sender_segments(&input, &no_db(), &ReaderView::as_written("carol", &[]));
         assert_eq!(seg.text(), "anchor public body prose");
         assert!(
             seg.segments.iter().all(|s| s.fact_id.is_none()),
@@ -1217,7 +1909,7 @@ al 10 maggio, ha {{{{subject=global f={SAMPLE_UUID_V7}}}}}tagliato i capelli{{{{
     fn segments_total_redaction_collapses_to_one_factless_callout() {
         let input = format!("{{{{subject=user:alice f={SAMPLE_UUID_V7}}}}}body{{{{/}}}}\n");
         let map = db_acl("user:alice", &[], None);
-        let seg = render_for_sender_segments(&input, &map, "bob", &[]);
+        let seg = render_for_sender_segments(&input, &map, &ReaderView::as_written("bob", &[]));
         assert_eq!(
             seg.segments,
             vec![RenderSegment {
@@ -1225,7 +1917,7 @@ al 10 maggio, ha {{{{subject=global f={SAMPLE_UUID_V7}}}}}tagliato i capelli{{{{
                 fact_id: None,
             }]
         );
-        let plain = render_for_sender(&input, &map, "bob", &[]);
+        let plain = render_for_sender(&input, &map, &ReaderView::as_written("bob", &[]));
         assert_eq!(seg.text(), plain.text);
     }
 
@@ -1284,7 +1976,7 @@ al 10 maggio, ha {{{{f={public_key}}}}}tagliato i capelli{{{{/}}}} ieri."
         // (`sender=user:alice`, no subject) are both redacted: the subject-of-last-
         // resort is the region's sender, not a wiki-wide `global` default, so a
         // sender-owned region is not globally readable.
-        let out = render_for_sender(&input, &no_db(), "dave", &[]);
+        let out = render_for_sender(&input, &no_db(), &ReaderView::as_written("dave", &[]));
         insta::assert_snapshot!(out.text);
     }
 }

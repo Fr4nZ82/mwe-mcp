@@ -5615,7 +5615,11 @@ mod tests {
         let map = page_acl_map_active(&pool, page).await.expect("acl map");
         assert_eq!(map.len(), 8, "every region's fact is in the page's map");
 
-        let out = crate::render::render_for_sender(&body, &map, "zoe", &[]);
+        let out = crate::render::render_for_sender(
+            &body,
+            &map,
+            &crate::render::ReaderView::as_written("zoe", &[]),
+        );
         assert_eq!(
             out.blocks_redacted, 0,
             "the subject reads her own facts — the page render must not tell her the page \
@@ -5630,7 +5634,11 @@ mod tests {
 
         // The other side of the same predicate, so the test is not merely
         // asserting that nothing is ever redacted: a stranger sees none of it.
-        let stranger = crate::render::render_for_sender(&body, &map, "morgana", &[]);
+        let stranger = crate::render::render_for_sender(
+            &body,
+            &map,
+            &crate::render::ReaderView::as_written("morgana", &[]),
+        );
         assert_eq!(
             stranger.blocks_redacted, 8,
             "somebody who is neither subject, audience nor author reads none of it"
@@ -5647,7 +5655,11 @@ mod tests {
             .await
             .expect("acl map");
         assert!(elsewhere.is_empty());
-        let blank = crate::render::render_for_sender(&body, &elsewhere, "zoe", &[]);
+        let blank = crate::render::render_for_sender(
+            &body,
+            &elsewhere,
+            &crate::render::ReaderView::as_written("zoe", &[]),
+        );
         assert_eq!(
             blank.blocks_redacted, 8,
             "bytes the index does not vouch for are served to nobody"

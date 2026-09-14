@@ -30,16 +30,32 @@ Opening a wiki shows its id, title, kind, short name and how many facts still
 hold, then the list of its **Pages** with their sizes. Both the count and the
 list are **yours**: the number counts the facts you can read, and a page whose
 every fact was written for somebody else is not listed for you, because its
-name would tell you what is on it. A page that holds no facts at all keeps
-nothing from anybody and is listed as it always was. Two page names recur:
+name would tell you what is on it. A page that holds no facts at all is still
+listed, and opening it shows nothing. Two page names recur:
 `@profile.md`, the identity card, and `@rules.md`, the standing rules.
 
 ## One page
 
-Opening a page shows it rendered, **as you are allowed to see it**. Where a
-region was written for somebody else, it is replaced by `[redacted]` and a line
-above the page says how many regions that was. You are never told what they
-said.
+Opening a page shows it rendered, **as you are allowed to see it** — and that
+is not only about the facts on it. Everything else a page carries was written
+by the memory, about somebody, and it says again what their facts say.
+
+- **Your own pages** you read whole. Where a region was written for somebody
+  else it is replaced by `[redacted]`, and a line above the page says how many
+  regions that was. You are never told what they said.
+- **Somebody else's pages** give you the facts you are allowed to read, one per
+  line, and nothing that was written around them: no headings, no connecting
+  prose. Not even a mark where the rest was.
+- **A group's pages, and a subject's**, you read section by section: a heading
+  and the paragraph under it come to you when you can read a fact of that
+  section, and go with it when you cannot.
+- **A page whose facts have all gone** — forgotten, or replaced — shows
+  nothing to anybody. What was left on it described things that are no longer
+  there.
+
+**Links follow the same rule.** A link that names a page in somebody's memory
+arrives as plain text when you cannot read a fact of that page: the sentence
+still reads, and it no longer tells you where something is filed.
 
 At the bottom, the page states what it is and is not: *"To change this page:
 leave inline comments, talk to the chat, or change the facts themselves on the

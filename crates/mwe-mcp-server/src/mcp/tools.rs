@@ -932,15 +932,6 @@ pub(super) async fn call_wiki_read(
         ),
         other => ToolError::new(ToolErrorClass::InternalError, other.to_string()),
     })?;
-    // The frontmatter (testata) is card metadata derived from the page's
-    // facts — not page content — and it carries no ACL markers, so
-    // `render_for_sender` would pass it through verbatim and leak the topic
-    // words / description of facts the sender cannot read. Strip it before
-    // rendering, exactly as the recall navigator does
-    // (`recall_nav::open_projected`); the structured card fields the consumer
-    // legitimately needs (title, wiki_type, owner) are returned separately in
-    // the JSON below. A page without a testata is body-only already.
-    let body = mwe_core::wiki::MarkdownDoc::parse(&raw).map_or(raw, |doc| doc.body);
     // Whose category this wiki is, derived from where it sits in the tree. A
     // topic wiki — one named for its subject, standing for nobody, which is
     // what the nightly grouping raises — answers to no principal, so the field
@@ -967,8 +958,25 @@ pub(super) async fn call_wiki_read(
     let db_acl = mwe_core::fact_index::page_acl_map_active(&state.pool, &source_path)
         .await
         .map_err(|e| ToolError::new(ToolErrorClass::InternalError, e.to_string()))?;
-    let rendered =
-        mwe_core::render::render_for_sender(&body, &db_acl, &identity.sender_id, &sender_groups);
+    // Where this reader may be sent from here: a page NAME is content like
+    // any other, so a `[[link]]` to a page they read no fact of arrives as
+    // plain text. One card answers for every link on the page.
+    let reader_card = mwe_core::meta_annotate::build_reader_card(
+        &state.pool,
+        &state.tree,
+        &identity.sender_id,
+        &sender_groups,
+    )
+    .await
+    .map_err(|e| ToolError::new(ToolErrorClass::InternalError, e.to_string()))?;
+    let view = mwe_core::render::ReaderView {
+        sender_id: &identity.sender_id,
+        sender_groups: &sender_groups,
+        page: mwe_core::render::page_for_reader(meta, &identity.sender_id),
+        home_wiki: meta.wiki_id.as_str(),
+        may_go: Some(&reader_card),
+    };
+    let rendered = mwe_core::render::render_for_sender(&raw, &db_acl, &view);
     Ok(json!({
         "wiki_id": meta.wiki_id.as_str(),
         "page": page_rel,

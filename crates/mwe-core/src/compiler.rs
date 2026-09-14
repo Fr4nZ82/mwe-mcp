@@ -3398,7 +3398,12 @@ mod tests {
                 sender: None,
             },
         );
-        let served = crate::render::render_for_sender(&written, &acl, "alice", &[]).text;
+        let served = crate::render::render_for_sender(
+            &written,
+            &acl,
+            &crate::render::ReaderView::as_written("alice", &[]),
+        )
+        .text;
         assert!(
             !served.contains("21000"),
             "the page Alice is served carries no part of Zoe's number: {served}"

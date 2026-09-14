@@ -98,7 +98,7 @@ use crate::prompts;
 use crate::recall::{MULTI_HOP_HARD_LIMIT, RecallHit, SenderContext, extract_wikilinks};
 use crate::render::render_for_sender;
 use crate::types::Principal;
-use crate::wiki::{self, DiscoveredWiki, MarkdownDoc, WikiTree};
+use crate::wiki::{self, DiscoveredWiki, WikiTree};
 
 /// Weight of a topic seed that pinned down a **page** card.
 pub const WEIGHT_TOPIC_PAGE: f32 = 0.8;
@@ -1526,7 +1526,9 @@ async fn open_target(
             return Err(OpenRefusal::AclUnreadable);
         },
     };
-    let projected = open_projected(d, &page, &db_acl, sender).ok_or(OpenRefusal::Unreadable)?;
+    let projected = open_projected(d, &page, &db_acl, sender, reader_card)
+        .filter(|text| !text.trim().is_empty())
+        .ok_or(OpenRefusal::Unreadable)?;
     let (text, cut) = take_budget(projected, state.remaining);
     state.remaining -= text.len();
     outcome.truncated |= cut;
@@ -1740,6 +1742,7 @@ fn open_projected(
     page: &Path,
     db_acl: &FactAclMap,
     sender: &SenderContext,
+    reader_card: &meta_annotate::ReaderCard,
 ) -> Option<String> {
     let raw = match std::fs::read_to_string(d.abs_dir.join(page)) {
         Ok(raw) => raw,
@@ -1753,9 +1756,14 @@ fn open_projected(
             return None;
         },
     };
-    // The testata is card metadata, not prose — drop it when present.
-    let body = MarkdownDoc::parse(&raw).map_or_else(|| raw.clone(), |doc| doc.body);
-    Some(render_for_sender(&body, db_acl, &sender.sender_id, &sender.sender_groups).text)
+    let view = crate::render::ReaderView {
+        sender_id: &sender.sender_id,
+        sender_groups: &sender.sender_groups,
+        page: crate::render::page_for_reader(&d.meta, &sender.sender_id),
+        home_wiki: d.meta.wiki_id.as_str(),
+        may_go: Some(reader_card),
+    };
+    Some(render_for_sender(&raw, db_acl, &view).text)
 }
 
 /// Truncate `text` to `budget` characters (on a char boundary). Returns the
@@ -2368,6 +2376,54 @@ mod tests {
         )
         .await
         .unwrap();
+    }
+
+    /// Write a page carrying one MARKED fact, and index it — the shape every
+    /// page in a live memory has, and the one the section rule reads: a
+    /// heading and its prose are served to whoever may read a fact under them.
+    async fn write_indexed_page(
+        pool: &SqlitePool,
+        tree: &WikiTree,
+        n: u8,
+        wiki: &str,
+        page: &str,
+        prose: &str,
+        subject: Principal,
+    ) {
+        let id = fid(n);
+        write_page(
+            tree,
+            wiki,
+            page,
+            &format!("{prose}\n\n{{{{f={id}}}}}a fact{{{{/}}}}\n"),
+        );
+        seed_fact(
+            pool,
+            &id,
+            wiki,
+            &format!("wikis/{wiki}/{page}"),
+            subject,
+            &[],
+        )
+        .await;
+    }
+
+    /// Seed one active fact on a page, so the page is a page at all.
+    ///
+    /// A page with no active fact serves nothing to anybody — its prose was
+    /// written around facts that are not there — so every page a navigator
+    /// test opens has to carry one, exactly as every page in a live memory
+    /// does.
+    async fn seed_page(pool: &SqlitePool, n: u8, wiki: &str, page: &str, subject: Principal) {
+        seed_fact(
+            pool,
+            &fid(n),
+            wiki,
+            &format!("wikis/{wiki}/{page}"),
+            subject,
+            &[],
+        )
+        .await;
     }
 
     fn find<'a>(fan: &'a [EntryPoint], wiki: &str, page: &str) -> Option<&'a EntryPoint> {
@@ -3641,15 +3697,27 @@ mod tests {
 
     #[tokio::test]
     async fn navigate_opens_vetted_pages_and_projects_acl() {
+        let pool = make_pool().await;
+        seed_page(
+            &pool,
+            0x90,
+            "alice",
+            "appunti.md",
+            Principal::User("alice".into()),
+        )
+        .await;
+        seed_page(&pool, 0x91, "alice", "appunti.md", Principal::global()).await;
         let (_dir, tree) = open_tree();
         forge_user(&tree, "alice");
+        let open = fid(0x91);
         write_page(
             &tree,
             "alice",
             "appunti.md",
             &format!(
                 "---\ntitle: \"Notes\"\n---\n\nShared prose.\n\n\
-                 {{{{subject=user:alice f={UUID_1}}}}}secret{{{{/}}}}\n"
+                 {{{{subject=user:alice f={UUID_1}}}}}secret{{{{/}}}}\n\n\
+                 {{{{f={open}}}}}anybody may read this{{{{/}}}}\n"
             ),
         );
         // One hop is the whole walk here, and that is the shipped behaviour:
@@ -3661,7 +3729,7 @@ mod tests {
         ]);
 
         let out = navigate(
-            &make_pool().await,
+            &pool,
             &tree,
             &llm,
             &sender("mallory", &[]),
@@ -3679,10 +3747,14 @@ mod tests {
         let f = &out.fragments[0];
         assert_eq!(f.wiki_id, "alice");
         assert_eq!(f.page, PathBuf::from("appunti.md"));
-        assert!(f.text.contains("Shared prose."));
+        // Alice's memory read by somebody else: the facts mallory may read,
+        // one per line, and nothing that was written around them.
+        assert!(f.text.contains("anybody may read this"), "{}", f.text);
+        assert!(!f.text.contains("Shared prose."), "{}", f.text);
         assert!(
-            !f.text.contains("secret") && f.text.contains("[redacted]"),
-            "alice's region must be projected away for mallory: {}",
+            !f.text.contains("secret") && !f.text.contains("[redacted]"),
+            "alice's region must be projected away for mallory, and leave no \
+             mark where it stood: {}",
             f.text
         );
         assert!(!f.text.contains("title:"), "testata must be dropped");
@@ -3701,11 +3773,11 @@ mod tests {
         assert!(hop.requested[0].opened);
         assert_eq!(hop.opened.len(), 1);
         assert_eq!(hop.opened[0].chars, f.text.len());
-        assert!(hop.opened[0].excerpt.contains("Shared prose."));
         assert!(
-            hop.opened[0].excerpt.contains("[redacted]")
-                && !hop.opened[0].excerpt.contains("secret"),
-            "the journaled excerpt is the projected prose, never the raw region"
+            hop.opened[0].excerpt.contains("anybody may read this")
+                && !hop.opened[0].excerpt.contains("secret")
+                && !hop.opened[0].excerpt.contains("Shared prose."),
+            "the journaled excerpt is what was served, never the raw page"
         );
     }
 
@@ -3714,14 +3786,20 @@ mod tests {
         let (_dir, tree) = open_tree();
         forge_user(&tree, "alice");
         // The marker claims global (stale inline copy) — the DB row is
-        // the authority and says owner=user:alice.
+        // the authority and says owner=user:alice. Beside it, one fact
+        // mallory MAY read, so the page has something to serve her at all.
+        let open = fid(0x90);
         write_page(
             &tree,
             "alice",
             "appunti.md",
-            &format!("Shared prose.\n\n{{{{subject=global f={UUID_1}}}}}secret{{{{/}}}}\n"),
+            &format!(
+                "Shared prose.\n\n{{{{subject=global f={UUID_1}}}}}secret{{{{/}}}}\n\n\
+                 {{{{f={open}}}}}anybody may read this{{{{/}}}}\n"
+            ),
         );
         let pool = make_pool().await;
+        seed_page(&pool, 0x90, "alice", "appunti.md", Principal::global()).await;
         fact_index::insert(
             &pool,
             &fact_index::NewFact {
@@ -3772,10 +3850,16 @@ mod tests {
         assert_eq!(out.fragments.len(), 1);
         let f = &out.fragments[0];
         assert!(
-            !f.text.contains("secret") && f.text.contains("[redacted]"),
+            !f.text.contains("secret"),
             "the DB subject must out-gate the inline owner=global: {}",
             f.text
         );
+        // Alice's memory, read by somebody else: the facts she may read and
+        // nothing around them — not the prose, and not the shape of the page
+        // either, so no `[redacted]` marks the spot.
+        assert!(f.text.contains("anybody may read this"), "{}", f.text);
+        assert!(!f.text.contains("Shared prose."), "{}", f.text);
+        assert!(!f.text.contains("[redacted]"), "{}", f.text);
     }
 
     #[tokio::test]
@@ -3822,37 +3906,45 @@ mod tests {
     async fn a_bare_wiki_rail_is_not_a_door() {
         let (_dir, tree) = open_tree();
         forge_user(&tree, "alice");
-        forge_user(&tree, "bob");
-        write_page(
+        forge_group(&tree, "famiglia");
+        let pool = make_pool().await;
+        write_indexed_page(
+            &pool,
             &tree,
+            0x90,
             "alice",
             "rails.md",
-            "# Rails\n\nSee [[bob]] and [[bob/hobbies]].\n",
-        );
-        write_page(&tree, "bob", "hobbies.md", "# Hobbies\n\nBob sails.\n");
-        // What `[[bob]]` means is *bob*, and bob is his card.
-        write_page(
-            &tree,
-            "bob",
-            wiki::PROFILE_FILENAME,
-            "# Bob\n\nBob is 40.\n",
-        );
-        let pool = make_pool().await;
+            "# Rails\n\nSee [[famiglia]] and [[famiglia/hobbies]].",
+            Principal::User("alice".into()),
+        )
+        .await;
         // Derived visibility: a rail is followed only if alice can read ≥ 1
-        // fact in bob's wiki. Seed a public (global-owned) fact there.
-        seed_fact(
+        // fact where it points. A public (global-owned) fact makes it so.
+        write_indexed_page(
             &pool,
-            &fid(1),
-            "bob",
-            "wikis/bob/hobbies.md",
+            &tree,
+            0x91,
+            "famiglia",
+            "hobbies.md",
+            "# Hobbies\n\nBob sails.",
             Principal::global(),
-            &[],
+        )
+        .await;
+        // What `[[famiglia]]` means is the wiki, and a wiki is not a door.
+        write_indexed_page(
+            &pool,
+            &tree,
+            0x92,
+            "famiglia",
+            wiki::PROFILE_FILENAME,
+            "# The family\n\nFour of them.",
+            Principal::global(),
         )
         .await;
         let llm = ScriptedLlm::new(&[
             r#"{"open":[{"wiki_id":"alice","page":"rails.md"}],"done":false}"#,
             // Both are asked for; only the page hop is an offered candidate.
-            r#"{"open":[{"wiki_id":"bob"},{"wiki_id":"bob","page":"hobbies.md"}],"done":false}"#,
+            r#"{"open":[{"wiki_id":"famiglia"},{"wiki_id":"famiglia","page":"hobbies.md"}],"done":false}"#,
         ]);
 
         let out = navigate(
@@ -3869,19 +3961,19 @@ mod tests {
         .unwrap();
 
         assert_eq!(out.fragments.len(), 2);
-        assert_eq!(out.fragments[1].wiki_id, "bob");
+        assert_eq!(out.fragments[1].wiki_id, "famiglia");
         assert_eq!(out.fragments[1].page, PathBuf::from("hobbies.md"));
         assert!(out.fragments[1].text.contains("Bob sails."));
         // The bare rail is NOT a door: only the page hop is offered.
         let offered: Vec<&str> = out.trace[1]
             .candidates
             .iter()
-            .filter(|c| c.wiki_id == "bob")
+            .filter(|c| c.wiki_id == "famiglia")
             .filter_map(|c| c.page.as_deref())
             .collect();
         assert!(
             !offered.contains(&wiki::PROFILE_FILENAME),
-            "`[[bob]]` names a wiki, and a wiki is not a destination: {offered:?}"
+            "`[[famiglia]]` names a wiki, and a wiki is not a destination: {offered:?}"
         );
         assert!(
             offered.contains(&"hobbies.md"),
@@ -3963,6 +4055,22 @@ mod tests {
         );
         write_page(&tree, "alice", "cucina.md", "# Cucina\n\nAlice paints.\n");
         let pool = make_pool().await;
+        seed_page(
+            &pool,
+            0x90,
+            "alice",
+            "rails.md",
+            Principal::User("alice".into()),
+        )
+        .await;
+        seed_page(
+            &pool,
+            0x91,
+            "alice",
+            "cucina.md",
+            Principal::User("alice".into()),
+        )
+        .await;
         // The fallback keeps the derived-visibility gate on the resolved
         // wiki: alice must read ≥ 1 fact there for the page to be offered.
         seed_fact(
@@ -4009,27 +4117,36 @@ mod tests {
     async fn navigate_follows_legacy_bare_slug_links_across_wiki_lines() {
         let (_dir, tree) = open_tree();
         forge_user(&tree, "alice");
-        forge_user(&tree, "bob");
-        // The legacy corpus links pages by bare name across wikis:
-        // `[[hobbies]]` on an alice page names bob's page — no `hobbies.md`
-        // in alice, so the deterministic order reaches bob's.
-        write_page(&tree, "alice", "rails.md", "# Rails\n\nSee [[hobbies]].\n");
-        write_page(&tree, "bob", "hobbies.md", "# Hobbies\n\nBob sails.\n");
+        forge_group(&tree, "famiglia");
         let pool = make_pool().await;
-        // Reader gate on the resolved destination: alice must read ≥ 1
-        // fact in bob's wiki for the page to be offered.
-        seed_fact(
+        // The legacy corpus links pages by bare name across wikis:
+        // `[[hobbies]]` on an alice page names the family's page — no
+        // `hobbies.md` in alice, so the deterministic order reaches it.
+        write_indexed_page(
             &pool,
-            &fid(1),
-            "bob",
-            "wikis/bob/hobbies.md",
+            &tree,
+            0x90,
+            "alice",
+            "rails.md",
+            "# Rails\n\nSee [[hobbies]].",
+            Principal::User("alice".into()),
+        )
+        .await;
+        // Reader gate on the resolved destination: alice must read ≥ 1 fact
+        // there for the page to be offered.
+        write_indexed_page(
+            &pool,
+            &tree,
+            0x91,
+            "famiglia",
+            "hobbies.md",
+            "# Hobbies\n\nBob sails.",
             Principal::global(),
-            &[],
         )
         .await;
         let llm = ScriptedLlm::new(&[
             r#"{"open":[{"wiki_id":"alice","page":"rails.md"}],"done":false}"#,
-            r#"{"open":[{"wiki_id":"bob","page":"hobbies.md"}],"done":false}"#,
+            r#"{"open":[{"wiki_id":"famiglia","page":"hobbies.md"}],"done":false}"#,
         ]);
 
         let out = navigate(
@@ -4052,7 +4169,7 @@ mod tests {
                 out.fragments[1].wiki_id.as_str(),
                 out.fragments[1].page.display().to_string().as_str(),
             ),
-            ("bob", "hobbies.md"),
+            ("famiglia", "hobbies.md"),
             "the bare [[hobbies]] rail must resolve across wiki lines"
         );
         assert!(out.fragments[1].text.contains("Bob sails."));
@@ -4062,32 +4179,36 @@ mod tests {
     async fn navigate_follows_page_hop_wikilinks_directly_and_strips_aliases() {
         let (_dir, tree) = open_tree();
         forge_user(&tree, "alice");
-        forge_user(&tree, "bob");
+        forge_group(&tree, "famiglia");
+        let pool = make_pool().await;
         // The page hop carries a `|display` alias — resolution must strip it.
-        // `[[bob/missing]]` is a dead rail (no such file) and must never
+        // `[[famiglia/missing]]` is a dead rail (no such file) and must never
         // become a candidate.
-        write_page(
+        write_indexed_page(
+            &pool,
             &tree,
+            0x90,
             "alice",
             "rails.md",
-            "# Rails\n\nDetail at [[bob/hobbies|Bob's hobbies]] and [[bob/missing]].\n",
-        );
-        write_page(&tree, "bob", "hobbies.md", "# Hobbies\n\nBob sails.\n");
-        let pool = make_pool().await;
-        seed_fact(
+            "# Rails\n\nDetail at [[famiglia/hobbies|the hobbies]] and [[famiglia/missing]].",
+            Principal::User("alice".into()),
+        )
+        .await;
+        write_indexed_page(
             &pool,
-            &fid(1),
-            "bob",
-            "wikis/bob/hobbies.md",
+            &tree,
+            0x91,
+            "famiglia",
+            "hobbies.md",
+            "# Hobbies\n\nBob sails.",
             Principal::global(),
-            &[],
         )
         .await;
         let llm = ScriptedLlm::new(&[
             r#"{"open":[{"wiki_id":"alice","page":"rails.md"}],"done":false}"#,
             // The linked PAGE itself must be an offered candidate — one hop,
             // no descent through bob's wiki.
-            r#"{"open":[{"wiki_id":"bob","page":"hobbies.md"}],"done":false}"#,
+            r#"{"open":[{"wiki_id":"famiglia","page":"hobbies.md"}],"done":false}"#,
         ]);
 
         let out = navigate(
@@ -4110,7 +4231,7 @@ mod tests {
                 out.fragments[1].wiki_id.as_str(),
                 out.fragments[1].page.as_path()
             ),
-            ("bob", Path::new("hobbies.md")),
+            ("famiglia", Path::new("hobbies.md")),
             "a [[wiki/page|alias]] hop must offer the page itself as a candidate"
         );
         assert!(out.fragments[1].text.contains("Bob sails."));
@@ -4130,6 +4251,22 @@ mod tests {
         );
         write_page(&tree, "bob", "overview.md", "# Bob\n\nBob overview.\n");
         let pool = make_pool().await;
+        seed_page(
+            &pool,
+            0x90,
+            "alice",
+            "rails.md",
+            Principal::User("alice".into()),
+        )
+        .await;
+        seed_page(
+            &pool,
+            0x91,
+            "bob",
+            "overview.md",
+            Principal::User("bob".into()),
+        )
+        .await;
         seed_fact(
             &pool,
             &fid(1),
@@ -4165,6 +4302,15 @@ mod tests {
 
     #[tokio::test]
     async fn navigate_respects_the_char_budget() {
+        let pool = make_pool().await;
+        seed_page(
+            &pool,
+            0x90,
+            "alice",
+            "appunti.md",
+            Principal::User("alice".into()),
+        )
+        .await;
         let (_dir, tree) = open_tree();
         forge_user(&tree, "alice");
         write_page(
@@ -4183,7 +4329,7 @@ mod tests {
         };
 
         let out = navigate(
-            &make_pool().await,
+            &pool,
             &tree,
             &llm,
             &sender("alice", &[]),
@@ -4214,6 +4360,23 @@ mod tests {
     /// navigator request for it, and a `[[wikilink]]` naming it.
     #[tokio::test]
     async fn navigate_never_opens_a_page_the_caller_already_served() {
+        let pool = make_pool().await;
+        seed_page(
+            &pool,
+            0x90,
+            "alice",
+            "@profile.md",
+            Principal::User("alice".into()),
+        )
+        .await;
+        seed_page(
+            &pool,
+            0x91,
+            "alice",
+            "appunti.md",
+            Principal::User("alice".into()),
+        )
+        .await;
         let (_dir, tree) = open_tree();
         forge_user(&tree, "alice");
         write_page(
@@ -4233,7 +4396,7 @@ mod tests {
         ]);
 
         let out = navigate(
-            &make_pool().await,
+            &pool,
             &tree,
             &llm,
             &sender("alice", &[]),
@@ -4298,6 +4461,15 @@ mod tests {
     /// which.
     #[tokio::test]
     async fn a_page_named_twice_in_one_decision_opens_once() {
+        let pool = make_pool().await;
+        seed_page(
+            &pool,
+            0x90,
+            "alice",
+            "appunti.md",
+            Principal::User("alice".into()),
+        )
+        .await;
         let (_dir, tree) = open_tree();
         forge_user(&tree, "alice");
         write_page(&tree, "alice", "appunti.md", "Ordinary prose.\n");
@@ -4306,7 +4478,7 @@ mod tests {
         ]);
 
         let out = navigate(
-            &make_pool().await,
+            &pool,
             &tree,
             &llm,
             &sender("alice", &[]),
@@ -4338,6 +4510,15 @@ mod tests {
     /// walk keeps its other choice.
     #[tokio::test]
     async fn a_door_whose_page_vanished_is_refused_at_the_read() {
+        let pool = make_pool().await;
+        seed_page(
+            &pool,
+            0x90,
+            "alice",
+            "appunti.md",
+            Principal::User("alice".into()),
+        )
+        .await;
         let (_dir, tree) = open_tree();
         forge_user(&tree, "alice");
         write_page(&tree, "alice", "appunti.md", "Ordinary prose.\n");
@@ -4347,7 +4528,7 @@ mod tests {
         ]);
 
         let out = navigate(
-            &make_pool().await,
+            &pool,
             &tree,
             &llm,
             &sender("alice", &[]),
@@ -4387,6 +4568,23 @@ mod tests {
     /// verbatim is discarded by the `open_target` fail-safe.
     #[tokio::test]
     async fn navigate_never_offers_nor_opens_the_rules_page() {
+        let pool = make_pool().await;
+        seed_page(
+            &pool,
+            0x91,
+            "alice",
+            "appunti.md",
+            Principal::User("alice".into()),
+        )
+        .await;
+        seed_page(
+            &pool,
+            0x92,
+            "alice",
+            "rails.md",
+            Principal::User("alice".into()),
+        )
+        .await;
         let (_dir, tree) = open_tree();
         forge_user(&tree, "alice");
         write_page(&tree, "alice", "@rules.md", "# Rules\n\nStanding policy.\n");
@@ -4403,7 +4601,7 @@ mod tests {
         ]);
 
         let out = navigate(
-            &make_pool().await,
+            &pool,
             &tree,
             &llm,
             &sender("alice", &[]),

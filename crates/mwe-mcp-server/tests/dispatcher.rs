@@ -670,9 +670,18 @@ async fn wiki_read_opens_a_wiki_nobody_owns_and_names_no_owner() {
     .expect("write _meta.md");
     std::fs::write(
         wiki_dir.join("rose.md"),
-        "# Rose\n\nThe roses are pruned in February.\n",
+        "# Rose\n\n{{subject=global f=01900000-0000-7000-8000-0000000000c1}}\
+         The roses are pruned in February.{{/}}\n",
     )
     .expect("write rose.md");
+    index_one_fact(
+        &state.pool,
+        "giardinaggio",
+        "rose.md",
+        "01900000-0000-7000-8000-0000000000c1",
+        "global",
+    )
+    .await;
 
     let tree = WikiTree::open(dir.path()).expect("reopen");
     let state = McpState { tree, ..state };
@@ -698,6 +707,50 @@ async fn wiki_read_opens_a_wiki_nobody_owns_and_names_no_owner() {
             .contains("pruned in February"),
         "the page body must come back: {out}"
     );
+}
+
+/// Index ONE fact for a page, so the page is a page at all.
+///
+/// A page with no ACTIVE fact serves nothing to anybody — what is left on it
+/// is prose written around facts that are not there. The other regions on
+/// these fixtures stay unknown to the index on purpose: that is the inline
+/// fallback, and it is still what gates a region the map does not cover.
+async fn index_one_fact(
+    pool: &sqlx::SqlitePool,
+    wiki: &str,
+    page: &str,
+    fact_id: &str,
+    subject: &str,
+) {
+    mwe_core::fact_index::insert(
+        pool,
+        &mwe_core::fact_index::NewFact {
+            fact_id: mwe_core::types::FactId::parse(fact_id).expect("fact id"),
+            wiki_id: wiki.to_owned(),
+            source_path: format!("wikis/{wiki}/{page}"),
+            region_start: None,
+            region_end: None,
+            text: "indexed".to_owned(),
+            embedding: vec![0.0; 8],
+            subject_id: subject.parse().expect("principal"),
+            allow_ids: Vec::new(),
+            sender_id: None,
+            subject_external: None,
+            slot: None,
+            slot_value: None,
+            authored_refs: Vec::new(),
+            fact_type: None,
+            topics: Vec::new(),
+            valid_from: None,
+            valid_to: None,
+            salience: None,
+            target_page: None,
+            style: None,
+            source_ref: None,
+        },
+    )
+    .await
+    .expect("index fact");
 }
 
 /// End-to-end ACL projection through `wiki_read`. Three-region page on
@@ -774,6 +827,14 @@ async fn wiki_read_projects_acl_per_sender() {
                 Shared note for the family group.\n\
                 {{/}}\n";
     std::fs::write(wiki_dir.join("salute.md"), body).expect("write salute.md");
+    index_one_fact(
+        &state.pool,
+        "alice",
+        "salute.md",
+        "01900000-0000-7000-8000-000000000001",
+        "global",
+    )
+    .await;
 
     // Re-open the tree so the new wiki is picked up.
     let tree = WikiTree::open(dir.path()).expect("reopen");
@@ -820,7 +881,10 @@ async fn wiki_read_projects_acl_per_sender() {
     assert!(rendered.contains("Endpoint visible to everyone."));
     assert!(!rendered.contains("Alice's private decision history."));
     assert!(rendered.contains("Shared note for the family group."));
-    assert!(rendered.contains("[redacted]"));
+    // Alice's memory, read by somebody else: the facts he may read, and not
+    // the words around them nor the shape of the page.
+    assert!(!rendered.contains("# Alice"));
+    assert!(!rendered.contains("[redacted]"));
 
     // ---- carol (not subject, not in `famiglia`) sees only the global region ----
     let carol_identity = IdentityProfile {
@@ -841,8 +905,10 @@ async fn wiki_read_projects_acl_per_sender() {
     assert!(rendered.contains("Endpoint visible to everyone."));
     assert!(!rendered.contains("Alice's private decision history."));
     assert!(!rendered.contains("Shared note for the family group."));
-    let redacted_occurrences = rendered.matches("[redacted]").count();
-    assert_eq!(redacted_occurrences, 2);
+    assert!(!rendered.contains("# Alice"));
+    // The count still reaches her — `redacted_count` is not a secret — but
+    // nothing marks where the two she may not read were sitting.
+    assert_eq!(rendered.matches("[redacted]").count(), 0);
 }
 
 /// `wiki_read` serves the page named by `path`, projecting the ACL of *that*
@@ -877,6 +943,14 @@ async fn wiki_read_serves_arbitrary_page_with_per_page_acl() {
          Alice's secret sauce.\n{{/}}\n",
     )
     .expect("write pasta.md");
+    index_one_fact(
+        &state.pool,
+        "alice",
+        "recipes/pasta.md",
+        "01900000-0000-7000-8000-0000000000c3",
+        "global",
+    )
+    .await;
 
     let tree = WikiTree::open(dir.path()).expect("reopen");
     let state = McpState { tree, ..state };
@@ -906,8 +980,10 @@ async fn wiki_read_serves_arbitrary_page_with_per_page_acl() {
     assert!(rendered.contains("Alice's secret sauce."));
     assert_eq!(out["redacted_count"], json!(0));
 
-    // A non-subject reads the subpage: prose passes, the subject-only region is
-    // redacted — i.e. the page's *own* ACL is applied, not the wiki's.
+    // A non-subject reads the subpage: it is ALICE's memory, so he gets the
+    // facts he may read there and none of the words written around them — and
+    // the subject-only region is not one of them. The page's own ACL is what
+    // decides, not the wiki's.
     let bob = IdentityProfile {
         sender_id: "bob".into(),
         token_sender_id: "bob".into(),
@@ -922,7 +998,7 @@ async fn wiki_read_serves_arbitrary_page_with_per_page_acl() {
     .await
     .expect("bob subpage read");
     let rendered = out["content_rendered_for_sender"].as_str().unwrap();
-    assert!(rendered.contains("Free prose anyone can read."));
+    assert!(!rendered.contains("Free prose anyone can read."));
     assert!(!rendered.contains("Alice's secret sauce."));
     assert_eq!(out["redacted_count"], json!(1));
 
@@ -977,12 +1053,21 @@ async fn wiki_read_strips_frontmatter_so_card_topics_never_leak() {
          è celiaca{{/}} dal 2020.\n",
     )
     .expect("write salute.md");
+    index_one_fact(
+        &state.pool,
+        "alice",
+        "salute.md",
+        "01900000-0000-7000-8000-0000000000c4",
+        "global",
+    )
+    .await;
 
     let tree = WikiTree::open(dir.path()).expect("reopen");
     let state = McpState { tree, ..state };
 
-    // A non-subject reads the page: the private region is redacted AND the
-    // frontmatter (description + topic words) never reaches the reader.
+    // A non-subject reads the page: it is alice's memory and he may read no
+    // fact of it, so nothing of it reaches him — the frontmatter's description
+    // and topic words least of all.
     let bob = IdentityProfile {
         sender_id: "bob".into(),
         token_sender_id: "bob".into(),
@@ -997,11 +1082,9 @@ async fn wiki_read_strips_frontmatter_so_card_topics_never_leak() {
     .await
     .expect("bob read");
     let rendered = out["content_rendered_for_sender"].as_str().unwrap();
-    // Body scaffolding survives; the private fact is redacted.
-    assert!(rendered.contains("Alice"), "body prose lost: {rendered}");
     assert!(
-        rendered.contains("dal 2020."),
-        "body prose lost: {rendered}"
+        !rendered.contains("dal 2020."),
+        "the words around somebody else's fact are that fact's: {rendered}"
     );
     assert!(
         !rendered.contains("è celiaca"),
@@ -1610,8 +1693,20 @@ async fn wiki_read_refuses_only_the_engines_own_files() {
     )
     .expect("write _meta.md");
     std::fs::write(wiki_dir.join("_briefing.md"), "# Inbox\n\n- item\n").expect("write briefing");
-    std::fs::write(wiki_dir.join("index.md"), "# Alice\n\nLanding page.\n")
-        .expect("write index.md");
+    std::fs::write(
+        wiki_dir.join("index.md"),
+        "# Alice\n\n{{subject=global f=01900000-0000-7000-8000-0000000000c2}}\
+         Landing page.{{/}}\n",
+    )
+    .expect("write index.md");
+    index_one_fact(
+        &state.pool,
+        "alice",
+        "index.md",
+        "01900000-0000-7000-8000-0000000000c2",
+        "global",
+    )
+    .await;
     let tree = WikiTree::open(dir.path()).expect("reopen");
     let state = McpState { tree, ..state };
 

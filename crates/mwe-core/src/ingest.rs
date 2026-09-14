@@ -9379,15 +9379,19 @@ async fn identity_card(
             return None;
         },
     };
-    // The testata is card metadata, not prose — and its `topics:` list alone
-    // runs to a hundred words, so dropping it is most of the injected size.
-    let body = crate::wiki::MarkdownDoc::parse(&raw).map_or(raw, |doc| doc.body);
-    let projected = crate::render::render_for_sender_segments(
-        &body,
-        &db_acl,
-        &sender.sender_id,
-        &sender.sender_groups,
-    );
+    // The card belongs to ONE person, so how much of it this reader gets is
+    // the ordinary question: whole when it is their own, its readable facts
+    // alone when it is somebody else's. The links are flattened wholesale a
+    // few lines down — an injected copy has nothing to navigate from — so
+    // there is nothing here for the link filter to decide.
+    let view = crate::render::ReaderView {
+        sender_id: &sender.sender_id,
+        sender_groups: &sender.sender_groups,
+        page: crate::render::page_for_reader(handle.meta(), &sender.sender_id),
+        home_wiki: handle.meta().wiki_id.as_str(),
+        may_go: None,
+    };
+    let projected = crate::render::render_for_sender_segments(&raw, &db_acl, &view);
     // A page whose injected prose carries **no fact this reader may see** is
     // scaffolding, not a card: a freshly seeded `@profile.md` is a heading and
     // a sentence of connective tissue, and serving that on every turn
@@ -9448,21 +9452,31 @@ pub(crate) fn plain_wikilinks(text: &str) -> String {
             out.push_str(from_open);
             return out;
         };
-        let inner = &from_open[2..close];
-        let label = match inner.split_once('|') {
-            // A `|display` alias is presentation — it is exactly what the
-            // author wanted a reader to see.
-            Some((_, alias)) if !alias.trim().is_empty() => alias.trim(),
-            _ => {
-                let head = inner.split('|').next().unwrap_or(inner).trim();
-                head.rsplit('/').next().unwrap_or(head).trim()
-            },
-        };
-        out.push_str(label);
+        out.push_str(wikilink_label(&from_open[2..close]));
         rest = &from_open[close + 2..];
     }
     out.push_str(rest);
     out
+}
+
+/// The plain text a `[[link]]` becomes when it cannot be followed.
+///
+/// The `|display` alias when the author wrote one — it is exactly what they
+/// wanted a reader to see — otherwise the last path segment, the page's own
+/// name, which is the noun the sentence is about. `inner` is what sits between
+/// the brackets.
+///
+/// Shared with [`crate::render`], which flattens ONE link at a time: the two
+/// must agree on what a flattened link reads as, or the same page says two
+/// different things depending on which road served it.
+pub(crate) fn wikilink_label(inner: &str) -> &str {
+    match inner.split_once('|') {
+        Some((_, alias)) if !alias.trim().is_empty() => alias.trim(),
+        _ => {
+            let head = inner.split('|').next().unwrap_or(inner).trim();
+            head.rsplit('/').next().unwrap_or(head).trim()
+        },
+    }
 }
 
 /// Fit `text` to `max_chars` on a **paragraph** boundary, never mid-sentence.

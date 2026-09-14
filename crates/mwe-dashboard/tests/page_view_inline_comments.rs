@@ -58,6 +58,48 @@ async fn make_app_with_memory() -> (Router, SqlitePool, WikiTree, tempfile::Temp
     (router(state), pool, tree, dir)
 }
 
+/// The fact every seeded page carries so that it is a page at all.
+///
+/// A page with no ACTIVE fact serves nothing to anybody — its prose was
+/// written around facts that are not there — so a fixture page without one
+/// renders empty, which is not what any of these tests are about. `global`,
+/// because none of them is about who may read THIS fact.
+async fn seed_one_fact_on(pool: &SqlitePool, page: &str) {
+    let id = format!(
+        "018f1234-5678-7abc-9def-{:012x}",
+        page.bytes().map(u64::from).sum::<u64>()
+    );
+    mwe_core::fact_index::insert(
+        pool,
+        &mwe_core::fact_index::NewFact {
+            fact_id: mwe_core::types::FactId::parse(&id).expect("fact id"),
+            wiki_id: "alice".to_owned(),
+            source_path: format!("wikis/alice/{page}"),
+            region_start: None,
+            region_end: None,
+            text: "the page holds something".to_owned(),
+            embedding: vec![0.0; 8],
+            subject_id: mwe_core::types::Principal::global(),
+            allow_ids: Vec::new(),
+            sender_id: None,
+            subject_external: None,
+            slot: None,
+            slot_value: None,
+            authored_refs: Vec::new(),
+            fact_type: None,
+            topics: Vec::new(),
+            valid_from: None,
+            valid_to: None,
+            salience: None,
+            target_page: None,
+            style: None,
+            source_ref: None,
+        },
+    )
+    .await
+    .expect("seed fact");
+}
+
 /// Drop a wiki directory at `<workdir>/wikis/alice` with the given
 /// page body. Mirrors the helper in `wiki_explorer.rs` but specialised
 /// for our two-heading layout fixture so each test reads cleanly.
@@ -159,6 +201,7 @@ async fn page_view_renders_inline_comment_below_matching_heading() {
     let (app, pool, tree, _dir) = make_app_with_memory().await;
     let cookie = login_as_admin(&app).await;
     seed_alice_with_page(&tree, "modules/parser.md", TWO_HEADING_BODY);
+    seed_one_fact_on(&pool, "modules/parser.md").await;
 
     // Comment anchored to the second heading.
     let id = seed_briefing_item(
@@ -244,6 +287,7 @@ async fn page_view_renders_orphaned_comments_in_footer_when_anchor_missing() {
     let (app, pool, tree, _dir) = make_app_with_memory().await;
     let cookie = login_as_admin(&app).await;
     seed_alice_with_page(&tree, "modules/parser.md", TWO_HEADING_BODY);
+    seed_one_fact_on(&pool, "modules/parser.md").await;
 
     // Comment pointing at an anchor that does not exist in the body.
     let id = seed_briefing_item(
@@ -301,6 +345,7 @@ async fn page_view_renders_a_cite_without_anchor_under_on_this_page() {
     let (app, pool, tree, _dir) = make_app_with_memory().await;
     let cookie = login_as_admin(&app).await;
     seed_alice_with_page(&tree, "modules/parser.md", TWO_HEADING_BODY);
+    seed_one_fact_on(&pool, "modules/parser.md").await;
 
     // Path-only cite: no `#anchor`. That is a remark about the page as
     // a whole — it opens the body under its own heading, and nothing
@@ -356,9 +401,10 @@ const HEADING_LESS_CARD: &str = "Alice, born 1985, lives in Turin.\n\n\
 
 #[tokio::test]
 async fn a_page_without_headings_offers_the_page_level_comment_link() {
-    let (app, _pool, tree, _dir) = make_app_with_memory().await;
+    let (app, pool, tree, _dir) = make_app_with_memory().await;
     let cookie = login_as_admin(&app).await;
     seed_alice_with_page(&tree, "@profile.md", HEADING_LESS_CARD);
+    seed_one_fact_on(&pool, "@profile.md").await;
 
     let response = send(
         &app,
@@ -405,6 +451,7 @@ async fn a_comment_posted_through_the_page_level_link_renders_under_on_this_page
     let (app, pool, tree, _dir) = make_app_with_memory().await;
     let cookie = login_as_admin(&app).await;
     seed_alice_with_page(&tree, "@profile.md", HEADING_LESS_CARD);
+    seed_one_fact_on(&pool, "@profile.md").await;
 
     // POST with no `?anchor=` — the form the page-level link opens.
     let response = send(
@@ -462,9 +509,10 @@ async fn a_comment_posted_through_the_page_level_link_renders_under_on_this_page
 
 #[tokio::test]
 async fn the_page_level_comment_form_says_it_is_about_the_whole_page() {
-    let (app, _pool, tree, _dir) = make_app_with_memory().await;
+    let (app, pool, tree, _dir) = make_app_with_memory().await;
     let cookie = login_as_admin(&app).await;
     seed_alice_with_page(&tree, "@profile.md", HEADING_LESS_CARD);
+    seed_one_fact_on(&pool, "@profile.md").await;
 
     let response = send(
         &app,
@@ -489,9 +537,10 @@ async fn the_page_level_comment_form_says_it_is_about_the_whole_page() {
 
 #[tokio::test]
 async fn a_blank_anchor_parameter_is_still_refused() {
-    let (app, _pool, tree, _dir) = make_app_with_memory().await;
+    let (app, pool, tree, _dir) = make_app_with_memory().await;
     let cookie = login_as_admin(&app).await;
     seed_alice_with_page(&tree, "modules/parser.md", TWO_HEADING_BODY);
+    seed_one_fact_on(&pool, "modules/parser.md").await;
 
     // Absent means "the whole page"; present-but-blank is a malformed
     // URL for a section, and answering the other question would file
@@ -515,6 +564,7 @@ async fn page_view_filters_processed_comments_out() {
     let (app, pool, tree, _dir) = make_app_with_memory().await;
     let cookie = login_as_admin(&app).await;
     seed_alice_with_page(&tree, "modules/parser.md", TWO_HEADING_BODY);
+    seed_one_fact_on(&pool, "modules/parser.md").await;
 
     let pending = seed_briefing_item(
         &pool,
@@ -570,9 +620,10 @@ async fn page_view_filters_processed_comments_out() {
 
 #[tokio::test]
 async fn page_view_renders_no_comment_section_when_none() {
-    let (app, _pool, tree, _dir) = make_app_with_memory().await;
+    let (app, pool, tree, _dir) = make_app_with_memory().await;
     let cookie = login_as_admin(&app).await;
     seed_alice_with_page(&tree, "modules/parser.md", TWO_HEADING_BODY);
+    seed_one_fact_on(&pool, "modules/parser.md").await;
 
     let response = send(
         &app,
@@ -602,6 +653,7 @@ async fn page_view_attributes_comment_to_author_sender_id() {
     let (app, pool, tree, _dir) = make_app_with_memory().await;
     let cookie = login_as_admin(&app).await;
     seed_alice_with_page(&tree, "modules/parser.md", TWO_HEADING_BODY);
+    seed_one_fact_on(&pool, "modules/parser.md").await;
     seed_briefing_item(
         &pool,
         "alice",
@@ -643,6 +695,7 @@ async fn page_view_attributes_rem_comment_without_author_as_from_rem() {
     let (app, pool, tree, _dir) = make_app_with_memory().await;
     let cookie = login_as_admin(&app).await;
     seed_alice_with_page(&tree, "modules/parser.md", TWO_HEADING_BODY);
+    seed_one_fact_on(&pool, "modules/parser.md").await;
     seed_briefing_item(
         &pool,
         "alice",
@@ -703,6 +756,7 @@ async fn comment_submission_inserts_briefing_row_with_correct_columns() {
     let (app, pool, tree, _dir) = make_app_with_memory().await;
     let cookie = login_as_admin(&app).await;
     seed_alice_with_page(&tree, "modules/parser.md", TWO_HEADING_BODY);
+    seed_one_fact_on(&pool, "modules/parser.md").await;
 
     let response = send(
         &app,
@@ -781,9 +835,10 @@ async fn comment_submission_inserts_briefing_row_with_correct_columns() {
 
 #[tokio::test]
 async fn comment_round_trip_to_inline_render() {
-    let (app, _pool, tree, _dir) = make_app_with_memory().await;
+    let (app, pool, tree, _dir) = make_app_with_memory().await;
     let cookie = login_as_admin(&app).await;
     seed_alice_with_page(&tree, "modules/parser.md", TWO_HEADING_BODY);
+    seed_one_fact_on(&pool, "modules/parser.md").await;
 
     // Step 1 — POST a fresh comment.
     let response = send(
@@ -835,8 +890,9 @@ async fn comment_round_trip_to_inline_render() {
 
 #[tokio::test]
 async fn comment_anonymous_redirects_to_login() {
-    let (app, _pool, tree, _dir) = make_app_with_memory().await;
+    let (app, pool, tree, _dir) = make_app_with_memory().await;
     seed_alice_with_page(&tree, "modules/parser.md", TWO_HEADING_BODY);
+    seed_one_fact_on(&pool, "modules/parser.md").await;
 
     let response = send(
         &app,
@@ -946,6 +1002,7 @@ async fn comment_empty_body_returns_422() {
     let (app, pool, tree, _dir) = make_app_with_memory().await;
     let cookie = login_as_admin(&app).await;
     seed_alice_with_page(&tree, "modules/parser.md", TWO_HEADING_BODY);
+    seed_one_fact_on(&pool, "modules/parser.md").await;
 
     let response = send(
         &app,
@@ -979,6 +1036,7 @@ async fn comment_body_too_long_returns_422() {
     let (app, pool, tree, _dir) = make_app_with_memory().await;
     let cookie = login_as_admin(&app).await;
     seed_alice_with_page(&tree, "modules/parser.md", TWO_HEADING_BODY);
+    seed_one_fact_on(&pool, "modules/parser.md").await;
 
     // 4097 ASCII bytes — one over the COMMENT_BODY_MAX_BYTES ceiling.
     let big = "a".repeat(4097);
@@ -1014,6 +1072,7 @@ async fn comment_malformed_anchor_returns_422() {
     let (app, pool, tree, _dir) = make_app_with_memory().await;
     let cookie = login_as_admin(&app).await;
     seed_alice_with_page(&tree, "modules/parser.md", TWO_HEADING_BODY);
+    seed_one_fact_on(&pool, "modules/parser.md").await;
 
     // Uppercase chars + spaces are forbidden — must be 422.
     let response = send(
@@ -1039,9 +1098,10 @@ async fn comment_malformed_anchor_returns_422() {
 
 #[tokio::test]
 async fn comment_mode_query_param_shows_add_comment_buttons() {
-    let (app, _pool, tree, _dir) = make_app_with_memory().await;
+    let (app, pool, tree, _dir) = make_app_with_memory().await;
     let cookie = login_as_admin(&app).await;
     seed_alice_with_page(&tree, "modules/parser.md", TWO_HEADING_BODY);
+    seed_one_fact_on(&pool, "modules/parser.md").await;
 
     // With `?mode=comment` → "+ Comment" buttons appear next to every
     // heading and the "Stop commenting" toggle replaces the "Add
@@ -1117,6 +1177,7 @@ async fn comment_round_trip_then_mark_processed_removes_it_from_inline_view() {
     let (app, pool, tree, _dir) = make_app_with_memory().await;
     let cookie = login_as_admin(&app).await;
     seed_alice_with_page(&tree, "modules/parser.md", TWO_HEADING_BODY);
+    seed_one_fact_on(&pool, "modules/parser.md").await;
 
     // (a) Dashboard write path lands the comment row.
     let response = send(
@@ -1199,9 +1260,10 @@ async fn comment_round_trip_then_mark_processed_removes_it_from_inline_view() {
 
 #[tokio::test]
 async fn comment_form_get_renders_context() {
-    let (app, _pool, tree, _dir) = make_app_with_memory().await;
+    let (app, pool, tree, _dir) = make_app_with_memory().await;
     let cookie = login_as_admin(&app).await;
     seed_alice_with_page(&tree, "modules/parser.md", TWO_HEADING_BODY);
+    seed_one_fact_on(&pool, "modules/parser.md").await;
 
     let response = send(
         &app,
@@ -1242,6 +1304,7 @@ async fn submit_process_refuses_standard_wiki_comment() {
     let (app, pool, tree, _dir) = make_app_with_memory().await;
     let cookie = login_as_admin(&app).await;
     seed_alice_with_page(&tree, "modules/parser.md", TWO_HEADING_BODY);
+    seed_one_fact_on(&pool, "modules/parser.md").await;
 
     let bi_id = seed_briefing_item(
         &pool,
@@ -1291,7 +1354,7 @@ async fn submit_process_refuses_standard_wiki_comment() {
 /// (the card boundary, dashboard half).
 #[tokio::test]
 async fn page_view_strips_the_testata_so_card_topics_never_leak() {
-    let (app, _pool, tree, _dir) = make_app_with_memory().await;
+    let (app, pool, tree, _dir) = make_app_with_memory().await;
     let cookie = login_as_admin(&app).await;
     // A page whose testata carries owner-tier card topics + a description.
     let page = "---\n\
@@ -1304,6 +1367,7 @@ async fn page_view_strips_the_testata_so_card_topics_never_leak() {
                 \n\
                 Visible body prose.\n";
     seed_alice_with_page(&tree, "health.md", page);
+    seed_one_fact_on(&pool, "health.md").await;
 
     let response = send(
         &app,
@@ -1354,9 +1418,10 @@ const BOB_OWNED_PAGE: &str = "# Secret page\n\
 
 #[tokio::test]
 async fn page_view_redacts_for_admin_without_the_reveal_cookie() {
-    let (app, _pool, tree, _dir) = make_app_with_memory().await;
+    let (app, pool, tree, _dir) = make_app_with_memory().await;
     let cookie = login_as_admin(&app).await;
     seed_alice_with_page(&tree, "secret.md", BOB_OWNED_PAGE);
+    seed_one_fact_on(&pool, "secret.md").await;
 
     let response = send(
         &app,
@@ -1387,9 +1452,10 @@ async fn page_view_redacts_for_admin_without_the_reveal_cookie() {
 
 #[tokio::test]
 async fn page_view_reveals_for_admin_with_the_reveal_cookie() {
-    let (app, _pool, tree, _dir) = make_app_with_memory().await;
+    let (app, pool, tree, _dir) = make_app_with_memory().await;
     let session = login_as_admin(&app).await;
     seed_alice_with_page(&tree, "secret.md", BOB_OWNED_PAGE);
+    seed_one_fact_on(&pool, "secret.md").await;
 
     let response = send(
         &app,
@@ -1444,6 +1510,7 @@ async fn page_view_redacts_a_retired_region_but_reveal_still_shows_it() {
         fact_id.as_str()
     );
     seed_alice_with_page(&tree, "retired.md", &page);
+    seed_one_fact_on(&pool, "retired.md").await;
     // The row is owned by the viewer herself — with the FULL map she would
     // read it; the active map must drop it regardless.
     fact_index::insert(
@@ -1597,6 +1664,7 @@ async fn a_smart_wiki_comment_offers_the_control_that_clears_it() {
     let (app, pool, tree, _dir) = make_app_with_memory().await;
     let cookie = login_as_admin(&app).await;
     seed_alice_with_page(&tree, "index.md", "# Alice\n");
+    seed_one_fact_on(&pool, "index.md").await;
     seed_smart_casa_with_page(
         &tree,
         "impianti.md",
@@ -1642,6 +1710,7 @@ async fn a_standard_wiki_comment_offers_no_control_the_route_would_refuse() {
     let (app, pool, tree, _dir) = make_app_with_memory().await;
     let cookie = login_as_admin(&app).await;
     seed_alice_with_page(&tree, "cucina.md", "# Cucina\n\n## Colazione\n\nCoffee.\n");
+    seed_one_fact_on(&pool, "cucina.md").await;
     seed_briefing_item(
         &pool,
         "alice",
@@ -1679,6 +1748,7 @@ async fn clearing_a_comment_returns_to_the_page_it_was_on() {
     let (app, pool, tree, _dir) = make_app_with_memory().await;
     let cookie = login_as_admin(&app).await;
     seed_alice_with_page(&tree, "index.md", "# Alice\n");
+    seed_one_fact_on(&pool, "index.md").await;
     seed_smart_casa_with_page(
         &tree,
         "impianti.md",
@@ -1732,9 +1802,10 @@ async fn clearing_a_comment_returns_to_the_page_it_was_on() {
 /// it — or that a consumer will read what the nightly pass will.
 #[tokio::test]
 async fn the_comment_form_says_who_will_read_it() {
-    let (app, _pool, tree, _dir) = make_app_with_memory().await;
+    let (app, pool, tree, _dir) = make_app_with_memory().await;
     let cookie = login_as_admin(&app).await;
     seed_alice_with_page(&tree, "cucina.md", "# Cucina\n\n## Colazione\n\nCoffee.\n");
+    seed_one_fact_on(&pool, "cucina.md").await;
     seed_smart_casa_with_page(
         &tree,
         "impianti.md",
@@ -1894,6 +1965,7 @@ async fn a_smart_wikis_owner_sees_its_pages_although_it_holds_no_facts() {
     let (app, pool, tree, _dir) = make_app_with_memory().await;
     let admin_cookie = login_as_admin(&app).await;
     seed_alice_with_page(&tree, "appunti.md", "# Appunti\n\nprose\n");
+    seed_one_fact_on(&pool, "appunti.md").await;
     let caller = mwe_core::wiki_admin::AdminCaller {
         sender_id: "alice".into(),
         consumer_id: Some("cc-alice".into()),
@@ -1952,6 +2024,7 @@ async fn a_nested_wikis_listing_and_count_agree() {
     let admin_cookie = login_as_admin(&app).await;
     let bob_cookie = login_as_user(&app, &admin_cookie, "bob").await;
     seed_alice_with_page(&tree, "appunti.md", "# Appunti\n\nprose\n");
+    seed_one_fact_on(&pool, "appunti.md").await;
     // A standard wiki nested under alice: `wikis/alice/ricette/`, id
     // `alice-ricette`. Its facts are bob's to read.
     let dir = tree.wikis_dir().join("alice").join("ricette");

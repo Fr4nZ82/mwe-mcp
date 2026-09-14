@@ -13,6 +13,38 @@ semver-governed surface: breaking changes are called out explicitly.
 
 ### Fixed
 
+- **What is written around a fact is part of that fact, and it is served the
+  same way.** A page is prose with the facts marked inside it, and only the
+  marked parts carried a permission. Everything else — the headings, the
+  sentences between the facts, a *See also* line, a link naming another page —
+  went to whoever opened the page. But that prose is not something a person
+  wrote: the memory writes it, about somebody, and it says again what their
+  facts say. So a page of yours could hide a fact from somebody and hand them
+  the paragraph that explains it.
+
+  How much of a page you are served now depends on whose memory it is. **Your
+  own pages** you read whole, as before. **Somebody else's** give you the facts
+  you are allowed to read, one per line, and nothing written around them — not
+  even a mark where the rest was, because knowing that something stood there,
+  and where, is knowing something. **A group's pages, and a subject's**, you
+  read section by section: a heading and the paragraph under it reach you when
+  you can read a fact of that section, and go with it when you cannot.
+
+  **A page whose facts have all gone shows nothing to anybody.** What was left
+  on it described things that are no longer there.
+
+  **And a link is an address.** *[[zoe/health]]* says a page exists, whose
+  memory it is in, and what it is about. It survives only for a reader who can
+  read a fact of the page it points at; for anybody else it becomes the plain
+  name the sentence was already about, so the sentence still reads and no
+  longer says where anything is filed. A *See also* line loses the entry
+  instead, and an empty one goes. A bare *[[name]]* is left alone: it says the
+  one word it would say anyway.
+
+  One place decides all of it, and the page's own heading card — its
+  description and its keys — is taken off there too, instead of by hand on each
+  of the four roads that serve a page.
+
 - **A standing rule is a fact with its own readers, and there is one kind of
   them.** *Keep my health private* and *answer me concisely* are both things
   somebody told an assistant, and until now they travelled on two different
