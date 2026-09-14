@@ -216,7 +216,11 @@ const SERVED_BY_CONSUMER: &str = "\
 ///   joined the household this morning gets this morning's notices and one who
 ///   left stops. The builtin universal group is the exception the membership
 ///   list cannot express: its `members` array is empty **because everybody is
-///   in it** ([`crate::enrollment::members_for`]), so it is matched by name.
+///   in it** ([`crate::enrollment::members_for`]), so it is matched by name —
+///   and the name is the BARE `global`, which is what
+///   [`crate::types::Principal`] prints for it and therefore the only form a
+///   recipient ever carries. Matching `group:global` would be matching
+///   something nothing writes.
 /// - **Nobody** — the event is the operator's (a compile-failure streak, a
 ///   budget threshold, an archive proposal). It reaches the operator through
 ///   whatever they happen to be holding, and nobody else: a consumer running
@@ -241,8 +245,8 @@ const SERVED_BY_CONSUMER: &str = "\
 /// the same offset. The prefixes are wire form and wire form is exact.
 ///
 /// Binds, in order: the operator flag and `consumer_id` (unaddressed); the
-/// universal group's id, the caller, `consumer_id` twice (group); the caller,
-/// `consumer_id` twice (person). Nine.
+/// universal group's wire form; the caller and `consumer_id` twice (group);
+/// the caller and `consumer_id` twice (person). Nine.
 ///
 /// Kept as one constant so the poll filter reads as the rule instead of
 /// restating it. The configured half read in the other direction —
@@ -255,11 +259,11 @@ static RECIPIENT_SERVED_BY_CONSUMER: std::sync::LazyLock<String> = std::sync::La
              OR EXISTS (SELECT 1 FROM consumers c \
                           JOIN enrollment_users u ON u.user_id = c.system_user_id \
                          WHERE c.consumer_id = ? AND u.is_admin = 1) \
+           WHEN json_extract(payload, '$.recipient_id') = ? THEN 1 \
            WHEN substr(json_extract(payload, '$.recipient_id'), 1, 6) = 'group:' THEN \
-             substr(json_extract(payload, '$.recipient_id'), 7) = ? \
-             OR EXISTS (SELECT 1 FROM enrollment_groups g, json_each(g.members) m \
-                         WHERE g.group_id = substr(json_extract(payload, '$.recipient_id'), 7) \
-                           AND (m.value = ? OR m.value IN ({SERVED_BY_CONSUMER}))) \
+             EXISTS (SELECT 1 FROM enrollment_groups g, json_each(g.members) m \
+                      WHERE g.group_id = substr(json_extract(payload, '$.recipient_id'), 7) \
+                        AND (m.value = ? OR m.value IN ({SERVED_BY_CONSUMER}))) \
            WHEN substr(json_extract(payload, '$.recipient_id'), 1, 5) = 'user:' THEN \
              substr(json_extract(payload, '$.recipient_id'), 6) = ? \
              OR substr(json_extract(payload, '$.recipient_id'), 6) IN ({SERVED_BY_CONSUMER}) \
@@ -269,8 +273,14 @@ static RECIPIENT_SERVED_BY_CONSUMER: std::sync::LazyLock<String> = std::sync::La
 });
 
 /// The consumers **configured** to receive an event addressed to
-/// `recipient_id` — a `user:` principal (a bare user id is accepted too), or
-/// a `group:` one.
+/// `recipient_id`, in the wire form a recipient carries
+/// ([`crate::types::Principal`]: `user:<id>`, `group:<id>`, or the bare
+/// `global`).
+///
+/// An addressee in none of those shapes serves nobody, which is the same
+/// answer [`RECIPIENT_SERVED_BY_CONSUMER`] gives it — the two halves of one
+/// rule have to agree about what an addressee even is, or the emit-time
+/// warning stops firing for exactly the rows the poll refuses.
 ///
 /// The declared half of the poll's recipient scope, in the other direction,
 /// and it has to answer for the same three shapes
@@ -289,7 +299,11 @@ static RECIPIENT_SERVED_BY_CONSUMER: std::sync::LazyLock<String> = std::sync::La
 ///
 /// [`EventsError::Db`] for any SQL failure.
 pub async fn consumers_serving(pool: &SqlitePool, recipient_id: &str) -> Result<Vec<String>> {
-    let rows: Vec<(String,)> = if let Some(group) = recipient_id.strip_prefix("group:") {
+    use crate::types::Principal;
+    let Ok(addressee) = recipient_id.parse::<Principal>() else {
+        return Ok(Vec::new());
+    };
+    let rows: Vec<(String,)> = if let Principal::Group(group) = &addressee {
         if crate::enrollment::is_global_group(group) {
             sqlx::query_as("SELECT consumer_id FROM consumers")
                 .fetch_all(pool)
@@ -311,7 +325,8 @@ pub async fn consumers_serving(pool: &SqlitePool, recipient_id: &str) -> Result<
             .await?
         }
     } else {
-        let bare = recipient_id.strip_prefix("user:").unwrap_or(recipient_id);
+        let bare = addressee.to_string();
+        let bare = bare.strip_prefix("user:").unwrap_or(&bare);
         sqlx::query_as(
             "SELECT consumer_id FROM consumers WHERE system_user_id = ?
               UNION
@@ -668,6 +683,13 @@ impl PollScope<'_> {
         } else {
             ""
         };
+        // A payload `SQLite` cannot parse is stepped over here rather than
+        // further down: every arm of the recipient rule calls `json_extract`
+        // on it, and `json_extract` over malformed JSON raises and takes the
+        // WHOLE query with it — one half-written row would close the queue
+        // for every consumer until somebody repaired it by hand. A NULL
+        // payload is not malformed, it is a notice with nothing on it.
+        //
         // The cursor is the ORDER BY pair read as a tuple: strictly later
         // stamp, or the same stamp and a later id. `created_at` is compared as
         // TEXT here and ordered as TEXT there, so the two agree by
@@ -683,6 +705,7 @@ impl PollScope<'_> {
             "SELECT id, kind, wiki_id, fact_id, payload, created_at
                FROM wiki_events
               WHERE json_extract(acks, '$.' || ?) IS NULL
+                AND (payload IS NULL OR json_valid(payload))
                 AND ({recipient_scope}){since_clause}{after_clause}{kinds_placeholder}
               ORDER BY created_at ASC, id ASC
               LIMIT ?"
@@ -692,8 +715,9 @@ impl PollScope<'_> {
             // unaddressed: the operator in person, or a consumer running as them
             .bind(i64::from(self.caller_is_the_operator))
             .bind(self.consumer_id)
-            // group: the universal group by name, then the member test
-            .bind(crate::enrollment::GLOBAL_GROUP_ID)
+            // the universal group, in the exact wire form a recipient carries
+            .bind(crate::types::Principal::global().to_string())
+            // group: the member test
             .bind(self.caller_id)
             .bind(self.consumer_id)
             .bind(self.consumer_id)
@@ -795,8 +819,9 @@ impl PollScope<'_> {
 /// # Errors
 ///
 /// - [`EventsError::Db`] for any SQL failure.
-/// - [`EventsError::Json`] if a stored payload is no longer valid JSON
-///   (operationally a schema-drift problem, surfaced loudly).
+/// - [`EventsError::Json`] is not raised by a drain: a row whose stored
+///   payload is not JSON is logged at `error` and skipped, because the queue
+///   belongs to every consumer and one corrupt row must not close it.
 pub async fn poll_events(
     pool: &SqlitePool,
     consumer_id: &str,
@@ -836,8 +861,24 @@ pub async fn poll_events(
             // for the next one.
             after = Some((created_at.clone(), id));
             let payload_val = match payload {
-                Some(s) => serde_json::from_str(&s)?,
                 None => serde_json::Value::Null,
+                Some(s) => match serde_json::from_str(&s) {
+                    Ok(v) => v,
+                    // The second net. The query already steps over what
+                    // `SQLite` calls malformed, and these are two different
+                    // parsers that can disagree at the edges; whatever gets
+                    // past the first one is skipped here, loudly, and the
+                    // cursor moves on like any other row.
+                    Err(e) => {
+                        tracing::error!(
+                            error = %e,
+                            event_id = id,
+                            kind,
+                            "events: a stored payload is not JSON — row skipped"
+                        );
+                        continue;
+                    },
+                },
             };
             if !page_open
                 .allows(pool, wiki_id.as_deref(), &payload_val)
@@ -1943,7 +1984,12 @@ mod tests {
             EventKind::StructureApplied,
             None,
             None,
-            &serde_json::json!({ "recipient_id": "group:global" }),
+            // The wire form the engine really emits: `Principal` prints the
+            // universal group BARE, so a predicate looking for `group:global`
+            // would be looking for something nothing writes.
+            &serde_json::json!({
+                "recipient_id": crate::types::Principal::global().to_string(),
+            }),
         )
         .await
         .expect("insert");
@@ -2343,6 +2389,87 @@ mod tests {
         assert!(
             out.has_more,
             "the drain stopped at its ceiling, which is «ask again», not «nothing here»"
+        );
+    }
+
+    #[tokio::test]
+    async fn one_unreadable_payload_does_not_close_the_queue() {
+        let (_workdir, pool) = fresh_pool().await;
+        consumer(&pool, "frodo-bridge", None, &["frodo"]).await;
+        let broken = insert_event(
+            &pool,
+            EventKind::StructureApplied,
+            Some("frodo"),
+            None,
+            &serde_json::json!({ "recipient_id": "user:frodo" }),
+        )
+        .await
+        .expect("insert");
+        sqlx::query("UPDATE wiki_events SET payload = '{not json' WHERE id = ?")
+            .bind(broken)
+            .execute(&pool)
+            .await
+            .expect("corrupt it the way a half-written row would be");
+        insert_event(
+            &pool,
+            EventKind::FactMintedForYou,
+            Some("frodo"),
+            None,
+            &serde_json::json!({
+                "recipient_id": "user:frodo",
+                "facts": [{ "fact_id": "f", "wiki_id": "frodo", "body": "good" }],
+            }),
+        )
+        .await
+        .expect("insert");
+
+        let out = poll_events(
+            &pool,
+            "frodo-bridge",
+            CALLER,
+            false,
+            None,
+            &[],
+            DEFAULT_POLL_TOP_K,
+        )
+        .await
+        .expect("a corrupt row must not fail the call");
+        assert_eq!(
+            out.events.len(),
+            1,
+            "the mail behind a row nobody can parse still arrives: {out:?}"
+        );
+        assert_eq!(out.events[0].kind, "fact_minted_for_you");
+    }
+
+    #[tokio::test]
+    async fn the_two_halves_agree_that_a_nonsense_addressee_is_nobodys() {
+        // The poll refuses it and the emit-time check has to say the same, or
+        // the warning that a notice can reach nobody stops firing for exactly
+        // the rows nothing will deliver.
+        let (_workdir, pool) = fresh_pool().await;
+        consumer(&pool, "a-bridge", None, &["a"]).await;
+        for wrong in ["banana", "USER:a", "", "user:"] {
+            assert!(
+                consumers_serving(&pool, wrong)
+                    .await
+                    .expect("configured")
+                    .is_empty(),
+                "`{wrong}` is not an addressee, so nobody is configured for it"
+            );
+        }
+        // And the two shapes that ARE addressees still answer.
+        consumer(&pool, "frodo-bridge", None, &["frodo"]).await;
+        group(&pool, "famiglia", &["frodo"]).await;
+        assert_eq!(
+            consumers_serving(&pool, "user:frodo").await.expect("ok"),
+            vec!["frodo-bridge"]
+        );
+        assert_eq!(
+            consumers_serving(&pool, "group:famiglia")
+                .await
+                .expect("ok"),
+            vec!["frodo-bridge"]
         );
     }
 }

@@ -185,9 +185,30 @@ pub mod kind {
     ///
     /// A LIST and not a rule about the text: which family a kind falls in is
     /// a judgement about what the row says, and a heuristic that guessed it
-    /// would guess wrong silently. A test pins the membership, so a kind
-    /// added later makes its author choose.
+    /// would guess wrong silently. Its sibling [`SOMEBODYS_BUSINESS`] holds
+    /// the rest, and a test pins that the two partition [`ALL`] — so a kind
+    /// added to `ALL` and to neither family fails the build, which is the
+    /// only way an author is made to choose.
     pub const ENGINE_REPORTS: &[&str] = &[RECALL_TUNING];
+
+    /// The kinds that are about somebody's material rather than about the
+    /// engine — the other half of the partition.
+    ///
+    /// Written out rather than derived as «everything not in
+    /// [`ENGINE_REPORTS`]», because derived it would swallow a new kind in
+    /// silence and put it on the safe side by accident. The safe side is
+    /// still the right default; being made to write it down is the point.
+    pub const SOMEBODYS_BUSINESS: &[&str] = &[
+        WIKI_PROMOTE,
+        DEDUP_MERGE,
+        FACT_FORGET,
+        PAGE_CREATE,
+        RAIL_ADD,
+        SLOT_CONFLICT,
+        PAGE_JUDGED,
+        CARD_RETYPE,
+        COMMENT_REFUSED,
+    ];
 
     /// `true` when `s` is one of [`ENGINE_REPORTS`].
     #[must_use]
@@ -381,18 +402,6 @@ pub enum RecipientScope {
     Addressee(String),
 }
 
-/// The clause that lets an **elector** read the request they are voting
-/// on.
-///
-/// A `fact_forget` request is addressed to whoever asked for the forget
-/// ([`crate::votes::open_forget_request`]), and the people being asked to
-/// vote are everybody else who can read the fact. Scoping on the
-/// addressee alone therefore hides the ballot from exactly the people it
-/// is a question for: they were told to go and vote and then shown
-/// nothing. So the electorate reads it too.
-///
-/// Narrowed to the one kind that has an electorate, so no other row is
-/// ever matched by a stray `eligible_voters` key.
 /// [`kind::ENGINE_REPORTS`] as a quoted SQL list, built once.
 ///
 /// The membership is a constant of this crate, so it is written into the
@@ -406,6 +415,17 @@ static ENGINE_REPORT_LITERALS: std::sync::LazyLock<String> = std::sync::LazyLock
         .join(", ")
 });
 
+/// The clause that lets an **elector** read the request they are voting on.
+///
+/// A `fact_forget` request is addressed to whoever asked for the forget
+/// ([`crate::votes::open_forget_request`]), and the people being asked to vote
+/// are everybody else who can read the fact. Scoping on the addressee alone
+/// therefore hides the ballot from exactly the people it is a question for:
+/// they were told to go and vote and then shown nothing. So the electorate
+/// reads it too.
+///
+/// Narrowed to the one kind that has an electorate, so no other row is ever
+/// matched by a stray `eligible_voters` key.
 const ELECTOR_CLAUSE: &str = "(kind = 'fact_forget' AND EXISTS (\
      SELECT 1 FROM json_each(structure_proposals.context, '$.eligible_voters') \
       WHERE json_each.value = ?))";
@@ -847,20 +867,29 @@ pub fn group_by_recipient<T: Clone>(
 /// Whether `caller_sender_id` may apply a proposal whose addressee is
 /// `recipient_id`.
 ///
-/// Admins always may. A proposal addressed to nobody stays actionable by
-/// anyone who is shown it, which is what makes a receipt nobody was addressed
-/// with answerable at all. Otherwise only the addressed user may act. `recipient_id`, when `Some`, is a `Principal` wire string
-/// (`"user:<id>"`); `caller_sender_id` is the bare session id.
+/// **Acting follows seeing**, and the same three answers decide both: the
+/// addressed person may act on their own; anybody else needs the
+/// administrator's role AND the reveal lens, which is what being shown
+/// somebody else's row costs on the listing too. A row addressed to nobody is
+/// no different — it is about somebody's pages even when the engine could not
+/// name them — so it is the operator's to decide, with the lens on.
+///
+/// Being the administrator with the lens off buys nothing here: a row you
+/// cannot be shown is not a row you may apply by knowing its id.
+///
+/// `recipient_id`, when `Some`, is a `Principal` wire string (`"user:<id>"`);
+/// `caller_sender_id` is the bare session id.
 #[must_use]
 pub fn recipient_can_act(
     recipient_id: Option<&str>,
     caller_sender_id: &str,
     is_admin: bool,
+    reveal: bool,
 ) -> bool {
-    if is_admin {
+    if is_admin && reveal {
         return true;
     }
-    recipient_id.is_none_or(|r| {
+    recipient_id.is_some_and(|r| {
         r.strip_prefix("user:")
             .is_some_and(|u| u == caller_sender_id)
     })
@@ -928,6 +957,7 @@ pub async fn apply_proposal(
     answers: &Value,
     applied_by: Option<&str>,
     is_admin: bool,
+    reveal: bool,
 ) -> std::result::Result<ApplyOutcome, ApplyError> {
     let row: Option<(String, String, String, Option<String>)> = sqlx::query_as(
         "SELECT kind, status, context, recipient_id FROM structure_proposals WHERE proposal_id = ?",
@@ -943,9 +973,9 @@ pub async fn apply_proposal(
             status,
         });
     }
-    // 0032: only the addressee or an admin may apply.
+    // Only the addressee, or the operator with the lens on.
     let caller = applied_by.unwrap_or("");
-    if !recipient_can_act(recipient_id.as_deref(), caller, is_admin) {
+    if !recipient_can_act(recipient_id.as_deref(), caller, is_admin, reveal) {
         return Err(ApplyError::NotAuthorized {
             proposal_id: proposal_id.to_owned(),
             caller: caller.to_owned(),
@@ -1750,7 +1780,10 @@ pub(crate) async fn apply_fact_forget_now(
     proposal_id: &str,
 ) -> std::result::Result<(), ApplyError> {
     let empty_answers = Value::Object(serde_json::Map::default());
-    apply_proposal(pool, tree, proposal_id, &empty_answers, None, true).await?;
+    // The engine applying a vote it counted itself: no person is asking, so
+    // there is nobody to check and the two authority flags stand for «this is
+    // the engine's own hand».
+    apply_proposal(pool, tree, proposal_id, &empty_answers, None, true, true).await?;
     Ok(())
 }
 
@@ -2582,6 +2615,7 @@ mod tests {
             &json!({ "verdict": "retire" }),
             Some("bob"),
             false,
+            false,
         )
         .await
         .expect("apply");
@@ -2778,6 +2812,7 @@ mod tests {
             &id,
             &json!({ "verdict": "retire" }),
             Some("bob"),
+            false,
             false,
         )
         .await
@@ -3033,18 +3068,44 @@ mod tests {
         assert_eq!(recipient_from_fact(&Principal::global(), None), None);
     }
 
+    /// Acting follows seeing: the same three answers decide both.
     #[test]
-    fn recipient_can_act_admin_addressee_and_null() {
-        // Admin always may, even for someone else's proposal.
-        assert!(recipient_can_act(Some("user:frodo"), "galadriel", true));
-        // The addressee may act on their own.
-        assert!(recipient_can_act(Some("user:frodo"), "frodo", false));
-        // A non-addressee non-admin may not.
-        assert!(!recipient_can_act(Some("user:frodo"), "galadriel", false));
-        // Unaddressed (NULL) stays actionable by anyone (pre-0032 behaviour).
-        assert!(recipient_can_act(None, "anyone", false));
-        // A non-user (group) recipient is not actionable by an arbitrary non-admin.
-        assert!(!recipient_can_act(Some("group:famiglia"), "frodo", false));
+    fn acting_on_a_proposal_follows_being_shown_it() {
+        // The addressee acts on their own, lens or no lens, admin or not.
+        assert!(recipient_can_act(Some("user:frodo"), "frodo", false, false));
+        // Somebody else's is nobody else's — including an administrator's,
+        // with the lens off. They cannot be shown it either.
+        assert!(!recipient_can_act(
+            Some("user:frodo"),
+            "galadriel",
+            false,
+            false
+        ));
+        assert!(!recipient_can_act(
+            Some("user:frodo"),
+            "galadriel",
+            true,
+            false
+        ));
+        // With the lens on, the administrator acts on everybody's.
+        assert!(recipient_can_act(
+            Some("user:frodo"),
+            "galadriel",
+            true,
+            true
+        ));
+        // Addressed to nobody is still about somebody's pages: the operator's
+        // to decide, with the lens on, and nobody else's at all.
+        assert!(!recipient_can_act(None, "anyone", false, false));
+        assert!(!recipient_can_act(None, "galadriel", true, false));
+        assert!(recipient_can_act(None, "galadriel", true, true));
+        // A group recipient addresses nobody who can act.
+        assert!(!recipient_can_act(
+            Some("group:famiglia"),
+            "frodo",
+            false,
+            false
+        ));
     }
 
     // ---- list (existing coverage, retained with the canonical kind names) ----
@@ -3221,8 +3282,7 @@ mod tests {
         );
     }
 
-    /// One `pending` row with an explicit addressee.
-    /// Seed an unaddressed proposal of a given kind.
+    /// One `pending` row of a given kind, addressed to nobody.
     async fn seed_unaddressed_of(pool: &SqlitePool, proposal_id: &str, kind: &str) {
         let now = chrono::Utc::now();
         sqlx::query(
@@ -3292,31 +3352,39 @@ mod tests {
         );
     }
 
-    /// Every kind belongs to exactly one family, and adding one makes the
-    /// author choose.
+    /// The two families PARTITION the kinds: every kind in exactly one, and
+    /// nothing in either that is not a kind.
     ///
-    /// The split decides who reads an unaddressed row with no lens on, so a
-    /// kind that nobody classified would quietly join the safe side and then
-    /// be wrong in a way nothing announces. The list is the classification —
-    /// there is no heuristic on the text, by decision.
+    /// The split decides who reads an unaddressed row with the lens off, so a
+    /// kind nobody classified would join the safe side by accident and be
+    /// wrong in a way nothing announces. Checking «is it an engine report»
+    /// would not catch that — the answer would simply be no. Checking that the
+    /// two lists cover `ALL` between them does: a kind added to `ALL` and to
+    /// neither family fails here, and its author has to decide which it is.
     #[test]
-    fn every_kind_is_either_an_engine_report_or_somebodys_business() {
-        let reports: Vec<&str> = kind::ALL
+    fn the_two_families_partition_every_kind() {
+        let mut covered: Vec<&str> = kind::ENGINE_REPORTS
+            .iter()
+            .chain(kind::SOMEBODYS_BUSINESS)
+            .copied()
+            .collect();
+        covered.sort_unstable();
+        let mut all: Vec<&str> = kind::ALL.to_vec();
+        all.sort_unstable();
+        assert_eq!(
+            covered, all,
+            "every kind belongs to exactly one family — put the new one in \
+             `ENGINE_REPORTS` if it is about the engine, in `SOMEBODYS_BUSINESS` \
+             if it is about anybody's material"
+        );
+        let overlap: Vec<&str> = kind::ENGINE_REPORTS
             .iter()
             .copied()
-            .filter(|k| kind::is_engine_report(k))
+            .filter(|k| kind::SOMEBODYS_BUSINESS.contains(k))
             .collect();
-        assert_eq!(
-            reports,
-            [kind::RECALL_TUNING],
-            "the engine-report family is this list and nothing else"
-        );
-        for k in kind::ENGINE_REPORTS {
-            assert!(
-                kind::is_canonical(k),
-                "`{k}` is listed as an engine report but is not a kind"
-            );
-        }
+        assert!(overlap.is_empty(), "a kind in both families: {overlap:?}");
+        assert!(kind::is_engine_report(kind::RECALL_TUNING));
+        assert!(!kind::is_engine_report(kind::PAGE_CREATE));
     }
 
     async fn seed_addressed(pool: &SqlitePool, proposal_id: &str, recipient: Option<&str>) {
@@ -3341,9 +3409,17 @@ mod tests {
     #[tokio::test]
     async fn apply_proposal_not_found() {
         let (_workdir, pool, tree) = fresh_pool_and_tree().await;
-        let err = apply_proposal(&pool, &tree, "p-missing", &json!({}), Some("frodo"), true)
-            .await
-            .unwrap_err();
+        let err = apply_proposal(
+            &pool,
+            &tree,
+            "p-missing",
+            &json!({}),
+            Some("frodo"),
+            true,
+            true,
+        )
+        .await
+        .unwrap_err();
         assert!(matches!(err, ApplyError::NotFound(ref id) if id == "p-missing"));
     }
 
@@ -3351,7 +3427,7 @@ mod tests {
     async fn apply_proposal_rejects_non_pending() {
         let (_workdir, pool, tree) = fresh_pool_and_tree().await;
         seed(&pool, "p-1", kind::WIKI_PROMOTE, "applied", 86_400).await;
-        let err = apply_proposal(&pool, &tree, "p-1", &json!({}), Some("frodo"), true)
+        let err = apply_proposal(&pool, &tree, "p-1", &json!({}), Some("frodo"), true, true)
             .await
             .unwrap_err();
         match err {
@@ -3370,7 +3446,7 @@ mod tests {
     async fn apply_proposal_rejects_unknown_kind() {
         let (_workdir, pool, tree) = fresh_pool_and_tree().await;
         seed(&pool, "p-1", "forge_type", "pending", 86_400).await;
-        let err = apply_proposal(&pool, &tree, "p-1", &json!({}), Some("frodo"), true)
+        let err = apply_proposal(&pool, &tree, "p-1", &json!({}), Some("frodo"), true, true)
             .await
             .unwrap_err();
         match err {
@@ -3399,7 +3475,7 @@ mod tests {
         for (i, k) in unshipped.iter().enumerate() {
             let id = format!("p-{i}");
             seed(&pool, &id, k, "pending", 86_400).await;
-            let err = apply_proposal(&pool, &tree, &id, &json!({}), Some("frodo"), true)
+            let err = apply_proposal(&pool, &tree, &id, &json!({}), Some("frodo"), true, true)
                 .await
                 .unwrap_err();
             match err {
@@ -3426,7 +3502,7 @@ mod tests {
         // on its own input contract.
         let (_workdir, pool, tree) = fresh_pool_and_tree().await;
         seed(&pool, "p-1", kind::WIKI_PROMOTE, "pending", 86_400).await;
-        let err = apply_proposal(&pool, &tree, "p-1", &json!({}), Some("frodo"), true)
+        let err = apply_proposal(&pool, &tree, "p-1", &json!({}), Some("frodo"), true, true)
             .await
             .unwrap_err();
         assert!(matches!(err, ApplyError::InvalidPayload(_)), "{err:?}");

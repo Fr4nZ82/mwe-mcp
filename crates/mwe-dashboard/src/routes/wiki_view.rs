@@ -115,7 +115,7 @@ use mwe_core::page::DeletionMode;
 use mwe_core::render;
 use mwe_core::sections;
 use mwe_core::types::{Principal, WikiId};
-use mwe_core::wiki::{META_FILENAME, wiki_get_meta, wiki_list_pages, wiki_read};
+use mwe_core::wiki::{META_FILENAME, wiki_get_meta, wiki_read};
 use mwe_core::wiki_admin::resolve_read_access;
 use mwe_core::wiki_delete;
 use serde::Deserialize;
@@ -742,45 +742,16 @@ async fn view(
     if !reveal && meta.smart && !wiki_readable(&state, memory, &wiki_id, &user.sender_id).await? {
         return Err(DashboardError::NotFound);
     }
-    let all_pages = wiki_list_pages(&memory.tree, &wiki_id).map_err(map_wiki_err)?;
-    let sender_groups = mwe_core::enrollment::groups_for(&state.pool, &user.sender_id)
-        .await
-        .map_err(|e| DashboardError::Internal(format!("groups_for: {e}")))?;
-    // What this home shows is a reader's view of the wiki, not the wiki's own
-    // shape. A page name is content — `blood_test_june.md` says what is on a
-    // page before anybody opens it — and a count of everything says how much
-    // there is that you are not being shown. So the list holds the pages this
-    // reader reads a fact of and the number counts those facts. Reveal shows
-    // the whole shelf, which is what the lens is for.
-    let mut pages = Vec::with_capacity(all_pages.len());
-    for p in all_pages {
-        let source_path = format!("wikis/{}/{}", wiki_id.as_str(), p.rel_path.display());
-        if reveal
-            || fact_index::readable_fact_on_page(
-                &state.pool,
-                &source_path,
-                &user.sender_id,
-                &sender_groups,
-            )
-            .await
-            .map_err(|e| DashboardError::Internal(format!("readable_fact_on_page: {e}")))?
-        {
-            pages.push(p);
-        }
-    }
-    let fact_count = if reveal {
-        fact_index::count_active_in_wiki(&state.pool, wiki_id.as_str())
-            .await
-            .map_err(|e| DashboardError::Internal(format!("count_active_in_wiki: {e}")))?
-    } else {
-        fact_index::count_readable_in_wiki(
-            &state.pool,
-            wiki_id.as_str(),
-            &mwe_core::acl::reader_principals(&user.sender_id, &sender_groups),
-        )
-        .await
-        .map_err(|e| DashboardError::Internal(format!("count_readable_in_wiki: {e}")))?
-    };
+    let handle = memory.tree.locate(&wiki_id).map_err(map_wiki_err)?;
+    let (pages, fact_count) = pages_and_count_for(
+        &state,
+        &handle,
+        &wiki_id,
+        &user.sender_id,
+        meta.smart,
+        reveal,
+    )
+    .await?;
     // No wiki is assumed to have an `index.md`. A standard wiki has none at
     // all, and nothing may coin one; a smart
     // wiki has whatever pages its consumer pushed, which may or may not
@@ -864,6 +835,71 @@ async fn view(
     Ok(Html(layout::authenticated_reading_page(
         chrome, &title, &user, &body,
     )))
+}
+
+/// What this home shows of a wiki: the pages this reader may be told exist,
+/// and the number of facts they may read.
+///
+/// A reader's view, not the wiki's shape. A page name is content —
+/// `blood_test_june.md` says what is on a page before anybody opens it — and a
+/// count of everything says how much there is that you are not being shown.
+///
+/// The question a listing asks is «may this reader be told this page exists»,
+/// and the product answers it in ONE place,
+/// [`fact_index::page_visible_to`]: the page view asks it, the comment surface
+/// asks it, the notice queue asks it. What it refuses is a page whose facts are
+/// all out of reach; a page with no active fact keeps nothing from anybody,
+/// which is what an `@rules.md` of plain prose is, and what a page looks like
+/// once the night has moved its facts away. The strict twin answers a different
+/// question — «send this person to that page» — and that one is `/cite`'s.
+///
+/// A SMART wiki holds no facts at all by construction, so there is nothing per
+/// page to ask: its gate is the roster, asked by the caller before this, and
+/// past it the whole shelf shows.
+///
+/// `reveal` shows the whole shelf and the whole count, which is what the lens
+/// is for.
+async fn pages_and_count_for(
+    state: &DashboardState,
+    handle: &mwe_core::wiki::WikiHandle,
+    wiki_id: &WikiId,
+    sender_id: &str,
+    smart: bool,
+    reveal: bool,
+) -> Result<(Vec<mwe_core::wiki::PageInfo>, i64)> {
+    let all_pages = handle.list_pages().map_err(map_wiki_err)?;
+    let sender_groups = mwe_core::enrollment::groups_for(&state.pool, sender_id)
+        .await
+        .map_err(|e| DashboardError::Internal(format!("groups_for: {e}")))?;
+    let mut pages = Vec::with_capacity(all_pages.len());
+    for p in all_pages {
+        // Built by the handle, never by hand: a smart wiki lives UNDER its
+        // person's (`wikis/<user>/<slug>/`) while its id is `<user>-<slug>`,
+        // so a path glued together from the id misses every nested wiki.
+        let source_path = handle.source_path(&p.rel_path);
+        if reveal
+            || smart
+            || fact_index::page_visible_to(&state.pool, &source_path, sender_id, &sender_groups)
+                .await
+                .map_err(|e| DashboardError::Internal(format!("page_visible_to: {e}")))?
+        {
+            pages.push(p);
+        }
+    }
+    let fact_count = if reveal {
+        fact_index::count_active_in_wiki(&state.pool, wiki_id.as_str())
+            .await
+            .map_err(|e| DashboardError::Internal(format!("count_active_in_wiki: {e}")))?
+    } else {
+        fact_index::count_readable_in_wiki(
+            &state.pool,
+            wiki_id.as_str(),
+            &mwe_core::acl::reader_principals(sender_id, &sender_groups),
+        )
+        .await
+        .map_err(|e| DashboardError::Internal(format!("count_readable_in_wiki: {e}")))?
+    };
+    Ok((pages, fact_count))
 }
 
 /// The `index.md` preview block of a wiki's home: the redaction/reveal

@@ -430,7 +430,7 @@ fn wiki_ingest_external() -> Tool {
 fn wiki_admin_push() -> Tool {
     materialize(
         "wiki_admin_push",
-        "Smart-wiki authoritative write (H family). Smart consumers only (`consumer_class=smart`). `mode=create` forges a new wiki at `slug` — a smart one under `parent_wiki_id`, a standard one at the top level; `mode=upsert` overwrites pages and applies `deletes` on an existing smart-wiki owned by the caller. No server-side LLM — content is taken verbatim. Optional `mark_processed` rides along the push to mark briefing items as `processed_at=NOW()` atomically with the same transaction (used by the smart consumer to recepire dashboard comments addressed by the push). The response returns `authored_refs`: one `[[wiki_id/page]]` breadcrumb per written page — echo these into the next `wiki_ingest_message` (`metadata.authored_refs`) so personal memory links to the page instead of duplicating its body.",
+        "Smart-wiki authoritative write (H family). Smart consumers only (`consumer_class=smart`). `mode=create` forges a new SMART wiki at `slug`, under `parent_wiki_id` (required — a smart wiki takes its read audience from the wiki it sits under). A standard wiki is structure the engine raises for itself and is not created here. `mode=upsert` overwrites pages and applies `deletes` on an existing smart-wiki owned by the caller. No server-side LLM — content is taken verbatim. Optional `mark_processed` rides along the push to mark briefing items as `processed_at=NOW()` atomically with the same transaction (used by the smart consumer to close off dashboard comments the push answers). The response returns `authored_refs`: one `[[wiki_id/page]]` breadcrumb per written page — echo these into the next `wiki_ingest_message` (`metadata.authored_refs`) so personal memory links to the page instead of duplicating its body.",
         json!({
             "type": "object",
             "required": ["mode", "pages"],
@@ -438,11 +438,11 @@ fn wiki_admin_push() -> Tool {
             "properties": {
                 "mode": { "type": "string", "enum": ["create", "upsert"] },
                 "wiki_id": { "type": "string", "description": "Required on `upsert`; forbidden on `create` (derived from parent + slug)." },
-                "parent_wiki_id": { "type": "string", "description": "Required when `create` forges a SMART wiki (`smart: true`): it lands under this wiki, which is where its read audience comes from — pass your own root wiki. A standard wiki has no parent and is refused if one is passed." },
+                "parent_wiki_id": { "type": "string", "description": "Required on `create`: the new wiki lands under this one, which is where its read audience comes from — pass your own root wiki." },
                 "slug": { "type": "string", "description": "Required on `create`. Directory slug for the new wiki." },
                 "title": { "type": "string", "description": "Required on `create`. Human display title." },
                 "wiki_type": { "type": "string", "description": "Required on create. Free-form tone/label; does NOT determine smart-ness (pass `smart: true`)." },
-                "smart": { "type": "boolean", "description": "Set true on create to forge a smart wiki (markerless, content-indexed, owner-administered via wiki_admin_*). Optional; default false." },
+                "smart": { "type": "boolean", "description": "Must be true on create: this API forges smart wikis (markerless, content-indexed, owner-administered via wiki_admin_*) and nothing else. Defaults to false, so a create that omits it is refused." },
                 "project_id": { "type": "string", "description": "Optional. Stable opaque id of the project the consumer tracks; stamped into `_meta.md.extra.project_id`." },
                 "pages": {
                     "type": "array",

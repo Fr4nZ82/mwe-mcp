@@ -1790,8 +1790,6 @@ fn seed_giardinaggio_with_page(tree: &WikiTree, page: &str, body: &str) {
     std::fs::write(dir.join(page), body).unwrap();
 }
 
-/// One indexed fact about `subject`, so the wiki's derived visibility has
-/// something to answer with.
 /// A wiki's home is a reader's view of it, not its shape.
 ///
 /// The door stays open — a standard wiki is structure and hides from nobody —
@@ -1839,6 +1837,162 @@ async fn a_wiki_home_lists_the_pages_its_reader_reads_and_counts_their_facts() {
     );
 }
 
+/// A page nobody's facts are on still has a name its reader may know.
+///
+/// The listing asks «may this reader be told this page exists», and the
+/// product answers that in one place. A page carrying no active fact keeps
+/// nothing from anybody — an `@rules.md` of plain prose is exactly that — so
+/// it is listed. What is withheld is a page whose facts are all out of reach.
+#[tokio::test]
+async fn a_wiki_home_lists_a_page_that_holds_no_fact_at_all() {
+    let (app, pool, tree, _dir) = make_app_with_memory().await;
+    let admin_cookie = login_as_admin(&app).await;
+    let bob_cookie = login_as_user(&app, &admin_cookie, "bob").await;
+    seed_alice_with_page(&tree, "shared.md", "# Shared\n\nprose\n");
+    seed_alice_with_page(&tree, "hers.md", "# Hers\n\nprose\n");
+    seed_fact_about(&pool, "alice", "shared.md", "user:alice", "b1").await;
+    sqlx::query("UPDATE fact_index SET allow_ids = '[\"user:bob\"]' WHERE source_path = ?")
+        .bind("wikis/alice/shared.md")
+        .execute(&pool)
+        .await
+        .expect("share the first one with bob");
+    seed_fact_about(&pool, "alice", "hers.md", "user:alice", "b2").await;
+
+    let response = send(
+        &app,
+        Request::builder()
+            .uri("/wiki/alice")
+            .header(header::COOKIE, bob_cookie)
+            .body(Body::empty())
+            .unwrap(),
+    )
+    .await;
+    assert_eq!(response.status(), StatusCode::OK);
+    let html = body_string(response).await;
+    assert!(
+        html.contains("shared.md"),
+        "a page he reads a fact of: {html}"
+    );
+    assert!(
+        !html.contains("hers.md"),
+        "a page whose only fact is alice's stays out: {html}"
+    );
+    assert!(
+        html.contains("@rules.md"),
+        "a page of plain prose withholds nothing and is listed: {html}"
+    );
+}
+
+/// A smart wiki holds no facts at all, so there is nothing per page to ask:
+/// its gate is the roster, and past it the whole shelf shows.
+///
+/// Asking the per-page question there would have shown its own owner an empty
+/// wiki — every page gone and no facts — which is what a per-fact rule does to
+/// a family that has no facts by construction.
+#[tokio::test]
+async fn a_smart_wikis_owner_sees_its_pages_although_it_holds_no_facts() {
+    let (app, pool, tree, _dir) = make_app_with_memory().await;
+    let admin_cookie = login_as_admin(&app).await;
+    seed_alice_with_page(&tree, "appunti.md", "# Appunti\n\nprose\n");
+    let caller = mwe_core::wiki_admin::AdminCaller {
+        sender_id: "alice".into(),
+        consumer_id: Some("cc-alice".into()),
+        consumer_class: mwe_core::jwt::ConsumerClass::Smart,
+    };
+    let created = mwe_core::wiki_admin::push(
+        &pool,
+        &tree,
+        &caller,
+        mwe_core::wiki_admin::PushRequest {
+            mode: mwe_core::wiki_admin::PushMode::Create,
+            wiki_id: None,
+            parent_wiki_id: Some(mwe_core::types::WikiId::parse("alice").unwrap()),
+            slug: Some("progetto".into()),
+            title: Some("Progetto".into()),
+            wiki_type: Some("wiki-companion".into()),
+            smart: true,
+            project_id: None,
+            description: None,
+            pages: vec![mwe_core::wiki_admin::PushPage {
+                path: "decisioni.md".into(),
+                content: "# Decisioni\n\nwhat we settled\n".into(),
+            }],
+            deletes: Vec::new(),
+            mark_processed: Vec::new(),
+            expected_op_log_head: None,
+        },
+    )
+    .await
+    .expect("forge the smart wiki");
+
+    let response = send(
+        &app,
+        Request::builder()
+            .uri(format!("/wiki/{}", created.wiki_id.as_str()))
+            .header(header::COOKIE, admin_cookie)
+            .body(Body::empty())
+            .unwrap(),
+    )
+    .await;
+    assert_eq!(response.status(), StatusCode::OK);
+    let html = body_string(response).await;
+    assert!(
+        html.contains("decisioni.md"),
+        "its owner must see the pages of their own smart wiki: {html}"
+    );
+}
+
+/// A nested wiki's pages live under its person's directory while its id is
+/// `<user>-<slug>`, so a source path glued together from the id names a file
+/// that is not there — and every per-page question about it answers about
+/// nothing. The handle builds the path.
+#[tokio::test]
+async fn a_nested_wikis_listing_and_count_agree() {
+    let (app, pool, tree, _dir) = make_app_with_memory().await;
+    let admin_cookie = login_as_admin(&app).await;
+    let bob_cookie = login_as_user(&app, &admin_cookie, "bob").await;
+    seed_alice_with_page(&tree, "appunti.md", "# Appunti\n\nprose\n");
+    // A standard wiki nested under alice: `wikis/alice/ricette/`, id
+    // `alice-ricette`. Its facts are bob's to read.
+    let dir = tree.wikis_dir().join("alice").join("ricette");
+    std::fs::create_dir_all(&dir).unwrap();
+    std::fs::write(
+        dir.join("_meta.md"),
+        "---\nwiki_id: alice-ricette\nwiki_type: wiki-topic\nparent_wiki_id: alice\n\
+         slug: ricette\ntitle: Ricette\nacl_default: 'global'\n---\n",
+    )
+    .unwrap();
+    std::fs::write(dir.join("dolci.md"), "# Dolci\n\nprose\n").unwrap();
+    seed_fact_about(&pool, "alice-ricette", "dolci.md", "user:bob", "b3").await;
+    sqlx::query("UPDATE fact_index SET source_path = ? WHERE wiki_id = 'alice-ricette'")
+        .bind("wikis/alice/ricette/dolci.md")
+        .execute(&pool)
+        .await
+        .expect("file it where the wiki really is");
+
+    let response = send(
+        &app,
+        Request::builder()
+            .uri("/wiki/alice-ricette")
+            .header(header::COOKIE, bob_cookie)
+            .body(Body::empty())
+            .unwrap(),
+    )
+    .await;
+    assert_eq!(response.status(), StatusCode::OK);
+    let html = body_string(response).await;
+    assert!(
+        html.contains("dolci.md"),
+        "a page of a NESTED wiki whose fact is his: {html}"
+    );
+    assert!(
+        html.contains("1 that still hold"),
+        "and the count agrees with the list: {html}"
+    );
+}
+
+/// One indexed fact about `subject`, so the wiki's derived visibility has
+/// something to answer with.
 async fn seed_fact_about(pool: &SqlitePool, wiki_id: &str, page: &str, subject: &str, tail: &str) {
     use mwe_core::fact_index::{self, NewFact};
     use mwe_core::types::FactId;

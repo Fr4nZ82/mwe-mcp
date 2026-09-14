@@ -1755,10 +1755,19 @@ pub(super) async fn call_wiki_lint(
     let report = lint::run(&state.pool, &state.tree, &scope, &checks)
         .await
         .map_err(|e| ToolError::new(ToolErrorClass::InternalError, e.to_string()))?;
-    // Everybody, the administrator included. The reveal lens is what lets an
-    // operator read past the per-fact gates and it is a dashboard thing; there
-    // is none on this surface, so here they are a reader like any other.
-    let report = lint_report_readable_by(state, identity, report).await?;
+    // Everybody except the administrator IN PERSON. An integrity report is the
+    // operator's maintenance — orphaned rows, malformed markers, facts the
+    // index holds and no page carries — and a report cut down to what one
+    // reader may see is a report nobody can act on: the rows in the blind spot
+    // are exactly the broken ones nobody would come looking for. So the whole
+    // report goes to the token that IS the administrator's, standing in for
+    // nobody; the same token speaking for somebody carries that somebody, and
+    // is filtered like them.
+    let report = if identity.is_admin() {
+        report
+    } else {
+        lint_report_readable_by(state, identity, report).await?
+    };
     Ok(json!({
         "issues": report.issues,
         "summary": {
@@ -2671,15 +2680,9 @@ pub(super) async fn call_wiki_admin_push(
     // MCP `wiki_admin_push` is the smart-consumer surface — the
     // `actor_kind` is fixed here so the smart-token and smart-family
     // gates keep firing.
-    let resp = mwe_core::wiki_admin::push(
-        &state.pool,
-        &state.tree,
-        &caller,
-        mwe_core::wiki_admin::ActorKind::SmartConsumer,
-        req,
-    )
-    .await
-    .map_err(|e| admin_error_to_tool_error(&e))?;
+    let resp = mwe_core::wiki_admin::push(&state.pool, &state.tree, &caller, req)
+        .await
+        .map_err(|e| admin_error_to_tool_error(&e))?;
     // Markerless smart wikis are content-indexed: hand each touched page
     // to the reindex queue (the watcher's channel — the marker protocol
     // hides our own writes from the watcher itself) and ack immediately.
@@ -3558,8 +3561,9 @@ pub(super) async fn call_wiki_forget(
     let fact_id = mwe_core::types::FactId::parse(&args.fact_id)
         .map_err(|e| invalid_input(format!("fact_id: {e}")))?;
 
-    // The caller acts as the JWT's sender (a bare user id); a consumer is
-    // never an admin on the MCP path, so `is_admin` is the token's own flag.
+    // The caller is the turn's effective sender, a bare user id; the role is
+    // the token's own and does not travel with a delegation
+    // (`IdentityProfile::is_admin`).
     let caller = identity.sender_id.as_str();
     let is_admin = identity.is_admin();
 

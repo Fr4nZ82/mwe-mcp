@@ -729,15 +729,7 @@ async fn ensure_dedicated_wiki(
         mark_processed: Vec::new(),
         expected_op_log_head: None,
     };
-    match wiki_admin::push(
-        &state.pool,
-        &memory.tree,
-        &caller,
-        wiki_admin::ActorKind::SmartConsumer,
-        req,
-    )
-    .await
-    {
+    match wiki_admin::push(&state.pool, &memory.tree, &caller, req).await {
         Ok(_) => {
             stamp_agent_marker(state, &wiki_id);
             Ok(wiki_id)

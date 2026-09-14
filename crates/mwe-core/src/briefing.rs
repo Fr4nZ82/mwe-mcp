@@ -1247,7 +1247,7 @@ fn render_section(
 mod tests {
     use super::*;
     use crate::wiki::{IdentityKind, create_identity_wiki};
-    use crate::wiki_admin::{ActorKind, AdminCaller, PushMode, PushPage, PushRequest, push};
+    use crate::wiki_admin::{AdminCaller, PushMode, PushPage, PushRequest, push};
     use sqlx::sqlite::SqlitePoolOptions;
     use tempfile::tempdir;
 
@@ -1293,9 +1293,7 @@ mod tests {
             mark_processed: Vec::new(),
             expected_op_log_head: None,
         };
-        let resp = push(&pool, &tree, &smart, ActorKind::SmartConsumer, req)
-            .await
-            .expect("create");
+        let resp = push(&pool, &tree, &smart, req).await.expect("create");
         (dir, tree, pool, resp.wiki_id)
     }
 

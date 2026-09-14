@@ -47,6 +47,24 @@ semver-governed surface: breaking changes are called out explicitly.
 
 ### Changed
 
+- **Deciding a proposal follows being shown it.** The Proposals page already
+  scoped what each person sees; applying one asked a different question and
+  answered it more generously — a note addressed to nobody could be applied by
+  anybody who knew its id, and the administrator could apply one addressed to
+  somebody else without turning the lens on to read it. Now the same three
+  answers decide both: your own are yours, and everything else needs the
+  administrator with the lens on.
+
+- **One corrupt notice no longer closes the queue.** A notice whose stored body
+  is not readable as data took the whole collection down with it: an assistant
+  asking for its mail got an error instead of a queue, and kept getting one
+  until somebody repaired the row by hand. The unreadable row is stepped over
+  and written to the log; the mail behind it arrives.
+
+- **A notice for everybody reached nobody.** The rule that lets a notice
+  addressed to the whole household through was looking for a spelling the
+  memory never writes, so it never matched. It matches the real one now.
+
 - **With the reveal lens off, the administrator is an ordinary reader.** Being
   the person who runs the server is not a key to everybody's memory: it is the
   right to turn the key, visibly, in Settings. Six places were treating it as
@@ -55,12 +73,14 @@ semver-governed surface: breaking changes are called out explicitly.
   writes, and each one names somebody's pages; now those wait for the lens, and
   what stays is the notes the memory writes about **itself**, which are about
   nobody's pages at all. A **wiki's home** listed every page and counted every
-  fact; now the list holds the pages you can read something on and the number
-  counts the facts you can read, because a file name says what is on a page
-  before anybody opens it. The **integrity report** named facts and page paths
-  without asking who was reading, for the administrator most of all; now it
-  names only the facts its reader may read, administrator included, because the
-  lens is a dashboard thing and that report is not on the dashboard. A page's
+  fact; now the number counts the facts you can read, and a page whose facts
+  are all somebody else's is not listed for you, because a file name says what
+  is on a page before anybody opens it — a page holding no facts at all keeps
+  nothing from anybody and is listed as it always was. The **integrity report**
+  named facts and page paths without asking who was reading; now it names only
+  the facts its reader may read, with one exception that is a person and not a
+  role: the administrator's own token, which is what repairs the deployment and
+  cannot repair what it is not shown. A page's
   **one-line summary**, which the memory uses to decide where to look, was
   offered for pages whose facts were all somebody else's. Asking to **forget** a
   fact you cannot read answered differently from asking about a fact that does
@@ -68,15 +88,17 @@ semver-governed surface: breaking changes are called out explicitly.
   anything. And a refusal to write to a wiki that is not yours no longer answers
   with the name of the person it belongs to.
 
-- **An assistant speaking for you does not become you, and does not become the
+- **An assistant speaking for you does not become you, and cannot become the
   administrator.** When an assistant relays a turn it attributes it to the
-  person it is serving — that is how a fact of yours ends up filed as yours.
-  The administrator's own permissions were travelling with that attribution, so
-  for as long as the administrator was the one talking, the household assistant
-  held the office: it could read the whole call log, open the spend page, and
-  collect notices meant for whoever runs the server. The person travels; the
-  office stays with the token. A dashboard link an assistant mints while
-  speaking for somebody now carries that somebody's permissions, which is to
+  person it is serving — that is how a fact of yours ends up filed as yours —
+  and the administrator's permissions were riding along with that
+  attribution. Nothing was actually getting through: a token issued to an
+  assistant is never an administrator's, and a token that is one cannot speak
+  for somebody else, so the two halves never met. But the rule was being kept
+  by two fences somewhere else rather than by the thing that decides, and a
+  third fence added later would not have known. Now the office stays with the
+  token wherever the question is asked, and a dashboard link an assistant mints
+  while speaking for somebody carries that somebody's permissions, which is to
   say none.
 
 - **A notice now goes to the people it is addressed to, and stops there.** The

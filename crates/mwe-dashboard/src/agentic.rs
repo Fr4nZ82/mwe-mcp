@@ -1132,6 +1132,7 @@ async fn dispatch_proposal_apply(
         &args.answers,
         Some(ctx.sender_ctx.sender_id.as_str()),
         ctx.is_admin,
+        ctx.reveal,
     )
     .await
     {

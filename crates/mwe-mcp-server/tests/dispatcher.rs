@@ -467,11 +467,15 @@ async fn forgetting_a_fact_you_cannot_read_answers_as_if_it_were_not_there() {
 }
 
 /// `wiki_lint` names facts, and a name is a fact's id on a page path. The
-/// caller gets the ones they may read, and being the administrator does not
-/// widen that: the reveal lens is a dashboard thing and there is none here.
+/// caller gets the ones they may read — with one exception, and it is a
+/// person rather than a role: the administrator's own token, standing in for
+/// nobody, gets the whole report, because the broken rows are precisely the
+/// ones in somebody's blind spot and a report of what one reader may see is a
+/// report nobody can repair from. The same token speaking for somebody else
+/// carries that somebody, and is filtered like them.
 #[tokio::test]
 async fn a_lint_report_names_only_the_facts_its_caller_may_read() {
-    let (state, admin, _dir) = fixture(true, None).await;
+    let (state, admin, _dir) = fixture(true, Some("telegram-bot")).await;
     mwe_core::wiki::create_identity_wiki(
         &state.tree,
         &mwe_core::types::WikiId::parse("galadriel").unwrap(),
@@ -501,18 +505,27 @@ async fn a_lint_report_names_only_the_facts_its_caller_may_read() {
         .await
         .expect("file it on her page");
 
-    let out = call(
-        &state,
-        &admin,
-        "wiki_lint",
-        json!({"scope": {"wiki_ids": ["galadriel"]}, "checks": ["orphan_facts"]}),
-    )
-    .await
-    .expect("lint runs");
-    let body = out.to_string();
+    let scope = json!({"scope": {"wiki_ids": ["galadriel"]}, "checks": ["orphan_facts"]});
+    let whole = call(&state, &admin, "wiki_lint", scope.clone())
+        .await
+        .expect("lint runs");
     assert!(
-        !body.contains(hers.as_str()),
-        "the administrator is an ordinary reader here: {body}"
+        whole.to_string().contains(hers.as_str()),
+        "the administrator's own token repairs the deployment, so it reads the whole \
+         report: {whole}"
+    );
+
+    // The same token, speaking for somebody: it carries her, not the office.
+    let delegated = IdentityProfile {
+        sender_id: "bob".into(),
+        ..admin
+    };
+    let filtered = call(&state, &delegated, "wiki_lint", scope)
+        .await
+        .expect("lint runs");
+    assert!(
+        !filtered.to_string().contains(hers.as_str()),
+        "a delegated call is bob, and this is not bob's fact: {filtered}"
     );
 }
 
@@ -1689,7 +1702,7 @@ async fn smart_fixture_with_smart_wiki() -> (
 ) {
     use mwe_core::types::WikiId;
     use mwe_core::wiki::{IdentityKind, create_identity_wiki};
-    use mwe_core::wiki_admin::{ActorKind, AdminCaller, PushMode, PushPage, PushRequest, push};
+    use mwe_core::wiki_admin::{AdminCaller, PushMode, PushPage, PushRequest, push};
 
     let (state, mut identity, dir) = fixture(false, Some("cc-laptop")).await;
     identity.consumer_class = mwe_core::jwt::ConsumerClass::Smart;
@@ -1726,15 +1739,9 @@ async fn smart_fixture_with_smart_wiki() -> (
         mark_processed: Vec::new(),
         expected_op_log_head: None,
     };
-    let resp = push(
-        &state.pool,
-        &state.tree,
-        &caller,
-        ActorKind::SmartConsumer,
-        req,
-    )
-    .await
-    .expect("seed smart wiki");
+    let resp = push(&state.pool, &state.tree, &caller, req)
+        .await
+        .expect("seed smart wiki");
     (state, identity, dir, resp.wiki_id)
 }
 

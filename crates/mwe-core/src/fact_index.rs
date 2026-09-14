@@ -2250,10 +2250,15 @@ pub async fn readable_fact_in_wiki(
 
 /// Can this reader read **at least one live fact on this page**?
 ///
-/// The per-page twin of [`readable_fact_in_wiki`], and the question every
-/// surface that hands somebody a whole page has to answer first: a page whose
-/// every fact is out of reach tells the person who opens it nothing they were
-/// told — and its NAME, which is often the news.
+/// The per-page twin of [`readable_fact_in_wiki`], and the STRICT half of a
+/// pair. It answers one question — *«send this person to that page»* — and the
+/// one surface that asks it is the citation resolver, which turns a link into
+/// a redirect: sending somebody to a page whose every fact is out of reach
+/// hands them its NAME, which is often the news, and nothing else.
+///
+/// Everything that asks *«may this reader be told this page exists»* wants
+/// [`page_visible_to`], which lets a page with no active fact through because
+/// such a page keeps nothing from anybody.
 ///
 /// Built from the same map the render path reads
 /// ([`page_acl_map_active`]), so the answer cannot disagree with what the
@@ -2302,8 +2307,11 @@ pub async fn readable_fact_on_page(
 /// no active fact should show is a question about prose, and this answers
 /// only about facts.
 ///
-/// The strict twin is the one to ask when the question is «send this person
-/// to that page»; this one is for «is this page's door shut in their face».
+/// The strict twin is the one to ask when the question is «send this person to
+/// that page»; this one is for «is this page's door shut in their face», and
+/// it is what the page view, the comment surface, the notice queue and a
+/// wiki's page listing all ask — one question with one answer, so a page a
+/// person may open is a page they are told about.
 ///
 /// # Errors
 ///

@@ -617,7 +617,7 @@ mod tests {
     use crate::embedder::FakeEmbedder;
     use crate::jwt::ConsumerClass;
     use crate::wiki::{IdentityKind, create_identity_wiki};
-    use crate::wiki_admin::{self, ActorKind, PushMode, PushPage, PushRequest};
+    use crate::wiki_admin::{self, PushMode, PushPage, PushRequest};
 
     fn embedder() -> Arc<dyn Embedder> {
         Arc::new(FakeEmbedder::new("smart-test", 4))
@@ -690,7 +690,6 @@ mod tests {
             pool,
             tree,
             caller,
-            ActorKind::SmartConsumer,
             PushRequest {
                 mode: PushMode::Create,
                 wiki_id: None,
@@ -731,7 +730,6 @@ mod tests {
             pool,
             tree,
             caller,
-            ActorKind::SmartConsumer,
             PushRequest {
                 mode: PushMode::Create,
                 wiki_id: None,

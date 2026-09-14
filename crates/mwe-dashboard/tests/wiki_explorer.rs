@@ -111,9 +111,13 @@ async fn capture_fact(pool: &SqlitePool, tree: &WikiTree, page: &str, body: &str
 async fn seed_pending_unshipped_proposal(pool: &SqlitePool, proposal_id: &str) {
     let now = chrono::Utc::now();
     let timeout = now + chrono::Duration::hours(24);
+    // Addressed to alice, the signed-in caller: a row addressed to nobody is
+    // the operator's to decide with the reveal lens on, and that is a
+    // different test from this one, which is about the apply handler refusing.
     sqlx::query(
         "INSERT INTO structure_proposals (proposal_id, kind, context, questions, \
-         proposed_at, timeout_at, status) VALUES (?, ?, ?, ?, ?, ?, 'pending')",
+         proposed_at, timeout_at, status, recipient_id) \
+         VALUES (?, ?, ?, ?, ?, ?, 'pending', 'user:alice')",
     )
     .bind(proposal_id)
     .bind("page_create")
@@ -138,9 +142,12 @@ async fn seed_pending_dedup_proposal(
         "loser_fact_id": loser.as_str(),
         "winner_fact_id": winner.as_str(),
     });
+    // Addressed to alice, because that is what `recipient_from_fact` does with
+    // a dedup of her own facts.
     sqlx::query(
         "INSERT INTO structure_proposals (proposal_id, kind, context, questions, \
-         proposed_at, timeout_at, status) VALUES (?, ?, ?, ?, ?, ?, 'pending')",
+         proposed_at, timeout_at, status, recipient_id) \
+         VALUES (?, ?, ?, ?, ?, ?, 'pending', 'user:alice')",
     )
     .bind(proposal_id)
     .bind("dedup_merge")
@@ -636,7 +643,7 @@ async fn seed_a_push(
     page_path: &str,
     body_text: &str,
 ) {
-    use mwe_core::wiki_admin::{ActorKind, AdminCaller, PushMode, PushPage, PushRequest, push};
+    use mwe_core::wiki_admin::{AdminCaller, PushMode, PushPage, PushRequest, push};
 
     // This API writes smart wikis, so the op-log rows the Revert button acts
     // on are seeded on one. The first call forges it under alice; the rest
@@ -652,7 +659,6 @@ async fn seed_a_push(
             pool,
             tree,
             &caller,
-            ActorKind::SmartConsumer,
             PushRequest {
                 mode: PushMode::Create,
                 wiki_id: None,
@@ -690,9 +696,7 @@ async fn seed_a_push(
         mark_processed: Vec::new(),
         expected_op_log_head: None,
     };
-    push(pool, tree, &caller, ActorKind::SmartConsumer, req)
-        .await
-        .expect("seed a push");
+    push(pool, tree, &caller, req).await.expect("seed a push");
 }
 
 /// The Revert button is rendered for revertable `push_*` rows; the

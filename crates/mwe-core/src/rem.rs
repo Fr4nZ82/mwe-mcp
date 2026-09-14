@@ -15534,6 +15534,7 @@ mod tests {
             // The caller is the bare sender id, as the chat passes it.
             Some("zoe"),
             false,
+            false,
         )
         .await
         .expect("answered");

@@ -61,32 +61,26 @@ use thiserror::Error;
 use crate::jwt::ConsumerClass;
 use crate::types::{Principal, WikiId, WikiIdParseError, WikiSlug, WikiSlugParseError};
 use crate::wiki::{META_FILENAME, WikiError, WikiHandle, WikiMeta, WikiTree, atomic_write};
-/// Who is performing the write — drives the gate matrix and the
-/// `actor_kind` column of `wiki_admin_op_log`.
+
+/// What wrote an op-log row — the vocabulary of
+/// `wiki_admin_op_log.actor_kind`, and nothing else.
 ///
-/// The op-log covers every wiki, so the dashboard textual editor and
-/// system-generated compensation rows have to be discriminable from a
-/// `wiki_admin_push` issued by a smart consumer over MCP.
+/// It decides no permission. Every write that reaches [`push`] is a smart
+/// consumer's, and what it may do is answered by who the caller is and what
+/// the wiki is ([`enforce_admin_auth`]); the revert handler writes its own
+/// compensation row and stamps it apart so the dashboard can tell a repair
+/// from an edit and refuse to revert one.
 ///
-/// Gate matrix:
-///
-/// | `actor_kind`      | `consumer_class=smart` required? | smart-family wiki required? | owner-match required? |
-/// |-------------------|----------------------------------|----------------------------------------|-----------------------|
-/// | `SmartConsumer`   | yes (`AdminError::RequiresSmart`) | yes (`AdminError::WikiNotSmart`) | yes |
-/// | `System`          | no                               | no — reserved for the revert handler | n/a (handler-driven)  |
-///
-/// `System` is threaded through the API but its write logic lives in
-/// `wiki_admin::op_revert`; see the module docstring for the
-/// distribution of responsibilities.
+/// The strings are pinned by the CHECK constraint in migration 0027, so a
+/// variant's wire form is not free to change.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub enum ActorKind {
-    /// MCP-side write from a `consumer_class=smart` token. The original
-    /// behaviour, default for every existing call site.
+    /// A write a smart consumer made through [`push`], which is every write
+    /// this API takes.
     SmartConsumer,
-    /// System-generated compensation row produced by the revert
-    /// handler. Threaded through `record_op_log` only — no
-    /// `push` call ever passes this variant today; reserved for
-    /// future use.
+    /// The compensation row the revert handler writes for itself. It never
+    /// comes through [`push`]: a repair is the engine's own hand, and the
+    /// dashboard reads this stamp to refuse reverting a revert.
     System,
 }
 
@@ -206,8 +200,8 @@ pub enum AdminError {
     },
     /// `mark_processed` carried a briefing-item id that does not exist
     /// or does not belong to the wiki this push targets. Validated
-    /// server-side so the smart consumer cannot mark
-    /// arbitrary rows as recepiti.
+    /// server-side so the smart consumer cannot mark arbitrary rows as
+    /// acted on.
     #[error("unknown briefing item id {bi_id:?} for wiki {wiki_id}")]
     UnknownBriefingItemId {
         /// Canonical `bi_<N>` string carried by the failing entry.
@@ -547,12 +541,9 @@ pub struct AdminCaller {
 fn guard_agent_label(
     tree: &WikiTree,
     caller: &AdminCaller,
-    actor_kind: ActorKind,
     req: &PushRequest,
 ) -> Result<(), AdminError> {
-    if actor_kind != ActorKind::SmartConsumer
-        || req.wiki_type.as_deref() != Some(crate::wiki::AGENT_WIKI_TYPE)
-    {
+    if req.wiki_type.as_deref() != Some(crate::wiki::AGENT_WIKI_TYPE) {
         return Ok(());
     }
     let slug = match req.mode {
@@ -573,11 +564,10 @@ fn guard_agent_label(
 /// Run a `wiki_admin_push` against the workdir. See module docstring
 /// for invariants and deferred features.
 ///
-/// `actor_kind` discriminates the writer (smart consumer over MCP,
-/// dashboard textual editor, or system compensation row from the
-/// revert handler) and drives the gate matrix — see [`ActorKind`] for
-/// the per-variant rules. The `actor_kind` value is also stamped into
-/// the resulting `wiki_admin_op_log` row.
+/// Every write that reaches here is a smart consumer's: the caller's class is
+/// checked first, and what they may then do is
+/// [`enforce_admin_auth`]'s answer. The `wiki_admin_op_log` row it leaves is
+/// stamped [`ActorKind::SmartConsumer`].
 ///
 /// # Errors
 ///
@@ -586,16 +576,12 @@ pub async fn push(
     pool: &SqlitePool,
     tree: &WikiTree,
     caller: &AdminCaller,
-    actor_kind: ActorKind,
     req: PushRequest,
 ) -> Result<PushResponse, AdminError> {
-    // The `consumer_class=smart` gate only fires on the smart-consumer
-    // path. Dashboard writes carry an admin session, not an MCP token,
-    // so the smartness check does not apply.
-    if actor_kind == ActorKind::SmartConsumer && !caller.consumer_class.is_smart() {
+    if !caller.consumer_class.is_smart() {
         return Err(AdminError::RequiresSmart);
     }
-    guard_agent_label(tree, caller, actor_kind, &req)?;
+    guard_agent_label(tree, caller, &req)?;
     // Fail-fast on the size cap before doing any other work.
     // Per-id parsing happens inside each branch once the effective
     // `wiki_id` is known (create derives it from parent + slug; upsert
@@ -627,8 +613,8 @@ pub async fn push(
         }
     }
     match req.mode {
-        PushMode::Create => push_create(pool, tree, caller, actor_kind, req).await,
-        PushMode::Upsert => push_upsert(pool, tree, caller, actor_kind, req).await,
+        PushMode::Create => push_create(pool, tree, caller, req).await,
+        PushMode::Upsert => push_upsert(pool, tree, caller, req).await,
     }
 }
 
@@ -640,7 +626,6 @@ async fn push_create(
     pool: &SqlitePool,
     tree: &WikiTree,
     caller: &AdminCaller,
-    actor_kind: ActorKind,
     req: PushRequest,
 ) -> Result<PushResponse, AdminError> {
     let slug_str = req.slug.as_deref().ok_or_else(|| {
@@ -683,61 +668,34 @@ async fn push_create(
     // smart consumer sends — it is the one that decides to create (importing
     // a local wiki, or a new project wiki on user request). `wiki_type` is a
     // free-form tone/label (feeding `compiler::resolve_tone`) and steers no
-    // gate. The flag is stamped into `WikiMeta.smart` below. The gate only
-    // fires on the smart-consumer path — dashboard creates are a power-user
-    // shortcut and the dashboard UI itself steers toward sensible
-    // templates.
-    let is_smart_family = req.smart;
-    if actor_kind == ActorKind::SmartConsumer && !is_smart_family {
+    // gate. The flag is stamped into `WikiMeta.smart` below. This API creates
+    // smart wikis and nothing else: a standard wiki is structure the engine
+    // raises for itself, and the road that raises one is the ingest.
+    if !req.smart {
         return Err(AdminError::WikiNotSmart {
             wiki_type: wiki_type.to_owned(),
         });
     }
 
-    // Where the wiki lands. A standard wiki is a shelf, not somebody's
-    // property: it hangs under nothing and is created at the top level. A
-    // smart wiki is the exception, and the reason is read access — its
-    // wiki-level audience is derived from the wiki it sits under, so it is
-    // created beneath its user's own, and passing that parent is required.
-    let parent_id: Option<WikiId> = if is_smart_family {
-        Some(
-            req.parent_wiki_id
-                .clone()
-                .ok_or_else(|| AdminError::WikiTypeRequiresParent {
-                    wiki_type: wiki_type.to_owned(),
-                    expected_parent: caller.sender_id.clone(),
-                })?,
-        )
-    } else {
-        if req.parent_wiki_id.is_some() {
-            return Err(AdminError::InvalidInput(
-                "a standard wiki has no parent — it is created at the top level. \
-                 `parent_wiki_id` belongs to a smart wiki, which takes its read audience from \
-                 the wiki it is created under"
-                    .into(),
-            ));
-        }
-        None
-    };
+    // Where the wiki lands, and the reason is read access: a smart wiki takes
+    // its wiki-level audience from the wiki it sits under, so it is created
+    // beneath its user's own and passing that parent is required.
+    let parent_id: WikiId =
+        req.parent_wiki_id
+            .clone()
+            .ok_or_else(|| AdminError::WikiTypeRequiresParent {
+                wiki_type: wiki_type.to_owned(),
+                expected_parent: caller.sender_id.clone(),
+            })?;
 
     let slug = WikiSlug::parse(slug_str)?;
-    let (new_wiki_id, parent_dir) = match &parent_id {
-        // Locate the parent on disk (or refuse if it's missing — we need its
-        // abs_dir to land the child).
-        Some(parent) => {
-            let handle = tree
-                .locate(parent)
-                .map_err(|_| AdminError::NotFound(parent.clone()))?;
-            (
-                WikiId::child_of(parent, &slug),
-                handle.abs_dir().to_path_buf(),
-            )
-        },
-        None => (
-            WikiId::parse(slug.as_str())?,
-            tree.wikis_dir().to_path_buf(),
-        ),
-    };
+    // Locate the parent on disk (or refuse if it is missing — its `abs_dir`
+    // is where the child lands).
+    let parent_handle = tree
+        .locate(&parent_id)
+        .map_err(|_| AdminError::NotFound(parent_id.clone()))?;
+    let new_wiki_id = WikiId::child_of(&parent_id, &slug);
+    let parent_dir = parent_handle.abs_dir().to_path_buf();
 
     // Refuse if the new wiki already exists — `create` is
     // strictly additive.
@@ -769,7 +727,7 @@ async fn push_create(
     let meta = WikiMeta {
         wiki_id: new_wiki_id.clone(),
         wiki_type: wiki_type.to_owned(),
-        parent_wiki_id: parent_id.clone(),
+        parent_wiki_id: Some(parent_id.clone()),
         slug,
         title: title.to_owned(),
         scope,
@@ -781,11 +739,8 @@ async fn push_create(
         no_archive: false,
         // Stamp the per-wiki smart flag into `_meta.md` from the
         // explicit `smart` request flag. This is the authoritative marker
-        // the smart/standard family gates read: they read this flag and
-        // sniff no `wiki_type` id. A dashboard
-        // power-user create lands `false` (the default); a smart-consumer
-        // smart-wiki create passes `smart: true`.
-        smart: is_smart_family,
+        // What the family gates read: this flag, never a `wiki_type` id.
+        smart: true,
         // Never stamped here: an agent identity wiki is not created through
         // this path at all, and the one smart wiki whose subject IS an agent
         // (a consumer's operational wiki) is stamped by the sign-in flow right
@@ -848,7 +803,7 @@ async fn push_create(
             wiki_id: &new_wiki_id,
             sender_id: &caller.sender_id,
             consumer_id: caller.consumer_id.as_deref(),
-            actor_kind,
+            actor_kind: ActorKind::SmartConsumer,
             op_kind: PushMode::Create.op_log_kind(),
             op_mode: Some(PushMode::Create.wire()),
             payload_hash: &payload_hash(&req),
@@ -864,7 +819,7 @@ async fn push_create(
     tx.commit().await?;
 
     let authored_refs = authored_refs_for(&new_wiki_id, &req.pages);
-    let warnings = shape_warnings(&req.pages, is_smart_family);
+    let warnings = shape_warnings(&req.pages, true);
     Ok(PushResponse {
         wiki_id: new_wiki_id,
         ops_applied: ops,
@@ -911,7 +866,6 @@ async fn push_upsert(
     pool: &SqlitePool,
     tree: &WikiTree,
     caller: &AdminCaller,
-    actor_kind: ActorKind,
     req: PushRequest,
 ) -> Result<PushResponse, AdminError> {
     let wiki_id = req
@@ -935,7 +889,7 @@ async fn push_upsert(
 
     stamp_description(&handle, req.description.as_deref())?;
 
-    enforce_admin_auth(pool, tree, &handle, caller, actor_kind).await?;
+    enforce_admin_auth(pool, tree, &handle, caller).await?;
 
     // Optimistic-concurrency gate. When the caller stamps
     // `expected_op_log_head` (the write-op id it last synced to), reject
@@ -1030,7 +984,7 @@ async fn push_upsert(
             wiki_id: &wiki_id,
             sender_id: &caller.sender_id,
             consumer_id: caller.consumer_id.as_deref(),
-            actor_kind,
+            actor_kind: ActorKind::SmartConsumer,
             op_kind: PushMode::Upsert.op_log_kind(),
             op_mode: Some(PushMode::Upsert.wire()),
             payload_hash: &payload_hash(&req),
@@ -1122,7 +1076,7 @@ pub async fn pull(
     let handle = tree
         .locate(wiki_id)
         .map_err(|_| AdminError::NotFound(wiki_id.clone()))?;
-    enforce_admin_auth(pool, tree, &handle, caller, ActorKind::SmartConsumer).await?;
+    enforce_admin_auth(pool, tree, &handle, caller).await?;
 
     let wanted: Option<std::collections::HashSet<&str>> = if req.paths.is_empty() {
         None
@@ -1493,9 +1447,8 @@ pub async fn op_revert(
     // 7. Insert the compensating row. `actor_kind='system'`,
     //    `op_kind='push_upsert'` (everything we wrote was an upsert /
     //    delete of a body that existed at restore time), `consumer_id`
-    //    is NULL (the operator at the dashboard is not behind an MCP
-    //    device), and `pre_image_json` carries the post-state we just
-    //    overwrote.
+    //    is NULL (a repair is the engine's own hand, not a device's), and
+    //    `pre_image_json` carries the post-state we just overwrote.
     let payload_hash = revert_payload_hash(op_id, &target_pages);
     let pages_affected = target_pages.len();
     let now = chrono::Utc::now().to_rfc3339();
@@ -1616,13 +1569,12 @@ async fn enforce_admin_auth(
     tree: &WikiTree,
     handle: &WikiHandle,
     caller: &AdminCaller,
-    actor_kind: ActorKind,
 ) -> Result<(), AdminError> {
     // The smart-family gate keeps standard wikis (`wiki-user`, `wiki-tech`,
     // …) write-protected: they are reached through the LLM-mediated
     // `wiki_ingest_message` path and never through here. Read per-wiki from
     // `_meta.smart`, stamped at create time.
-    if actor_kind == ActorKind::SmartConsumer && !handle.meta().smart {
+    if !handle.meta().smart {
         return Err(AdminError::WikiNotSmart {
             wiki_type: handle.meta().wiki_type.clone(),
         });
@@ -2408,7 +2360,6 @@ mod tests {
             &pool,
             &tree,
             &alice_standard(),
-            ActorKind::SmartConsumer,
             create_smart_wiki_request("lnprint"),
         )
         .await
@@ -2423,7 +2374,6 @@ mod tests {
             &pool,
             &tree,
             &alice_smart(),
-            ActorKind::SmartConsumer,
             create_smart_wiki_request("lnprint"),
         )
         .await
@@ -2487,7 +2437,6 @@ mod tests {
             &pool,
             &tree,
             &alice_smart(),
-            ActorKind::SmartConsumer,
             create_smart_wiki_request("lnprint"),
         )
         .await
@@ -2496,7 +2445,6 @@ mod tests {
             &pool,
             &tree,
             &alice_smart(),
-            ActorKind::SmartConsumer,
             create_smart_wiki_request("lnprint"),
         )
         .await
@@ -2512,7 +2460,7 @@ mod tests {
             page("Docs/Setup.md", "# Setup\n"),
             page("README.md", "# readme\n"),
         ];
-        let resp = push(&pool, &tree, &alice_smart(), ActorKind::SmartConsumer, req)
+        let resp = push(&pool, &tree, &alice_smart(), req)
             .await
             .expect("uppercase pages create");
         let handle = tree.locate(&resp.wiki_id).expect("locate");
@@ -2532,7 +2480,7 @@ mod tests {
         ] {
             let mut req = create_smart_wiki_request("lnprint");
             req.pages.push(page(bad, "x"));
-            let err = push(&pool, &tree, &alice_smart(), ActorKind::SmartConsumer, req)
+            let err = push(&pool, &tree, &alice_smart(), req)
                 .await
                 .expect_err("must reject");
             assert!(matches!(err, AdminError::InvalidInput(_)), "{bad}: {err:?}");
@@ -2551,7 +2499,7 @@ mod tests {
         let (_dir, tree, pool) = seeded_tree().await;
         let mut req = create_smart_wiki_request("lnprint");
         req.pages = vec![page("Setup.md", "a"), page("setup.md", "b")];
-        let err = push(&pool, &tree, &alice_smart(), ActorKind::SmartConsumer, req)
+        let err = push(&pool, &tree, &alice_smart(), req)
             .await
             .expect_err("case twins must reject");
         match err {
@@ -2567,7 +2515,6 @@ mod tests {
             &pool,
             &tree,
             &alice_smart(),
-            ActorKind::SmartConsumer,
             create_smart_wiki_request("lnprint"),
         )
         .await
@@ -2592,7 +2539,6 @@ mod tests {
             &pool,
             &tree,
             &alice_smart(),
-            ActorKind::SmartConsumer,
             upsert(vec![page("Index.md", "x")]),
         )
         .await
@@ -2603,7 +2549,6 @@ mod tests {
             &pool,
             &tree,
             &alice_smart(),
-            ActorKind::SmartConsumer,
             upsert(vec![page("Modules/extra.md", "x")]),
         )
         .await
@@ -2614,7 +2559,6 @@ mod tests {
             &pool,
             &tree,
             &alice_smart(),
-            ActorKind::SmartConsumer,
             upsert(vec![page("index.md", "v2"), page("Changelog.md", "x")]),
         )
         .await
@@ -2642,7 +2586,6 @@ mod tests {
             &pool,
             &tree,
             &bob_smart,
-            ActorKind::SmartConsumer,
             PushRequest {
                 mode: PushMode::Upsert,
                 wiki_id: Some(WikiId::parse("alice").unwrap()),
@@ -2679,7 +2622,7 @@ mod tests {
         // refused — smart-ness is now the explicit request flag, not the
         // wiki_type label.
         req.smart = false;
-        let err = push(&pool, &tree, &alice_smart(), ActorKind::SmartConsumer, req)
+        let err = push(&pool, &tree, &alice_smart(), req)
             .await
             .expect_err("must reject non-smart create");
         assert!(matches!(err, AdminError::WikiNotSmart { .. }));
@@ -2693,7 +2636,7 @@ mod tests {
         let (_dir, tree, pool) = seeded_tree().await;
         let mut req = create_smart_wiki_request("lnprint");
         req.wiki_type = Some(crate::wiki::AGENT_WIKI_TYPE.to_owned());
-        let err = push(&pool, &tree, &alice_smart(), ActorKind::SmartConsumer, req)
+        let err = push(&pool, &tree, &alice_smart(), req)
             .await
             .expect_err("must reject the reserved label");
         assert!(
@@ -2709,7 +2652,7 @@ mod tests {
         let (_dir, tree, pool) = seeded_tree().await;
         let mut req = create_smart_wiki_request("cc-laptop");
         req.wiki_type = Some(crate::wiki::AGENT_WIKI_TYPE.to_owned());
-        push(&pool, &tree, &alice_smart(), ActorKind::SmartConsumer, req)
+        push(&pool, &tree, &alice_smart(), req)
             .await
             .expect("own operational wiki may carry the agent label");
     }
@@ -2736,7 +2679,7 @@ mod tests {
             mark_processed: Vec::new(),
             expected_op_log_head: None,
         };
-        let err = push(&pool, &tree, &alice_smart(), ActorKind::SmartConsumer, req)
+        let err = push(&pool, &tree, &alice_smart(), req)
             .await
             .expect_err("top-level smart wiki must reject");
         match &err {
@@ -2778,7 +2721,7 @@ mod tests {
             mark_processed: Vec::new(),
             expected_op_log_head: None,
         };
-        let resp = push(&pool, &tree, &alice_smart(), ActorKind::SmartConsumer, req)
+        let resp = push(&pool, &tree, &alice_smart(), req)
             .await
             .expect("child smart wiki with parent must succeed");
         assert_eq!(resp.wiki_id.as_str(), "alice-lnprint");
@@ -2791,7 +2734,6 @@ mod tests {
             &pool,
             &tree,
             &alice_smart(),
-            ActorKind::SmartConsumer,
             create_smart_wiki_request("lnprint"),
         )
         .await
@@ -2814,7 +2756,7 @@ mod tests {
             mark_processed: Vec::new(),
             expected_op_log_head: None,
         };
-        let resp = push(&pool, &tree, &alice_smart(), ActorKind::SmartConsumer, req)
+        let resp = push(&pool, &tree, &alice_smart(), req)
             .await
             .expect("upsert");
         assert_eq!(resp.ops_applied.created, 1, "modules/payments.md is new");
@@ -2841,7 +2783,6 @@ mod tests {
             &pool,
             &tree,
             &alice_smart(),
-            ActorKind::SmartConsumer,
             create_smart_wiki_request("lnprint"),
         )
         .await
@@ -2866,7 +2807,7 @@ mod tests {
             mark_processed: Vec::new(),
             expected_op_log_head: None,
         };
-        let err = push(&pool, &tree, &bob, ActorKind::SmartConsumer, req)
+        let err = push(&pool, &tree, &bob, req)
             .await
             .expect_err("bob must not write into alice's wiki");
         assert!(matches!(err, AdminError::WikiOwnedByOtherUser { .. }));
@@ -2879,7 +2820,6 @@ mod tests {
             &pool,
             &tree,
             &alice_smart(),
-            ActorKind::SmartConsumer,
             create_smart_wiki_request("lnprint"),
         )
         .await
@@ -2899,15 +2839,9 @@ mod tests {
             mark_processed: Vec::new(),
             expected_op_log_head: None,
         };
-        let err = push(
-            &pool,
-            &tree,
-            &alice_smart(),
-            ActorKind::SmartConsumer,
-            bad_write,
-        )
-        .await
-        .expect_err("must reject _meta.md write");
+        let err = push(&pool, &tree, &alice_smart(), bad_write)
+            .await
+            .expect_err("must reject _meta.md write");
         assert!(matches!(err, AdminError::InvalidInput(_)));
 
         let bad_delete = PushRequest {
@@ -2925,15 +2859,9 @@ mod tests {
             mark_processed: Vec::new(),
             expected_op_log_head: None,
         };
-        let err = push(
-            &pool,
-            &tree,
-            &alice_smart(),
-            ActorKind::SmartConsumer,
-            bad_delete,
-        )
-        .await
-        .expect_err("must reject _meta.md delete");
+        let err = push(&pool, &tree, &alice_smart(), bad_delete)
+            .await
+            .expect_err("must reject _meta.md delete");
         assert!(matches!(err, AdminError::InvalidInput(_)));
     }
 
@@ -2944,7 +2872,6 @@ mod tests {
             &pool,
             &tree,
             &alice_smart(),
-            ActorKind::SmartConsumer,
             create_smart_wiki_request("lnprint"),
         )
         .await
@@ -2983,7 +2910,6 @@ mod tests {
             &pool,
             &tree,
             &alice_smart(),
-            ActorKind::SmartConsumer,
             create_smart_wiki_request("lnprint"),
         )
         .await
@@ -3019,7 +2945,6 @@ mod tests {
             &pool,
             &tree,
             &alice_smart(),
-            ActorKind::SmartConsumer,
             create_smart_wiki_request("lnprint"),
         )
         .await
@@ -3028,7 +2953,6 @@ mod tests {
             &pool,
             &tree,
             &alice_smart(),
-            ActorKind::SmartConsumer,
             PushRequest {
                 mode: PushMode::Upsert,
                 wiki_id: Some(create.wiki_id.clone()),
@@ -3088,7 +3012,6 @@ mod tests {
             &pool,
             &tree,
             &alice_smart(),
-            ActorKind::SmartConsumer,
             create_smart_wiki_request("lnprint"),
         )
         .await
@@ -3099,7 +3022,6 @@ mod tests {
             &pool,
             &tree,
             &alice_smart(),
-            ActorKind::SmartConsumer,
             PushRequest {
                 mode: PushMode::Upsert,
                 wiki_id: Some(create.wiki_id.clone()),
@@ -3125,7 +3047,7 @@ mod tests {
     /// A push carrying `mark_processed` flips the briefing row with the page
     /// write, in one transaction.
     ///
-    /// This is how a smart consumer recepisce a comment left on its own wiki:
+    /// This is how a smart consumer acts on a comment left on its own wiki:
     /// it writes the answer onto the page and stamps the item in the same
     /// call, so a crash between the two cannot leave a comment that has been
     /// acted on still showing as pending.
@@ -3136,7 +3058,6 @@ mod tests {
             &pool,
             &tree,
             &alice_smart(),
-            ActorKind::SmartConsumer,
             create_smart_wiki_request("lnprint"),
         )
         .await
@@ -3155,7 +3076,6 @@ mod tests {
             &pool,
             &tree,
             &alice_smart(),
-            ActorKind::SmartConsumer,
             PushRequest {
                 mode: PushMode::Upsert,
                 wiki_id: Some(create.wiki_id.clone()),
@@ -3195,7 +3115,6 @@ mod tests {
             &pool,
             &tree,
             &alice_smart(),
-            ActorKind::SmartConsumer,
             create_smart_wiki_request("lnprint"),
         )
         .await
@@ -3279,7 +3198,6 @@ mod tests {
             &pool,
             &tree,
             &alice_smart(),
-            ActorKind::SmartConsumer,
             create_smart_wiki_request("lnprint"),
         )
         .await
@@ -3311,7 +3229,6 @@ mod tests {
             &pool,
             &tree,
             &alice_smart(),
-            ActorKind::SmartConsumer,
             create_smart_wiki_request("lnprint"),
         )
         .await
@@ -3332,7 +3249,6 @@ mod tests {
             &pool,
             &tree,
             &alice_smart(),
-            ActorKind::SmartConsumer,
             create_smart_wiki_request("lnprint"),
         )
         .await
@@ -3365,7 +3281,6 @@ mod tests {
             &pool,
             &tree,
             &alice_smart(),
-            ActorKind::SmartConsumer,
             create_smart_wiki_request("lnprint"),
         )
         .await
@@ -3407,7 +3322,6 @@ mod tests {
             &pool,
             &tree,
             &alice_smart(),
-            ActorKind::SmartConsumer,
             create_smart_wiki_request("lnprint"),
         )
         .await
@@ -3429,7 +3343,6 @@ mod tests {
             &pool,
             &tree,
             &alice_smart(),
-            ActorKind::SmartConsumer,
             create_smart_wiki_request("lnprint"),
         )
         .await
@@ -3473,7 +3386,6 @@ mod tests {
             &pool,
             &tree,
             &alice_smart(),
-            ActorKind::SmartConsumer,
             create_smart_wiki_request("lnprint"),
         )
         .await
@@ -3494,7 +3406,7 @@ mod tests {
             consumer_id: Some("cc-laptop".into()),
             consumer_class: ConsumerClass::Smart,
         };
-        enforce_admin_auth(&pool, &tree, &handle, &member, ActorKind::SmartConsumer)
+        enforce_admin_auth(&pool, &tree, &handle, &member)
             .await
             .expect("a member of the owning group may write");
 
@@ -3504,7 +3416,7 @@ mod tests {
             consumer_id: Some("cc-laptop".into()),
             consumer_class: ConsumerClass::Smart,
         };
-        let err = enforce_admin_auth(&pool, &tree, &handle, &stranger, ActorKind::SmartConsumer)
+        let err = enforce_admin_auth(&pool, &tree, &handle, &stranger)
             .await
             .expect_err("a non-member is refused");
         assert!(matches!(err, AdminError::WikiOwnedByOtherUser { .. }));
@@ -3519,7 +3431,6 @@ mod tests {
             &pool,
             &tree,
             &alice_smart(),
-            ActorKind::SmartConsumer,
             create_smart_wiki_request("lnprint"),
         )
         .await
@@ -3537,7 +3448,6 @@ mod tests {
             &pool,
             &tree,
             &bob_smart,
-            ActorKind::SmartConsumer,
             PushRequest {
                 mode: PushMode::Upsert,
                 wiki_id: Some(create.wiki_id.clone()),
@@ -3579,7 +3489,6 @@ mod tests {
             &pool,
             &tree,
             &alice_smart(),
-            ActorKind::SmartConsumer,
             create_smart_wiki_request("lnprint"),
         )
         .await
@@ -3601,7 +3510,6 @@ mod tests {
             &pool,
             &tree,
             &alice_smart(),
-            ActorKind::SmartConsumer,
             PushRequest {
                 mode: PushMode::Upsert,
                 wiki_id: Some(create.wiki_id.clone()),
@@ -3639,7 +3547,6 @@ mod tests {
             &pool,
             &tree,
             &alice_smart(),
-            ActorKind::SmartConsumer,
             PushRequest {
                 mode: PushMode::Upsert,
                 wiki_id: Some(create.wiki_id.clone()),
@@ -3668,7 +3575,6 @@ mod tests {
             &pool,
             &tree,
             &alice_smart(),
-            ActorKind::SmartConsumer,
             create_smart_wiki_request("lnprint"),
         )
         .await
@@ -3681,7 +3587,6 @@ mod tests {
             &pool,
             &tree,
             &alice_smart(),
-            ActorKind::SmartConsumer,
             PushRequest {
                 mode: PushMode::Upsert,
                 wiki_id: Some(create.wiki_id.clone()),
@@ -3704,19 +3609,18 @@ mod tests {
 
     // ---------- actor_kind discipline ----------
 
+    /// This API writes smart wikis, and a person's own identity wiki is not
+    /// one: the request is refused whoever makes it.
     #[tokio::test]
-    async fn smart_consumer_actor_kind_still_enforces_the_smart_flag_gate() {
-        // The same upsert request the dashboard is allowed to make trips
-        // `WikiNotSmart` under `SmartConsumer`, because alice's wiki has
-        // `_meta.smart = false`. The `wiki-user` label rides along in the
-        // message and decides nothing.
+    async fn a_push_to_a_standard_wiki_trips_the_smart_flag_gate() {
+        // `_meta.smart = false` is what decides. The `wiki-user` label rides
+        // along in the message and decides nothing.
         let (_dir, tree, pool) = seeded_tree().await;
         let alice_id = WikiId::parse("alice").unwrap();
         let err = push(
             &pool,
             &tree,
             &alice_smart(),
-            ActorKind::SmartConsumer,
             PushRequest {
                 mode: PushMode::Upsert,
                 wiki_id: Some(alice_id),
@@ -3752,7 +3656,6 @@ mod tests {
             &pool,
             &tree,
             &alice_smart(),
-            ActorKind::SmartConsumer,
             create_smart_wiki_request("lnprint"),
         )
         .await
@@ -3780,7 +3683,6 @@ mod tests {
             &pool,
             &tree,
             &alice_smart(),
-            ActorKind::SmartConsumer,
             guarded_upsert(create.op_log_id),
         )
         .await
@@ -3793,27 +3695,15 @@ mod tests {
         pull(&pool, &tree, &alice_smart(), &pull_all(&wiki_id))
             .await
             .expect("pull");
-        let up2 = push(
-            &pool,
-            &tree,
-            &alice_smart(),
-            ActorKind::SmartConsumer,
-            guarded_upsert(up1.op_log_id),
-        )
-        .await
-        .expect("a pull between writes must not look like a conflict");
+        let up2 = push(&pool, &tree, &alice_smart(), guarded_upsert(up1.op_log_id))
+            .await
+            .expect("a pull between writes must not look like a conflict");
         assert!(up2.op_log_id > up1.op_log_id);
 
         // Re-using the now-stale head is rejected, naming both heads.
-        let err = push(
-            &pool,
-            &tree,
-            &alice_smart(),
-            ActorKind::SmartConsumer,
-            guarded_upsert(up1.op_log_id),
-        )
-        .await
-        .expect_err("a stale expected_op_log_head must conflict");
+        let err = push(&pool, &tree, &alice_smart(), guarded_upsert(up1.op_log_id))
+            .await
+            .expect_err("a stale expected_op_log_head must conflict");
         assert!(
             matches!(
                 err,
@@ -3840,7 +3730,6 @@ mod tests {
             &pool,
             &tree,
             &alice_smart(),
-            ActorKind::SmartConsumer,
             create_smart_wiki_request("lnprint"),
         )
         .await
@@ -3863,7 +3752,6 @@ mod tests {
             &pool,
             &tree,
             &alice_smart(),
-            ActorKind::SmartConsumer,
             PushRequest {
                 mode: PushMode::Upsert,
                 wiki_id: Some(create.wiki_id.clone()),
@@ -3940,7 +3828,6 @@ mod tests {
             &pool,
             &tree,
             &alice_smart(),
-            ActorKind::SmartConsumer,
             create_smart_wiki_request("lnprint"),
         )
         .await
@@ -3953,7 +3840,6 @@ mod tests {
             &pool,
             &tree,
             &alice_smart(),
-            ActorKind::SmartConsumer,
             PushRequest {
                 mode: PushMode::Upsert,
                 wiki_id: Some(create.wiki_id.clone()),
@@ -4020,7 +3906,6 @@ mod tests {
             &pool,
             &tree,
             &alice_smart(),
-            ActorKind::SmartConsumer,
             create_smart_wiki_request("lnprint"),
         )
         .await
@@ -4030,7 +3915,6 @@ mod tests {
             &pool,
             &tree,
             &alice_smart(),
-            ActorKind::SmartConsumer,
             PushRequest {
                 mode: PushMode::Upsert,
                 wiki_id: Some(create.wiki_id.clone()),
@@ -4074,7 +3958,6 @@ mod tests {
             &pool,
             &tree,
             &alice_smart(),
-            ActorKind::SmartConsumer,
             PushRequest {
                 mode: PushMode::Upsert,
                 wiki_id: Some(wiki_id.clone()),
@@ -4244,7 +4127,6 @@ mod tests {
             &pool,
             &tree,
             &alice_smart(),
-            ActorKind::SmartConsumer,
             PushRequest {
                 mode: PushMode::Upsert,
                 wiki_id: Some(wiki_id.clone()),
@@ -4381,7 +4263,6 @@ mod tests {
             &pool,
             &tree,
             &alice_smart(),
-            ActorKind::SmartConsumer,
             create_smart_wiki_request("lnprint"),
         )
         .await
@@ -4394,7 +4275,6 @@ mod tests {
             &pool,
             &tree,
             &alice_smart(),
-            ActorKind::SmartConsumer,
             upsert_with_marks(&create.wiki_id, vec![format!("bi_{bi}")]),
         )
         .await
@@ -4429,7 +4309,6 @@ mod tests {
             &pool,
             &tree,
             &alice_smart(),
-            ActorKind::SmartConsumer,
             create_smart_wiki_request("lnprint"),
         )
         .await
@@ -4445,7 +4324,6 @@ mod tests {
             &pool,
             &tree,
             &alice_smart(),
-            ActorKind::SmartConsumer,
             upsert_with_marks(
                 &create.wiki_id,
                 vec!["bi_99999".into()], // not present
@@ -4481,7 +4359,6 @@ mod tests {
             &pool,
             &tree,
             &alice_smart(),
-            ActorKind::SmartConsumer,
             create_smart_wiki_request("lnprint"),
         )
         .await
@@ -4490,15 +4367,9 @@ mod tests {
         // Distinct page set so the wiki id differs but everything else
         // is structurally the same.
         other_req.pages = vec![page("index.md", "# voxhobbit\n")];
-        let voxhobbit = push(
-            &pool,
-            &tree,
-            &alice_smart(),
-            ActorKind::SmartConsumer,
-            other_req,
-        )
-        .await
-        .expect("create voxhobbit");
+        let voxhobbit = push(&pool, &tree, &alice_smart(), other_req)
+            .await
+            .expect("create voxhobbit");
 
         // Briefing item seeded against lnprint, then we try to mark it
         // from a push targeting voxhobbit. The cross-wiki check inside
@@ -4510,7 +4381,6 @@ mod tests {
             &pool,
             &tree,
             &alice_smart(),
-            ActorKind::SmartConsumer,
             upsert_with_marks(&voxhobbit.wiki_id, vec![format!("bi_{bi}")]),
         )
         .await
@@ -4547,7 +4417,6 @@ mod tests {
             &pool,
             &tree,
             &alice_smart(),
-            ActorKind::SmartConsumer,
             create_smart_wiki_request("lnprint"),
         )
         .await
@@ -4558,7 +4427,6 @@ mod tests {
             &pool,
             &tree,
             &alice_smart(),
-            ActorKind::SmartConsumer,
             upsert_with_marks(&create.wiki_id, Vec::new()),
         )
         .await
@@ -4583,15 +4451,9 @@ mod tests {
             mark_processed: Vec::new(),
             expected_op_log_head: None,
         };
-        let resp_omitted = push(
-            &pool,
-            &tree,
-            &alice_smart(),
-            ActorKind::SmartConsumer,
-            req_no_field,
-        )
-        .await
-        .expect("push without field");
+        let resp_omitted = push(&pool, &tree, &alice_smart(), req_no_field)
+            .await
+            .expect("push without field");
         assert!(resp_omitted.marked_processed.is_empty());
     }
 
@@ -4602,7 +4464,6 @@ mod tests {
             &pool,
             &tree,
             &alice_smart(),
-            ActorKind::SmartConsumer,
             create_smart_wiki_request("lnprint"),
         )
         .await
@@ -4615,7 +4476,6 @@ mod tests {
             &pool,
             &tree,
             &alice_smart(),
-            ActorKind::SmartConsumer,
             upsert_with_marks(
                 &create.wiki_id,
                 vec![format!("bi_{bi_a}"), format!("{bi_b}")],
@@ -4638,7 +4498,6 @@ mod tests {
             &pool,
             &tree,
             &alice_smart(),
-            ActorKind::SmartConsumer,
             create_smart_wiki_request("lnprint"),
         )
         .await
@@ -4652,7 +4511,6 @@ mod tests {
             &pool,
             &tree,
             &alice_smart(),
-            ActorKind::SmartConsumer,
             upsert_with_marks(&create.wiki_id, too_many),
         )
         .await

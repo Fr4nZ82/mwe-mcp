@@ -26480,6 +26480,7 @@ mod tests {
             &serde_json::json!({ "verdict": "retire" }),
             Some("bob"),
             false,
+            false,
         )
         .await
         .expect("bob answers");
@@ -26522,6 +26523,7 @@ mod tests {
             &proposal,
             &serde_json::json!({ "verdict": "keep" }),
             Some("bob"),
+            false,
             false,
         )
         .await
@@ -26882,6 +26884,7 @@ mod tests {
             &proposal,
             &serde_json::json!({ "verdict": "both" }),
             Some("zoe"),
+            false,
             false,
         )
         .await
