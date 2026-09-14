@@ -549,6 +549,14 @@ struct StructureMove {
 pub struct PageJudgementReport {
     /// Pages the judge actually read — one model call each.
     pub pages_read: usize,
+    /// The source paths of those readings that LANDED: a page whose answer
+    /// came back and could be read, even when every verdict in it was `keep`
+    /// or the engine refused them all.
+    ///
+    /// A page whose call failed, or whose answer could not be read, is NOT
+    /// here — nothing was decided about it, so the passes that stand aside for
+    /// a reading must not stand aside for this one.
+    pub pages_answered: Vec<String>,
     /// Pages the cap left out, oldest first. They are still unjudged, and the
     /// next pass — the next hour's, or tonight's — reads them.
     pub pages_left: usize,
@@ -1014,11 +1022,22 @@ pub async fn run_cycle(
     // about a placement somebody just made; it never drops a candidate.
     let day = day::perimeter(pool).await;
 
-    // The pages tonight's judge will read, chosen once and before anything
-    // reads a page, because two passes below skip exactly them: whatever the
-    // judge answers about a page in one call, nobody buys a second call to ask
-    // again. A page the cap leaves out is not on this list, so those passes
-    // still cover it.
+    // **The two lists, and why they are two.** Tonight's reading is chosen once
+    // and before anything reads a page, because passes below key on it — but on
+    // two different questions, and they must not share one answer.
+    //
+    // `will_be_read` is the SELECTION: the pages the reading intends to open.
+    // The completion and contradiction sweeps run BEFORE the reading does, so
+    // the selection is all that can be known when they choose their pairs, and
+    // it is the right list for them — they only stand aside for a pair that
+    // lives wholly on one of those pages, and being wrong costs a night.
+    //
+    // `were_read` is the READINGS THAT LANDED, filled in after the pass. The
+    // passes that would carry a page to a model again key on that one: a page
+    // whose reading failed answered nothing, so nobody may skip it on the
+    // strength of a question that was never answered.
+    //
+    // A page the cap leaves out is on neither list, so every pass covers it.
     let fresh: Vec<FactId> = day
         .facts_written
         .iter()
@@ -1026,7 +1045,7 @@ pub async fn run_cycle(
         .collect();
     let to_judge =
         pages_the_round_wrote_onto(pool, &fresh, JudgementDepth::Nightly.page_cap(policy)).await;
-    let judged_pages: BTreeSet<&str> = to_judge.pages.iter().map(String::as_str).collect();
+    let will_be_read: BTreeSet<&str> = to_judge.pages.iter().map(String::as_str).collect();
 
     let auto_apply = run_auto_apply_sweep(pool, tree, now).await?;
     let revisor = run_revisor_jaccard(
@@ -1047,7 +1066,7 @@ pub async fn run_cycle(
         &day,
         policy,
         &smart_wiki_index,
-        &judged_pages,
+        &will_be_read,
     )
     .await?;
     let page_merge = run_page_merge(
@@ -1101,6 +1120,7 @@ pub async fn run_cycle(
         now,
         policy,
         &smart_wiki_index,
+        &will_be_read,
     )
     .await?;
     let contradiction_sweep = run_contradiction_sweep(
@@ -1111,12 +1131,16 @@ pub async fn run_cycle(
         now,
         policy,
         &smart_wiki_index,
+        &will_be_read,
     )
     .await?;
-    // The judge reads what the day WROTE, and it reads it after the two
-    // sweeps that close things: a fact those already settled is not offered
-    // for a second opinion, and a request the completion sweep finished is
-    // not closed twice.
+    // The judge reads what the day WROTE, and it reads it after the two sweeps
+    // that close things: a fact those already settled is not offered for a
+    // second opinion, and a request the completion sweep finished is not closed
+    // twice. Those sweeps stand aside the other way for a pair that lives
+    // wholly on a page this reading will open
+    // ([`all_on_one_page_the_reading_will_open`]), so the two never carry one
+    // page to a model twice.
     //
     // **What runs beside what.** The sub-jobs of a cycle are sequential, and
     // they stay that way: nearly all of them write `fact_index` rows chosen by
@@ -1140,11 +1164,10 @@ pub async fn run_cycle(
     //
     // **What stays separate, and why.** The completion and contradiction
     // sweeps above pair a fact with its nearest neighbours wherever they live,
-    // and the answer is usually on another page — the judge cannot see it, so
-    // it cannot replace them. The page-group regrouping inside
-    // [`run_auto_promote`] reads the memory as one shelf. What the judge does
-    // absorb is what one page answers on its own, and those passes skip the
-    // pages it read.
+    // and when one of those lives on another page this reading cannot see it —
+    // so those pairs stay theirs. The page-group regrouping inside
+    // [`run_auto_promote`] reads the memory as one shelf. What this reading
+    // absorbs is what one page answers on its own.
     let page_judge = run_page_judgement(
         pool,
         tree,
@@ -1172,6 +1195,11 @@ pub async fn run_cycle(
     // follows this cycle. The pages the judge read have answered this question
     // about themselves already; what is left for this pass is the under-linked
     // page nobody wrote onto, which is most of what it is for.
+    let were_read: BTreeSet<&str> = page_judge
+        .pages_answered
+        .iter()
+        .map(String::as_str)
+        .collect();
     let rail_writer = run_rail_writer(
         pool,
         tree,
@@ -1179,7 +1207,7 @@ pub async fn run_cycle(
         &cycle_id,
         &day,
         policy,
-        &judged_pages,
+        &were_read,
     )
     .await?;
     // The recall-repair sub-job runs after the refile sweep so a fact the
@@ -1392,11 +1420,13 @@ struct RailChoice {
 /// the next time the page is written, and from then on the harvest reads it
 /// off the page like any other.
 ///
-/// **The pages tonight's judge read are not nominated.** They are asked this
-/// same question while the judge has the page open ([`RAILS_QUESTION`]), out of
-/// a call somebody is paying for anyway. What is left for this pass is what it
-/// is chiefly for: the under-linked page nobody touched today, lifted by a
-/// reader who opened it beside another and could not walk between them.
+/// **The pages tonight's reading ANSWERED are not nominated.** They were asked
+/// this same question while it had the page open ([`RAILS_QUESTION`]), out of a
+/// call somebody is paying for anyway. A page whose reading failed is not on
+/// that list and is nominated here tonight, because nothing was decided about
+/// it. What is left is what this pass is chiefly for: the under-linked page
+/// nobody touched today, lifted by a reader who opened it beside another and
+/// could not walk between them.
 async fn run_rail_writer(
     pool: &SqlitePool,
     tree: &WikiTree,
@@ -1404,7 +1434,7 @@ async fn run_rail_writer(
     cycle_id: &str,
     day: &day::DayPerimeter,
     policy: &RemPolicy,
-    judged_pages: &BTreeSet<&str>,
+    were_read: &BTreeSet<&str>,
 ) -> Result<RailWriterReport> {
     let mut report = RailWriterReport::default();
     if policy.rail_writer_cap == 0 {
@@ -1441,10 +1471,12 @@ async fn run_rail_writer(
         // was already paying for.
         .filter(|(_, p)| {
             crate::planner::plan_page_source_path(tree, p)
-                .is_none_or(|path| !judged_pages.contains(path.as_str()))
+                .is_none_or(|path| !were_read.contains(path.as_str()))
         })
         .map(|(slug, _)| slug.as_str())
         .collect();
+    drop_the_pages_that_already_answered(pool, &plan, llm.model_id(), &mut nominees).await?;
+
     nominees.sort_by(|a, b| {
         let n = |s: &str| plan.link_graph.get(s).map_or(0, Vec::len);
         n(a).cmp(&n(b))
@@ -1477,24 +1509,7 @@ async fn run_rail_writer(
         return Ok(report);
     }
 
-    // The candidate pool, once for the pass. An identity card is not a
-    // destination — the compiler refuses one as a rail
-    // (`compiler::recommended_link_targets`), so offering it here would spend
-    // a model call and one of the page's link slots on a choice that is
-    // dropped before the page is written.
-    let by_source_path: BTreeMap<String, String> = plan
-        .pages
-        .iter()
-        .filter(|(_, p)| !p.is_identity_card())
-        .filter_map(|(slug, p)| {
-            Some((
-                crate::planner::plan_page_source_path(tree, p)?,
-                slug.clone(),
-            ))
-        })
-        .collect();
-    let candidates = crate::candidates::CandidatePool::load(pool, &by_source_path).await;
-
+    let candidates = the_candidate_pool(pool, tree, &plan).await;
     for slug in nominees {
         match judge_rails(pool, tree, llm, cycle_id, &plan, &candidates, slug).await {
             // One page, one judgement, however many links came back — a page
@@ -1515,6 +1530,60 @@ async fn run_rail_writer(
         }
     }
     Ok(report)
+}
+
+/// The pool a whole pass picks its destinations out of, read once.
+///
+/// An identity card is not in it: the compiler refuses one as a rail
+/// (`compiler::recommended_link_targets`), so offering it would spend a model
+/// call and one of the page's link slots on a choice that is dropped before
+/// the page is written.
+async fn the_candidate_pool(
+    pool: &SqlitePool,
+    tree: &WikiTree,
+    plan: &CompilationPlan,
+) -> crate::candidates::CandidatePool {
+    let by_source_path: BTreeMap<String, String> = plan
+        .pages
+        .iter()
+        .filter(|(_, p)| !p.is_identity_card())
+        .filter_map(|(slug, p)| {
+            Some((
+                crate::planner::plan_page_source_path(tree, p)?,
+                slug.clone(),
+            ))
+        })
+        .collect();
+    crate::candidates::CandidatePool::load(pool, &by_source_path).await
+}
+
+/// Take out the pages that have already said they need no link.
+///
+/// A page answers this question in whichever reading asks it, and the answer
+/// is remembered against the page's own facts ([`rails_memo_subject`]).
+/// Without this the night's other reading answers «no link needed» and this
+/// pass buys the same question again tomorrow, on a page nothing has touched.
+///
+/// # Errors
+///
+/// Surfaces the memo read.
+async fn drop_the_pages_that_already_answered(
+    pool: &SqlitePool,
+    plan: &CompilationPlan,
+    model_id: &str,
+    nominees: &mut Vec<&str>,
+) -> Result<()> {
+    let mut settled: BTreeSet<&str> = BTreeSet::new();
+    for slug in nominees.iter() {
+        if let Some(page) = plan.pages.get(*slug) {
+            let key = rem_verdicts::key(model_id, &rails_memo_subject(slug, page));
+            if rem_verdicts::is_settled(pool, rem_verdicts::kind::RAIL, &key).await? {
+                settled.insert(*slug);
+            }
+        }
+    }
+    nominees.retain(|slug| !settled.contains(slug));
+    Ok(())
 }
 
 /// What the model is shown about one under-linked page: its card, its facts
@@ -1704,6 +1773,25 @@ fn accepted_choice<'c>(
         return None;
     };
     Some((to, for_fact))
+}
+
+/// What the memo remembers when a reading answers «nowhere» about a page's
+/// links, keyed so BOTH readings compute the same string: the page, and the
+/// content the answer was about.
+///
+/// **Why the page's own facts and not the destinations offered.** The question
+/// is about a NEED — does a fact here leave a reader with something this page
+/// cannot answer — and the answer to that changes when the page's facts
+/// change, not when a new neighbour appears somewhere else. So a page that has
+/// answered «nowhere» is not asked again until it says something different.
+fn rails_memo_subject(slug: &str, page: &crate::planner::PagePlan) -> String {
+    use std::fmt::Write as _;
+
+    let mut out = format!("rails|{slug}");
+    for f in &page.primary_facts {
+        let _ = write!(out, "|{}:{}", f.fact_id.as_str(), f.text);
+    }
+    out
 }
 
 /// Park one accepted rail and leave its receipt. `None` when the park refused.
@@ -2746,13 +2834,18 @@ const fn mass_floor_for_style(
 /// Hard-capped by `policy.auto_promote_cap`. A failed model call costs its
 /// page and not the night — see [`note_llm_failure`].
 ///
-/// **The pages the judge will read are not asked here.** `judged_pages` is
-/// tonight's reading list ([`pages_the_round_wrote_onto`]), and the judge asks
-/// each of those pages the same question while it has the page open
-/// ([`SPLIT_QUESTION`]). This loop keeps what the judge never sees: the page
-/// nobody wrote onto today, which grew heavy over weeks and is nominated by
-/// mass alone. The regrouping above is not skipped for anybody — it reads the
-/// whole shelf at once, and no single page's reading can answer it.
+/// **The pages tonight's reading will open are not asked here.**
+/// `will_be_read` is the SELECTION ([`pages_the_round_wrote_onto`]), and the
+/// reading asks each of those pages the same question while it has the page
+/// open ([`SPLIT_QUESTION`]). This loop keeps what the reading never sees: the
+/// page nobody wrote onto today, which grew heavy over weeks and is nominated
+/// by mass alone. The regrouping above is not skipped for anybody — it reads
+/// the whole shelf at once, and no single page's reading can answer it.
+///
+/// It is the SELECTION and not the readings that landed, and the difference is
+/// a night: this pass runs before the reading does, so a page whose reading
+/// then fails is not offered here until the next round. The rail writer, which
+/// runs after, keys on the readings themselves.
 ///
 /// No LLM → the sub-job short-circuits cleanly with
 /// `disabled_reason = Some("no rem_promotions LLM wired")`.
@@ -2762,7 +2855,7 @@ const fn mass_floor_for_style(
 )]
 #[allow(
     clippy::too_many_arguments,
-    reason = "one sub-job: the tree, who judges, under which policy, what the day did, and which pages another pass already reads"
+    reason = "one sub-job: the tree, who judges, under which policy, what the day did, and which pages another reading will open"
 )]
 async fn run_auto_promote(
     pool: &SqlitePool,
@@ -2772,7 +2865,7 @@ async fn run_auto_promote(
     day: &day::DayPerimeter,
     policy: &RemPolicy,
     smart_wiki_index: &SmartWikiIndex,
-    judged_pages: &BTreeSet<&str>,
+    will_be_read: &BTreeSet<&str>,
 ) -> Result<AutoPromoteReport> {
     let mut report = AutoPromoteReport::default();
     let Some(llm) = llm else {
@@ -2870,10 +2963,10 @@ async fn run_auto_promote(
             .filter(|&(&path, &m)| over_mass_floor(d, path, m, policy))
             .map(|(&p, _)| p)
             .filter(|p| !regrouped.contains(*p))
-            // A page tonight's judge reads answers this question inside that
-            // reading, so asking it here would be the same page carried to the
-            // same slot twice.
-            .filter(|p| !judged_pages.contains(*p))
+            // A page tonight's reading opens answers this question inside
+            // that reading, so asking it here would be the same page carried to
+            // the same slot twice.
+            .filter(|p| !will_be_read.contains(*p))
             .collect();
         // What the day added to first, then the heaviest, then the slug for
         // determinism. Sorting by slug alone hands the cap an alphabetical
@@ -5159,6 +5252,7 @@ async fn run_completion_sweep(
     now: DateTime<Utc>,
     policy: &RemPolicy,
     smart_wiki_index: &SmartWikiIndex,
+    will_be_read: &BTreeSet<&str>,
 ) -> Result<CompletionSweepReport> {
     let mut report = CompletionSweepReport::default();
     if policy.completion_sweep_cap == 0 {
@@ -5191,6 +5285,16 @@ async fn run_completion_sweep(
             .filter(|c| !closed_this_cycle.contains(c.fact_id.as_str()))
             .collect();
         if candidates.is_empty() {
+            continue;
+        }
+        // A request and the fact that finishes it, both on a page the reading
+        // will open, is a question that reading already answers
+        // ([`all_on_one_page_the_reading_will_open`]).
+        if all_on_one_page_the_reading_will_open(
+            case.evidence,
+            candidates.iter().copied(),
+            will_be_read,
+        ) {
             continue;
         }
         let case = CompletionCase {
@@ -5624,6 +5728,9 @@ struct RailsAsk {
     /// What the model is shown: where this page may lead, and what it already
     /// carries.
     block: String,
+    /// What a «nowhere» answer is remembered under, so the rail writer does not
+    /// ask this page the same question again ([`rails_memo_subject`]).
+    memo_subject: String,
 }
 
 impl JudgedPage {
@@ -5736,6 +5843,32 @@ enum VerdictOutcome {
     Kept,
 }
 
+/// Whether a fact and everything it is being weighed against sit on ONE page
+/// that tonight's reading will open.
+///
+/// **The reading sees the whole page and already carries this question.** It
+/// answers `contradicted` and `closes` about facts it can see together in the
+/// prose, so a pair that lives entirely on a page it will read is carried to a
+/// model twice: once as a pair, once as a page. This is the one shape the
+/// per-fact sweeps can safely leave to it — the moment one of the neighbours
+/// lives somewhere else, the reading cannot see it and the sweep is the only
+/// pass that can.
+///
+/// It takes the SELECTION, not the readings: the sweeps run before the reading
+/// does, so what is known at that point is which pages it will open. A page
+/// whose reading then fails is covered again by the next round, which is a
+/// night's delay on a question nobody was asking yesterday.
+fn all_on_one_page_the_reading_will_open<'a>(
+    seed: &FactIndexRow,
+    others: impl IntoIterator<Item = &'a FactIndexRow>,
+    will_read: &BTreeSet<&str>,
+) -> bool {
+    will_read.contains(seed.source_path.as_str())
+        && others
+            .into_iter()
+            .all(|c| c.source_path == seed.source_path)
+}
+
 /// The pages a round wrote onto, newest write first, and how many the cap left
 /// out.
 #[derive(Debug, Default)]
@@ -5749,21 +5882,26 @@ struct PagesToJudge {
 
 /// Which pages a round wrote onto, capped, newest write first.
 ///
-/// **One origin for a list three passes need.** The judge reads these pages and
-/// answers every page-level question about them in one call; the two passes
-/// that ask those questions one at a time — the per-page split, the rail
-/// writer — skip exactly this list ([`run_cycle`]). Computed twice the two
-/// lists could drift apart, and a page in one and not the other is either read
-/// twice or not at all.
+/// **One origin for the list every other pass keys on.** The reading opens
+/// these pages and answers every page-level question about them in one call,
+/// and four passes stand aside for that: the completion and contradiction
+/// sweeps, which run first and can only know the SELECTION; the per-page
+/// split, which runs first for the same reason; and the rail writer, which
+/// runs after and keys on the readings that actually landed
+/// ([`PageJudgementReport::pages_answered`]). Computed twice the lists could
+/// drift apart, and a page in one and not the other is either read twice or
+/// not at all.
 ///
 /// The cap belongs here, because what it leaves out is what the *next* pass
 /// reads and the count of that is part of the answer. A fact that vanished
 /// between the perimeter and here is simply not read; a channel page is
 /// nobody's prose and is never judged.
 ///
-/// A page the confirmer memo settles is on this list and skipped by all three:
-/// the answer those passes want came from the reading the memo stands in for,
-/// and nothing about the page has moved since.
+/// A page the confirmer memo settles is on this list and skipped by the passes
+/// that key on the selection: the answer they want came from the reading the
+/// memo stands in for, and nothing about the page has moved since. It never
+/// reaches [`PageJudgementReport::pages_answered`], because no answer was
+/// bought for it tonight.
 async fn pages_the_round_wrote_onto(
     pool: &SqlitePool,
     fresh: &[FactId],
@@ -5902,6 +6040,9 @@ async fn run_page_judgement(
             },
             None => continue,
         };
+        // The answer came back and could be read: from here on this page HAS
+        // been judged, whatever the verdicts in it turned out to be.
+        report.pages_answered.push(page.source_path.clone());
         let outcomes = apply_page_decision(
             pool,
             tree,
@@ -5911,6 +6052,7 @@ async fn run_page_judgement(
             cycle_id,
             now,
             depth,
+            llm.model_id(),
             &mut report,
         )
         .await?;
@@ -6212,6 +6354,7 @@ async fn fill_in_the_rails(pool: &SqlitePool, tree: &WikiTree, asking: &mut [Jud
             continue;
         }
         asking[i].rails = Some(RailsAsk {
+            memo_subject: rails_memo_subject(slug, plan_page),
             slug: slug.to_owned(),
             offered,
             budget,
@@ -6459,6 +6602,7 @@ async fn apply_page_decision(
     cycle_id: &str,
     now: DateTime<Utc>,
     depth: JudgementDepth,
+    model_id: &str,
     report: &mut PageJudgementReport,
 ) -> Result<PageOutcomes> {
     let mut outcomes = PageOutcomes::default();
@@ -6542,40 +6686,56 @@ async fn apply_page_decision(
         page,
         &decision.links,
         cycle_id,
+        model_id,
         report,
         &mut outcomes,
     )
-    .await;
+    .await?;
 
     // The split runs last: it moves rows off this page, so every verdict about
     // them has landed by the time it does.
     if let Some(split) = &decision.split
         && !split.markers.is_empty()
     {
-        match apply_page_split(pool, tree, page, split, cycle_id).await? {
-            VerdictOutcome::Applied(what, verb, detail) => {
-                report.changed.push(format!("{what} · {verb}"));
-                outcomes.applied.push(serde_json::json!({
-                    "marker": "(the page)",
-                    "fact_id": what,
-                    "verb": verb,
-                    "detail": detail,
-                }));
-            },
-            VerdictOutcome::Refused(why) => {
-                report
-                    .refused
-                    .push(format!("{}:split · {why}", page.source_path));
-                outcomes.refused.push(serde_json::json!({
-                    "marker": "(the page)",
-                    "verdict": "split",
-                    "reason": why,
-                }));
-            },
-            VerdictOutcome::Asked(..) | VerdictOutcome::Kept => {},
-        }
+        record_page_split(pool, tree, page, split, cycle_id, report, &mut outcomes).await?;
     }
     Ok(outcomes)
+}
+
+/// Carry out the split the reading asked for, and write down what it did or
+/// why the engine would not do it.
+async fn record_page_split(
+    pool: &SqlitePool,
+    tree: &WikiTree,
+    page: &JudgedPage,
+    split: &LlmPageSplit,
+    cycle_id: &str,
+    report: &mut PageJudgementReport,
+    outcomes: &mut PageOutcomes,
+) -> Result<()> {
+    match apply_page_split(pool, tree, page, split, cycle_id).await? {
+        VerdictOutcome::Applied(what, verb, detail) => {
+            report.changed.push(format!("{what} · {verb}"));
+            outcomes.applied.push(serde_json::json!({
+                "marker": "(the page)",
+                "fact_id": what,
+                "verb": verb,
+                "detail": detail,
+            }));
+        },
+        VerdictOutcome::Refused(why) => {
+            report
+                .refused
+                .push(format!("{}:split · {why}", page.source_path));
+            outcomes.refused.push(serde_json::json!({
+                "marker": "(the page)",
+                "verdict": "split",
+                "reason": why,
+            }));
+        },
+        VerdictOutcome::Asked(..) | VerdictOutcome::Kept => {},
+    }
+    Ok(())
 }
 
 /// What one page's reading came to: what the engine did, what it put to a
@@ -7229,11 +7389,22 @@ async fn apply_page_rails(
     page: &JudgedPage,
     links: &[LlmPageLink],
     cycle_id: &str,
+    model_id: &str,
     report: &mut PageJudgementReport,
     outcomes: &mut PageOutcomes,
-) {
+) -> Result<()> {
+    if let Some(ask) = &page.rails
+        && links.is_empty()
+    {
+        // «Nowhere» is an answer, and it is the common one. Remembered here,
+        // the rail writer does not carry this page to the same slot tomorrow
+        // to be told the same thing ([`rails_memo_subject`]).
+        let key = rem_verdicts::key(model_id, &ask.memo_subject);
+        rem_verdicts::record_negative(pool, rem_verdicts::kind::RAIL, &key, &page.source_path)
+            .await?;
+    }
     if links.is_empty() {
-        return;
+        return Ok(());
     }
     // Every refusal is written down where the page's own refusals go, because
     // that is the promise this pass makes: a reading the engine would not carry
@@ -7262,7 +7433,7 @@ async fn apply_page_rails(
 
     let Some(ask) = &page.rails else {
         refuse(report, outcomes, "(the page)", "not asked of this page");
-        return;
+        return Ok(());
     };
     let mut taken: BTreeSet<&str> = BTreeSet::new();
     for choice in links {
@@ -7317,6 +7488,7 @@ async fn apply_page_rails(
             "detail": format!("{} → {}", ask.slug, outcome.to),
         }));
     }
+    Ok(())
 }
 
 /// One receipt per page, born applied: what the judge changed, and what it
@@ -8019,6 +8191,7 @@ async fn run_contradiction_sweep(
     now: DateTime<Utc>,
     policy: &RemPolicy,
     smart_wiki_index: &SmartWikiIndex,
+    will_be_read: &BTreeSet<&str>,
 ) -> Result<ContradictionSweepReport> {
     let mut report = ContradictionSweepReport::default();
     if policy.contradiction_sweep_cap == 0 {
@@ -8094,6 +8267,13 @@ async fn run_contradiction_sweep(
             let candidates: Vec<FactIndexRow> =
                 scored.into_iter().take(5).map(|(_, c)| c.clone()).collect();
             if candidates.is_empty() {
+                continue;
+            }
+            // A fact and every neighbour it is weighed against, all on a page
+            // the reading will open: that reading answers `contradicted` with
+            // the whole page in front of it
+            // ([`all_on_one_page_the_reading_will_open`]).
+            if all_on_one_page_the_reading_will_open(&seed, &candidates, will_be_read) {
                 continue;
             }
             cases.push((seed, candidates));
@@ -13826,6 +14006,7 @@ mod tests {
             Utc::now(),
             &RemPolicy::default(),
             &index,
+            &BTreeSet::new(),
         )
         .await
         .expect("sweep");
@@ -13909,6 +14090,7 @@ mod tests {
             Utc::now(),
             &RemPolicy::default(),
             &index,
+            &BTreeSet::new(),
         )
         .await
         .expect("sweep");
@@ -13969,6 +14151,7 @@ mod tests {
             Utc::now(),
             &RemPolicy::default(),
             &index,
+            &BTreeSet::new(),
         )
         .await
         .expect("sweep");
@@ -14045,6 +14228,7 @@ mod tests {
             Utc::now(),
             &RemPolicy::default(),
             &index,
+            &BTreeSet::new(),
         )
         .await
         .expect("sweep");
@@ -14083,6 +14267,7 @@ mod tests {
             Utc::now(),
             &RemPolicy::default(),
             &index,
+            &BTreeSet::new(),
         )
         .await
         .expect("sweep");
@@ -14140,6 +14325,7 @@ mod tests {
             Utc::now(),
             &RemPolicy::default(),
             &index,
+            &BTreeSet::new(),
         )
         .await
         .expect("sweep");
@@ -16055,6 +16241,141 @@ mod tests {
         drop(dir);
     }
 
+    /// **A page nobody managed to read is nobody's answer.**
+    ///
+    /// The passes that stand aside for a reading stand aside for an ANSWER.
+    /// A page whose call failed, or whose reply could not be read, decided
+    /// nothing — so it is not on the list those passes key on, and the split
+    /// and the rail writer see it that same night. Keying on the selection
+    /// instead leaves it covered by nobody until tomorrow.
+    #[tokio::test]
+    async fn a_page_whose_reading_failed_is_not_counted_as_read() {
+        let (dir, tree, pool) = setup_workdir().await;
+        write_wiki(&tree, "alice", "Alice", "wiki-user");
+        let fact = plant_on_page_of_kind(
+            &tree,
+            &pool,
+            "alice",
+            "orto.md",
+            "Alice keeps bees on the balcony",
+            "alice",
+            "state",
+            None,
+        )
+        .await;
+
+        // The model answers, and what comes back is not an answer.
+        let llm = FakeLlmBackend::new("judge", "I could not do that");
+        let report = judge_the_page(
+            &pool,
+            &tree,
+            &llm,
+            std::slice::from_ref(&fact),
+            JudgementDepth::Nightly,
+            &RemPolicy::default(),
+        )
+        .await;
+
+        assert_eq!(report.pages_read, 1, "the page was selected and opened");
+        assert_eq!(report.errors.len(), 1, "{:?}", report.errors);
+        assert!(
+            report.pages_answered.is_empty(),
+            "but nothing was decided about it, so nobody may skip it: {:?}",
+            report.pages_answered
+        );
+
+        // And the same page, read properly, IS on the list — even when every
+        // answer in it was `keep`.
+        let quiet = FakeLlmBackend::new("judge", "{\"verdicts\":{}}");
+        let read = judge_the_page(
+            &pool,
+            &tree,
+            &quiet,
+            std::slice::from_ref(&fact),
+            JudgementDepth::Nightly,
+            &RemPolicy::default(),
+        )
+        .await;
+        assert_eq!(
+            read.pages_answered.len(),
+            1,
+            "a reading that changed nothing is still a reading: {read:?}"
+        );
+        drop(dir);
+    }
+
+    /// **«Nowhere» is an answer, and it is remembered.**
+    ///
+    /// Most pages need no new link, and that is the answer the reading gets.
+    /// Keyed on the page's own facts, it settles the question for the rail
+    /// writer too: without it that pass carries the same page to the same slot
+    /// the next night, on a page nothing has touched, to be told the same
+    /// thing.
+    #[tokio::test]
+    async fn a_page_that_needs_no_link_is_not_asked_again_tomorrow() {
+        let (dir, tree, pool) = setup_workdir().await;
+        write_wiki(&tree, "bob", "Bob", "wiki-user");
+        let fact = plant_on_page_of_kind(
+            &tree,
+            &pool,
+            "bob",
+            "casa.md",
+            "Bob cooks without peanuts when Carol eats here",
+            "bob",
+            "state",
+            None,
+        )
+        .await;
+        crate::planner::save_plan(&tree, &a_plan_of(&["casa", "intolleranze"], "bob"))
+            .expect("save plan");
+
+        // Both readings ask the same slot, so they are the same model.
+        let judge = FakeLlmBackend::new("pro", "{\"verdicts\":{},\"links\":[]}");
+        let report = judge_the_page(
+            &pool,
+            &tree,
+            &judge,
+            std::slice::from_ref(&fact),
+            JudgementDepth::Nightly,
+            &RemPolicy::default(),
+        )
+        .await;
+        assert!(
+            judge
+                .last_prompt()
+                .is_some_and(|p| p.contains("LEAVES A READER STUCK")),
+            "the page was asked where it leads"
+        );
+        assert!(report.changed.is_empty(), "{:?}", report.changed);
+
+        // The rail writer, with nothing skipped for having been read: the page
+        // carries no link at all, which is its strongest nomination.
+        let rails = FakeLlmBackend::new("pro", "{\"links\":[]}");
+        let after = run_rail_writer(
+            &pool,
+            &tree,
+            Some(&rails),
+            "cycle-rails",
+            &day::DayPerimeter::default(),
+            &RemPolicy::default(),
+            &BTreeSet::new(),
+        )
+        .await
+        .expect("rail writer");
+
+        assert_eq!(
+            after.nominated, 1,
+            "only the page that has not answered: {after:?}"
+        );
+        assert!(
+            rails
+                .last_prompt()
+                .is_some_and(|p| p.contains("intolleranze —") && !p.contains("casa —")),
+            "and the call bought was about the other page"
+        );
+        drop(dir);
+    }
+
     /// **A destination the page was not offered reaches nothing.**
     ///
     /// The list under the question is the whole of what may be answered: a
@@ -16901,6 +17222,7 @@ mod tests {
             Utc::now(),
             &RemPolicy::default(),
             &index,
+            &BTreeSet::new(),
         )
         .await
         .expect("sweep");
@@ -16927,6 +17249,99 @@ mod tests {
             .unwrap()
             .expect("seed");
         assert_eq!(row.valid_to, seed.valid_to);
+        drop(dir);
+    }
+
+    /// **A contradiction wholly on a page tonight's reading will open is left
+    /// to that reading.**
+    ///
+    /// The reading has the whole page in front of it and answers
+    /// `contradicted` with both facts in view, so sending the pair here as
+    /// well carries one page to a model twice. The sibling above is the same
+    /// fixture with nothing selected, and there the sweep does close it — which
+    /// is what makes this a fence and not an accident.
+    #[tokio::test]
+    async fn a_contradiction_wholly_on_a_page_the_reading_will_open_is_left_to_it() {
+        let (dir, tree, pool) = setup_workdir().await;
+        write_wiki(&tree, "alice", "Alice", "wiki-user");
+        let departure = plant_fact(
+            &tree,
+            &pool,
+            "alice",
+            "Partenza per Parigi il 15 giugno",
+            "alice",
+        )
+        .await;
+        let satellite = plant_fact(
+            &tree,
+            &pool,
+            "alice",
+            "Itinerario giorno 1: Louvre",
+            "alice",
+        )
+        .await;
+        let cancellation = plant_fact(
+            &tree,
+            &pool,
+            "alice",
+            "Il viaggio a Parigi è annullato",
+            "alice",
+        )
+        .await;
+        fact_index::mark_superseded(&pool, &departure, &cancellation, chrono::Utc::now())
+            .await
+            .expect("supersede");
+
+        let where_it_lives = fact_index::find_by_id(&pool, &departure)
+            .await
+            .unwrap()
+            .expect("seed")
+            .source_path;
+        assert_eq!(
+            fact_index::find_by_id(&pool, &satellite)
+                .await
+                .unwrap()
+                .expect("satellite")
+                .source_path,
+            where_it_lives,
+            "the fixture puts the pair on one page, which is the whole case"
+        );
+        let will_be_read: BTreeSet<&str> = std::iter::once(where_it_lives.as_str()).collect();
+
+        let resp = format!(
+            "{{\"invalidated\":[{{\"target\":\"{}\",\"valid_to\":null}}]}}",
+            satellite.as_str()
+        );
+        let llm = FakeLlmBackend::new("confirmer", &resp);
+        let index = load_smart_wiki_index(&tree).expect("index");
+        let report = run_contradiction_sweep(
+            &pool,
+            &tree,
+            &llm,
+            "cycle-test",
+            Utc::now(),
+            &RemPolicy::default(),
+            &index,
+            &will_be_read,
+        )
+        .await
+        .expect("sweep");
+
+        assert_eq!(report.seeds_examined, 0, "{report:?}");
+        assert!(report.closed.is_empty(), "{report:?}");
+        assert!(
+            llm.last_prompt().is_none(),
+            "and no call was bought for a question the reading already carries"
+        );
+        assert!(
+            fact_index::find_by_id(&pool, &satellite)
+                .await
+                .unwrap()
+                .expect("satellite")
+                .valid_to
+                .is_none(),
+            "the satellite is untouched, waiting for the reading"
+        );
         drop(dir);
     }
 
@@ -16997,6 +17412,7 @@ mod tests {
             Utc::now(),
             &RemPolicy::default(),
             &index,
+            &BTreeSet::new(),
         )
         .await
         .expect("sweep");
@@ -17098,6 +17514,7 @@ mod tests {
             Utc::now(),
             &RemPolicy::default(),
             &index,
+            &BTreeSet::new(),
         )
         .await
         .expect("sweep");
@@ -17190,6 +17607,7 @@ mod tests {
             Utc::now(),
             &RemPolicy::default(),
             &index,
+            &BTreeSet::new(),
         )
         .await
         .expect("sweep");
@@ -17259,6 +17677,7 @@ mod tests {
             Utc::now(),
             &RemPolicy::default(),
             &index,
+            &BTreeSet::new(),
         )
         .await
         .expect("sweep");
@@ -17308,6 +17727,7 @@ mod tests {
             Utc::now(),
             &RemPolicy::default(),
             &index,
+            &BTreeSet::new(),
         )
         .await
         .expect("sweep");
@@ -17360,6 +17780,7 @@ mod tests {
             Utc::now(),
             &RemPolicy::default(),
             &index,
+            &BTreeSet::new(),
         )
         .await
         .expect("sweep");

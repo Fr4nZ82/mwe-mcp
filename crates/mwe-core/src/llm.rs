@@ -5146,7 +5146,22 @@ mod tests {
         inside: std::sync::atomic::AtomicUsize,
         peak: std::sync::atomic::AtomicUsize,
         delay: Duration,
+        /// A meeting point, for the test that needs two callers to overlap as
+        /// a FACT rather than as a hope.
+        ///
+        /// A call holds here until a second one is inside with it, so the peak
+        /// this fake records is at least two however loaded the machine is —
+        /// eight sleeps of a few milliseconds are not a promise that any two
+        /// of them land in the same instant, and a test that reads a schedule
+        /// as a guarantee fails on a busy runner while the code is right.
+        ///
+        /// It holds with a DEADLINE, because a limiter that admitted one call
+        /// at a time has to fail this test rather than hang it.
+        meet: Option<tokio::sync::Barrier>,
     }
+
+    /// How long a caller waits for the one that should be beside it.
+    const MEETING_DEADLINE: Duration = Duration::from_secs(5);
 
     #[async_trait]
     impl LlmBackend for Counting {
@@ -5158,8 +5173,20 @@ mod tests {
             use std::sync::atomic::Ordering;
             let now_inside = self.inside.fetch_add(1, Ordering::SeqCst) + 1;
             self.peak.fetch_max(now_inside, Ordering::SeqCst);
-            tokio::time::sleep(self.delay).await;
+            let met = if let Some(barrier) = &self.meet {
+                tokio::time::timeout(MEETING_DEADLINE, barrier.wait())
+                    .await
+                    .is_ok()
+            } else {
+                tokio::time::sleep(self.delay).await;
+                true
+            };
             self.inside.fetch_sub(1, Ordering::SeqCst);
+            if !met {
+                return Err(LlmError::Invalid(
+                    "no second caller arrived: the limiter let one in at a time".into(),
+                ));
+            }
             Ok(CompletionResponse {
                 text: "{}".to_owned(),
                 finish_reason: FinishReason::EndOfTurn,
@@ -5213,6 +5240,9 @@ mod tests {
             inside: std::sync::atomic::AtomicUsize::new(0),
             peak: std::sync::atomic::AtomicUsize::new(0),
             delay: Duration::from_millis(200),
+            // This one measures WAITING, so its calls take real time and nobody
+            // waits for anybody.
+            meet: None,
         });
         let nightly: Vec<Box<dyn LlmBackend>> = (0..4)
             .map(|_| {
@@ -5282,7 +5312,10 @@ mod tests {
         let counting = Arc::new(Counting {
             inside: std::sync::atomic::AtomicUsize::new(0),
             peak: std::sync::atomic::AtomicUsize::new(0),
-            delay: Duration::from_millis(40),
+            delay: Duration::ZERO,
+            // Two at a time meet here and release each other, so the floor
+            // below is a fact of this fake and not a bet on the scheduler.
+            meet: Some(tokio::sync::Barrier::new(2)),
         });
         // Through the real decorator, the way `build_backend` attaches it.
         let backends: Vec<Box<dyn LlmBackend>> = (0..8)
