@@ -9,14 +9,27 @@
 //!
 //! ## Auth posture
 //!
-//! **The resolver itself is anonymous** — no session cookie required,
-//! no `SessionUser` / `AdminUser` extractor on the handler. The route
-//! performs *only* the translation (`bi_id` → wiki page URL). Access
-//! control fires on the destination `/dashboard/wiki/<wiki_id>/<path>`
-//! page, which already runs through the session middleware. This keeps
-//! the URL short, copy-pasteable, and embeddable in a consumer's replies
-//! even when the recipient is not logged in (they will be redirected
-//! to `/dashboard/login` on the destination if needed).
+//! **The redirect itself tells somebody where a page is**, which is why
+//! this route answers nobody it has not recognised. The ids are
+//! consecutive integers, so anyone can walk them; a `Location` carrying
+//! a wiki and a page path is the name of that page handed over, and a
+//! page's name is usually the news. Access control on the destination
+//! arrives one hop too late — the header has already been read.
+//!
+//! So: no session, and the visitor goes to the sign-in page with the
+//! CITE handle to come back to, never the destination. With a session,
+//! the redirect happens only when that reader can read at least one
+//! fact of the page it points at
+//! ([`mwe_core::fact_index::readable_fact_on_page`]); otherwise the
+//! answer is the one a handle that does not exist gets, so the two
+//! cannot be told apart.
+//!
+//! **The short form forwards.** The session cookie is scoped to
+//! `/dashboard`, so a browser sends it to the dashboard alias and to
+//! nothing above it: the canonical `/cite/:bi_id` at the root could
+//! never see a reader, and would bounce everybody to sign in. It
+//! forwards to the alias instead — the same short URL to paste, one hop
+//! more, and the checking happens where the cookie is.
 //!
 //! ## Algorithm
 //!
@@ -31,18 +44,17 @@
 //!    parse error → `404` (corrupt cite — shouldn't happen because
 //!    `notify_append` validates on the way in, but the resolver is
 //!    defensive).
-//! 4. Compose the destination URL
+//! 4. Check the reader against the page the cite names; a reader who
+//!    can read nothing of it gets the same `404`.
+//! 5. Compose the destination URL
 //!    `/dashboard/wiki/<wiki_id>/view/<path>` (with `#<anchor>`
 //!    appended when present) and return `302 Found`.
 //!
 //! The destination route `/dashboard/wiki/:id/view/*path` is the
-//! inline-comment view. axum 0.7's `matchit` router cannot host the
-//! bare `/wiki/:id/<path>` capture alongside the existing
-//! `/wiki/:id/edit/*path` editor route (overlapping captures panic at
-//! startup), so the destination uses the `/view/` prefix. The
-//! resolver redirects to this prefix to stay consistent. The textual
-//! editor `/dashboard/wiki/:id/edit/<path>` is *not* the chosen target
-//! because the spec pins the reading view.
+//! inline-comment view. The `/view/` prefix keeps the greedy `*path`
+//! capture from overlapping its `comment/` sibling, which axum 0.7's
+//! `matchit` router panics on at startup; the resolver points at the
+//! same prefix.
 //!
 //! ## Scope guard
 //!
@@ -51,10 +63,13 @@
 
 use axum::Router;
 use axum::extract::{Path as AxumPath, State};
-use axum::response::Redirect;
+use axum::response::{IntoResponse, Redirect, Response};
 use axum::routing::get;
+use axum_extra::extract::CookieJar;
 use mwe_core::briefing::{parse_bi_id, parse_cite};
+use mwe_core::{enrollment, fact_index};
 
+use crate::auth::session_of;
 use crate::error::{DashboardError, Result};
 use crate::state::DashboardState;
 
@@ -67,12 +82,44 @@ pub fn router() -> Router<DashboardState> {
     Router::new().route("/cite/:bi_id", get(resolve))
 }
 
-/// GET `/cite/:bi_id` — citation-handle resolver.
+/// The same short URL, mounted at the root, forwarding to the alias.
+///
+/// The session cookie is `Path=/dashboard`, so nothing above that prefix is
+/// ever shown a reader. A resolver there could only bounce everybody to sign
+/// in — including the person who is already signed in — so it sends the
+/// browser one hop down to where the cookie is sent and the reader can be
+/// recognised. Nothing but the handle the visitor already had travels in that
+/// hop, and a handle that is not one is refused here rather than forwarded.
+pub fn root_router() -> Router<DashboardState> {
+    Router::new().route("/cite/:bi_id", get(forward))
+}
+
+/// GET `/cite/:bi_id` at the root — forward to the dashboard alias.
+async fn forward(AxumPath(bi_id): AxumPath<String>) -> Result<Redirect> {
+    // Rebuilt from the parsed number, never echoed: whatever shape the
+    // visitor typed, what leaves here is the canonical one.
+    let id = parse_bi_id(&bi_id).ok_or(DashboardError::NotFound)?;
+    Ok(Redirect::to(&format!("/dashboard/cite/bi_{id}")))
+}
+
+/// GET `/dashboard/cite/:bi_id` — citation-handle resolver.
 async fn resolve(
     State(state): State<DashboardState>,
+    jar: CookieJar,
     AxumPath(bi_id): AxumPath<String>,
-) -> Result<Redirect> {
+) -> Result<Response> {
     let id = parse_bi_id(&bi_id).ok_or(DashboardError::NotFound)?;
+
+    // A stranger is sent to sign in, and what they are sent back to is this
+    // handle — never the page it names. The check is the panel's own, run
+    // here because this route sits outside the layer that normally runs it.
+    let Some(user) = session_of(&state, &jar).await else {
+        return Ok(Redirect::to(&format!(
+            "/dashboard/login?next={}",
+            crate::urlenc::query_value(&format!("/dashboard/cite/bi_{id}"))
+        ))
+        .into_response());
+    };
 
     let row: Option<(Option<String>, String)> =
         sqlx::query_as("SELECT target_cite, wiki_id FROM wiki_briefing_items WHERE id = ?")
@@ -89,13 +136,32 @@ async fn resolve(
     // the malformed value rather than exposing the parse error.
     let parsed = parse_cite(&cite).map_err(|_| DashboardError::NotFound)?;
 
-    // Spec destination — the read-only viewer. The `/view/` prefix
-    // disambiguates from the editor
-    // sibling `/wiki/:id/edit/*path` under axum 0.7 (overlapping
-    // captures panic at startup). The `<path>` segment already
-    // contains the forward slashes that map onto the URL hierarchy;
-    // the anchor (if any) appears after `#` per the citation handle
-    // format.
+    // The reading view. The `<path>` segment already contains the
+    // forward slashes that map onto the URL hierarchy; the anchor (if
+    // any) appears after `#` per the citation handle format.
+    // The reader against the page the handle names. A reader who can read
+    // nothing of it is told what somebody holding a handle to nothing is told,
+    // so a walk through the ids learns only which ids exist — which the ids
+    // being consecutive already says.
+    let memory = state
+        .memory
+        .as_ref()
+        .ok_or_else(|| DashboardError::Internal("no memory handles".to_owned()))?;
+    let handle = memory
+        .tree
+        .locate(&parsed.wiki_id)
+        .map_err(|_| DashboardError::NotFound)?;
+    let source_path = handle.source_path(std::path::Path::new(&parsed.path));
+    let groups = enrollment::groups_for(&state.pool, &user.sender_id)
+        .await
+        .map_err(|e| DashboardError::Internal(format!("groups_for: {e}")))?;
+    if !fact_index::readable_fact_on_page(&state.pool, &source_path, &user.sender_id, &groups)
+        .await
+        .map_err(|e| DashboardError::Internal(format!("readable_fact_on_page: {e}")))?
+    {
+        return Err(DashboardError::NotFound);
+    }
+
     let location = if let Some(anchor) = parsed.anchor.as_deref() {
         format!(
             "/dashboard/wiki/{}/view/{}#{}",
@@ -111,7 +177,7 @@ async fn resolve(
         )
     };
 
-    Ok(Redirect::to(&location))
+    Ok(Redirect::to(&location).into_response())
 }
 
 // Wire-shape tests for `parse_bi_id` live in

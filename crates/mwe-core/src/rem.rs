@@ -1596,8 +1596,7 @@ async fn drop_the_pages_that_already_answered(
 /// The links it already carries are **labelled by who wrote them**, because
 /// that decides what the model may do with them: a rail this pass wrote before
 /// may be replaced, a link the page's own prose carries may not — it belongs
-/// to whoever wrote it, the Cronista or an admin correcting the page from the
-/// dashboard's raw editor.
+/// to whoever wrote it — the Cronista, or whatever else touched the file.
 fn rail_prompt(
     tree: &WikiTree,
     plan: &CompilationPlan,

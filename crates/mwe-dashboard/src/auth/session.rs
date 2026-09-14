@@ -298,6 +298,27 @@ fn sign_in_redirect(method: &Method, uri: &Uri) -> String {
     format!("{SIGN_IN}?next={}", crate::urlenc::query_value(&target))
 }
 
+/// The session a request carries, when it carries one, for a route that sits
+/// OUTSIDE the layer that normally attaches it.
+///
+/// A handler in the public tree has no [`SessionUser`] extension to read —
+/// the middleware never ran — so one that must tell a stranger from a
+/// signed-in reader asks here. It is the same check the layer makes, because
+/// it is the same function: a route cannot accidentally accept a weaker
+/// credential than the panel does.
+///
+/// `None` is "no session", never "something went wrong": every flavour of
+/// failure collapses into it, and a handler that must not reveal anything to
+/// a stranger treats them alike.
+pub async fn session_of(state: &DashboardState, jar: &CookieJar) -> Option<SessionUser> {
+    let claims = verify_session(state, jar).await.ok()?;
+    Some(SessionUser {
+        sender_id: claims.sender_id,
+        is_admin: claims.is_admin,
+        session_jti: claims.jti,
+    })
+}
+
 /// Tower middleware: gate the wrapped routes on a valid session and
 /// refresh the cookie on every successful interaction.
 pub async fn refresh_session_layer(

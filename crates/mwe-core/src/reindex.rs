@@ -2,8 +2,8 @@
 //! Filesystem watcher → `fact_index` reindex pipeline.
 //!
 //! When something outside the compiler touches a markdown file under
-//! `<workdir>/wikis/**` — a smart consumer writing its own files, an
-//! admin in the dashboard's raw editor — this
+//! `<workdir>/wikis/**` — a smart consumer writing its own files, a hand
+//! on the disk — this
 //! module re-parses it and reconciles the `fact_index`. What
 //! "reconcile" means depends on the wiki's family:
 //!

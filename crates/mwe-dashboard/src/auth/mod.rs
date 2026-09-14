@@ -11,4 +11,4 @@
 pub mod password;
 pub mod session;
 
-pub use session::{AdminUser, SessionUser};
+pub use session::{AdminUser, SessionUser, session_of};

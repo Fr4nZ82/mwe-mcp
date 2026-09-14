@@ -257,111 +257,6 @@ async fn wiki_view_returns_404_for_unknown_id() {
 
 // ---- dashboard editor → wiki_admin::push ----
 
-/// The dashboard textual editor must produce a `wiki_admin_op_log`
-/// row with `actor_kind = 'dashboard'` and `consumer_id IS NULL`
-/// when the operator saves a page. This is the load-bearing
-/// invariant — the dashboard write rides the same op-log
-/// path as a smart consumer's `wiki_admin_push`, discriminated only
-/// by `actor_kind`.
-#[tokio::test]
-async fn dashboard_editor_save_writes_op_log_row_with_actor_kind_dashboard() {
-    let (app, pool, _tree, _dir) = make_app_with_memory().await;
-    let cookie = login_as_admin(&app).await;
-
-    // Setup auto-creates `wikis/alice/` of type `wiki-user` for the
-    // admin. Posting an edit on a brand-new page is
-    // exactly the "operator types into a textarea" gesture this test
-    // covers.
-    let response = send(
-        &app,
-        Request::builder()
-            .method("POST")
-            .uri("/wiki/alice/edit/appunti.md")
-            .header(header::CONTENT_TYPE, "application/x-www-form-urlencoded")
-            .header(header::COOKIE, cookie.clone())
-            .body(Body::from(
-                "body=%23+note+dal+cruscotto%0A%0Acontenuto+di+test%0A",
-            ))
-            .unwrap(),
-    )
-    .await;
-    assert!(
-        response.status().is_redirection(),
-        "expected redirect, got {} body={}",
-        response.status(),
-        body_string(response).await
-    );
-
-    // The op-log carries a row with the dashboard discriminator and
-    // no consumer_id (the operator is not behind an MCP device).
-    let (actor_kind, sender_id, consumer_id, op_kind, pages_affected): (
-        String,
-        String,
-        Option<String>,
-        String,
-        i64,
-    ) = sqlx::query_as(
-        "SELECT actor_kind, sender_id, consumer_id, op_kind, pages_affected
-           FROM wiki_admin_op_log WHERE wiki_id = ? ORDER BY op_id DESC LIMIT 1",
-    )
-    .bind("alice")
-    .fetch_one(&pool)
-    .await
-    .expect("op log row");
-    assert_eq!(actor_kind, "dashboard");
-    assert_eq!(sender_id, "alice");
-    assert!(
-        consumer_id.is_none(),
-        "dashboard writes carry no consumer_id (got {consumer_id:?})"
-    );
-    assert_eq!(op_kind, "push_upsert");
-    assert_eq!(pages_affected, 1);
-
-    // GET the edit form back — must surface the body that was just
-    // saved, proving the round-trip lands on disk via the same
-    // `atomic_write` path the smart-consumer push uses.
-    let response = send(
-        &app,
-        Request::builder()
-            .uri("/wiki/alice/edit/appunti.md")
-            .header(header::COOKIE, cookie)
-            .body(Body::empty())
-            .unwrap(),
-    )
-    .await;
-    assert_eq!(response.status(), StatusCode::OK);
-    let html = body_string(response).await;
-    assert!(html.contains("note dal cruscotto"), "{html}");
-}
-
-/// `_meta.md` writes from the page editor are refused with a
-/// validation error — the metadata edit surface lives on
-/// `/dashboard/wiki/:id/sharing` and the two flows must not
-/// conflate.
-#[tokio::test]
-async fn dashboard_editor_refuses_meta_md_writes() {
-    let (app, _pool, _tree, _dir) = make_app_with_memory().await;
-    let cookie = login_as_admin(&app).await;
-
-    let response = send(
-        &app,
-        Request::builder()
-            .method("POST")
-            .uri("/wiki/alice/edit/_meta.md")
-            .header(header::CONTENT_TYPE, "application/x-www-form-urlencoded")
-            .header(header::COOKIE, cookie)
-            .body(Body::from("body=fake"))
-            .unwrap(),
-    )
-    .await;
-    assert_eq!(
-        response.status(),
-        StatusCode::UNPROCESSABLE_ENTITY,
-        "expected 422 for _meta.md write, got {}",
-        response.status()
-    );
-}
-
 /// `/sharing` is the WIKI-LEVEL ACL surface, which only exists for smart
 /// wikis. On a standard wiki — where access is governed per-fragment — it
 /// must not be reachable: a `404`, not even discoverable, so a wiki-level
@@ -699,7 +594,7 @@ async fn dashboard_editor_forbidden_on_smart_wiki() {
     assert_eq!(
         get.status(),
         StatusCode::NOT_FOUND,
-        "smart-wiki raw editor GET must be 404"
+        "there is no editor route at all, on any wiki"
     );
 
     // POST a save → 404, and the body on disk is unchanged.
@@ -717,7 +612,7 @@ async fn dashboard_editor_forbidden_on_smart_wiki() {
     assert_eq!(
         post.status(),
         StatusCode::NOT_FOUND,
-        "smart-wiki raw editor POST must be 404"
+        "and nothing to post a page's text to either"
     );
     let on_disk = std::fs::read_to_string(dir.join("index.md")).unwrap();
     assert_eq!(
@@ -728,54 +623,48 @@ async fn dashboard_editor_forbidden_on_smart_wiki() {
 
 // ---- dashboard revert button ----
 
-/// Tiny URL-form encoder for the integration tests — escapes the
-/// characters we actually pass (space, newline, hash, ampersand,
-/// equals, plus). We do not pull a percent-encoding dep just for the
-/// half-dozen literals these tests need.
-fn url_form_encode(s: &str) -> String {
-    use std::fmt::Write as _;
-    let mut out = String::with_capacity(s.len());
-    for b in s.bytes() {
-        match b {
-            b'A'..=b'Z' | b'a'..=b'z' | b'0'..=b'9' | b'-' | b'_' | b'.' | b'~' => {
-                out.push(b as char);
-            },
-            _ => {
-                let _ = write!(out, "%{b:02X}");
-            },
-        }
-    }
-    out
-}
-
-/// Drive a save through the dashboard editor — convenience wrapper
-/// used by the revert tests below to produce revertable op-log
-/// rows without re-typing the urlencoded body each time.
-async fn dashboard_editor_save(
-    app: &Router,
-    cookie: &str,
+/// Write one page through the admin API, to give the revert tests below
+/// revertable op-log rows.
+///
+/// The rows the Revert button acts on are `push_*` rows, and every one of
+/// them is written here — by a smart consumer's `wiki_admin_push`, or by a
+/// dashboard action that funnels through the same call. The button is about
+/// the op log, not about who filled it.
+async fn seed_a_push(
+    pool: &SqlitePool,
+    tree: &WikiTree,
     wiki_id: &str,
     page_path: &str,
     body_text: &str,
 ) {
-    let body = format!("body={}", url_form_encode(body_text));
-    let response = send(
-        app,
-        Request::builder()
-            .method("POST")
-            .uri(format!("/wiki/{wiki_id}/edit/{page_path}"))
-            .header(header::CONTENT_TYPE, "application/x-www-form-urlencoded")
-            .header(header::COOKIE, cookie)
-            .body(Body::from(body))
-            .unwrap(),
-    )
-    .await;
-    assert!(
-        response.status().is_redirection(),
-        "save must redirect, got {} (body {})",
-        response.status(),
-        body_string(response).await
-    );
+    use mwe_core::wiki_admin::{ActorKind, AdminCaller, PushMode, PushPage, PushRequest, push};
+
+    let caller = AdminCaller {
+        sender_id: "alice".to_owned(),
+        consumer_id: None,
+        consumer_class: mwe_core::jwt::ConsumerClass::Standard,
+    };
+    let req = PushRequest {
+        mode: PushMode::Upsert,
+        wiki_id: Some(mwe_core::types::WikiId::parse(wiki_id).expect("wiki id")),
+        parent_wiki_id: None,
+        slug: None,
+        title: None,
+        wiki_type: None,
+        smart: false,
+        project_id: None,
+        description: None,
+        pages: vec![PushPage {
+            path: page_path.to_owned(),
+            content: body_text.to_owned(),
+        }],
+        deletes: Vec::new(),
+        mark_processed: Vec::new(),
+        expected_op_log_head: None,
+    };
+    push(pool, tree, &caller, ActorKind::Dashboard, req)
+        .await
+        .expect("seed a push");
 }
 
 /// The Revert button is rendered for revertable `push_*` rows; the
@@ -783,15 +672,15 @@ async fn dashboard_editor_save(
 /// the op-log view with a success flash.
 #[tokio::test]
 async fn dashboard_revert_button_succeeds_on_revertable_row() {
-    let (app, pool, _tree, _dir) = make_app_with_memory().await;
+    let (app, pool, tree, _dir) = make_app_with_memory().await;
     let cookie = login_as_admin(&app).await;
 
-    // Two saves on `appunti.md`: the second is the target we will revert.
+    // Two writes on `appunti.md`: the second is the target we will revert.
     // (We need a second op_log row so the first save's `pre_image_json`
     // is non-NULL — that's the row whose pre-image carries the original
     // body and whose revert restores it.)
-    dashboard_editor_save(&app, &cookie, "alice", "appunti.md", "# v1 body\n").await;
-    dashboard_editor_save(&app, &cookie, "alice", "appunti.md", "# v2 body\n").await;
+    seed_a_push(&pool, &tree, "alice", "appunti.md", "# v1 body\n").await;
+    seed_a_push(&pool, &tree, "alice", "appunti.md", "# v2 body\n").await;
 
     // GET the op-log view: the page must render a Revert form for the
     // second row (the upsert).
@@ -890,14 +779,14 @@ async fn dashboard_revert_button_succeeds_on_revertable_row() {
 /// translates that to a `?flash=revert_conflict` redirect.
 #[tokio::test]
 async fn dashboard_revert_button_returns_409_with_conflict_details_on_target_changed() {
-    let (app, pool, _tree, _dir) = make_app_with_memory().await;
+    let (app, pool, tree, _dir) = make_app_with_memory().await;
     let cookie = login_as_admin(&app).await;
 
     // Save v1 (creates `appunti.md`), then v2 (overwrites with the body
     // we'll try to revert), then v3 (an independent later edit on the
     // same page — this is the conflict).
-    dashboard_editor_save(&app, &cookie, "alice", "appunti.md", "# v1 body\n").await;
-    dashboard_editor_save(&app, &cookie, "alice", "appunti.md", "# v2 body\n").await;
+    seed_a_push(&pool, &tree, "alice", "appunti.md", "# v1 body\n").await;
+    seed_a_push(&pool, &tree, "alice", "appunti.md", "# v2 body\n").await;
     // The middle row is our revert target (its pre-image is "# v1 body\n").
     let target_op_id: i64 = sqlx::query_scalar(
         "SELECT op_id FROM wiki_admin_op_log
@@ -907,7 +796,7 @@ async fn dashboard_revert_button_returns_409_with_conflict_details_on_target_cha
     .fetch_one(&pool)
     .await
     .unwrap();
-    dashboard_editor_save(&app, &cookie, "alice", "appunti.md", "# v3 body\n").await;
+    seed_a_push(&pool, &tree, "alice", "appunti.md", "# v3 body\n").await;
 
     let response = send(
         &app,
@@ -966,13 +855,13 @@ async fn dashboard_revert_button_returns_409_with_conflict_details_on_target_cha
 /// "not revertable" tooltip).
 #[tokio::test]
 async fn dashboard_revert_button_hidden_for_pull_rows() {
-    let (app, pool, _tree, _dir) = make_app_with_memory().await;
+    let (app, pool, tree, _dir) = make_app_with_memory().await;
     let cookie = login_as_admin(&app).await;
 
     // Build a revertable history first so the table has at least one
     // pull-discriminated assertion: a dashboard save (push_upsert) +
     // a manually inserted pull row simulating an MCP `wiki_admin_pull`.
-    dashboard_editor_save(&app, &cookie, "alice", "appunti.md", "# body\n").await;
+    seed_a_push(&pool, &tree, "alice", "appunti.md", "# body\n").await;
     sqlx::query(
         "INSERT INTO wiki_admin_op_log
             (wiki_id, sender_id, consumer_id, actor_kind, op_kind, op_mode,
@@ -1024,12 +913,12 @@ async fn dashboard_revert_button_hidden_for_pull_rows() {
 /// extractor-level gate.
 #[tokio::test]
 async fn dashboard_revert_button_admin_only() {
-    let (app, pool, _tree, _dir) = make_app_with_memory().await;
+    let (app, pool, tree, _dir) = make_app_with_memory().await;
     let admin_cookie = login_as_admin(&app).await;
 
     // Seed a revertable row.
-    dashboard_editor_save(&app, &admin_cookie, "alice", "appunti.md", "# body\n").await;
-    dashboard_editor_save(&app, &admin_cookie, "alice", "appunti.md", "# body2\n").await;
+    seed_a_push(&pool, &tree, "alice", "appunti.md", "# body\n").await;
+    seed_a_push(&pool, &tree, "alice", "appunti.md", "# body2\n").await;
     let target_op_id: i64 = sqlx::query_scalar(
         "SELECT op_id FROM wiki_admin_op_log
           WHERE wiki_id = 'alice' AND op_kind = 'push_upsert'

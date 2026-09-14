@@ -61,8 +61,8 @@ Then the people and the programs that talk to the memory:
   speak for, revoke it.
 - [Bridges](operator/bridges.md) — wire a consumer to this memory, starting
   with the ready-made assistant.
-- [Wikis, from the admin's side](operator/wikis.md) — the raw editor, exporting
-  a wiki, deleting one, and the consoles of a consumer's own wiki.
+- [Wikis, from the admin's side](operator/wikis.md) — exporting a wiki,
+  deleting one, and the consoles of a consumer's own wiki.
 - [Skills](operator/skills.md) — what a consumer is taught, served by this
   server.
 

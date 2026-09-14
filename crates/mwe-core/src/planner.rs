@@ -2105,9 +2105,10 @@ pub async fn foreign_page_offers(
 ///
 /// - a rewrite is the only thing that changes a page's links, so the file is
 ///   always at least as fresh as any record the engine could keep;
-/// - an admin can correct a page by hand from the dashboard's raw editor. A
-///   link they wrote themselves is a link the memory has, and reading the file
-///   is what makes it one the engine defends on the next rewrite instead of
+/// - a file under `<workdir>/wikis/**` can be changed by something that is
+///   not the compiler — a smart consumer writing its own, a hand on the disk.
+///   A link written there is a link the memory has, and reading the file is
+///   what makes it one the engine defends on the next rewrite instead of
 ///   quietly dropping.
 ///
 /// Only **page** hops count. A bare `[[wiki_id]]` names a wiki, and recall

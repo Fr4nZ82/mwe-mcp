@@ -145,11 +145,13 @@ pub fn build(state: DashboardState) -> Router {
         // verified password and the session mint, holding state in
         // `pending_2fa` keyed by an opaque cookie — no session yet.
         .merge(two_factor::challenge_router())
-        // Citation-handle resolver. Anonymous on
-        // purpose — auth fires on the destination `/dashboard/wiki/...`
-        // page. Mounted in the dashboard public tree as the discoverable
-        // alias `/dashboard/cite/:bi_id`; the canonical short form
-        // `/cite/:bi_id` is mounted by `mwe-mcp-server` at the root.
+        // Citation-handle resolver. In the public tree because it
+        // recognises the reader itself — a redirect naming a wiki and a
+        // page is that page's name handed over, so it answers nobody it
+        // has not recognised and nobody who cannot read the page. This
+        // mount is `/dashboard/cite/:bi_id`, where the session cookie is
+        // sent; the short form `/cite/:bi_id` that `mwe-mcp-server`
+        // mounts at the root forwards here.
         .merge(cite::router())
         // `webagentoauth` consent step. Mounted in the public tree so it
         // can verify the session itself and answer an absent one on its own
@@ -191,15 +193,16 @@ pub fn build(state: DashboardState) -> Router {
         ))
 }
 
-/// Standalone router exposing only the `/cite/:bi_id` resolver.
+/// Standalone router exposing only the `/cite/:bi_id` short form.
 ///
 /// Mounted at the root of the HTTP tree (alongside `/dashboard`,
-/// `/mcp`, `/skills`, `/connect`) so the canonical short URL is the
-/// path the smart consumer hands to the user. Shares the same handler
-/// as the in-dashboard alias above so the two mount points cannot
-/// drift in behaviour.
+/// `/mcp`, `/skills`, `/connect`) so the canonical short URL is the path
+/// the smart consumer hands to the user. It forwards to the in-dashboard
+/// alias rather than resolving: the session cookie is scoped to
+/// `/dashboard`, so nothing above that prefix is ever shown a reader, and
+/// a resolver that cannot recognise anybody could only refuse everybody.
 pub fn cite_router(state: DashboardState) -> Router {
-    cite::router().with_state(state)
+    cite::root_router().with_state(state)
 }
 
 /// Public, anonymous bridge-distribution router.

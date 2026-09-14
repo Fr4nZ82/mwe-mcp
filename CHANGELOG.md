@@ -47,6 +47,31 @@ semver-governed surface: breaking changes are called out explicitly.
 
 ### Changed
 
+- **A page's text can no longer be edited by hand, by anybody.** The screen
+  that opened a page's raw Markdown in a box is gone. A page shows each fact
+  only to the people that fact is for, and a box holding the raw text handed
+  whoever opened it every fact on the page, whoever it was about — including
+  the ones the same page had just hidden from them a moment earlier. Being able
+  to run the panel is not being everybody's audience.
+
+  What changes a page is what changes the facts under it: a **comment** on the
+  page or on one of its headings, the **chat**, or the **Facts** page for who
+  may read a fact and when it holds. Those were already the durable ways — the
+  prose is written from the facts at the next rewrite, so a hand edit survived
+  only until then.
+
+- **A citation link answers nobody it has not recognised.** `/cite/<id>`
+  translated a short handle into the address of a wiki page, for anyone who
+  asked: the ids are consecutive numbers, so anybody could walk them and
+  collect the names of pages they had never been shown, without signing in.
+  The name of a page is usually the news.
+
+  Now a visitor with no session is sent to sign in and comes back to the
+  handle, never to the page; and a signed-in reader is sent on only when they
+  can read at least one fact of the page it names. Otherwise they are told what
+  somebody holding a handle to nothing is told. The short link is still the
+  short link.
+
 - **Asking the assistant to do something no longer sends the memory looking.**
   «Can you print it?» over a document you have just attached is a job for the
   assistant, not a question for the memory: what to print arrived with the

@@ -27,12 +27,10 @@
 //!   `<section class="page-comments">` headed "On this page". Comments
 //!   whose anchor is missing from the current body land in a footer
 //!   `<section class="orphaned-comments">` so the operator does not lose
-//!   the feedback when a heading is renamed. The spec ideal
-//!   `/dashboard/wiki/:id/<path>` cannot
-//!   coexist with the editor sibling `/wiki/:id/edit/*path` under
-//!   axum 0.7's `matchit` router (overlapping captures panic at
-//!   startup); we therefore use the `/view/` prefix and keep the
-//!   `/cite/` resolver aligned with the new destination.
+//!   the feedback when a heading is renamed. The `/view/` prefix keeps
+//!   the greedy `*path` capture from overlapping the `comment/`
+//!   sibling, which axum 0.7's `matchit` router panics on at startup;
+//!   the `/cite/` resolver points at the same destination.
 //!
 //!   The optional query parameter `?mode=comment` enables
 //!   "comment mode": each heading sprouts a `+ Comment` link that
@@ -43,27 +41,15 @@
 //!   default view (no query param) is the clean read-only surface — no
 //!   comment affordance — so a reader opting only to consume the page
 //!   does not get a noisy UI.
-//! - GET `/dashboard/wiki/:id/edit/*path`      — textual editor for
-//!   the page at `path`. The raw free-text editor is a
-//!   **discouraged escape hatch**: **hard-
-//!   forbidden on smart wikis** (the smart consumer is the sole
-//!   writer — surfaced as a `404` so the editor is not even
-//!   discoverable), **admin-only on standard wikis** (non-admins get
-//!   a `403`). On a wiki that has an owner the owner check still applies
-//!   on top ([`mwe_core::wiki_admin`]'s gate; non-owners get a `404`); a
-//!   **topic wiki** — one named for its subject, standing for nobody — has
-//!   no owner, and there the admin is who may save. There
-//!   is no discoverable link to this route from the normal page view —
-//!   the write channels a reader is offered are the inline **comments**,
-//!   the **chat**, and the **fact actions** (who may read a fact, and
-//!   when it holds, on `/dashboard/facts`).
-//! - POST `/dashboard/wiki/:id/edit/*path`     — save the textual
-//!   submission, under the same smart-forbidden / admin-only gate as
-//!   the GET form. Funnels through
-//!   [`mwe_core::wiki_admin::push`] with
-//!   [`mwe_core::wiki_admin::ActorKind::Dashboard`] so the write
-//!   lands in `wiki_admin_op_log` exactly like an MCP push — same
-//!   audit machinery, same receipt downstream.
+//!
+//! **A page is not edited from here.** There is no route that takes a
+//! page's text and writes it back: the ways in are the inline
+//! **comments** below, the **chat**, and the **fact actions** (who may
+//! read a fact, and when it holds, on `/dashboard/facts`). A surface
+//! that hands somebody a page's raw body hands them every fragment on
+//! it in clear, whoever their subject is — which is what the per-fragment
+//! permissions exist to prevent, and no gate on top of it made it a
+//! different kind of surface.
 //! - GET `/dashboard/wiki/:id/comment/*path[?anchor=<slug>]` — render
 //!   the small "leave a comment" form for the heading addressed by
 //!   `?anchor=`, or for the whole page when the parameter is absent.
@@ -130,9 +116,7 @@ use mwe_core::render;
 use mwe_core::sections;
 use mwe_core::types::{Principal, WikiId};
 use mwe_core::wiki::{META_FILENAME, wiki_get_meta, wiki_list_pages, wiki_read};
-use mwe_core::wiki_admin::{
-    ActorKind, AdminCaller, AdminError, PushMode, PushPage, PushRequest, resolve_read_access,
-};
+use mwe_core::wiki_admin::resolve_read_access;
 use mwe_core::wiki_delete;
 use serde::Deserialize;
 
@@ -150,7 +134,7 @@ pub fn router() -> Router<DashboardState> {
     // `matchit` cannot route a greedy capture (`*path`) followed by
     // a literal suffix — the suffix is consumed by the capture. We
     // use a sibling `comment/` prefix instead, which lives next to
-    // `view/` and `edit/` without overlap. The handler still scopes
+    // `view/` without overlap. The handler still scopes
     // the comment to the page identified by `*path`, just from a
     // different URL stem.
     Router::new()
@@ -159,7 +143,6 @@ pub fn router() -> Router<DashboardState> {
         .route("/wiki/:id/export", get(export_archive))
         .route("/wiki/:id/delete", get(delete_confirm).post(delete_apply))
         .route("/wiki/:id/view/*path", get(view_page))
-        .route("/wiki/:id/edit/*path", get(edit_form).post(submit_edit))
         .route(
             "/wiki/:id/describe/*path",
             get(describe_form).post(submit_describe),
@@ -921,10 +904,7 @@ fn render_index_preview(
         }
         p {
             // View link is the only affordance — it lands on the
-            // read-only surface where the "Add comments" toggle lives. The
-            // raw editor is forbidden (smart) / admin-only-discouraged
-            // (standard), so we do NOT surface a
-            // discoverable edit link here.
+            // read-only surface where the "Add comments" toggle lives.
             a href=(format!("/dashboard/wiki/{}/view/index.md", wiki_id.as_str())) {
                 "Open index.md"
             }
@@ -1800,12 +1780,10 @@ fn render_view_page_body(
     }
 }
 
-/// The footer that says how this page gets changed. The raw editor is not
-/// among the routes it offers — it is admin-only on a standard wiki,
-/// refused on a smart one, and deliberately undiscoverable — so the list
-/// is the three channels an ordinary reader has. The inline-comments link
-/// is offered only when the viewer can actually comment, so it is never a
-/// dead link.
+/// The footer that says how this page gets changed, which is the whole list:
+/// there are three channels and a page's text is not one of them. The
+/// inline-comments link is offered only when the viewer can actually comment,
+/// so it is never a dead link.
 ///
 /// On a frozen deployment there are no channels at all — the footer would
 /// otherwise be a list of three links to things that refuse — so it says
@@ -1821,10 +1799,8 @@ fn how_to_change_footer(comment_mode_url: &str, can_comment: bool, frozen: bool)
         };
     }
     html! {
-        // No discoverable "open the raw editor" link here: rewriting a
-        // page by hand is the escape hatch, not a channel. This footer
-        // serves both wiki families, so it says nothing that holds for
-        // only one of them.
+        // This footer serves both wiki families, so it says nothing that
+        // holds for only one of them.
         p class="how-to-change-footer muted" {
             @if can_comment {
                 "To change this page: leave inline "
@@ -2402,291 +2378,16 @@ async fn enforce_read_access_or_not_found(
     }
 }
 
-// ---------- textual page editor ----------
-
-/// Form submission for the textual editor.
-#[derive(Debug, Deserialize)]
-pub struct PageEditSubmission {
-    /// Full body the operator typed in the textarea. Written verbatim.
-    pub body: String,
-}
-
-async fn edit_form(
-    State(state): State<DashboardState>,
-    user: SessionUser,
-    AxumPath((id, page_path)): AxumPath<(String, String)>,
-) -> Result<Response> {
-    let chrome = layout::Chrome::of(&state);
-    let memory = require_memory(&state)?;
-    let wiki_id = WikiId::parse(&id).map_err(|e| DashboardError::BadRequest(format!("{e}")))?;
-
-    // The raw free-text editor is the discouraged escape hatch: hard-
-    // forbidden on smart wikis (the smart consumer is the sole writer),
-    // admin-only on standard wikis. Both gates run before the owner check
-    // so a non-admin / smart attempt never even reveals the page body.
-    enforce_raw_editor_allowed(memory, &wiki_id, &user)?;
-
-    // Owner check via the same path the writes use — non-owners get a
-    // generic 404 (no information leak about which wikis exist).
-    enforce_owner_or_not_found(&state.pool, memory, &wiki_id, &user).await?;
-
-    // Refuse the metadata file up-front: the editor surface for
-    // `_meta.md` lives on `/dashboard/wiki/:id/sharing`, this route
-    // would conflate sharing edits with content edits.
-    if is_meta_filename(&page_path) {
-        return Err(meta_route_violation());
-    }
-
-    let rel = PathBuf::from(&page_path);
-    if !mwe_core::wiki::is_safe_page_path(&rel) {
-        return Err(DashboardError::BadRequest(format!(
-            "unsafe page path: {page_path}"
-        )));
-    }
-
-    let current_body = match wiki_read(&memory.tree, &wiki_id, &rel) {
-        Ok(s) => s,
-        // Editing a path that doesn't yet exist creates it on save —
-        // the textarea opens blank. Mirrors the "new page" affordance
-        // a textual wiki editor is expected to provide.
-        Err(mwe_core::wiki::WikiError::PageNotFound { .. }) => String::new(),
-        Err(e) => return Err(map_wiki_err(e)),
-    };
-
-    Ok(Html(render_edit_form(
-        chrome,
-        &user,
-        &id,
-        &page_path,
-        &current_body,
-        None,
-    ))
-    .into_response())
-}
-
-async fn submit_edit(
-    State(state): State<DashboardState>,
-    user: SessionUser,
-    AxumPath((id, page_path)): AxumPath<(String, String)>,
-    HtmlForm(form): HtmlForm<PageEditSubmission>,
-) -> Result<Response> {
-    let chrome = layout::Chrome::of(&state);
-    let memory = require_memory(&state)?;
-    let wiki_id = WikiId::parse(&id).map_err(|e| DashboardError::BadRequest(format!("{e}")))?;
-
-    enforce_raw_editor_allowed(memory, &wiki_id, &user)?;
-    enforce_owner_or_not_found(&state.pool, memory, &wiki_id, &user).await?;
-    if is_meta_filename(&page_path) {
-        return Err(meta_route_violation());
-    }
-
-    let rel = PathBuf::from(&page_path);
-    if !mwe_core::wiki::is_safe_page_path(&rel) {
-        return Err(DashboardError::BadRequest(format!(
-            "unsafe page path: {page_path}"
-        )));
-    }
-
-    let caller = AdminCaller {
-        sender_id: user.sender_id.clone(),
-        // The dashboard operator is not behind an MCP device — every
-        // dashboard write is consumer-agnostic, so `consumer_id` is
-        // intentionally None. The cross-user attribution channel is
-        // `sender_id`.
-        consumer_id: None,
-        // Irrelevant on the `Dashboard` path (the gate is bypassed
-        // by `ActorKind::Dashboard`), but we surface the human's
-        // class for completeness.
-        consumer_class: mwe_core::jwt::ConsumerClass::Standard,
-    };
-
-    let req = PushRequest {
-        mode: PushMode::Upsert,
-        wiki_id: Some(wiki_id.clone()),
-        parent_wiki_id: None,
-        slug: None,
-        title: None,
-        wiki_type: None,
-        smart: false,
-        project_id: None,
-        description: None,
-        pages: vec![PushPage {
-            path: page_path.clone(),
-            content: form.body.clone(),
-        }],
-        deletes: Vec::new(),
-        // Dashboard editor never opportunistically marks briefing
-        // items processed — the comment-recepiment loop is the
-        // smart-consumer's responsibility.
-        mark_processed: Vec::new(),
-        expected_op_log_head: None,
-    };
-
-    match mwe_core::wiki_admin::push(
-        &state.pool,
-        &memory.tree,
-        &caller,
-        ActorKind::Dashboard,
-        req,
-    )
-    .await
-    {
-        Ok(resp) => {
-            tracing::info!(
-                actor = %user.sender_id,
-                wiki = %id,
-                page = %page_path,
-                op_log_id = resp.op_log_id,
-                "dashboard editor saved page"
-            );
-            Ok(Redirect::to(&format!(
-                "/dashboard/wiki/{}/edit/{}",
-                wiki_id.as_str(),
-                page_path
-            ))
-            .into_response())
-        },
-        Err(err) => {
-            let msg = render_admin_error(&err);
-            Ok(Html(render_edit_form(
-                chrome,
-                &user,
-                &id,
-                &page_path,
-                &form.body,
-                Some(&msg),
-            ))
-            .into_response())
-        },
-    }
-}
-
-/// Convert a `wiki_admin::push` failure into a user-facing flash. The
-/// dashboard editor never proxies the raw error to keep the surface
-/// stable: a `WikiOwnedByOtherUser` here would indicate a state
-/// mismatch since `enforce_owner_or_not_found` already ran.
-fn render_admin_error(err: &AdminError) -> String {
-    match err {
-        AdminError::InvalidInput(msg) => format!("Save refused: {msg}"),
-        AdminError::WikiLockedByLease {
-            held_by_consumer_id,
-            held_by_sender_id,
-            expires_at,
-            ..
-        } => format!(
-            "This wiki is locked by a cooperative lease (sender_id={held_by_sender_id}, \
-             consumer_id={held_by_consumer_id:?}, expires_at={expires_at}). Try again after \
-             the lease expires."
-        ),
-        other => format!("Save failed: {other}"),
-    }
-}
-
-fn render_edit_form(
-    chrome: layout::Chrome,
-    user: &SessionUser,
-    wiki_id: &str,
-    page_path: &str,
-    body: &str,
-    error: Option<&str>,
-) -> String {
-    let title = format!("Edit — {wiki_id}/{page_path}");
-    let html_body = html! {
-        @if let Some(msg) = error {
-            (components::flash("error", msg))
-        }
-        section.meta {
-            dl {
-                dt { "Wiki" } dd { code { (wiki_id) } }
-                dt { "Page" } dd { code { (page_path) } }
-            }
-        }
-
-        (components::flash(
-            "warning",
-            "Rewriting a standard-wiki page by hand is a discouraged \
-             admin-only escape hatch: its prose is composed from the facts on \
-             it, so what you write here is undone the next time that page is \
-             written. Prefer inline comments, the chat, or changing the facts \
-             themselves. A smart-wiki page cannot be edited here at all — its \
-             consumer is the sole writer.",
-        ))
-
-        p.muted {
-            "The save is recorded in this wiki's operation log alongside the "
-            "pushes a smart consumer makes, and can be reverted from there."
-        }
-
-        form action=(format!("/dashboard/wiki/{wiki_id}/edit/{page_path}")) method="post" {
-            p {
-                label for="body" { "Page body" }
-                textarea id="body" name="body" rows="24" cols="80" {
-                    (body)
-                }
-            }
-            (components::submit("Save"))
-        }
-
-        p {
-            a href=(format!("/dashboard/wiki/{wiki_id}")) { "← Back to wiki" }
-        }
-    };
-    layout::authenticated_reading_page(chrome, &title, user, &html_body)
-}
-
-/// Returns `Ok(())` if the caller may save into this wiki, `Err(NotFound)`
-/// otherwise. The shared write path of `wiki_admin::push` enforces
-/// the same gate at write time; this pre-check is for the GET form
-/// page so we don't render an editor for a wiki the operator can't
-/// save into.
-///
-/// A wiki with an owner takes owner-equivalence: its user owner, or a member
-/// of the owning group. Sharing grants reads and notify but not writes.
-///
-/// A **topic wiki** — one named for its subject, standing for nobody, which is
-/// what the nightly grouping raises — has no owner, so there is no equivalence
-/// to test and an admin is who may save. That is the same person
-/// [`enforce_raw_editor_allowed`] admits one gate earlier, and it is asked
-/// again here so this check stands on its own.
-async fn enforce_owner_or_not_found(
-    pool: &sqlx::SqlitePool,
-    memory: &crate::state::MemoryHandles,
-    wiki_id: &WikiId,
-    user: &SessionUser,
-) -> Result<()> {
-    let Ok(handle) = memory.tree.locate(wiki_id) else {
-        return Err(DashboardError::NotFound);
-    };
-    if memory
-        .tree
-        .resolve_scope_principal(handle.meta())
-        .map_err(map_wiki_err)?
-        .is_none()
-    {
-        return if user.is_admin {
-            Ok(())
-        } else {
-            Err(DashboardError::NotFound)
-        };
-    }
-    let outcome = resolve_read_access(pool, &memory.tree, &handle, &user.sender_id)
-        .await
-        .map_err(|e| DashboardError::Internal(format!("resolve_read_access: {e}")))?;
-    if !outcome.is_owner_equivalent() {
-        return Err(DashboardError::NotFound);
-    }
-    Ok(())
-}
-
 // ---------- page description (testata `description`) editor ----------
 //
 // A leaf page's testata `description` is the one frontmatter field meant to
 // be hand-authored (the rest of the testata is compiler output that REM
 // regenerates): it is the page description, guides the planner's
 // fact placement, and titles the page in recall navigation. Editing it is
-// LIGHTER than the raw editor (admin AND owner): it is a placement hint, not
-// content, so the gate is standard-wiki + (owner OR admin) — an operator can
-// curate any user's cards, an owner annotates their own.
+// A page's DESCRIPTION is a placement hint and not content — it says what
+// belongs on the page, never what anybody said — so the gate is standard-wiki
+// + (owner OR admin): an operator can curate any user's cards, an owner
+// annotates their own.
 
 /// The "✎ Edit page description" affordance shown under a page view to an
 /// owner / admin (gated by `PageViewFlags::can_edit_meta`). Links to the
@@ -2884,42 +2585,6 @@ fn render_describe_form(
     };
     let title = format!("Page description — {page_path}");
     layout::authenticated_reading_page(chrome, &title, user, &body)
-}
-
-/// Gate the raw free-text page editor. Rewriting a page by hand from the
-/// dashboard is forbidden on a smart wiki and discouraged on a standard
-/// one; the channels a reader is offered instead are inline comments, the
-/// chat, and the fact actions.
-///
-/// - **Smart wikis: hard-forbidden.** The smart consumer is the sole
-///   writer — a raw page rewrite would collide with its pushes. Returns a
-///   `404 Not Found` so the route is indistinguishable from a missing
-///   page (no information leak that the smart wiki even exists / has a raw
-///   editor), with a message pointing at the consumer.
-/// - **Standard wikis: admin-only.** Demoted to a prominently-discouraged
-///   escape hatch — a non-admin gets `403 Forbidden`. The owner check
-///   still runs after this (an admin editing a wiki they do not own is a
-///   separate concern handled by `enforce_owner_or_not_found`).
-///
-/// A wiki that cannot be located is a `404` (mirrors the owner gate).
-fn enforce_raw_editor_allowed(
-    memory: &crate::state::MemoryHandles,
-    wiki_id: &WikiId,
-    user: &SessionUser,
-) -> Result<()> {
-    let Ok(handle) = memory.tree.locate(wiki_id) else {
-        return Err(DashboardError::NotFound);
-    };
-    if handle.meta().smart {
-        // Hard-forbidden — surface as NotFound so the smart raw editor is
-        // not even discoverable. The reader's channel on a smart wiki is a
-        // comment to the consumer that owns it.
-        return Err(DashboardError::NotFound);
-    }
-    if !user.is_admin {
-        return Err(DashboardError::Forbidden);
-    }
-    Ok(())
 }
 
 fn is_meta_filename(rel: &str) -> bool {

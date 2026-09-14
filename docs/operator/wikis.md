@@ -5,15 +5,17 @@
 Everybody sees this page — [Wikis and pages](../user/wikis-and-pages.md) is the
 reader's half of it. This is what an admin can do there that a reader cannot.
 
-## The raw page editor
+## A page's text is not edited from here
 
-On a **standard** wiki an admin can edit a page's Markdown directly. It is
-admin-only, and it does not exist on a smart wiki at all: there the reader's
-channel is a comment to the consumer that owns the wiki.
+There is no screen that hands you a page's Markdown to rewrite. A page shows
+each fact only to the people that fact is for, and a box holding the raw text
+would hand whoever opened it every fact on the page, whoever it is about.
 
-Reach for it rarely. The prose of a standard wiki is compiled out of the facts,
-so a hand edit survives only until the next rewrite of that page. The durable
-fix is the fact: [the Facts page](../user/your-facts.md), or a comment.
+What changes a page is what changes the facts under it: a **comment** on the
+page or on one of its headings, the **chat**, or [the Facts
+page](../user/your-facts.md) for who may read a fact and when it holds. The
+prose is written from the facts at the next rewrite, so those are also the only
+changes that last.
 
 ## Exporting a wiki
 

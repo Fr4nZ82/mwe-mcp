@@ -1950,12 +1950,15 @@ async fn a_page_of_a_wiki_nobody_owns_opens_for_the_reader_of_one_of_its_facts()
     );
 }
 
-/// The raw editor on a wiki nobody owns belongs to the admin: there is no owner
-/// to be, so the admin-only gate the editor already carries is the whole of it.
-/// A non-admin who can read the page still cannot open it, and the save goes
-/// through to disk rather than being refused by the write gate underneath.
+/// **A page's text is not editable from anywhere.**
+///
+/// The route that handed somebody a page's raw body is gone, GET and POST:
+/// a page shows each fact only to the people that fact is for, and a box
+/// holding the raw text hands whoever opens it every fact on the page,
+/// whoever it is about. The admin is not an exception — being able to run
+/// the panel is not being everybody's audience.
 #[tokio::test]
-async fn the_raw_editor_of_a_wiki_nobody_owns_is_the_admins() {
+async fn a_pages_text_cannot_be_opened_for_editing_by_anybody() {
     let (app, pool, tree, _dir) = make_app_with_memory().await;
     let admin = login_as_admin(&app).await;
     let bob = login_as_user(&app, &admin, "bob").await;
@@ -1963,58 +1966,44 @@ async fn the_raw_editor_of_a_wiki_nobody_owns_is_the_admins() {
     seed_giardinaggio_with_page(&tree, "rose.md", TWO_HEADING_BODY);
     seed_fact_about(&pool, "giardinaggio", "rose.md", "user:bob", "02").await;
 
-    let refused = send(
-        &app,
-        Request::builder()
-            .uri("/wiki/giardinaggio/edit/rose.md")
-            .header(header::COOKIE, &bob)
-            .body(Body::empty())
-            .unwrap(),
-    )
-    .await;
-    assert_eq!(
-        refused.status(),
-        StatusCode::FORBIDDEN,
-        "the raw editor stays admin-only on a standard wiki"
-    );
+    for (who, cookie) in [("the admin", &admin), ("a reader", &bob)] {
+        let form = send(
+            &app,
+            Request::builder()
+                .uri("/wiki/giardinaggio/edit/rose.md")
+                .header(header::COOKIE, cookie)
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await;
+        assert_eq!(
+            form.status(),
+            StatusCode::NOT_FOUND,
+            "{who} finds no editor: there is no such route"
+        );
 
-    let form = send(
-        &app,
-        Request::builder()
-            .uri("/wiki/giardinaggio/edit/rose.md")
-            .header(header::COOKIE, &admin)
-            .body(Body::empty())
-            .unwrap(),
-    )
-    .await;
-    assert_eq!(
-        form.status(),
-        StatusCode::OK,
-        "the admin opens the editor on a wiki nobody owns"
-    );
+        let saved = send(
+            &app,
+            Request::builder()
+                .method("POST")
+                .uri("/wiki/giardinaggio/edit/rose.md")
+                .header(header::COOKIE, cookie)
+                .header(header::CONTENT_TYPE, "application/x-www-form-urlencoded")
+                .body(Body::from("body=%23%20Rose%0A"))
+                .unwrap(),
+        )
+        .await;
+        assert_eq!(
+            saved.status(),
+            StatusCode::NOT_FOUND,
+            "and nothing to post to either, for {who}"
+        );
+    }
 
-    let saved = send(
-        &app,
-        Request::builder()
-            .method("POST")
-            .uri("/wiki/giardinaggio/edit/rose.md")
-            .header(header::COOKIE, &admin)
-            .header(header::CONTENT_TYPE, "application/x-www-form-urlencoded")
-            .body(Body::from(
-                "body=%23%20Rose%0A%0APruned%20in%20February.%0A",
-            ))
-            .unwrap(),
-    )
-    .await;
-    assert!(
-        saved.status().is_redirection(),
-        "the save must land, not bounce back with an error: {}",
-        saved.status()
-    );
     let on_disk =
         std::fs::read_to_string(tree.wikis_dir().join("giardinaggio").join("rose.md")).unwrap();
-    assert!(
-        on_disk.contains("Pruned in February."),
-        "the editor wrote the page: {on_disk}"
+    assert_eq!(
+        on_disk, TWO_HEADING_BODY,
+        "and the page on disk is byte for byte what it was"
     );
 }

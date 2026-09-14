@@ -2248,6 +2248,44 @@ pub async fn readable_fact_in_wiki(
         .any(|row| row_readable_by(row, sender_id, sender_groups)))
 }
 
+/// Can this reader read **at least one live fact on this page**?
+///
+/// The per-page twin of [`readable_fact_in_wiki`], and the question every
+/// surface that hands somebody a whole page has to answer first: a page whose
+/// every fact is out of reach tells the person who opens it nothing they were
+/// told — and its NAME, which is often the news.
+///
+/// Built from the same map the render path reads
+/// ([`page_acl_map_active`]), so the answer cannot disagree with what the
+/// rendering would actually show: the retired and the tombstoned are out of
+/// the map, and what is left is judged by the same
+/// [`crate::acl::can_read`].
+///
+/// `source_path` is workdir-relative, as everywhere else.
+///
+/// # Errors
+///
+/// The underlying [`page_acl_map_active`] query error.
+pub async fn readable_fact_on_page(
+    pool: &SqlitePool,
+    source_path: &str,
+    sender_id: &str,
+    sender_groups: &[String],
+) -> Result<bool> {
+    let acl = page_acl_map_active(pool, source_path).await?;
+    Ok(acl.values().any(|region| {
+        crate::acl::can_read(
+            &crate::types::Acl {
+                subject: Some(region.subject.clone()),
+                allow: region.allow.clone(),
+            },
+            sender_id,
+            sender_groups,
+            region.sender.as_ref(),
+        )
+    }))
+}
+
 /// The per-row visibility test both wiki-level questions above are built
 /// from — the same [`crate::acl::can_read`] the redaction path applies, so a
 /// per-fragment `allow=` grant is honoured.
