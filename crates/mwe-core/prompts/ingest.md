@@ -1,8 +1,8 @@
 ---
 name: ingest
-description: Classifier driving `wiki_ingest_message` — one JSON object per turn (intent + an `extractions[]` array of atomic facts, the SOLE fact container; every fact is prose except a `lista` entry, which is the bare item with its values; each carrying a per-fact validity interval `valid_from`/`valid_to`, a per-fact `style` (and, for `lista` material or a requested container, a `target_page` + `page_description`), a `requested_container` live-write flag, a per-fact `salience`, and an `engine_rule` flag routing a standing governance directive to `@rules.md` instead of `fact_index`, a `behaviour_rule` flag (with a `behaviour_scope` of `per-user`/`agent-wide`/`user-global`, read from the addressee) routing a how-an-agent-converses-or-operates directive to the calling consumer's own wiki — or, user-global, to the sender's identity wiki for every assistant serving them — and an `attachments` claim list linking the turn's media to the fact that describes them; plus three turn-level fields for a turn that TAKES SOMETHING BACK — `withdrawal`, `erasure` when the speaker asks for it to be taken OUT of the memory rather than merely ended, and, when what it takes back is a standing rule, `withdraw_target` naming that rule from the block of directives in force); targets the strong-model tier
-version: 3.6
-default_version_at_bootstrap: v3.6
+description: Classifier driving `wiki_ingest_message` — one JSON object per turn (intent + an `extractions[]` array of atomic facts, the SOLE fact container; every fact is prose except a `lista` entry, which is the bare item with its values; each carrying a per-fact validity interval `valid_from`/`valid_to`, a per-fact `style` (and, for `lista` material or a requested container, a `target_page` + `page_description`), a `requested_container` live-write flag, a per-fact `salience`, and an `engine_rule` flag routing a standing governance directive to `@rules.md` instead of `fact_index`, a `behaviour_rule` flag (with a `behaviour_scope` of `per-user`/`agent-wide`/`user-global`, read from the addressee) routing a how-an-agent-converses-or-operates directive to the calling consumer's own wiki — or, user-global, to the sender's identity wiki for every assistant serving them — and an `attachments` claim list linking the turn's media to the fact that describes them; plus three turn-level fields for a turn that TAKES SOMETHING BACK — `withdrawal`, `erasure` when the speaker asks for it to be taken OUT of the memory rather than merely ended, and, when what it takes back is a standing rule, `withdraw_target` naming that rule from the block of directives in force — and `consumer_acts` for a turn that asks the agent to DO something rather than to remember, which costs the turn the deeper pass); targets the strong-model tier
+version: 3.7
+default_version_at_bootstrap: v3.7
 source_of_truth: crates/mwe-core/src/ingest.rs (fn wiki_ingest_message)
 ---
 
@@ -416,6 +416,7 @@ Examples — the cases the rules above do not already walk through:
 "suggested_seed":      "<short natural-language reply the consumer agent can refine>",
 "needs_disambig":      false | true,
 "needs_project_docs":  false | true,
+"consumer_acts":       false | true,
 "disambig_candidates": [ { "candidate_id": "...", "description": "..." }, ... ],
 "completed_message":   "<the turn's message with what the speaker left implicit written in — omit when nothing is implicit>",
 "fact_scores":         [ { "target": "<fact_id copied EXACTLY from recalled_memory>", "multiplier": 0.90 … 1.10 }, ... ],
@@ -568,6 +569,23 @@ Worked calls, all on the same project and the same vocabulary:
 - No signpost in the recall block at all → `false`. There is nothing to open.
 
 Setting it `true` costs the turn a documentation lookup, and — worse — spends the consumer's context on paragraphs that do not help. Setting it `false` on a turn that needed it leaves the agent answering from memory alone. Neither error is free; judge the message, not its keywords.
+
+## `consumer_acts` — is this turn asking you to DO something rather than to remember?
+
+Turn-level judgement, `false` unless you actively decide otherwise.
+
+mwe performs no actions; the consumer agent does. Print this, send it, play it, turn it on or off, call them, set a timer, open it, save it: the work is the agent's, and the memory is not being asked for anything. Set it `true` on those turns.
+
+**What settles it is whether the turn's references are already resolved**, the same test as `recall` above — with one addition that matters: a reference can be resolved by something that arrived WITH the turn. An attached document, a photo, a file the person just handed over is present, and «can you print it?», «read it out to me», «send it to Bob» point at THAT, not at anything this memory holds. The thing is in the room.
+
+- «can you print it?», with a document attached → `true` (what to print came with the turn).
+- «read me this one», with a photo attached → `true`.
+- «turn the volume down», «set a timer for ten minutes», «put on Metallica» → `true` (every parameter given; these are `skip` as well).
+- «put on a playlist Galadriel and I both like» → `false`. It asks you to do something AND asks the memory which playlist — the reference is unresolved, and only what is remembered can resolve it.
+- «send this to my sister», with a document attached → `false`. The document is resolved; WHO the sister is is not.
+- «what does this say about her thyroid?», with a document attached → `false`. The document is in the room and the question is still about what the memory knows of her.
+
+Setting it `true` costs the turn the deeper pass that finds what the shallow hits miss: on a turn that only needed doing, that pass opens pages for nothing and the person waits for it. Setting it `true` on a turn that DID need remembering leaves the agent answering without the page that had the answer. When both readings are arguable, answer `false` — the unnecessary pass costs seconds, the missing one costs the answer.
 
 ## `subject_id` — WHO ANSWERS FOR each fact (a user or a group; decided per extraction)
 

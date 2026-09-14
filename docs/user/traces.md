@@ -24,9 +24,10 @@ the same recall as text:
   a line saying whether the facts answer that sentence or the words as
   written.
 - **Read as** — what the engine took the message to be. **How deep** — whether
-  the walk was allowed to run, or the consumer asked for a light recall and it
-  was skipped. **Search started from** — the topics and the people it
-  resolved.
+  the walk was allowed to run, or a shorter recall was asked for and it was
+  skipped: either by the assistant, whose channel was waiting for an answer,
+  or because the turn asked it to do something rather than to remember.
+  **Search started from** — the topics and the people it resolved.
 - **The walk** — how many steps, why it stopped, how much prose it collected
   against its budget. **Time** — the recall alone, inside the whole turn.
 - **Handed over whole** — the identity cards the consumer received in full;

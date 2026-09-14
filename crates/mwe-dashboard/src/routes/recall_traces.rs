@@ -490,7 +490,7 @@ fn render_meta(row: &TraceRow, trace: &RecallTrace, navigate: bool) -> Markup {
                     @if !navigate {
                         tr { th { "How deep" } td {
                             @if light {
-                                "light — the consumer asked for a shorter recall, so the walk was skipped"
+                                "light — a shorter recall was asked for, so the walk was skipped: either by the consumer, whose channel was waiting, or because this turn asked the assistant to do something rather than to remember"
                             } @else {
                                 "full — the walk was allowed to run"
                             }
@@ -511,7 +511,7 @@ fn render_meta(row: &TraceRow, trace: &RecallTrace, navigate: bool) -> Markup {
                                 @if trace.truncated { " (the budget cut the last page)" }
                             },
                             None => {
-                                @if light { "skipped by request" }
+                                @if light { "skipped: this turn read at the shorter depth" }
                                 @else { "did not run this turn" }
                             },
                         }

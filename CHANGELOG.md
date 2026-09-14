@@ -47,6 +47,27 @@ semver-governed surface: breaking changes are called out explicitly.
 
 ### Changed
 
+- **Asking the assistant to do something no longer sends the memory looking.**
+  «Can you print it?» over a document you have just attached is a job for the
+  assistant, not a question for the memory: what to print arrived with the
+  message. The memory was reading it as a question about you — ten facts, three
+  pages opened, a search that came back with nothing while you waited for it to
+  finish.
+
+  Now the part of the search that opens pages is skipped on a turn that asks
+  for an action — print it, send it, play it, turn it off, call them, set a
+  timer. Nothing else about the turn changes: the recent conversation, the
+  facts that matched, your card and what is coming up all arrive as before, so
+  an assistant that turns out to need a name still has one. A turn that asks
+  for an action AND for something only the memory knows — *«put on a playlist
+  Galadriel and I both like»* — is not one of these, and still gets the full
+  search.
+
+  On **Traces**, the *How deep* line now says a shorter recall was asked for
+  without claiming which side asked: the assistant can ask for it because its
+  channel is waiting, and the memory can decide it because the turn was an
+  action.
+
 - **The memory now reads a page where it used to read a list.** When a message
   closes, replaces, re-dates or re-shares something already stored, the stage
   that decides is shown the PAGES the turn opened, written as they stand, with

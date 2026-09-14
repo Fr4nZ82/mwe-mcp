@@ -157,10 +157,16 @@ pub struct RecallTrace {
     pub completed_message: Option<String>,
     /// The turn's classified intent (ingest only).
     pub intent: Option<String>,
-    /// The depth the consumer asked for ([`crate::ingest::RecallDepth`]):
-    /// `full`, or `light` for a turn that asked to skip the navigator's walk.
+    /// The depth this turn actually read at ([`crate::ingest::RecallDepth`]):
+    /// `full`, or `light` for a turn that skipped the navigator's walk.
     /// `None` on a `wiki_navigate` trace, which has no such dial, and on a
     /// row written before the field.
+    ///
+    /// **Two parties can ask for the shorter reading** and the row does not
+    /// say which did: the consumer, per turn, because its channel is waiting
+    /// for a spoken answer; and the classifier, because the turn asks the
+    /// consumer to DO something and the memory for nothing. Either way the
+    /// walk did not run, which is what the surface has to explain.
     ///
     /// Without it a light turn is indistinguishable from one the intent
     /// skipped, and a surface explaining the missing walk explains it wrongly.

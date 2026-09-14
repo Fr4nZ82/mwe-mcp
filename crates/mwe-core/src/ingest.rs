@@ -194,9 +194,14 @@ impl ContextHint {
 /// It exists because a channel can be latency-bound rather than
 /// answer-bound: a voice satellite in a room is waiting for a spoken reply
 /// while the walk is still opening pages, and there the shallower answer is
-/// the better one. **The consumer opts in per turn** — the same consumer's
-/// text channel keeps the full walk, so this is not a deployment setting and
-/// not a tier.
+/// the better one. **Per turn, never per deployment** — the same consumer's
+/// text channel keeps the full walk, so this is not a setting and not a tier.
+///
+/// **Two parties ask for it**, and the shallower of them wins
+/// ([`depth_of_this_turn`]): the consumer, which knows what its channel is
+/// waiting for, and the classifier, which knows the turn asks the agent to do
+/// something and the memory for nothing
+/// ([`LlmIngestPlan::consumer_acts`]).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum RecallDepth {
     /// Everything the recall block carries, the navigator's walk included.
@@ -233,6 +238,28 @@ impl RecallDepth {
             Self::Full => "full",
             Self::Light => "light",
         }
+    }
+}
+
+/// How deep one turn reads, from everybody who has a say.
+///
+/// **The shallowest wins, because each side knows something the other does
+/// not.** The consumer knows its channel: a voice satellite in a room is
+/// waiting for a spoken answer while the walk is still opening pages, and it
+/// says so per turn (`metadata.recall: "light"`). The classifier knows the
+/// turn: «can you print it?» over an attached document asks the consumer to
+/// DO something and asks the memory for nothing, and no consumer can tell that
+/// from the outside ([`LlmIngestPlan::consumer_acts`]).
+///
+/// Neither can make the reading DEEPER than the other asked for. A consumer
+/// that wants the short answer gets it whatever the turn says, and a turn that
+/// needs nothing walked does not get walked because the consumer left the
+/// default on.
+const fn depth_of_this_turn(asked_for: RecallDepth, consumer_acts: bool) -> RecallDepth {
+    match asked_for {
+        RecallDepth::Light => RecallDepth::Light,
+        RecallDepth::Full if consumer_acts => RecallDepth::Light,
+        RecallDepth::Full => RecallDepth::Full,
     }
 }
 
@@ -360,9 +387,12 @@ pub struct IngestMetadata {
     /// requesting one from what it serves back. Unset → the consumer is
     /// treated as a single surface.
     pub channel: Option<String>,
-    /// How deep this turn's recall goes ([`RecallDepth`]). Absent on the
-    /// wire → [`RecallDepth::Full`], which is every turn that does not ask
-    /// for anything else.
+    /// How deep the CONSUMER asks this turn's recall to go ([`RecallDepth`]).
+    /// Absent on the wire → [`RecallDepth::Full`], which is every turn that
+    /// does not ask for anything else.
+    ///
+    /// What the turn actually reads at is this and the classifier's judgement
+    /// together, shallowest first ([`depth_of_this_turn`]).
     pub recall: RecallDepth,
 }
 
@@ -971,6 +1001,28 @@ struct LlmIngestPlan {
     /// so an older prompt (or a fallback plan) simply never digs.
     #[serde(default)]
     needs_project_docs: bool,
+    /// Turn-level judgement: is this turn asking the consumer to DO
+    /// something it performs on its own?
+    ///
+    /// Print this, send it, play it, turn it off, call them, set a timer —
+    /// the work is the consumer's and the memory is not being asked for
+    /// anything. The classifier is the only reader that can tell, because
+    /// what settles it is whether the turn's references are already resolved,
+    /// and a reference can be resolved by something that arrived WITH the
+    /// turn: «can you print it?» over an attached document points at the
+    /// document, not at anything remembered.
+    ///
+    /// What it costs the turn is the navigator's walk
+    /// ([`RecallDepth::Light`]) — the part that opens pages and takes
+    /// seconds, on a turn whose answer is an action. Everything else the
+    /// block carries is untouched, the recent window included, so a consumer
+    /// that needs the last few turns to know what «it» is still has them.
+    ///
+    /// Defaults to `false`, so an older prompt — or a fallback plan — asks
+    /// for the full reading: the expensive direction is never the default,
+    /// and skipping a walk somebody needed is the error that shows.
+    #[serde(default)]
+    consumer_acts: bool,
     /// `fact_id` the model wants to supersede (when the new message
     /// updates / contradicts a row already in `recalled_memory`). When
     /// set, the orchestrator routes the capture branch through
@@ -10965,6 +11017,11 @@ fn flat_verdicts(
 struct IngestTraceParts<'a> {
     request: &'a IngestRequest,
     intent: IntentKind,
+    /// How deep this turn actually read ([`depth_of_this_turn`]), which is
+    /// not always what the consumer asked for: the classifier can say the
+    /// turn is an action it performs itself, and then the walk does not run
+    /// however the consumer left the field.
+    depth: RecallDepth,
     seed_mode: &'a str,
     seeds: &'a NavSeeds,
     /// The classifier's completed message, when it wrote one that says
@@ -11028,7 +11085,7 @@ async fn record_ingest_trace(
         turn_text: recall_trace::cap_turn_text(&request.text),
         completed_message: parts.completed_message.map(recall_trace::cap_turn_text),
         intent: Some(parts.intent.as_str().to_owned()),
-        recall_depth: Some(request.metadata.recall.as_str().to_owned()),
+        recall_depth: Some(parts.depth.as_str().to_owned()),
         seed_mode: parts.seed_mode.to_owned(),
         topics: parts.seeds.topics.clone(),
         subjects: parts
@@ -11483,6 +11540,8 @@ pub async fn wiki_ingest_message(
                 IngestTraceParts {
                     request: &request,
                     intent: IntentKind::Skip,
+                    // No classifier ran, so nobody but the consumer has a say.
+                    depth: request.metadata.recall,
                     seed_mode: "guest",
                     seeds: &NavSeeds::default(),
                     completed_message: None,
@@ -13481,16 +13540,15 @@ pub async fn wiki_ingest_message(
         served_cards.extend(m.rails.iter().cloned());
     }
     recall_clock.charge(stage);
-    // The depth condition is the turn's own: a consumer on a latency-bound
-    // channel asks for the block without the walk
-    // (`metadata.recall: "light"`), because the walk is the part that opens
-    // pages and costs seconds, and a voice satellite in a room is waiting for
-    // a spoken answer while it runs. Nothing else about the turn changes.
+    // How deep this turn reads, from everybody who has a say
+    // ([`depth_of_this_turn`]). The walk is the part that opens pages and
+    // costs seconds; nothing else about the turn changes either way.
     let stage = std::time::Instant::now();
+    let depth = depth_of_this_turn(request.metadata.recall, plan.consumer_acts);
     let nav_tail = match navigator {
         Some(nav_llm)
             if serves_a_block
-                && request.metadata.recall == RecallDepth::Full
+                && depth == RecallDepth::Full
                 && (matches!(intent, IntentKind::Capture | IntentKind::Recall)
                     || plan.needs_disambig) =>
         {
@@ -14012,6 +14070,7 @@ pub async fn wiki_ingest_message(
             IngestTraceParts {
                 request: &request,
                 intent,
+                depth,
                 seed_mode: if repeated { "repeat" } else { "classifier" },
                 seeds: &seeds,
                 completed_message,
@@ -15011,6 +15070,7 @@ mod tests {
             body: Some("comprare il latte".into()),
             needs_disambig: false,
             needs_project_docs: false,
+            consumer_acts: false,
             disambig_candidates: Vec::new(),
             supersede_target: None,
             extractions: Vec::new(),
@@ -15066,6 +15126,7 @@ mod tests {
             body: Some("a fact".into()),
             needs_disambig: false,
             needs_project_docs: false,
+            consumer_acts: false,
             disambig_candidates: Vec::new(),
             supersede_target: None,
             extractions: Vec::new(),
@@ -15117,6 +15178,7 @@ mod tests {
             body: Some("alice prefers coffee black".into()),
             needs_disambig: false,
             needs_project_docs: false,
+            consumer_acts: false,
             disambig_candidates: Vec::new(),
             supersede_target: None,
             extractions: Vec::new(),
@@ -15176,6 +15238,7 @@ mod tests {
             body: Some("alice prefers coffee black".into()),
             needs_disambig: false,
             needs_project_docs: false,
+            consumer_acts: false,
             disambig_candidates: Vec::new(),
             supersede_target: None,
             extractions: Vec::new(),
@@ -15223,6 +15286,7 @@ mod tests {
             body: Some("alice prefers tea".into()),
             needs_disambig: false,
             needs_project_docs: false,
+            consumer_acts: false,
             disambig_candidates: Vec::new(),
             supersede_target: None,
             extractions: Vec::new(),
@@ -15305,6 +15369,7 @@ mod tests {
             body: Some("public fact".into()),
             needs_disambig: false,
             needs_project_docs: false,
+            consumer_acts: false,
             disambig_candidates: Vec::new(),
             supersede_target: None,
             extractions: Vec::new(),
@@ -16063,6 +16128,7 @@ mod tests {
             body: Some("alice prefers tea now".into()),
             needs_disambig: false,
             needs_project_docs: false,
+            consumer_acts: false,
             disambig_candidates: Vec::new(),
             supersede_target: target.map(str::to_owned),
             extractions: Vec::new(),
@@ -33426,6 +33492,115 @@ mod tests {
             "the flat hits are untouched, so the turn still answers: {snippet}"
         );
         drop(dir);
+    }
+
+    /// **A turn that asks the assistant to DO something does not open pages.**
+    ///
+    /// From a production trace: «can you print it?» over an attached document
+    /// was read as a question for the memory — the full depth, ten facts, three
+    /// pages opened, and the walk came back with nothing after two hops. What
+    /// to print had arrived WITH the turn; nothing about it was remembered.
+    ///
+    /// The consumer cannot tell that from outside, so the classifier says it
+    /// and the walk is the one thing that does not run — `PanickingLlm` in the
+    /// navigator's place would blow this test up if it did. Everything else
+    /// stands, the flat hits included, so a turn that turns out to need a name
+    /// after all still has one.
+    #[tokio::test]
+    async fn a_turn_that_asks_for_an_action_does_not_open_pages() {
+        let (dir, tree, pool) = setup_workdir().await;
+        std::fs::write(
+            dir.path().join("wikis/alice/bologna.md"),
+            "# bologna\nalice's city page\n",
+        )
+        .unwrap();
+        let fact = fact_index::NewFact {
+            subject_external: None,
+            slot: None,
+            slot_value: None,
+            authored_refs: Vec::new(),
+            fact_id: FactId::parse("018f1234-5678-7abc-9def-00000000f003").unwrap(),
+            wiki_id: "alice".to_owned(),
+            source_path: "wikis/alice/bologna.md".to_owned(),
+            region_start: None,
+            region_end: None,
+            text: "alice lives in Bologna".to_owned(),
+            embedding: vec![0.9, -0.3, 0.2, -0.1],
+            subject_id: Principal::User("alice".into()),
+            allow_ids: Vec::new(),
+            sender_id: None,
+            fact_type: Some("bio".to_owned()),
+            topics: Vec::new(),
+            valid_from: None,
+            valid_to: None,
+            salience: None,
+            target_page: None,
+            style: None,
+            source_ref: None,
+        };
+        fact_index::insert(&pool, &fact).await.expect("insert fact");
+
+        // The same shape as the trace: an intent that would walk, and the
+        // judgement that this turn is an action. The consumer asked for
+        // nothing — `metadata.recall` is left at its default.
+        let llm = FakeLlmBackend::new("fake", "{\"intent\":\"recall\",\"consumer_acts\":true}");
+        let request = req("me lo puoi stampare?", "alice");
+        assert_eq!(
+            request.metadata.recall,
+            RecallDepth::Full,
+            "the consumer asked for the deep reading, and the turn still does not walk"
+        );
+        let resp = wiki_ingest_message(
+            &pool,
+            &tree,
+            fake_embedder(),
+            &llm,
+            Some(&PanickingLlm),
+            request,
+            &IngestPolicy::default(),
+        )
+        .await
+        .expect("ingest");
+
+        let snippet = resp.context_snippet.expect("recall block present");
+        assert!(
+            !snippet.contains(HDR_NAVIGATED_PAGES),
+            "an action turn opens no pages: {snippet}"
+        );
+        assert!(
+            snippet.contains("alice lives in Bologna"),
+            "and everything else the block carries is untouched: {snippet}"
+        );
+        drop(dir);
+    }
+
+    /// **The shallowest reading anybody asked for is the one the turn gets.**
+    ///
+    /// Two parties have a say and neither can make the reading deeper than the
+    /// other wanted: the consumer knows its channel is waiting, the classifier
+    /// knows the turn is an action. Pinned as a table, because each arm is
+    /// read far from where it is set.
+    #[test]
+    fn the_shallowest_reading_anybody_asked_for_wins() {
+        assert_eq!(
+            depth_of_this_turn(RecallDepth::Full, false),
+            RecallDepth::Full,
+            "nobody asked for less"
+        );
+        assert_eq!(
+            depth_of_this_turn(RecallDepth::Full, true),
+            RecallDepth::Light,
+            "the classifier saw an action the consumer could not"
+        );
+        assert_eq!(
+            depth_of_this_turn(RecallDepth::Light, false),
+            RecallDepth::Light,
+            "the consumer knows its own channel"
+        );
+        assert_eq!(
+            depth_of_this_turn(RecallDepth::Light, true),
+            RecallDepth::Light
+        );
     }
 
     /// The wire tokens, and the refusal that keeps a typo from putting a
