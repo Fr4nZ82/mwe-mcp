@@ -2782,19 +2782,25 @@ pub async fn find_by_filters(
     rows.into_iter().map(decode_row).collect()
 }
 
-/// A PERSON's wiki, as SQL: enrolled, not marked as an assistant, and not the
-/// identity any consumer speaks as. Two signals because each covers the
-/// other's gap — the `is_agent` marker is stamped when a consumer's token
-/// first connects, so an assistant that has not connected yet would read as a
-/// person; and a consumer binding is how an assistant gets a wiki at all.
-/// Anything else — a group's wiki, a wiki named for its subject — is nobody's
-/// rules page.
-const A_PERSONS_WIKI: &str = "(EXISTS (SELECT 1 FROM enrollment_users u \
-                                        WHERE u.user_id = fact_index.wiki_id) \
-    AND NOT EXISTS (SELECT 1 FROM enrollment_users u \
-                     WHERE u.user_id = fact_index.wiki_id AND u.is_agent = 1) \
+/// «Is this wiki NOT an assistant's own», as SQL. Two signals because each
+/// covers the other's gap — the `is_agent` marker is stamped when a consumer's
+/// token first connects, so an assistant that has not connected yet would read
+/// as a person; and a consumer binding is how an assistant gets a wiki at all.
+const NOT_AN_ASSISTANTS_WIKI: &str = "(NOT EXISTS (SELECT 1 FROM enrollment_users u \
+                                                    WHERE u.user_id = fact_index.wiki_id \
+                                                      AND u.is_agent = 1) \
     AND NOT EXISTS (SELECT 1 FROM consumers c \
                      WHERE c.system_user_id = fact_index.wiki_id))";
+
+/// A PERSON's wiki, as SQL: enrolled, and not an assistant's. Anything else —
+/// a group's wiki, a wiki named for its subject — is nobody's rules page.
+fn a_persons_wiki() -> String {
+    format!(
+        "(EXISTS (SELECT 1 FROM enrollment_users u \
+                   WHERE u.user_id = fact_index.wiki_id) \
+          AND {NOT_AN_ASSISTANTS_WIKI})"
+    )
+}
 
 /// Fetch the standing rules **this reader may read**, from the pages a rule
 /// is allowed to live on, newest first, capped at `limit` (0 = no cap).
@@ -2851,14 +2857,25 @@ pub async fn find_behaviour_rules(
         return Ok(Vec::new());
     }
     let readable = readable_by_sql("fact_index", reader_principals.len());
-    // The reader's OWN page, this assistant's, or another person's. The first
-    // needs no lookup: a person's identity wiki is theirs by construction, and
-    // asking the enrolment for it would make their own rules depend on a row
-    // somebody else writes.
+    let a_persons_wiki = a_persons_wiki();
+    // The reader's OWN page, this assistant's, or another person's.
+    //
+    // When the turn HAS an assistant of its own, the reader's own page has to
+    // answer the same question as the third arm: an administrator may delegate
+    // an ASSISTANT's identity like anybody else's, and a turn speaking for
+    // that identity through a different assistant would otherwise walk off
+    // with a second assistant's rules page — the one thing this clause exists
+    // to refuse. This assistant's own page is the arm beside it, so nothing of
+    // the turn's own is lost.
+    //
+    // When it has none, the arm needs no lookup and asks for none: there is no
+    // second assistant to confuse it with, and a person's identity wiki is
+    // theirs by construction — asking the enrolment for it would make their
+    // own rules depend on a row somebody else writes.
     let home = if agent_wiki.is_some() {
-        format!("(wiki_id = ? OR wiki_id = ? OR {A_PERSONS_WIKI})")
+        format!("((wiki_id = ? AND {NOT_AN_ASSISTANTS_WIKI}) OR wiki_id = ? OR {a_persons_wiki})")
     } else {
-        format!("(wiki_id = ? OR {A_PERSONS_WIKI})")
+        format!("(wiki_id = ? OR {a_persons_wiki})")
     };
     let mut sql = format!(
         r#"SELECT fact_id, wiki_id, source_path, region_start, region_end,
@@ -4925,6 +4942,60 @@ mod tests {
         assert_eq!(
             smart.iter().map(|r| r.fact_id.as_str()).collect::<Vec<_>>(),
             vec![SAMPLE_UUID_V7_3]
+        );
+    }
+
+    /// **A DELEGATED assistant identity does not carry its own rules page into
+    /// another assistant's turn.**
+    ///
+    /// An administrator delegates an identity to somebody, and the roster they
+    /// choose from lists assistants beside people. Speaking for that identity
+    /// makes the ASSISTANT the reader — and the reader's own wiki is one of
+    /// the homes, so the arm that serves a person their own rules would hand
+    /// this turn a second assistant's page, which is exactly what the clause
+    /// refuses everywhere else. The page this turn speaks through is the arm
+    /// beside it and is unaffected.
+    #[tokio::test]
+    async fn a_delegated_assistant_identity_does_not_bring_its_own_rules_page() {
+        let pool = make_pool().await;
+        let at = "2026-07-02T12:00:00Z";
+        enrol_as(&pool, "agent", true).await;
+        enrol_as(&pool, "other-agent", true).await;
+
+        // This turn's assistant holds its own standing operation.
+        let mut ours = sample_new_fact(SAMPLE_UUID_V7_1, "agent", "user:agent", "Sei Gandalf.");
+        ours.source_path = "wikis/agent/@rules.md".to_owned();
+        ours.sender_id = Some("user:agent".parse().unwrap());
+        ours.allow_ids = vec![Principal::global()];
+        // The OTHER assistant holds its own, on its own page.
+        let mut theirs = sample_new_fact(
+            SAMPLE_UUID_V7_2,
+            "other-agent",
+            "user:other-agent",
+            "Sei Saruman.",
+        );
+        theirs.source_path = "wikis/other-agent/@rules.md".to_owned();
+        theirs.sender_id = Some("user:other-agent".parse().unwrap());
+        theirs.allow_ids = vec![Principal::global()];
+        for f in [&ours, &theirs] {
+            insert(&pool, f).await.expect("insert");
+        }
+
+        let got = find_behaviour_rules(
+            &pool,
+            "other-agent",
+            Some("agent"),
+            &crate::acl::reader_principals("other-agent", &[]),
+            at,
+            0,
+        )
+        .await
+        .expect("query");
+        assert_eq!(
+            got.iter().map(|r| r.fact_id.as_str()).collect::<Vec<_>>(),
+            vec![SAMPLE_UUID_V7_1],
+            "the assistant this turn speaks through, and not the one whose \
+             identity it is speaking for"
         );
     }
 
