@@ -2290,10 +2290,16 @@ pub async fn readable_fact_on_page(
 ///
 /// The per-page twin of [`wiki_visible_to`], and the exact sibling of
 /// [`readable_fact_on_page`] with the same one difference the wiki-level pair
-/// has: **a page with no facts answers `true`**. There is nothing on it being
-/// kept from anybody, so refusing would hide an emptiness rather than a
-/// secret — and the page's own existence is already known to whoever is
-/// standing on it.
+/// has: **a page with no ACTIVE facts answers `true`**.
+///
+/// Two different pages answer that way, and only the first is empty in the
+/// plain sense. A page nothing was ever written on keeps nothing from
+/// anybody. A page whose facts have all been superseded or tombstoned still
+/// carries the prose the Cronista wrote around them — [`page_acl_map_active`]
+/// drops the retired rows, so this answers `true` while the file still reads
+/// as a page. That prose is served to whoever opens it, and closing it is
+/// P5's business, not this predicate's: a page with no active facts should
+/// serve prose to nobody but the engine.
 ///
 /// The strict twin is the one to ask when the question is «send this person
 /// to that page»; this one is for «is this page's door shut in their face».

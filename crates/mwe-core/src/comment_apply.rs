@@ -397,17 +397,28 @@ async fn apply_page_for_one_commenter(
         .filter(|f| authority.may_read(f))
         .cloned()
         .collect();
+    // Where this reading's own refusals begin. The report gathers every
+    // refusal of the whole run — other people's, on other pages, naming facts
+    // this person cannot read — and a receipt is addressed to ONE person, so
+    // what goes on it is this slice and never the whole list.
+    let refused_before = report.refused.len();
     if facts.is_empty() {
         // Nothing of this page is theirs to see. Their comment is about a page
         // they read nothing of, which the surface that took it should already
-        // have refused; here it simply changes nothing.
+        // have refused — but a comment left before that gate existed, or one
+        // whose facts have since narrowed their audience, arrives here anyway.
         report.refused.push(format!(
             "{source_path} · comment · the author reads no fact of this page"
         ));
-        emit_refusal_receipt(pool, source_path, commenter.as_ref(), &report.refused).await;
+        emit_refusal_receipt(
+            pool,
+            source_path,
+            commenter.as_ref(),
+            &report.refused[refused_before..],
+        )
+        .await;
         return Ok(());
     }
-    let refused_before = report.refused.len();
 
     let scope_ctx = describe_scope(tree, wiki_id, commenter.as_ref(), pool).await;
 
@@ -1723,6 +1734,133 @@ mod tests {
                 .iter()
                 .any(|k| k == crate::proposals::kind::COMMENT_REFUSED),
             "{kinds:?}"
+        );
+        drop(dir);
+    }
+
+    /// **A receipt addressed to one person carries only that person's
+    /// refusals.**
+    ///
+    /// The report gathers every refusal of the whole run — other people's, on
+    /// other pages, each naming a `fact_id` and saying what somebody asked of
+    /// it. A receipt goes to one person, so it must carry the slice this
+    /// reading produced and never the list.
+    ///
+    /// The path that got this wrong is the early one: a comment on a page its
+    /// author reads nothing of. That is reachable in the ordinary way —
+    /// comments left before the per-page gate existed, and facts whose
+    /// audience has narrowed since.
+    #[tokio::test]
+    async fn a_refusal_receipt_carries_only_its_own_readers_refusals() {
+        let (dir, _tree, pool) = setup().await;
+        std::fs::write(
+            dir.path().join("wikis/alice/conti.md"),
+            "# Conti\n\n## bio\n\nbody.\n",
+        )
+        .unwrap();
+        let tree = WikiTree::open(dir.path()).expect("tree");
+
+        // Page one: Alice's own fact, which she may read and not remove —
+        // Bob told it. Her comment asks to remove it, and is refused.
+        let hers = fid_str(0x81);
+        insert_fact_told_by(
+            &pool,
+            &hers,
+            "SECRETONE the boiler was serviced",
+            "user:alice",
+            "user:bob",
+        )
+        .await;
+        sqlx::query("UPDATE fact_index SET source_path = ? WHERE fact_id = ?")
+            .bind("wikis/alice/conti.md")
+            .bind(&hers)
+            .execute(&pool)
+            .await
+            .unwrap();
+        // Pages are visited in path order, so this refusal is on the report
+        // before the second page is reached — which is the whole point.
+        let alice_bi = insert_comment_by(
+            &pool,
+            "alice",
+            Some("wiki://alice/conti.md#bio"),
+            "drop that",
+        )
+        .await;
+
+        // Page two: one fact, Carol's alone. Dara reads nothing of it.
+        let carols = fid_str(0x82);
+        fact_index::insert(
+            &pool,
+            &NewFact {
+                subject_external: None,
+                slot: None,
+                slot_value: None,
+                authored_refs: Vec::new(),
+                fact_id: FactId::parse(&carols).unwrap(),
+                wiki_id: "alice".to_owned(),
+                source_path: "wikis/alice/cucina.md".to_owned(),
+                region_start: Some(10),
+                region_end: Some(40),
+                text: "Carol owes nothing".to_owned(),
+                embedding: vec![0.5, 0.6],
+                subject_id: "user:carol".parse().unwrap(),
+                allow_ids: Vec::new(),
+                sender_id: Some("user:carol".parse().unwrap()),
+                fact_type: None,
+                topics: Vec::new(),
+                valid_from: None,
+                valid_to: None,
+                target_page: None,
+                style: None,
+                salience: None,
+                source_ref: None,
+            },
+        )
+        .await
+        .unwrap();
+        let dara_bi = insert_comment_by(
+            &pool,
+            "dara",
+            Some("wiki://alice/cucina.md#bio"),
+            "this is out of date",
+        )
+        .await;
+
+        let llm = FakeLlmBackend::new(
+            "fake",
+            format!("{{\"ops\":[{{\"action\":\"remove\",\"fact_id\":\"{hers}\"}}]}}"),
+        );
+        let embedder: Arc<dyn Embedder> = Arc::new(FakeEmbedder::new("fake", 2));
+        let report = apply_comments(
+            &pool,
+            &tree,
+            &embedder,
+            &llm,
+            &WikiId::parse("alice").unwrap(),
+            &[alice_bi, dara_bi],
+            "2026-05-31T02:00:00Z",
+        )
+        .await
+        .expect("apply");
+
+        assert_eq!(report.refused.len(), 2, "{:?}", report.refused);
+
+        // Dara's receipt: one line, hers, naming neither the other page's
+        // fact nor a word of it.
+        let ctx: String = sqlx::query_scalar(
+            "SELECT context FROM structure_proposals \
+             WHERE kind = ? AND recipient_id = 'user:dara'",
+        )
+        .bind(crate::proposals::kind::COMMENT_REFUSED)
+        .fetch_one(&pool)
+        .await
+        .expect("dara's receipt");
+        let parsed: serde_json::Value = serde_json::from_str(&ctx).expect("json");
+        let lines = parsed["refused"].as_array().expect("refused list");
+        assert_eq!(lines.len(), 1, "one refusal, hers: {lines:?}");
+        assert!(
+            !ctx.contains(&hers) && !ctx.contains("SECRETONE"),
+            "and nothing of the other person's page: {ctx}"
         );
         drop(dir);
     }

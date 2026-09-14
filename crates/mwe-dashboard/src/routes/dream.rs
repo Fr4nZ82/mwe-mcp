@@ -72,10 +72,11 @@ async fn index(State(state): State<DashboardState>, user: SessionUser) -> Result
 
 /// The three triggers box the dispatch future.
 ///
-/// A whole cycle's state rides in it — every sub-job's locals, nested — and at
-/// that size a future living on the stack of an axum handler is a lint and, on
-/// a thread with a small stack, a crash. Boxing costs one allocation per
-/// button press.
+/// A whole cycle's state rides in it — every sub-job's locals, nested — and it
+/// grew past the size `clippy::large_futures` refuses under `-D warnings`,
+/// which is what was seen. The lint has that ceiling because a future this
+/// size lives on the caller's stack. Boxing costs one allocation per button
+/// press.
 async fn run_light(
     State(state): State<DashboardState>,
     user: SessionUser,

@@ -1952,11 +1952,11 @@ async fn a_page_of_a_wiki_nobody_owns_opens_for_the_reader_of_one_of_its_facts()
 
 /// **You comment where you read, and «where» is the page.**
 ///
-/// Bob reads a fact on one page of this wiki. That used to let him comment on
-/// EVERY page of it, including one he has never been shown a line of — and the
-/// night turns a comment into changes to that page's facts. The affordance is
-/// gone from the page he cannot read, and the endpoint refuses him there too,
-/// so the two agree.
+/// Reading one page of a wiki is not reading another. Bob reads a fact on one
+/// page of this wiki and nothing on the next, and the night turns a comment
+/// into changes to the facts of the page it names — so the affordance is on
+/// the first page and not on the second, and the endpoint refuses him there
+/// too, so the two agree.
 #[tokio::test]
 async fn commenting_is_offered_on_the_page_you_read_and_refused_on_the_one_you_do_not() {
     let (app, pool, tree, _dir) = make_app_with_memory().await;
