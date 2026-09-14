@@ -773,6 +773,15 @@ pub struct BriefingProcessorReport {
     /// page or wiki (born-applied — the `_direct` wrappers mint a
     /// receipt).
     pub facts_moved: usize,
+    /// Ops a comment asked for that its author may not ask: `fact_id · action
+    /// · reason`.
+    ///
+    /// The engine working, not failing — which is why it is not in
+    /// [`Self::errors`]. The person who asked is told on a receipt of their
+    /// own ([`crate::proposals::kind::COMMENT_REFUSED`]); this is the same
+    /// thing in the night's own log, so an operator reading the cycle sees
+    /// that a comment was partly turned down without going to look.
+    pub comment_ops_refused: Vec<String>,
     /// Per-row soft errors (DB / filesystem / invalid `wiki_id` row).
     /// Hard failures bubble as [`RemError`]; everything else is
     /// collected here and the cycle keeps going.
@@ -9821,6 +9830,7 @@ async fn run_briefing_processor_non_smart(
             report.facts_deduped += applied.facts_deduped;
             report.facts_removed += applied.facts_removed;
             report.facts_moved += applied.facts_moved;
+            report.comment_ops_refused.extend(applied.refused);
             report.errors.extend(applied.errors);
         }
     }

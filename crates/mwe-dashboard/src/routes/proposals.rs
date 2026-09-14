@@ -690,6 +690,7 @@ fn label(row: &ProposalRow) -> &'static str {
         kind::SLOT_CONFLICT => "Two values for one detail",
         kind::PAGE_JUDGED => "A page read again",
         kind::CARD_RETYPE => "A line on your card",
+        kind::COMMENT_REFUSED => "Part of your comment was not done",
         // A row written by a newer engine shows as itself rather than
         // being swallowed into a wrong label.
         _ => "Something changed",
@@ -710,6 +711,7 @@ fn headline(row: &ProposalRow) -> String {
             "Two facts that said the same thing became one; the other was retired.".to_owned()
         },
         kind::PAGE_JUDGED => page_judged_headline(c),
+        kind::COMMENT_REFUSED => comment_refused_headline(c),
         kind::CARD_RETYPE => format!(
             "Reading the page it sits on, \u{ab}{what}\u{bb} looks like something you are \
              doing for a while rather than part of who you are. Nothing was changed: you \
@@ -744,6 +746,27 @@ fn headline(row: &ProposalRow) -> String {
         ),
         other => format!("The memory recorded a change of kind `{other}`."),
     }
+}
+
+/// What a comment asked for that the engine would not do, in one sentence.
+///
+/// A comment changes what its author may change: a fact they cannot read is
+/// not theirs to correct, and one somebody else told is not theirs to take
+/// away. The rest of the comment went through, so this row says which part did
+/// not and why — the answer to «I asked for that and nothing happened».
+fn comment_refused_headline(c: &Value) -> String {
+    let n = c
+        .get("refused")
+        .and_then(Value::as_array)
+        .map_or(0, Vec::len);
+    let page = str_at(c, "source_path").unwrap_or("a page");
+    format!(
+        "Your comment on \u{ab}{page}\u{bb} asked for {n} thing{} the memory would not do, \
+         because {} not yours to change. Everything else in it was done \u{2014} open the \
+         row to see which.",
+        if n == 1 { "" } else { "s" },
+        if n == 1 { "it is" } else { "they are" },
+    )
 }
 
 /// The `variant` discriminator inside a `wiki_promote` context.

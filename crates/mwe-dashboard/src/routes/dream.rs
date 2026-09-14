@@ -70,12 +70,18 @@ async fn index(State(state): State<DashboardState>, user: SessionUser) -> Result
     )))
 }
 
+/// The three triggers box the dispatch future.
+///
+/// A whole cycle's state rides in it — every sub-job's locals, nested — and at
+/// that size a future living on the stack of an axum handler is a lint and, on
+/// a thread with a small stack, a crash. Boxing costs one allocation per
+/// button press.
 async fn run_light(
     State(state): State<DashboardState>,
     user: SessionUser,
     headers: HeaderMap,
 ) -> Result<Response> {
-    dispatch(state, user, &headers, DreamKind::Light).await
+    Box::pin(dispatch(state, user, &headers, DreamKind::Light)).await
 }
 
 async fn run_compile(
@@ -83,7 +89,7 @@ async fn run_compile(
     user: SessionUser,
     headers: HeaderMap,
 ) -> Result<Response> {
-    dispatch(state, user, &headers, DreamKind::Compile).await
+    Box::pin(dispatch(state, user, &headers, DreamKind::Compile)).await
 }
 
 async fn run_full(
@@ -91,7 +97,7 @@ async fn run_full(
     user: SessionUser,
     headers: HeaderMap,
 ) -> Result<Response> {
-    dispatch(state, user, &headers, DreamKind::Full).await
+    Box::pin(dispatch(state, user, &headers, DreamKind::Full)).await
 }
 
 /// `GET /dashboard/dream/status` — JSON the topnav indicator polls while a

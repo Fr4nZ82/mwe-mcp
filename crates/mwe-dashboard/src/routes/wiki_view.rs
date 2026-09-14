@@ -1064,7 +1064,15 @@ async fn view_page(
     // visitor they lack write access, when in truth nobody has any,
     // would be a wrong explanation of a correct refusal.
     let frozen = crate::read_only::hides_writes(&state);
-    let can_comment = !frozen && can_comment_on(&state, memory, &wiki_id, &user.sender_id).await?;
+    let can_comment = !frozen
+        && can_comment_on(
+            &state,
+            memory,
+            &wiki_id,
+            std::path::Path::new(&page_path),
+            &user.sender_id,
+        )
+        .await?;
     // Whether to offer the "✎ page description" affordance: standard wiki +
     // owner-or-admin. A non-owner reader never sees a link that would 404.
     let can_edit_meta = !frozen && may_edit_page_meta(&state.pool, memory, &wiki_id, &user).await?;
@@ -1984,10 +1992,11 @@ async fn comment_form(
     }
     let anchor = validate_target_anchor(q.anchor.as_deref())?;
 
-    // Read-access check on the wiki — anyone who can read it may comment on
-    // it, which on a shared smart wiki is how a teammate feeds feedback to the
-    // consumer that writes it without owning the wiki.
-    enforce_read_access_or_not_found(&state, memory, &wiki_id, &user).await?;
+    // Read-access check on the PAGE — you comment where you read. On a shared
+    // smart wiki, which holds no facts, the wiki's own roster answers instead,
+    // which is how a teammate feeds feedback to the consumer that writes it
+    // without owning the wiki.
+    enforce_read_access_or_not_found(&state, memory, &wiki_id, &rel, &user).await?;
 
     // Surface the heading text so the operator knows what they are
     // commenting on. The lookup is best-effort — a missing heading
@@ -2033,7 +2042,7 @@ async fn submit_comment(
     }
     let anchor = validate_target_anchor(q.anchor.as_deref())?;
 
-    enforce_read_access_or_not_found(&state, memory, &wiki_id, &user).await?;
+    enforce_read_access_or_not_found(&state, memory, &wiki_id, &rel, &user).await?;
 
     let body = form.body.trim();
     if body.is_empty() {
@@ -2302,27 +2311,54 @@ fn render_comment_form(
     layout::authenticated_reading_page(chrome, &title, user, &html_body)
 }
 
-/// Whether `sender_id` may leave a dashboard comment on `wiki_id`: anyone who
-/// can read the wiki. The bool sibling of
-/// [`enforce_read_access_or_not_found`], used by [`view_page`] to decide
-/// whether to render the comment affordance at all (vs a "you can't
-/// comment" notice) — so the UI never shows a link the endpoint would
-/// then 403.
+/// Whether `sender_id` may leave a dashboard comment on ONE page. The bool
+/// sibling of [`enforce_read_access_or_not_found`], used by [`view_page`] to
+/// decide whether to render the comment affordance at all (vs a "you can't
+/// comment" notice) — so the UI never shows a link the endpoint would then
+/// refuse.
 ///
-/// A comment is a write REM later turns into fact ops on the facts of the page
-/// it is anchored to, so it is scoped to the **wiki's** read-set, and that
-/// question is asked per family through [`wiki_readable`]: on a standard wiki
-/// you may comment where you can read at least one fact, on a smart wiki where
-/// its own roster names you. Admin reveal deliberately does **not** unlock
-/// commenting: reveal is a read lens over one page, and this gate answers per
-/// wiki.
+/// **You comment where you read.** A comment is a write: the night turns it
+/// into ops on the facts of the page it names. So the question is asked of
+/// that page — does it surface to this person at all
+/// ([`mwe_core::fact_index::page_visible_to`]) — and not of the wiki, which
+/// would let somebody who reads one fact in a corner of it leave instructions
+/// about a page they have never been shown a line of.
+///
+/// A page with no facts on it surfaces to everybody who reaches it: there is
+/// nothing on it being kept from anybody, and a comment there changes nothing
+/// until somebody writes a fact for it to be about.
+///
+/// A **smart** wiki holds no facts at all, so that question cannot speak for
+/// it and its own roster answers instead, as it always has
+/// ([`wiki_readable`]).
+///
+/// Admin reveal deliberately does **not** unlock commenting, and neither does
+/// being an admin: reveal is a read lens over one page, and what the night
+/// does with a comment it does with the author's own authority.
 async fn can_comment_on(
     state: &DashboardState,
     memory: &crate::state::MemoryHandles,
     wiki_id: &WikiId,
+    page: &std::path::Path,
     sender_id: &str,
 ) -> Result<bool> {
-    wiki_readable(state, memory, wiki_id, sender_id).await
+    let Ok(handle) = memory.tree.locate(wiki_id) else {
+        return Ok(false);
+    };
+    if handle.meta().smart {
+        return wiki_readable(state, memory, wiki_id, sender_id).await;
+    }
+    let sender_groups = enrollment::groups_for(&state.pool, sender_id)
+        .await
+        .map_err(|e| DashboardError::Internal(format!("groups_for: {e}")))?;
+    mwe_core::fact_index::page_visible_to(
+        &state.pool,
+        &handle.source_path(page),
+        sender_id,
+        &sender_groups,
+    )
+    .await
+    .map_err(|e| DashboardError::Internal(format!("page_visible_to: {e}")))
 }
 
 /// The wiki-level read gate, for either family.
@@ -2363,12 +2399,13 @@ async fn enforce_read_access_or_not_found(
     state: &DashboardState,
     memory: &crate::state::MemoryHandles,
     wiki_id: &WikiId,
+    page: &std::path::Path,
     user: &SessionUser,
 ) -> Result<()> {
     if memory.tree.locate(wiki_id).is_err() {
         return Err(DashboardError::NotFound);
     }
-    if can_comment_on(state, memory, wiki_id, &user.sender_id).await? {
+    if can_comment_on(state, memory, wiki_id, page, &user.sender_id).await? {
         Ok(())
     } else {
         // There is no admin bypass on this gate, so a refusal is a content ACL

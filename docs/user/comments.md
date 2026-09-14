@@ -34,7 +34,9 @@ claim.
 The comment stays visible on the page until it is acted on.
 
 Where the box reads *"You can't comment on this page"* instead, that is the
-read gate: you comment where you can read.
+read gate: **you comment where you can read, and «where» is this page**. A page
+of the same wiki whose facts are not yours to see is not one you can leave
+instructions about.
 
 ## What happens next
 
@@ -43,6 +45,15 @@ nightly pass reads your comment and changes the facts you point at:
 correcting one, removing one, adding one. Your words are never pasted into the
 page as you wrote them. A fresh comment is left alone for a while first (fifteen
 minutes out of the box), in case you are still editing.
+
+**Your comment changes what is yours to change.** It is read against the facts
+of the page **you** can read, and it carries your say and no more: what a fact
+says can be changed by whoever it is about and whoever told it, and a fact can
+be taken away by whoever said it. Ask for something outside that and the rest
+of your comment still happens — the part that did not shows up under
+**Proposals** as *Part of your comment was not done*, with which part and why.
+Being an administrator does not change this: the panel lets you run the
+memory, it does not make you everybody.
 
 **On a smart wiki** — the documentation a coding assistant keeps — the comment
 goes to that assistant, which finds it the next time it starts up and takes it

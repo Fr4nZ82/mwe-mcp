@@ -128,6 +128,18 @@ pub mod kind {
     /// for that the engine would not do, and why.
     pub const PAGE_JUDGED: &str = "page_judged";
 
+    /// What a comment asked for that the engine would not do.
+    ///
+    /// A comment is applied by the night against the facts of one page, and
+    /// what it may change is what its author may change: a fact they cannot
+    /// read is not theirs to correct, and one somebody else told is not theirs
+    /// to take away. A refused op leaves this row, addressed to the person who
+    /// wrote the comment, so the answer to «I asked for that and it did not
+    /// happen» is on the page they already read rather than in a log they
+    /// never see. **One receipt per comment**, listing every refusal in it
+    /// with its reason; the ops that were allowed are applied either way.
+    pub const COMMENT_REFUSED: &str = "comment_refused";
+
     /// Every canonical kind.
     pub const ALL: &[&str] = &[
         WIKI_PROMOTE,
@@ -138,6 +150,7 @@ pub mod kind {
         SLOT_CONFLICT,
         PAGE_JUDGED,
         CARD_RETYPE,
+        COMMENT_REFUSED,
     ];
 
     /// `true` when `s` matches one of the canonical kinds.
@@ -2887,7 +2900,7 @@ mod tests {
     // ---- kind constants ----
 
     #[test]
-    fn kind_constants_are_the_eight_the_engine_emits() {
+    fn kind_constants_are_the_nine_the_engine_emits() {
         assert_eq!(kind::WIKI_PROMOTE, "wiki_promote");
         assert_eq!(kind::DEDUP_MERGE, "dedup_merge");
         assert_eq!(kind::FACT_FORGET, "fact_forget");
@@ -2896,12 +2909,14 @@ mod tests {
         assert_eq!(kind::SLOT_CONFLICT, "slot_conflict");
         assert_eq!(kind::PAGE_JUDGED, "page_judged");
         assert_eq!(kind::CARD_RETYPE, "card_retype");
-        // Four questionnaire kinds, the fact-forget vote, and three
+        assert_eq!(kind::COMMENT_REFUSED, "comment_refused");
+        // Four questionnaire kinds, the fact-forget vote, and four
         // receipt-only kinds — never `pending`, emitted born-applied so what
         // the engine decided about the shape of the memory (a page it
         // invented, a link it required, a page it read back) leaves a record
-        // the owner can read.
-        assert_eq!(kind::ALL.len(), 8);
+        // the owner can read — and, for the last of them, what somebody asked
+        // for that was not theirs to ask.
+        assert_eq!(kind::ALL.len(), 9);
         assert!(kind::is_canonical("wiki_promote"));
         assert!(kind::is_canonical("fact_forget"));
         assert!(kind::is_canonical("page_create"));
@@ -2909,6 +2924,7 @@ mod tests {
         assert!(kind::is_canonical("slot_conflict"));
         assert!(kind::is_canonical("page_judged"));
         assert!(kind::is_canonical("card_retype"));
+        assert!(kind::is_canonical("comment_refused"));
         // Plausible names that are not kinds: the list above is the whole
         // list, and a canonical check that quietly accepted one of these
         // would let a proposal through with nothing to apply it.

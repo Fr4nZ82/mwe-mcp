@@ -47,6 +47,30 @@ semver-governed surface: breaking changes are called out explicitly.
 
 ### Changed
 
+- **A comment changes what its author may change, and nothing else.** A comment
+  you leave on a page is read by the nightly pass and turned into changes to
+  that page's facts. It was being applied with no regard for who wrote it: a
+  comment could correct or delete a fact its author was never shown, on a page
+  they had never read a line of, because the right to comment was decided for
+  the whole wiki at once.
+
+  Three things changed. You can now comment where you can **read**, and «where»
+  is the page in front of you, not the wiki it belongs to. What the memory is
+  shown when it reads your comment is the page **as you read it** — a fact
+  outside your reach is not in front of it and cannot be touched. And every
+  change your comment asks for is checked against what is yours: what a fact
+  says can be changed by whoever it is about and whoever told it; a fact can be
+  taken away by whoever said it.
+
+  Ask for something outside that and the rest of your comment still happens.
+  The part that did not appears under **Proposals** as *Part of your comment was
+  not done*, saying which part and why. Being an administrator changes none of
+  this: the panel lets you run the memory, it does not make you everybody.
+
+  A page carrying comments from several people is now read once **per person**,
+  each against what that person can see, instead of once for the page with the
+  most recent author standing in for the rest.
+
 - **A page's text can no longer be edited by hand, by anybody.** The screen
   that opened a page's raw Markdown in a box is gone. A page shows each fact
   only to the people that fact is for, and a box holding the raw text handed

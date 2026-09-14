@@ -4,14 +4,26 @@
 //! A dashboard comment on a compiled standard page is parked as an unprocessed
 //! `wiki_briefing_items` row — there is no submit button, the operator just
 //! leaves it. The REM full cycle (the batched, nightly-or-admin-triggered dream)
-//! reads **every** pending comment for a wiki *together* and turns each into a
-//! fact-level edit against the facts of the page the comment names:
+//! reads the pending comments of a wiki and turns each into a fact-level edit
+//! against the facts of the page the comment names:
 //! `correct` a claim in place, `remove` it, `add` a new one, or `move` one of
 //! the page's facts to a destination the operator named (another page of this
 //! wiki, or another wiki entirely). The compile pass that runs after the cycle
 //! then recompiles only the page(s) whose fact set or content changed — the
 //! [content-aware fingerprint](planner) makes an in-place correction dirty
 //! exactly its page.
+//!
+//! **A comment is a person speaking, and it carries their authority.** The
+//! comments of one page are read once per AUTHOR, never once for the page with
+//! somebody chosen to stand for the rest: what each of them may be shown is
+//! different, and a fact one of them reads is a fact another was never told.
+//! Each reading is given the facts its author can read and nothing else, every
+//! op is checked against what that author may do to the fact it names
+//! ([`CommenterAuthority`]), and what they may not do is refused with its
+//! reason on a receipt addressed to them while the rest of their comment goes
+//! through. Being an admin buys nothing here: the reveal lens is a read lens
+//! held by a person at a screen, and this runs at night with nobody holding
+//! one.
 //!
 //! Two invariants hold this module to the maintainer's cost rule ("a memory edit
 //! must never re-scan the whole wiki"):
@@ -94,6 +106,15 @@ pub struct CommentApplyReport {
     /// Per-page soft errors (an unparseable / failed page is left for the next
     /// cycle; its comments stay unprocessed). Never aborts the other pages.
     pub errors: Vec<String>,
+    /// One line per op the engine would not carry out because the person who
+    /// asked for it may not: `fact_id · action · reason`.
+    ///
+    /// Kept apart from [`Self::errors`], which is the engine failing. This is
+    /// the engine working: somebody asked for something that is not theirs to
+    /// ask, the rest of their comment went through, and they are told which
+    /// part did not on a receipt of their own
+    /// ([`crate::proposals::kind::COMMENT_REFUSED`]).
+    pub refused: Vec<String>,
 }
 
 /// Errors raised by [`apply_comments`].
@@ -258,11 +279,13 @@ pub async fn apply_comments(
     Ok(report)
 }
 
-/// Apply the comments that name one page.
+/// Apply the comments that name one page, one author at a time.
 ///
-/// Gathers the page's active facts, interprets the comments against them, and
-/// applies the resulting ops. Stamps the comments `processed_at` only once the
-/// LLM call parsed — a transient LLM/parse failure leaves them for next cycle.
+/// Gathers the page's active facts once, then hands each author's comments to
+/// their own reading ([`apply_page_for_one_commenter`]) — because what a
+/// reading may be shown is what its author may read. Stamps every comment
+/// `processed_at` once the readings are done; a transient LLM/parse failure
+/// raises and leaves the page's comments for the next cycle.
 #[allow(
     clippy::too_many_arguments,
     reason = "threads the shared cycle handles"
@@ -290,14 +313,102 @@ async fn apply_page(
         return Ok(());
     }
 
-    // The commenter whose `add` facts are owned/sent: the single distinct author
-    // among this page's pending comments. The dashboard records every comment's
-    // author (`author_sender_id`), so — like a captured message — an `add`'s
-    // `sender` is that human and the subject defaults to them. When a page mixes
-    // authors (rare: comments are interpreted together but an `add` op carries
-    // no back-reference to one comment), the most recent author represents them;
-    // the LLM may still attribute a fact to a named subject via `subject_id`.
-    let commenter = representative_commenter(comments);
+    // **One reading per person, never one reading of everybody.** A page can
+    // carry comments from several people, and what each of them may be shown
+    // is different: a fact one reads is a fact another was never told. Reading
+    // them together would mean choosing one author to stand for the rest —
+    // and then interpreting somebody's comment against facts they cannot see,
+    // and filing somebody else's `add` under that author's name.
+    //
+    // So the page is interpreted once per author, each time against the facts
+    // that author can read, and an `add` carries the author whose comment
+    // asked for it. The cost is one model call per author on a page instead of
+    // one per page; a page with one commenter — which is nearly all of them —
+    // costs exactly what it did.
+    let mut by_author: std::collections::BTreeMap<String, Vec<(i64, String, Option<String>)>> =
+        std::collections::BTreeMap::new();
+    for c in comments {
+        let author = c.2.as_deref().map(str::trim).unwrap_or_default().to_owned();
+        by_author.entry(author).or_default().push(c.clone());
+    }
+    for (_, theirs) in by_author {
+        apply_page_for_one_commenter(
+            pool,
+            tree,
+            embedder,
+            llm,
+            wiki_id,
+            language_directive,
+            source_path,
+            &facts,
+            &theirs,
+            report,
+        )
+        .await?;
+    }
+
+    for (bi, _, _) in comments {
+        stamp_processed(pool, *bi, now).await?;
+        report.comments_processed += 1;
+    }
+    Ok(())
+}
+
+/// Interpret and apply the comments ONE person left on one page.
+///
+/// The facts in front of the model are the ones that person can read, and
+/// every op is checked against what that person may do to the fact it names
+/// ([`CommenterAuthority`]). What they may not do is refused with its reason
+/// and left on a receipt addressed to them; the rest of their comment goes
+/// through.
+#[allow(
+    clippy::too_many_arguments,
+    reason = "threads the shared cycle handles, as `apply_page` does"
+)]
+async fn apply_page_for_one_commenter(
+    pool: &SqlitePool,
+    tree: &WikiTree,
+    embedder: &Arc<dyn Embedder>,
+    llm: &dyn LlmBackend,
+    wiki_id: &WikiId,
+    language_directive: &str,
+    source_path: &str,
+    all_facts: &[fact_index::FactIndexRow],
+    comments: &[(i64, String, Option<String>)],
+    report: &mut CommentApplyReport,
+) -> Result<()> {
+    let commenter = author_of(comments);
+    let authority = CommenterAuthority {
+        who: commenter.as_ref(),
+        groups: match commenter.as_ref() {
+            Some(Principal::User(id)) => crate::enrollment::groups_for(pool, id)
+                .await
+                .unwrap_or_default(),
+            _ => Vec::new(),
+        },
+    };
+
+    // What this person may be shown: the page as it is rendered for them,
+    // asked of the rows rather than of the file, because the same
+    // `can_read` decides both and the rows are what the ops name. A fact they
+    // cannot read is not in the prompt, so an op naming it is an invention.
+    let facts: Vec<fact_index::FactIndexRow> = all_facts
+        .iter()
+        .filter(|f| authority.may_read(f))
+        .cloned()
+        .collect();
+    if facts.is_empty() {
+        // Nothing of this page is theirs to see. Their comment is about a page
+        // they read nothing of, which the surface that took it should already
+        // have refused; here it simply changes nothing.
+        report.refused.push(format!(
+            "{source_path} · comment · the author reads no fact of this page"
+        ));
+        emit_refusal_receipt(pool, source_path, commenter.as_ref(), &report.refused).await;
+        return Ok(());
+    }
+    let refused_before = report.refused.len();
+
     let scope_ctx = describe_scope(tree, wiki_id, commenter.as_ref(), pool).await;
 
     let facts_desc = describe_facts(&facts);
@@ -331,6 +442,55 @@ async fn apply_page(
         return Err(CommentApplyError::Unparseable);
     };
 
+    apply_the_ops(
+        pool,
+        tree,
+        embedder,
+        wiki_id,
+        source_path,
+        &facts,
+        &authority,
+        commenter.as_ref(),
+        &parsed,
+        comments,
+        report,
+    )
+    .await?;
+
+    // Whatever this person asked for and may not have, told to them where they
+    // will look. The comments themselves are drained by the caller, once, for
+    // every author of the page.
+    if report.refused.len() > refused_before {
+        emit_refusal_receipt(
+            pool,
+            source_path,
+            commenter.as_ref(),
+            &report.refused[refused_before..],
+        )
+        .await;
+    }
+    Ok(())
+}
+
+/// Carry out the ops one reading produced, each under the authority of the
+/// person whose comment asked for it.
+#[allow(
+    clippy::too_many_arguments,
+    reason = "one reading's ops: what was asked, about which page, by whose authority, written where"
+)]
+async fn apply_the_ops(
+    pool: &SqlitePool,
+    tree: &WikiTree,
+    embedder: &Arc<dyn Embedder>,
+    wiki_id: &WikiId,
+    source_path: &str,
+    facts: &[fact_index::FactIndexRow],
+    authority: &CommenterAuthority<'_>,
+    commenter: Option<&Principal>,
+    parsed: &InterpretedOps,
+    comments: &[(i64, String, Option<String>)],
+    report: &mut CommentApplyReport,
+) -> Result<()> {
     let known: HashSet<&str> = facts.iter().map(|f| f.fact_id.as_str()).collect();
 
     // Fact ids a `remove` op in THIS batch targets. Ops apply in emission
@@ -348,16 +508,27 @@ async fn apply_page(
     for op in &parsed.ops {
         match op.action.as_str() {
             "correct" => {
-                apply_correct(pool, embedder.as_ref(), &facts, &known, op, report).await?;
+                apply_correct(
+                    pool,
+                    embedder.as_ref(),
+                    facts,
+                    &known,
+                    authority,
+                    op,
+                    report,
+                )
+                .await?;
             },
-            "remove" => apply_remove(pool, tree, embedder, &known, op, report).await?,
+            "remove" => {
+                apply_remove(pool, tree, embedder, facts, &known, authority, op, report).await?;
+            },
             "add" => {
                 apply_add(
                     pool,
                     embedder.as_ref(),
                     wiki_id,
                     source_path,
-                    commenter.as_ref(),
+                    commenter,
                     &batch_removals,
                     op,
                     report,
@@ -368,8 +539,9 @@ async fn apply_page(
                 apply_move(
                     pool,
                     tree,
-                    &facts,
+                    facts,
                     &known,
+                    authority,
                     wiki_id,
                     source_path,
                     op,
@@ -386,19 +558,119 @@ async fn apply_page(
         }
     }
 
-    for (bi, _, _) in comments {
-        stamp_processed(pool, *bi, now).await?;
-        report.comments_processed += 1;
-    }
     Ok(())
 }
 
+/// One born-applied receipt saying what a comment asked for that its author
+/// may not ask, addressed to that author.
+///
+/// Best-effort on purpose: the ops that WERE allowed have already landed, and
+/// losing the paper trail is not a reason to undo them. A failure is logged
+/// and the pass goes on.
+async fn emit_refusal_receipt(
+    pool: &SqlitePool,
+    source_path: &str,
+    commenter: Option<&Principal>,
+    refused: &[String],
+) {
+    let context = serde_json::json!({
+        "source_path": source_path,
+        "author": commenter.map(ToString::to_string),
+        "refused": refused,
+    });
+    let params = crate::proposals::EmitParams::new(
+        crate::proposals::kind::COMMENT_REFUSED,
+        context.clone(),
+        serde_json::json!([]),
+    )
+    .with_recipient(commenter.map(ToString::to_string));
+    if let Err(e) =
+        crate::proposals::emit_applied_proposal(pool, params, context, Some("comment")).await
+    {
+        tracing::warn!(error = %e, source_path, "comment apply: refusal receipt not recorded");
+    }
+}
+
+/// What one commenter may do to one fact of the page they commented on.
+///
+/// **A comment is a person speaking, and it carries their authority and no
+/// more.** The night applies it while nobody is watching, so the authority has
+/// to be checked here rather than trusted from the surface that took the
+/// comment: the page is one thing, and a fact on it is somebody's.
+///
+/// Two questions, in order, and the first is the one that matters most: can
+/// this person READ the fact at all ([`crate::acl::can_read`])? A fact they
+/// cannot read is one they were never shown, so an op naming it is either a
+/// model's invention or a probe, and either way the answer is the same. Then
+/// the write rule for the verb, the same ones the chat asks
+/// ([`crate::acl::sender_may_rewrite`], [`crate::acl::can_delete`]).
+///
+/// **Being an admin buys nothing here.** The reveal lens is what lets an
+/// operator see past the per-fact gates, and it is not in this path: a comment
+/// is applied by the night, where nobody is holding a lens. So the authority
+/// asked is the person's own, admin or not.
+struct CommenterAuthority<'a> {
+    /// The person whose comment this is, as `user:<id>`. `None` when no
+    /// comment on the page recorded an author — an anonymous comment may read
+    /// nothing and change nothing.
+    who: Option<&'a Principal>,
+    /// Their groups, for the same reason every other gate resolves them.
+    groups: Vec<String>,
+}
+
+impl CommenterAuthority<'_> {
+    /// The bare user id the acl helpers take, or `""` — which matches nobody.
+    const fn id(&self) -> &str {
+        match self.who {
+            Some(Principal::User(id)) => id.as_str(),
+            _ => "",
+        }
+    }
+
+    /// Can they read this fact? Everything else is asked only after this.
+    fn may_read(&self, row: &fact_index::FactIndexRow) -> bool {
+        crate::acl::can_read(
+            &crate::types::Acl {
+                subject: Some(row.subject_id.clone()),
+                allow: row.allow_ids.clone(),
+            },
+            self.id(),
+            &self.groups,
+            row.sender_id.as_ref(),
+        )
+    }
+
+    /// May they change what this fact SAYS, or where it lives? Both are the
+    /// rewrite rule: the fact's subject, or whoever told it.
+    fn may_rewrite(&self, row: &fact_index::FactIndexRow) -> bool {
+        self.may_read(row)
+            && crate::acl::sender_may_rewrite(
+                &row.subject_id,
+                row.sender_id.as_ref(),
+                self.id(),
+                &self.groups,
+            )
+    }
+
+    /// May they take it away? The strictest of the three: a tombstone is the
+    /// only op that loses something, so it belongs to whoever said it.
+    fn may_remove(&self, row: &fact_index::FactIndexRow) -> bool {
+        // `is_admin` is false on purpose, and it is the rule above in code.
+        self.may_read(row) && crate::acl::can_delete(row.sender_id.as_ref(), self.id(), false)
+    }
+}
+
 /// Correct an existing fact's claim in place, preserving its offsets + ACL.
+#[allow(
+    clippy::too_many_arguments,
+    reason = "one op: what to change, on which fact, by whose authority, written where"
+)]
 async fn apply_correct(
     pool: &SqlitePool,
     embedder: &dyn Embedder,
     facts: &[fact_index::FactIndexRow],
     known: &HashSet<&str>,
+    authority: &CommenterAuthority<'_>,
     op: &RawOp,
     report: &mut CommentApplyReport,
 ) -> Result<()> {
@@ -425,6 +697,13 @@ async fn apply_correct(
         .iter()
         .find(|f| f.fact_id.as_str() == fid_str)
         .expect("fid is in `known`, built from `facts`");
+    // What a fact says belongs to its subject and to whoever told it.
+    if !authority.may_rewrite(row) {
+        report.refused.push(format!(
+            "{fid_str} · correct · what a fact says is its subject's and its teller's to change"
+        ));
+        return Ok(());
+    }
     let embedding = embedder
         .embed(&crate::parser::strip_embed_markers(text))
         .await?;
@@ -445,11 +724,17 @@ async fn apply_correct(
 /// Tombstone an existing fact a comment asks to forget, and excise its
 /// on-disk region ([`crate::capture::wiki_forget`] owns both halves; the
 /// strip inside it is best-effort and never fails the removal).
+#[allow(
+    clippy::too_many_arguments,
+    reason = "one op: which fact, by whose authority, written where"
+)]
 async fn apply_remove(
     pool: &SqlitePool,
     tree: &WikiTree,
     embedder: &Arc<dyn Embedder>,
+    facts: &[fact_index::FactIndexRow],
     known: &HashSet<&str>,
+    authority: &CommenterAuthority<'_>,
     op: &RawOp,
     report: &mut CommentApplyReport,
 ) -> Result<()> {
@@ -469,6 +754,18 @@ async fn apply_remove(
             .push(format!("remove refused: malformed fact_id {fid_str}"));
         return Ok(());
     };
+    let row = facts
+        .iter()
+        .find(|f| f.fact_id.as_str() == fid_str)
+        .expect("fid is in `known`, built from `facts`");
+    // A tombstone is the only op here that loses something, so it belongs to
+    // whoever said the thing.
+    if !authority.may_remove(row) {
+        report.refused.push(format!(
+            "{fid_str} · remove · a fact somebody else told is not yours to take away"
+        ));
+        return Ok(());
+    }
     let outcome =
         crate::capture::wiki_forget(tree, pool, embedder.clone(), &fid, REASON_COMMENT_REMOVE)
             .await
@@ -689,6 +986,7 @@ async fn apply_move(
     tree: &WikiTree,
     facts: &[fact_index::FactIndexRow],
     known: &HashSet<&str>,
+    authority: &CommenterAuthority<'_>,
     wiki_id: &WikiId,
     source_path: &str,
     op: &RawOp,
@@ -716,6 +1014,14 @@ async fn apply_move(
         .iter()
         .find(|f| f.fact_id.as_str() == fid_str)
         .expect("fid is in `known`, built from `facts`");
+    // Where a fact lives is the same authority as what it says: its subject's
+    // and its teller's. Moving one cross-wiki also changes who meets it.
+    if !authority.may_rewrite(row) {
+        report.refused.push(format!(
+            "{fid_str} · move · where a fact lives is its subject's and its teller's to change"
+        ));
+        return Ok(());
+    }
     let recipient = proposals::recipient_from_fact(&row.subject_id, row.sender_id.as_ref());
     // Built here rather than once for the page: the receipt is addressed to
     // the owner of THIS fact, and the page's comments can be several
@@ -1145,14 +1451,15 @@ fn describe_comments(comments: &[(i64, String, Option<String>)]) -> String {
         .join("\n")
 }
 
-/// The commenter principal an `add` op is owned/sent by: the single distinct
-/// non-empty `author_sender_id` among the page's pending comments, taken as
-/// `user:<id>`. When the page mixes authors the last (most recent) one
-/// represents them — a minimal, faithful choice given an `add` op carries no
-/// back-reference to one comment. `None` when no comment on the page records
-/// an author — then `apply_add` falls back to the wiki's scope principal,
-/// never inventing a sender.
-fn representative_commenter(comments: &[(i64, String, Option<String>)]) -> Option<Principal> {
+/// Whose comments these are: the `author_sender_id` they carry, as
+/// `user:<id>`.
+///
+/// One reading is one author's comments ([`apply_page_for_one_commenter`]), so
+/// this is that author — the `add` ops it produces are theirs, and so is the
+/// authority every other op is checked against. `None` when the comments
+/// record no author at all, and then an anonymous reading may read nothing and
+/// change nothing.
+fn author_of(comments: &[(i64, String, Option<String>)]) -> Option<Principal> {
     comments
         .iter()
         .filter_map(|(_, _, author)| author.as_deref())
@@ -1312,6 +1619,229 @@ mod tests {
         insert_fact_with_subject(pool, id, text, "user:alice").await;
     }
 
+    /// **A comment changes what its author may change, and nothing else.**
+    ///
+    /// Bob leaves a comment on a page of Alice's wiki asking for two things:
+    /// a fact Alice told about herself corrected, and a fact Alice told about
+    /// herself taken away. He can read them — she shared them — but what a
+    /// fact says belongs to its subject and its teller, and a tombstone
+    /// belongs to whoever said the thing. Both are refused with their reason,
+    /// and the `add` he also asked for goes through: the rest of a comment is
+    /// not punished for the part that was not his to ask.
+    #[tokio::test]
+    async fn a_comment_may_change_only_what_its_author_may_change() {
+        let (dir, tree, pool) = setup().await;
+        let hers = fid_str(0x71);
+        // Alice's own, shared with Bob: he reads it, and it is still not his.
+        fact_index::insert(
+            &pool,
+            &NewFact {
+                subject_external: None,
+                slot: None,
+                slot_value: None,
+                authored_refs: Vec::new(),
+                fact_id: FactId::parse(&hers).unwrap(),
+                wiki_id: "alice".to_owned(),
+                source_path: "wikis/alice/cucina.md".to_owned(),
+                region_start: Some(10),
+                region_end: Some(40),
+                text: "Alice cooks on Sundays".to_owned(),
+                embedding: vec![0.1, 0.2],
+                subject_id: "user:alice".parse().unwrap(),
+                allow_ids: vec!["user:bob".parse().unwrap()],
+                sender_id: Some("user:alice".parse().unwrap()),
+                fact_type: None,
+                topics: Vec::new(),
+                valid_from: None,
+                valid_to: None,
+                target_page: None,
+                style: None,
+                salience: None,
+                source_ref: None,
+            },
+        )
+        .await
+        .unwrap();
+        let bi = insert_comment_by(
+            &pool,
+            "bob",
+            Some("wiki://alice/cucina.md#bio"),
+            "that is wrong, drop it, and note that I cook on Saturdays",
+        )
+        .await;
+
+        let llm = FakeLlmBackend::new(
+            "fake",
+            format!(
+                "{{\"ops\":[\
+                   {{\"action\":\"correct\",\"fact_id\":\"{hers}\",\"text\":\"Alice never cooks\"}},\
+                   {{\"action\":\"remove\",\"fact_id\":\"{hers}\"}},\
+                   {{\"action\":\"add\",\"text\":\"Bob cooks on Saturdays\",\
+                     \"subject_id\":\"user:bob\",\"allow_ids\":[]}}\
+                 ]}}"
+            ),
+        );
+        let embedder: Arc<dyn Embedder> = Arc::new(FakeEmbedder::new("fake", 2));
+        let report = apply_comments(
+            &pool,
+            &tree,
+            &embedder,
+            &llm,
+            &WikiId::parse("alice").unwrap(),
+            &[bi],
+            "2026-05-31T02:00:00Z",
+        )
+        .await
+        .expect("apply");
+
+        assert_eq!(report.facts_corrected, 0, "{:?}", report.refused);
+        assert_eq!(report.facts_removed, 0, "{:?}", report.refused);
+        assert_eq!(report.facts_added, 1, "the rest of his comment stands");
+        assert_eq!(report.refused.len(), 2, "{:?}", report.refused);
+        assert!(
+            report.refused.iter().all(|r| r.contains(&hers)),
+            "each refusal names the fact it was about: {:?}",
+            report.refused
+        );
+
+        // Her fact is exactly as she left it.
+        let row = fact_index::find_by_id(&pool, &FactId::parse(&hers).unwrap())
+            .await
+            .unwrap()
+            .expect("row");
+        assert_eq!(row.text, "Alice cooks on Sundays");
+        assert!(row.deleted_at.is_none());
+
+        // And he is told which part was not done, where he will look.
+        let kinds: Vec<String> =
+            sqlx::query_scalar("SELECT kind FROM structure_proposals WHERE status = 'applied'")
+                .fetch_all(&pool)
+                .await
+                .expect("receipts");
+        assert!(
+            kinds
+                .iter()
+                .any(|k| k == crate::proposals::kind::COMMENT_REFUSED),
+            "{kinds:?}"
+        );
+        drop(dir);
+    }
+
+    /// **The model never sees a fact the commenter cannot read.**
+    ///
+    /// What reaches it is the page as that person reads it. A fact outside
+    /// their reach is not in the prompt at all, so it cannot be named — and a
+    /// page they read nothing of produces no call and no ops.
+    #[tokio::test]
+    async fn the_reading_carries_only_the_facts_its_commenter_can_read() {
+        let (dir, tree, pool) = setup().await;
+        let private = fid_str(0x72);
+        insert_fact_with_subject(&pool, &private, "Alice sees a therapist", "user:alice").await;
+        let shared = fid_str(0x73);
+        fact_index::insert(
+            &pool,
+            &NewFact {
+                subject_external: None,
+                slot: None,
+                slot_value: None,
+                authored_refs: Vec::new(),
+                fact_id: FactId::parse(&shared).unwrap(),
+                wiki_id: "alice".to_owned(),
+                source_path: "wikis/alice/cucina.md".to_owned(),
+                region_start: Some(50),
+                region_end: Some(70),
+                text: "the kitchen tap drips".to_owned(),
+                embedding: vec![0.3, 0.4],
+                subject_id: "user:alice".parse().unwrap(),
+                allow_ids: vec!["user:bob".parse().unwrap()],
+                sender_id: Some("user:alice".parse().unwrap()),
+                fact_type: None,
+                topics: Vec::new(),
+                valid_from: None,
+                valid_to: None,
+                target_page: None,
+                style: None,
+                salience: None,
+                source_ref: None,
+            },
+        )
+        .await
+        .unwrap();
+        let bi = insert_comment_by(
+            &pool,
+            "bob",
+            Some("wiki://alice/cucina.md#bio"),
+            "the tap was fixed",
+        )
+        .await;
+
+        let llm = FakeLlmBackend::new("fake", "{\"ops\":[]}");
+        let embedder: Arc<dyn Embedder> = Arc::new(FakeEmbedder::new("fake", 2));
+        apply_comments(
+            &pool,
+            &tree,
+            &embedder,
+            &llm,
+            &WikiId::parse("alice").unwrap(),
+            &[bi],
+            "2026-05-31T02:00:00Z",
+        )
+        .await
+        .expect("apply");
+
+        let prompt = llm.last_system_prompt().expect("the page was read");
+        assert!(
+            prompt.contains(&shared),
+            "the fact he reads is in front of the model: {prompt}"
+        );
+        assert!(
+            !prompt.contains(&private) && !prompt.contains("therapist"),
+            "and the one he does not read is nowhere in it: {prompt}"
+        );
+        drop(dir);
+    }
+
+    /// A fact whose SUBJECT and TELLER are different people — the shape a
+    /// misfiling has, and the one the per-fact authority turns on: what you
+    /// told is yours to correct whoever it turned out to be about.
+    async fn insert_fact_told_by(
+        pool: &SqlitePool,
+        id: &str,
+        text: &str,
+        subject: &str,
+        teller: &str,
+    ) {
+        fact_index::insert(
+            pool,
+            &NewFact {
+                subject_external: None,
+                slot: None,
+                slot_value: None,
+                authored_refs: Vec::new(),
+                fact_id: FactId::parse(id).unwrap(),
+                wiki_id: "alice".to_owned(),
+                source_path: "wikis/alice/cucina.md".to_owned(),
+                region_start: Some(10),
+                region_end: Some(40),
+                text: text.to_owned(),
+                embedding: vec![0.1, 0.2],
+                subject_id: subject.parse::<Principal>().unwrap(),
+                allow_ids: Vec::new(),
+                sender_id: Some(teller.parse::<Principal>().unwrap()),
+                fact_type: None,
+                topics: Vec::new(),
+                valid_from: None,
+                valid_to: None,
+                target_page: None,
+                style: None,
+                salience: None,
+                source_ref: None,
+            },
+        )
+        .await
+        .unwrap();
+    }
+
     async fn insert_fact_with_subject(pool: &SqlitePool, id: &str, text: &str, subject: &str) {
         fact_index::insert(
             pool,
@@ -1348,6 +1878,30 @@ mod tests {
         )
         .await
         .unwrap();
+    }
+
+    /// A comment with a named author, for the tests where WHO wrote it is the
+    /// whole question.
+    async fn insert_comment_by(
+        pool: &SqlitePool,
+        author: &str,
+        cite: Option<&str>,
+        body: &str,
+    ) -> i64 {
+        let ts = "2026-05-31T00:00:00Z";
+        let row: (i64,) = sqlx::query_as(
+            "INSERT INTO wiki_briefing_items \
+             (wiki_id, source_kind, source_ref, topic, body, kind, ts, target_cite, author_sender_id, processed_at) \
+             VALUES ('alice','dashboard_comment','dashboard:alice','t', ?, 'external', ?, ?, ?, NULL) RETURNING id",
+        )
+        .bind(body)
+        .bind(ts)
+        .bind(cite)
+        .bind(author)
+        .fetch_one(pool)
+        .await
+        .unwrap();
+        row.0
     }
 
     async fn insert_comment(pool: &SqlitePool, cite: Option<&str>, body: &str) -> i64 {
@@ -1686,11 +2240,14 @@ mod tests {
         // answer (`subject_id`, here the commenter).
         let (dir, tree, pool) = setup().await;
         let misfiled = fid_str(0x61);
-        insert_fact_with_subject(
+        // Alice told it; the classifier filed it under Bob. What she told is
+        // hers to correct, which is why this repair goes through at all.
+        insert_fact_told_by(
             &pool,
             &misfiled,
             "Roberto Sackville is retiring in June",
             "user:bob",
+            "user:alice",
         )
         .await;
         let bi = insert_comment(

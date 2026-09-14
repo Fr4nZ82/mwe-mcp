@@ -1950,6 +1950,74 @@ async fn a_page_of_a_wiki_nobody_owns_opens_for_the_reader_of_one_of_its_facts()
     );
 }
 
+/// **You comment where you read, and «where» is the page.**
+///
+/// Bob reads a fact on one page of this wiki. That used to let him comment on
+/// EVERY page of it, including one he has never been shown a line of — and the
+/// night turns a comment into changes to that page's facts. The affordance is
+/// gone from the page he cannot read, and the endpoint refuses him there too,
+/// so the two agree.
+#[tokio::test]
+async fn commenting_is_offered_on_the_page_you_read_and_refused_on_the_one_you_do_not() {
+    let (app, pool, tree, _dir) = make_app_with_memory().await;
+    let admin = login_as_admin(&app).await;
+    let bob = login_as_user(&app, &admin, "bob").await;
+
+    // Two pages in one wiki: one fact is Bob's, the other is not his to see.
+    seed_giardinaggio_with_page(&tree, "rose.md", TWO_HEADING_BODY);
+    seed_giardinaggio_with_page(&tree, "conti.md", TWO_HEADING_BODY);
+    seed_fact_about(&pool, "giardinaggio", "rose.md", "user:bob", "03").await;
+    seed_fact_about(&pool, "giardinaggio", "conti.md", "user:carol", "04").await;
+
+    let his = send(
+        &app,
+        Request::builder()
+            .uri("/wiki/giardinaggio/view/rose.md")
+            .header(header::COOKIE, &bob)
+            .body(Body::empty())
+            .unwrap(),
+    )
+    .await;
+    assert_eq!(his.status(), StatusCode::OK);
+    assert!(
+        body_string(his).await.contains("Add comments"),
+        "he may comment on the page he reads"
+    );
+
+    let not_his = send(
+        &app,
+        Request::builder()
+            .uri("/wiki/giardinaggio/view/conti.md")
+            .header(header::COOKIE, &bob)
+            .body(Body::empty())
+            .unwrap(),
+    )
+    .await;
+    let html = body_string(not_his).await;
+    assert!(
+        !html.contains("Add comments"),
+        "and not on the page he reads nothing of: {html}"
+    );
+
+    // And the endpoint says the same thing, so the two cannot drift.
+    let refused = send(
+        &app,
+        Request::builder()
+            .method("POST")
+            .uri("/wiki/giardinaggio/comment/conti.md")
+            .header(header::COOKIE, &bob)
+            .header(header::CONTENT_TYPE, "application/x-www-form-urlencoded")
+            .body(Body::from("body=change+this"))
+            .unwrap(),
+    )
+    .await;
+    assert!(
+        refused.status().is_client_error(),
+        "the endpoint refuses what the page did not offer, got {}",
+        refused.status()
+    );
+}
+
 /// **A page's text is not editable from anywhere.**
 ///
 /// The route that handed somebody a page's raw body is gone, GET and POST:

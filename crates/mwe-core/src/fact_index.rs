@@ -2286,6 +2286,42 @@ pub async fn readable_fact_on_page(
     }))
 }
 
+/// Does this page surface to this reader at all?
+///
+/// The per-page twin of [`wiki_visible_to`], and the exact sibling of
+/// [`readable_fact_on_page`] with the same one difference the wiki-level pair
+/// has: **a page with no facts answers `true`**. There is nothing on it being
+/// kept from anybody, so refusing would hide an emptiness rather than a
+/// secret — and the page's own existence is already known to whoever is
+/// standing on it.
+///
+/// The strict twin is the one to ask when the question is «send this person
+/// to that page»; this one is for «is this page's door shut in their face».
+///
+/// # Errors
+///
+/// The underlying [`page_acl_map_active`] query error.
+pub async fn page_visible_to(
+    pool: &SqlitePool,
+    source_path: &str,
+    sender_id: &str,
+    sender_groups: &[String],
+) -> Result<bool> {
+    let acl = page_acl_map_active(pool, source_path).await?;
+    Ok(acl.is_empty()
+        || acl.values().any(|region| {
+            crate::acl::can_read(
+                &crate::types::Acl {
+                    subject: Some(region.subject.clone()),
+                    allow: region.allow.clone(),
+                },
+                sender_id,
+                sender_groups,
+                region.sender.as_ref(),
+            )
+        }))
+}
+
 /// The per-row visibility test both wiki-level questions above are built
 /// from — the same [`crate::acl::can_read`] the redaction path applies, so a
 /// per-fragment `allow=` grant is honoured.
