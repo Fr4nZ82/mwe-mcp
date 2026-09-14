@@ -1800,6 +1800,14 @@ pub struct RecallConfig {
     /// a curation knob; `0` serves the one-line summary alone.
     #[serde(default)]
     pub max_sender_identity_chars: Option<usize>,
+    /// Override `IngestPolicy::max_identity_core_chars_per_person` — the
+    /// budget of ONE person's lines inside the `identity_core` block
+    /// (default 1200). Per person, never applied to the speaker's own card,
+    /// and never to a line that fills a card slot or whose topic says health
+    /// or safety. Raise it for a memory whose cards have grown long; what it
+    /// leaves out is announced, never silent.
+    #[serde(default)]
+    pub max_identity_core_chars_per_person: Option<usize>,
     /// Deployment-wide IANA timezone of the users (e.g. `Europe/Rome`) →
     /// sets `IngestPolicy::ingest_timezone`. Also settable via the
     /// `MWE_INGEST_TIMEZONE` env var; this YAML field wins when both are set.
@@ -1901,6 +1909,9 @@ impl RecallConfig {
         }
         if let Some(v) = self.max_sender_identity_chars {
             p.max_sender_identity_chars = v;
+        }
+        if let Some(v) = self.max_identity_core_chars_per_person {
+            p.max_identity_core_chars_per_person = v;
         }
         if let Some(v) = self.recent_window_entries {
             p.recent_window_entries = v;

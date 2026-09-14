@@ -1329,14 +1329,19 @@ pub async fn set_acl(
     Ok(Some(prev))
 }
 
-/// **Narrow a fact's exclusions to `excluded`** — nothing else on the row
-/// moves, and `updated_at` is bumped.
+/// **Add `excluded` to a fact's exclusions** — nothing else on the row moves,
+/// and `updated_at` is bumped.
 ///
 /// The write half of «and don't tell her» about something the memory already
-/// holds ([`crate::capture`]'s dedup gate). It only ever NARROWS in practice,
-/// because the one caller unions the new names onto the ones already there:
-/// lifting a restriction is something a person says of that fact, with a
-/// receipt, and not something a resemblance may do on their behalf.
+/// holds ([`crate::capture`]'s dedup gate).
+///
+/// **It can only ever narrow, and that is enforced HERE.** The union is taken
+/// inside the function, against what the row already holds, rather than by the
+/// caller handing in a complete list: a caller that passed only its own names
+/// would otherwise drop somebody else's restriction by writing over it, and
+/// that is a mistake nobody would see. Lifting a restriction is a different
+/// act — something a person says of that fact, with a receipt — and it does
+/// not come through this door at all ([`set_acl`]'s `excluded` argument).
 ///
 /// Returns `false` when `fact_id` has no active row.
 ///
@@ -1348,7 +1353,16 @@ pub async fn restrict_to(
     fact_id: &FactId,
     excluded: &[Principal],
 ) -> Result<bool> {
-    let excluded_json = principals_to_json(excluded)?;
+    let Some(row) = find_by_id(pool, fact_id).await? else {
+        return Ok(false);
+    };
+    let mut union = row.excluded_ids;
+    for principal in excluded {
+        if !union.contains(principal) {
+            union.push(principal.clone());
+        }
+    }
+    let excluded_json = principals_to_json(&union)?;
     let res = sqlx::query(
         "UPDATE fact_index SET excluded_ids = ?, updated_at = ?
           WHERE fact_id = ? AND deleted_at IS NULL",
@@ -6048,6 +6062,59 @@ mod tests {
         assert_eq!(changed.sender_id, None, "sender cleared when None passed");
         // The snapshot the receipt records is the ACL as it was.
         assert_eq!(prev.prev_allow_ids, vec!["group:family".parse().unwrap()]);
+    }
+
+    /// **A caller that knows only its own names does not drop anybody
+    /// else's.**
+    ///
+    /// The union is taken inside `restrict_to`, against what the row already
+    /// holds, and not by the caller handing in a complete list: a second
+    /// caller passing only what it wants added would otherwise write over a
+    /// restriction somebody else put there, and nobody would see it happen.
+    /// The function can only ever narrow, and that is the point of it.
+    #[tokio::test]
+    async fn adding_one_exclusion_never_drops_another() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let pool = crate::db::open_or_init(dir.path()).await.expect("open");
+        let id = FactId::parse("0190f3c2-7a4e-7c31-9b02-2f6a1c8e5e09").unwrap();
+        sqlx::query(
+            "INSERT INTO fact_index (fact_id, wiki_id, source_path, \"text\", subject_id, \
+                                     allow_ids, excluded_ids, embedding, embedding_dim, \
+                                     created_at, updated_at) \
+             VALUES (?, 'famiglia', 'casa.md', 'x', 'group:parents', '[]', \
+                     '[\"user:zoe\"]', ?, 1, ?, ?)",
+        )
+        .bind(id.as_str())
+        .bind(vec![0u8; 4])
+        .bind("2026-09-12T13:00:00Z")
+        .bind("2026-09-12T13:00:00Z")
+        .execute(&pool)
+        .await
+        .expect("plant");
+
+        // A caller that knows nothing of Zoe adds its own name.
+        let carol: Principal = "user:carol".parse().unwrap();
+        assert!(
+            restrict_to(&pool, &id, std::slice::from_ref(&carol))
+                .await
+                .expect("restrict")
+        );
+        let row = find_by_id(&pool, &id).await.unwrap().expect("row");
+        assert_eq!(
+            row.excluded_ids,
+            vec!["user:zoe".parse::<Principal>().unwrap(), carol.clone()],
+            "both stand: the union is taken here, not by whoever calls"
+        );
+
+        // And saying the same name twice changes nothing.
+        assert!(
+            restrict_to(&pool, &id, std::slice::from_ref(&carol))
+                .await
+                .expect("restrict")
+        );
+        let row = find_by_id(&pool, &id).await.unwrap().expect("row");
+        assert_eq!(row.excluded_ids.len(), 2, "no duplicate");
+        drop(dir);
     }
 
     /// **Widening an audience does not lift an exclusion.**

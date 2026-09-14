@@ -532,13 +532,10 @@ async fn apply_exclusion_to_the_fact_already_there(
     if !crate::acl::sender_may_rewrite(&row.subject_id, row.sender_id.as_ref(), &speaker, &[]) {
         return Ok(None);
     }
-    let mut excluded = row.excluded_ids.clone();
-    for p in audience.excluded {
-        if !excluded.contains(p) {
-            excluded.push(p.clone());
-        }
-    }
-    if !fact_index::restrict_to(pool, &row.fact_id, &excluded).await? {
+    // Only the names this capture adds: the union against what the row
+    // already holds is taken inside `restrict_to`, so no caller can drop
+    // somebody else's restriction by writing over it.
+    if !fact_index::restrict_to(pool, &row.fact_id, audience.excluded).await? {
         return Ok(None);
     }
     tracing::info!(

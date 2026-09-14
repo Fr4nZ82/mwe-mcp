@@ -180,6 +180,15 @@ fn knobs() -> Vec<Knob> {
                 .to_owned(),
         },
         Knob {
+            field: "max_identity_core_chars_per_person",
+            label: "Identity card of somebody else — budget per person (chars)",
+            default: def.max_identity_core_chars_per_person.to_string(),
+            help: "Per person, and never the card of whoever is speaking: theirs goes whole. \
+                   Health and safety are never the part left out, and what is left out is \
+                   said — to the assistant and on the turn's trace."
+                .to_owned(),
+        },
+        Knob {
             field: "recent_window_entries",
             label: "Recent window — entries per user",
             default: def.recent_window_entries.to_string(),
@@ -227,6 +236,7 @@ fn override_value(cfg: &RecallConfig, field: &str) -> String {
         "max_agent_identity_chars" => s(cfg.max_agent_identity_chars),
         "max_agent_history_chars" => s(cfg.max_agent_history_chars),
         "max_sender_identity_chars" => s(cfg.max_sender_identity_chars),
+        "max_identity_core_chars_per_person" => s(cfg.max_identity_core_chars_per_person),
         "recent_window_entries" => s(cfg.recent_window_entries),
         "recent_window_ttl_hours" => s(cfg.recent_window_ttl_hours),
         "recent_window_chars" => s(cfg.recent_window_chars),
@@ -445,6 +455,10 @@ fn parse_form(form: &HashMap<String, String>) -> Result<RecallConfig> {
         max_agent_identity_chars: parse_usize(form, "max_agent_identity_chars")?,
         max_agent_history_chars: parse_usize(form, "max_agent_history_chars")?,
         max_sender_identity_chars: parse_usize(form, "max_sender_identity_chars")?,
+        max_identity_core_chars_per_person: parse_usize(
+            form,
+            "max_identity_core_chars_per_person",
+        )?,
         // Not a recall knob and not on this panel — the caller carries the
         // live value forward so a save here never wipes a configured zone.
         ingest_timezone: None,

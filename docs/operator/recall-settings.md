@@ -28,6 +28,7 @@ prompt, not numbers on this page. These are the resources.
 | WHO YOU ARE — budget (chars) | 900 |
 | History with user — budget (chars) | 1400 |
 | WHO IS SPEAKING — budget (chars) | 2500 |
+| Identity card of somebody else — budget per person (chars) | 1200 |
 | Recent window — entries per user | 32 |
 | Recent window — TTL (hours) | 4 |
 | Recent window — budget (chars) | 1200 |
@@ -37,6 +38,12 @@ knowing before you touch anything are the **navigator depth**, which is
 clamped to a hard cap of 10 however high you set it, and the **recent
 window**, which is deliberately short because it serves the live thread and
 not history.
+
+The **identity card of somebody else** budget applies per person, and never to
+the card of whoever is speaking: theirs goes whole. Nothing about health or
+safety is ever the part left out, and what the budget does leave out is said
+plainly — to the assistant, on that person's own line, and on the turn's
+[trace](../user/traces.md). Raise it for a memory whose cards have grown long.
 
 Related: which model serves the navigator is
 [the model slots](model-slots.md); what one nightly cycle may change is
