@@ -13,6 +13,12 @@ semver-governed surface: breaking changes are called out explicitly.
 
 ### Fixed
 
+- **The document road asks the same question about names as the chat does.** A
+  document is what writes the most facts from the least supervision, and it was
+  still being handed the whole list of everybody enrolled. It gets the
+  uploader's own list now: themselves, the assistants, and whoever they share a
+  group or something readable with.
+
 - **The memory names to an assistant only the people you have met in it.** The
   whole list of everybody enrolled, with the names each of them goes by, went
   to the model on every turn of every conversation. That list is what the model

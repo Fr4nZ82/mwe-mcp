@@ -2275,14 +2275,24 @@ async fn process_job(
         let sender_groups = crate::enrollment::groups_with_scope_for(pool, job.uploader())
             .await
             .unwrap_or_default();
-        // The enrolled roster the extractor resolves a named subject against —
-        // the gate that stops `subject_id` minting a `user:<id>` for a person who
-        // is not in the system (a relative, a pet). The same roster the message
-        // classifier injects: without it the extractor coins a principal for a
-        // name it has no row for.
-        let known_users = crate::enrollment::list_users(pool)
-            .await
-            .unwrap_or_default();
+        // The roster the extractor resolves a named subject against — the gate
+        // that stops `subject_id` minting a `user:<id>` for a person who is not
+        // in the system (a relative, a pet). The same roster the message
+        // classifier is handed, and narrowed the same way
+        // ([`crate::enrollment::roster_for`]): the people the UPLOADER has met
+        // inside this memory. A document is the road that writes the most facts
+        // from the least supervision, so a stranger's name in front of it is
+        // the costliest name in the product.
+        let known_users = crate::enrollment::roster_for(
+            pool,
+            job.uploader(),
+            &sender_groups
+                .iter()
+                .map(|(g, _)| g.clone())
+                .collect::<Vec<_>>(),
+        )
+        .await
+        .unwrap_or_default();
         // Read once for the whole document: every segment must answer the same
         // way about the same name, and a per-segment lookup would let the
         // roster shift under the extractor mid-file.
@@ -2838,6 +2848,70 @@ mod tests {
             .await
             .expect("migrations");
         pool
+    }
+
+    /// **A document is the road that writes the most facts from the least
+    /// supervision, and the roster it resolves names against is the uploader's
+    /// own.**
+    ///
+    /// The extractor coins nothing for a name it has no row for, so the roster
+    /// is the whole gate — and a name in it is where a fact about that person
+    /// comes from. Somebody the uploader has never met inside this memory has
+    /// no business being an answer the extractor can reach for.
+    #[tokio::test]
+    async fn the_uploaders_roster_is_the_people_they_have_met() {
+        let pool = make_pool().await;
+        for (who, agent) in [
+            ("alice", false),
+            ("bob", false),
+            ("carol", false),
+            ("samvisebot", true),
+        ] {
+            sqlx::query(
+                "INSERT INTO enrollment_users (user_id, aliases, is_admin, is_agent) \
+                 VALUES (?,'[]',0,?)",
+            )
+            .bind(who)
+            .bind(i64::from(agent))
+            .execute(&pool)
+            .await
+            .unwrap();
+        }
+        sqlx::query(
+            "INSERT INTO enrollment_groups (group_id, members) \
+             VALUES ('famiglia', '[\"alice\",\"bob\"]')",
+        )
+        .execute(&pool)
+        .await
+        .unwrap();
+
+        // Exactly the pair `run_document_jobs` builds: the uploader's groups
+        // with their scope, reduced to ids.
+        let sender_groups = crate::enrollment::groups_with_scope_for(&pool, "alice")
+            .await
+            .unwrap();
+        let names: Vec<String> = crate::enrollment::roster_for(
+            &pool,
+            "alice",
+            &sender_groups
+                .iter()
+                .map(|(g, _)| g.clone())
+                .collect::<Vec<_>>(),
+        )
+        .await
+        .expect("roster")
+        .into_iter()
+        .map(|u| u.user_id)
+        .collect();
+        assert_eq!(
+            names,
+            vec![
+                "alice".to_owned(),
+                "bob".to_owned(),
+                "samvisebot".to_owned()
+            ],
+            "her household and the assistant — carol is a stranger to her"
+        );
     }
 
     fn policy() -> DocumentPolicy {
@@ -3565,6 +3639,16 @@ mod tests {
         sqlx::query(
             "INSERT INTO enrollment_users (user_id, aliases, is_admin)
              VALUES ('alice','[]',0), ('bob','[]',0)",
+        )
+        .execute(&pool)
+        .await
+        .unwrap();
+        // And they share a household, which is what puts bob in the roster the
+        // extractor is handed at all (`enrollment::roster_for`): the test is
+        // about a look-alike of a name that IS there.
+        sqlx::query(
+            "INSERT INTO enrollment_groups (group_id, members) \
+             VALUES ('famiglia', '[\"alice\",\"bob\"]')",
         )
         .execute(&pool)
         .await

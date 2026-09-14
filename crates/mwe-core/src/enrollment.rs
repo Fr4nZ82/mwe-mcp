@@ -549,8 +549,11 @@ pub async fn list_users(pool: &SqlitePool) -> Result<Vec<EnrolledUserLite>, sqlx
 ///
 /// The **admin** is handed the whole enrolment, as they are everywhere else.
 ///
-/// One query for the facts ([`crate::fact_index::active_card_acl_rows`]) and
-/// one for the roster, whatever the size of either.
+/// Four reads, none of them per person: the roster, the admin check, the
+/// groups WHOLE (one row per group, members and all — never one lookup per
+/// enrolled user, which is how this grows with the household), and one scan of
+/// the active facts ([`crate::fact_index::active_card_acl_rows`], the lean
+/// projection the reader card already uses).
 ///
 /// # Errors
 ///
@@ -564,11 +567,35 @@ pub async fn roster_for(
     if is_admin(pool, reader_id).await.unwrap_or(false) {
         return Ok(everybody);
     }
+    // Every group once, with its members, and the memberships read off it —
+    // both directions at the price of one query. Asking per person is what
+    // turns a household into a query storm as it grows.
+    let all_groups: Vec<(String, Vec<String>)> =
+        sqlx::query_as::<_, (String, String)>("SELECT group_id, members FROM enrollment_groups")
+            .fetch_all(pool)
+            .await?
+            .into_iter()
+            .map(|(id, members)| {
+                (
+                    id,
+                    serde_json::from_str::<Vec<String>>(&members).unwrap_or_default(),
+                )
+            })
+            .collect();
+    let groups_of = |user: &str| -> Vec<String> {
+        all_groups
+            .iter()
+            .filter(|(_, m)| m.iter().any(|x| x == user))
+            .map(|(id, _)| id.clone())
+            .collect()
+    };
     let mut shared: std::collections::BTreeSet<String> = std::collections::BTreeSet::new();
     shared.insert(reader_id.to_owned());
     for g in reader_groups {
-        for m in members_for(pool, g).await.unwrap_or_default() {
-            shared.insert(m);
+        if let Some((_, members)) = all_groups.iter().find(|(id, _)| id == g) {
+            for m in members {
+                shared.insert(m.clone());
+            }
         }
     }
     // A fact either of them may read, read the same way everything else is:
@@ -597,7 +624,7 @@ pub async fn roster_for(
         if shared.contains(&u.user_id) {
             continue;
         }
-        let groups = groups_for(pool, &u.user_id).await.unwrap_or_default();
+        let groups = groups_of(&u.user_id);
         if theirs.iter().any(|row| {
             crate::acl::can_read(
                 &crate::types::Acl {
