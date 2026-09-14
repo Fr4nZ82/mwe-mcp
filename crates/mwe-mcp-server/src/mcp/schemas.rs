@@ -468,7 +468,7 @@ fn wiki_admin_push() -> Tool {
                 },
                 "expected_op_log_head": {
                     "type": "integer",
-                    "description": "Optimistic concurrency (upsert only): the `op_log_head` the caller last synced to (from a prior push's `op_log_id` or a pull's `op_log_head`). The push is rejected with `409 conflicting_op_log_head` if a newer write op landed since — pull, re-diff, re-push. Pulls/notifies do not bump it. Omit for last-writer-wins."
+                    "description": "Optimistic concurrency (upsert only): the `op_log_head` the caller last synced to (from a prior push's `op_log_id` or a pull's `op_log_head`). The push is rejected with `409 conflicting_op_log_head` if a newer WRITE op landed since — pull, re-diff, re-push. Pulls and notifies never trip the gate, so a value you stamped from a pull is always safe to send back; the number itself does climb with every read, so it is not a signal that something changed. Omit for last-writer-wins."
                 },
                 "description": {
                     "type": "string",

@@ -167,8 +167,11 @@ fn resume(cwd):
 
     # 2. Reconcile the local mirror with the server.
     state = read(".mwe/state.json")                       # absent on a fresh clone
-    if state and state.last_op_log_head < me.last_op_log_id:
-        pull = wiki_admin_pull(wiki_id = wiki_id)         # add paths=[…] to narrow it
+    if state and state.last_op_log_head < me.last_op_log_id:   # counts READS too:
+        pull = wiki_admin_pull(wiki_id = wiki_id)              # a rise can be a pull,
+                                                               # so this errs toward
+                                                               # pulling, never toward
+                                                               # missing a write
         for page in local_edits_not_in(pull):
             wiki_admin_push(wiki_id, mode="upsert", pages=[page])
     return wiki_id

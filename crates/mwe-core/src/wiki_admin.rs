@@ -401,9 +401,13 @@ pub struct PushRequest {
     /// wiki since the caller last synced — i.e. a concurrent device wrote
     /// in the meantime. `None` (the default) skips the check and keeps the
     /// prior last-writer-wins behaviour. Read ops (`pull` / `notify`) never
-    /// trip the gate, so the value the caller stamps from a push response's
-    /// `op_log_id` (or a pull's `op_log_head`) stays stable across its own
-    /// pulls. Ignored on `Create` (the derived id cannot pre-exist).
+    /// trip the gate, so a value stamped from a push response's `op_log_id`
+    /// or from a pull's `op_log_head` is always safe to send back — even
+    /// though the NUMBER itself climbs with every read, because the log
+    /// counts reads too ([`PullResponse::op_log_head`]). A caller watching
+    /// that number therefore cannot tell a read from a write; the gate can,
+    /// and it is the gate that decides. Ignored on `Create` (the derived id
+    /// cannot pre-exist).
     pub expected_op_log_head: Option<i64>,
 }
 
@@ -510,10 +514,16 @@ pub struct PullResponse {
     /// and sub-wikis (matches `WikiHandle::list_pages` semantics),
     /// narrowed by [`PullRequest::paths`] when set.
     pub pages: Vec<PullPage>,
-    /// `op_id` of the most recent `wiki_admin_op_log` row for this
-    /// wiki, or `None` if no admin op was ever recorded. The smart
-    /// consumer stamps it into `.mwe/state.json` and forwards it as
-    /// `expected_op_log_head` on the next push.
+    /// `op_id` of the most recent `wiki_admin_op_log` row for this wiki, or
+    /// `None` if no admin op was ever recorded. The smart consumer stamps it
+    /// into `.mwe/state.json` and forwards it as `expected_op_log_head` on the
+    /// next push.
+    ///
+    /// **It counts every op, reads included**, so it climbs when nothing has
+    /// been written — a pull of its own records a `pull` row. That is harmless
+    /// to send back, because the gate compares against write ops alone, and it
+    /// is why the number is not a "has anything changed?" signal: a caller
+    /// that polls it sees its own reads move it.
     pub op_log_head: Option<i64>,
 }
 

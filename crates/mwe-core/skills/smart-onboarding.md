@@ -256,9 +256,12 @@ payload with it. Small batches also make a partial failure obvious.
 
 **`op_log_id` is global, not per-wiki.** The id in a push response is the
 server's own counter across all wikis, so it jumps: expecting 33 and
-seeing 40 is normal. Stamp whatever the last response returned into
+seeing 40 is normal. It also counts READS — a pull records one — so it
+climbs while nothing is being written, and a rise in it is not a sign
+that the wiki changed. Stamp whatever the last response returned into
 `.mwe/state.json.last_op_log_head` and pass it back as
-`expected_op_log_head`; never compute what it "should" be.
+`expected_op_log_head`; never compute what it "should" be, and never read
+it as "somebody wrote". Only a newer write op makes a push fail.
 
 **Copy verbatim, never paraphrase**, and copy a chronological `log.md` /
 `CHANGELOG.md` **whole** — it is the trail maintainers read to retrace
