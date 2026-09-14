@@ -1630,10 +1630,18 @@ async fn enforce_admin_auth(
         // A topic wiki — named for its subject, standing for nobody: there is
         // no owner to compare the caller against and no group whose membership
         // stands in for one. What may be written there is decided per fact, and
-        // the channel that writes a fact is `wiki_ingest_message`. The one
-        // actor that passes here is the human admin at the dashboard raw
-        // editor, which admits nobody else — for everybody else "nobody owns
-        // it" is not "anybody may write it".
+        // the channel that writes a fact is `wiki_ingest_message`. For
+        // everybody else "nobody owns it" is not "anybody may write it".
+        //
+        // **Nothing in this deployment reaches this arm.** No caller writes
+        // with [`ActorKind::Dashboard`]: the panel has no route that takes a
+        // page's text, and a page is changed through comments, the chat and
+        // the fact actions, none of which comes through here. The arm stands
+        // because the actor kind still exists and rows in the op log still
+        // carry it; it and the kind go together, and not before somebody has
+        // decided what the kind is for. **Do not add a writer here to reach
+        // it** — a permission check is not a hole to be filled from the other
+        // side.
         Ok(None) if actor_kind == ActorKind::Dashboard => {},
         Ok(None) => {
             return Err(AdminError::WikiNotSmart {
