@@ -1908,14 +1908,14 @@ async fn a_wiki_home_lists_the_pages_its_reader_reads_and_counts_their_facts() {
     );
 }
 
-/// A page nobody's facts are on still has a name its reader may know.
+/// **A page with no fact left on it is named to nobody, its owner included.**
 ///
-/// The listing asks «may this reader be told this page exists», and the
-/// product answers that in one place. A page carrying no active fact keeps
-/// nothing from anybody — an `@rules.md` of plain prose is exactly that — so
-/// it is listed. What is withheld is a page whose facts are all out of reach.
+/// The listing names what would open with something on it. A page carrying no
+/// active fact opens empty for everybody — what is left on it is prose about
+/// things that are not there — so listing it would send its own reader to an
+/// empty page. An `@rules.md` of plain prose is exactly one of those.
 #[tokio::test]
-async fn a_wiki_home_lists_a_page_that_holds_no_fact_at_all() {
+async fn a_page_with_no_fact_left_is_listed_to_nobody() {
     let (app, pool, tree, _dir) = make_app_with_memory().await;
     let admin_cookie = login_as_admin(&app).await;
     let bob_cookie = login_as_user(&app, &admin_cookie, "bob").await;
@@ -1949,8 +1949,26 @@ async fn a_wiki_home_lists_a_page_that_holds_no_fact_at_all() {
         "a page whose only fact is alice's stays out: {html}"
     );
     assert!(
-        html.contains("@rules.md"),
-        "a page of plain prose withholds nothing and is listed: {html}"
+        !html.contains("@rules.md"),
+        "a page of plain prose opens empty, so it is named to nobody: {html}"
+    );
+
+    // And not to alice either, whose wiki it is: she is served the page whole,
+    // so a page with no fact left arrives with nothing on it for her too.
+    let alice = send(
+        &app,
+        Request::builder()
+            .uri("/wiki/alice")
+            .header(header::COOKIE, admin_cookie)
+            .body(Body::empty())
+            .unwrap(),
+    )
+    .await;
+    let html = body_string(alice).await;
+    assert!(html.contains("hers.md"), "her own page, which holds a fact");
+    assert!(
+        !html.contains("@rules.md"),
+        "nor to the wiki's own person: {html}"
     );
 }
 

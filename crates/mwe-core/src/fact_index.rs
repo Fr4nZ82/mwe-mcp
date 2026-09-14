@@ -1385,111 +1385,22 @@ pub async fn mark_forgotten_in_wiki(pool: &SqlitePool, wiki_id: &str, reason: &s
     Ok(res.rows_affected())
 }
 
-/// Re-sign the facts a just-removed principal authored, so no active row
-/// carries the name of somebody who is gone.
-///
-/// Every active fact whose `sender_id` is the removed principal `gone` takes
-/// that fact's wiki **scope principal** instead, so a contribution outlives
-/// its author as the category's: a fact authored in the family wiki becomes
-/// `sender = group:famiglia` once its author is gone, instead of pointing at
-/// a principal that is not there.
-///
-/// This is the **group** deletion's answer, and the one a group can give: a
-/// group is a collective, not a person, so its contributions belong to the
-/// wiki they were filed in. Forgetting a **person** answers differently — the
-/// author's name is replaced by an identity nobody holds
-/// ([`crate::gdpr::forget_user`]), because an erasure must not put somebody
-/// else's name on what they did not say.
-///
-/// Facts are grouped by wiki and each wiki's scope is resolved from topology
-/// ([`crate::wiki::WikiTree::resolve_scope_principal`]). A wiki whose scope is
-/// *itself* `gone` is **skipped** — the substitute would not lift the dangle.
-/// A **topic wiki** — one named for its subject, standing for nobody — has no
-/// scope for the contribution to pass to, so its rows are re-signed with
-/// [`crate::gdpr::removed_sender`] instead: the identity nobody holds, the one
-/// a forgotten author's facts already carry. The provenance slot stays filled
-/// and grants nothing to anybody, and no active fact keeps the name of a
-/// principal that is gone.
-/// A wiki that fails to locate or resolve is logged and skipped, never
-/// aborting the removal. Only active (non-tombstoned) rows are touched.
-/// Returns the number reassigned.
-///
-/// # Errors
-///
-/// As [`sqlx::Error`] (the distinct-wiki scan or a per-wiki update).
-pub async fn reassign_sender_after_removal(
-    pool: &SqlitePool,
-    tree: &crate::wiki::WikiTree,
-    gone: &Principal,
-) -> Result<u64> {
-    let gone_str = gone.to_string();
-    let wikis: Vec<(String,)> = sqlx::query_as(
-        "SELECT DISTINCT wiki_id FROM fact_index WHERE sender_id = ? AND deleted_at IS NULL",
-    )
-    .bind(&gone_str)
-    .fetch_all(pool)
-    .await?;
-
-    let now = chrono::Utc::now().to_rfc3339();
-    let mut reassigned = 0u64;
-    for (wiki_id,) in wikis {
-        let Ok(id) = crate::types::WikiId::parse(&wiki_id) else {
-            tracing::warn!(wiki_id = %wiki_id, "unparsable wiki_id — sender left dangling");
-            continue;
-        };
-        let scope = match tree
-            .locate(&id)
-            .and_then(|h| tree.resolve_scope_principal(h.meta()))
-        {
-            Ok(Some(scope)) => scope,
-            // A topic wiki answers to no principal, so there is nothing for
-            // the contribution to pass to. The name of the principal that is
-            // gone may not stay on the fact either, so authorship goes to the
-            // identity nobody holds.
-            Ok(None) => {
-                tracing::info!(
-                    wiki_id = %wiki_id,
-                    "wiki answers to no principal — authorship goes to the removed identity"
-                );
-                crate::gdpr::removed_sender()
-            },
-            Err(e) => {
-                tracing::warn!(
-                    wiki_id = %wiki_id, error = %e,
-                    "could not resolve wiki scope — sender left dangling"
-                );
-                continue;
-            },
-        };
-        // The substitute is the removed principal itself (its own identity
-        // wiki): reassigning changes nothing, so leave it for forget-user.
-        if &scope == gone {
-            continue;
-        }
-        let res = sqlx::query(
-            "UPDATE fact_index
-                SET sender_id = ?, updated_at = ?
-              WHERE wiki_id = ? AND sender_id = ? AND deleted_at IS NULL",
-        )
-        .bind(scope.to_string())
-        .bind(&now)
-        .bind(&wiki_id)
-        .bind(&gone_str)
-        .execute(pool)
-        .await?;
-        reassigned += res.rows_affected();
-    }
-    Ok(reassigned)
-}
-
 /// Re-stamp every active fact `from` authored with `to`.
 ///
-/// The authorship half of forgetting a person ([`crate::gdpr::forget_user`]):
-/// what they said about somebody else is that person's memory and stays where
-/// it is, but the name of who said it goes. `to` is
-/// [`crate::gdpr::removed_sender`] — a principal nobody answers to, so the
-/// fact keeps its provenance slot filled without granting read, amendment or
-/// deletion to anyone (`crate::acl::can_read`, `crate::acl::can_delete`).
+/// The authorship half of losing a principal, and the SAME answer whether the
+/// principal was a person or a group: what they said about somebody else is
+/// that person's memory and stays where it is, but the name of who said it
+/// goes. `to` is [`crate::gdpr::removed_sender`] — a principal nobody answers
+/// to, so the fact keeps its provenance slot filled without granting read,
+/// amendment or deletion to anyone (`crate::acl::can_read`,
+/// `crate::acl::can_delete`).
+///
+/// **The wiki's own principal is never the substitute**, tempting as it is for
+/// a group ("the contribution belongs to the category it was filed in").
+/// `sender` is one of the three axes [`crate::acl::can_read`] asks, so handing
+/// a contribution to the wiki's owner lets somebody read tomorrow what they
+/// could not read yesterday, and no line in the disclosure log says when
+/// (founder's call, 2026-09-14).
 ///
 /// Only active (non-tombstoned) rows are touched. Returns the number
 /// re-stamped.
@@ -1945,6 +1856,33 @@ pub async fn page_acl_map_active(pool: &SqlitePool, source_path: &str) -> Result
     page_acl_map_impl(pool, source_path, true).await
 }
 
+/// Does this page hold a fact that still stands, for anybody?
+///
+/// Not an ACL question and not an answer to one: it says whether the page has
+/// anything left to serve at all. A page whose facts are retired, forgotten,
+/// or were never written is prose about things that are not there, and the
+/// render serves none of it ([`crate::render::render_for_sender`]) — so a
+/// listing that names it sends its own reader to an empty page.
+///
+/// The per-reader question is [`readable_fact_on_page`]; this is the one to
+/// ask for a reader who is served the page WHOLE, where the prose comes too
+/// and only the facts' existence decides whether anything arrives.
+///
+/// # Errors
+///
+/// `sqlx::Error`.
+pub async fn has_an_active_fact(pool: &SqlitePool, source_path: &str) -> Result<bool> {
+    let hit: Option<(i64,)> = sqlx::query_as(
+        "SELECT 1 FROM fact_index \
+          WHERE source_path = ? AND superseded_at IS NULL AND deleted_at IS NULL \
+          LIMIT 1",
+    )
+    .bind(source_path)
+    .fetch_optional(pool)
+    .await?;
+    Ok(hit.is_some())
+}
+
 /// Fact key → the NAME the fact is about, for the regions of one page.
 ///
 /// The sibling of [`page_acl_map`], kept apart from it on purpose: the ACL map
@@ -2308,16 +2246,14 @@ pub async fn readable_fact_on_page(
 /// only about facts.
 ///
 /// The strict twin is the one to ask when the question is «send this person to
-/// that page»; this one is for «is this page's door shut in their face». Three
-/// surfaces ask it: whether a page may be COMMENTED on, whether a notice
-/// naming a page may go out, and whether a wiki's home lists that page.
+/// that page»; this one is for «is this page's door shut in their face». Two
+/// surfaces ask it: whether a page may be COMMENTED on, and whether a notice
+/// naming a page may go out.
 ///
-/// Reading a page is not one of them. `view_page` gates on the WIKI and then
-/// redacts region by region, so a page this predicate refuses can still be
-/// opened and come back with everything on it `[redacted]`. The listing and
-/// the page view therefore do not agree, and that is the state of things
-/// rather than a promise: closing the gap is the render path's work, not this
-/// predicate's.
+/// A wiki's home is NOT one of them: a listing names what would open with
+/// something on it, which is the render's own rule
+/// ([`crate::render::page_for_reader`]) and is asked that way. The listing and
+/// the page view agree.
 ///
 /// # Errors
 ///
@@ -4462,136 +4398,6 @@ mod tests {
 
     // ---------- deleted-principal sender reassignment ----------
 
-    #[tokio::test]
-    async fn reassign_sender_after_removal_substitutes_gone_author() {
-        use crate::wiki::WikiTree;
-        let pool = make_pool().await;
-
-        // A group wiki `famiglia` on disk → scope principal group:famiglia.
-        let dir = tempfile::tempdir().unwrap();
-        std::fs::create_dir_all(dir.path().join("wikis/famiglia")).unwrap();
-        std::fs::write(
-            dir.path().join("wikis/famiglia/_meta.md"),
-            "---\nwiki_id: famiglia\nwiki_type: wiki-group\nparent_wiki_id: null\n\
-             slug: famiglia\ntitle: famiglia\n---\n",
-        )
-        .unwrap();
-        let tree = WikiTree::open(dir.path()).unwrap();
-
-        // A fact franz authored in the family wiki (subject = the collective).
-        let mut f = sample_new_fact(
-            SAMPLE_UUID_V7_1,
-            "famiglia",
-            "group:famiglia",
-            "we go to the sea in July",
-        );
-        f.sender_id = Some("user:franz".parse().unwrap());
-        f.allow_ids = vec!["group:famiglia".parse().unwrap()];
-        insert(&pool, &f).await.expect("insert");
-
-        // franz is removed → his sender is reassigned to the wiki scope.
-        let gone = "user:franz".parse::<Principal>().unwrap();
-        let n = reassign_sender_after_removal(&pool, &tree, &gone)
-            .await
-            .expect("reassign");
-        assert_eq!(n, 1, "one fact reassigned");
-        let back = find_by_id(&pool, &f.fact_id).await.unwrap().unwrap();
-        assert_eq!(
-            back.sender_id,
-            Some("group:famiglia".parse().unwrap()),
-            "sender now the wiki scope, not the vanished franz"
-        );
-
-        // Idempotent: a second pass finds nothing still attributed to franz.
-        let n2 = reassign_sender_after_removal(&pool, &tree, &gone)
-            .await
-            .expect("reassign2");
-        assert_eq!(n2, 0, "nothing left to reassign");
-    }
-
-    #[tokio::test]
-    async fn reassign_sender_skips_when_scope_is_the_gone_principal() {
-        use crate::wiki::WikiTree;
-        let pool = make_pool().await;
-
-        // franz's own identity wiki → scope principal user:franz.
-        let dir = tempfile::tempdir().unwrap();
-        std::fs::create_dir_all(dir.path().join("wikis/franz")).unwrap();
-        std::fs::write(
-            dir.path().join("wikis/franz/_meta.md"),
-            "---\nwiki_id: franz\nwiki_type: wiki-user\nparent_wiki_id: null\n\
-             slug: franz\ntitle: franz\n---\n",
-        )
-        .unwrap();
-        let tree = WikiTree::open(dir.path()).unwrap();
-
-        let mut f = sample_new_fact(SAMPLE_UUID_V7_2, "franz", "user:franz", "I like rust");
-        f.sender_id = Some("user:franz".parse().unwrap());
-        f.allow_ids = vec![];
-        insert(&pool, &f).await.expect("insert");
-
-        // Reassigning would substitute user:franz with user:franz — a no-op the
-        // helper skips, leaving the fact for the forget-user pass.
-        let gone = "user:franz".parse::<Principal>().unwrap();
-        let n = reassign_sender_after_removal(&pool, &tree, &gone)
-            .await
-            .expect("reassign");
-        assert_eq!(n, 0, "scope == gone is skipped");
-        let back = find_by_id(&pool, &f.fact_id).await.unwrap().unwrap();
-        assert_eq!(back.sender_id, Some("user:franz".parse().unwrap()));
-    }
-
-    /// The other road out of the same call. A **topic wiki** stands for
-    /// nobody, so there is no scope principal to pass the contribution to —
-    /// and the vanished group's name may not stay on the fact either, which is
-    /// what leaving the row alone would do. Authorship goes to the identity
-    /// nobody holds, the one a forgotten author's facts already carry.
-    #[tokio::test]
-    async fn reassign_sender_signs_a_topic_wiki_fact_with_the_removed_identity() {
-        use crate::wiki::WikiTree;
-        let pool = make_pool().await;
-
-        // The shape the nightly grouping raises: at the root, no parent, named
-        // for its subject.
-        let dir = tempfile::tempdir().unwrap();
-        std::fs::create_dir_all(dir.path().join("wikis/giardinaggio")).unwrap();
-        std::fs::write(
-            dir.path().join("wikis/giardinaggio/_meta.md"),
-            "---\nwiki_id: giardinaggio\nwiki_type: wiki-tech\nparent_wiki_id: null\n\
-             slug: giardinaggio\ntitle: giardinaggio\n---\n",
-        )
-        .unwrap();
-        let tree = WikiTree::open(dir.path()).unwrap();
-
-        let mut f = sample_new_fact(
-            SAMPLE_UUID_V7_1,
-            "giardinaggio",
-            "user:alice",
-            "the tomatoes go in in May",
-        );
-        f.sender_id = Some("group:famiglia".parse().unwrap());
-        insert(&pool, &f).await.expect("insert");
-
-        let gone = "group:famiglia".parse::<Principal>().unwrap();
-        let n = reassign_sender_after_removal(&pool, &tree, &gone)
-            .await
-            .expect("reassign");
-        assert_eq!(n, 1, "the row is re-signed, not left as it is");
-        let back = find_by_id(&pool, &f.fact_id).await.unwrap().unwrap();
-        assert_eq!(
-            back.sender_id,
-            Some(crate::gdpr::removed_sender()),
-            "authorship goes to the identity nobody holds, never staying on the group that is gone"
-        );
-
-        // Idempotent: the removed identity is not the gone principal, so a
-        // second pass finds nothing.
-        let n2 = reassign_sender_after_removal(&pool, &tree, &gone)
-            .await
-            .expect("reassign2");
-        assert_eq!(n2, 0, "nothing left attributed to the vanished group");
-    }
-
     // ---------- bulk self-delete ----------
 
     #[tokio::test]
@@ -4725,6 +4531,50 @@ mod tests {
         .await
         .expect("sorted");
         assert_eq!(sorted.len(), 2);
+    }
+
+    /// **A group that is deleted takes its name off what it authored, in every
+    /// wiki, and hands it to nobody.**
+    ///
+    /// The tempting answer for a group is the wiki it was filed in — a
+    /// collective's contribution belonging to the category. But `sender` is
+    /// one of the three axes `can_read` asks, so the wiki's owner would start
+    /// reading what they could not read the day before, silently. The removed
+    /// identity answers to nobody and grants nothing, which is what forgetting
+    /// a PERSON already does, and it is the same answer here.
+    #[tokio::test]
+    async fn a_deleted_group_leaves_its_name_nowhere_and_widens_nothing() {
+        let pool = make_pool().await;
+        let gone = Principal::Group("famiglia".into());
+        // One in a PERSON's wiki, one in a wiki named for its subject: the
+        // shape that has an owner to widen to, and the one that has none.
+        for (id, wiki) in [(SAMPLE_UUID_V7_1, "alice"), (SAMPLE_UUID_V7_2, "cucina")] {
+            let mut f = sample_new_fact(id, wiki, "global", "the family said so");
+            f.sender_id = Some(gone.clone());
+            f.allow_ids = Vec::new();
+            insert(&pool, &f).await.expect("insert");
+        }
+
+        let n = replace_sender(&pool, &gone, &crate::gdpr::removed_sender())
+            .await
+            .expect("re-sign");
+        assert_eq!(n, 2, "both wikis, one answer");
+        for id in [SAMPLE_UUID_V7_1, SAMPLE_UUID_V7_2] {
+            let row = find_by_id(&pool, &FactId::parse(id).unwrap())
+                .await
+                .expect("read back")
+                .expect("row");
+            assert_eq!(
+                row.sender_id,
+                Some(crate::gdpr::removed_sender()),
+                "the name goes to nobody, whatever wiki the fact sits in"
+            );
+            assert_ne!(
+                row.sender_id,
+                Some(Principal::User("alice".into())),
+                "and never to the wiki's own person"
+            );
+        }
     }
 
     /// Enrol a principal, saying whether it is an assistant.

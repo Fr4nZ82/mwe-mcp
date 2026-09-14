@@ -393,28 +393,32 @@ async fn delete(
         return Err(DashboardError::NotFound);
     }
 
-    // Reassign any fact whose `sender` is this group (e.g. one a prior pass
-    // auto-attributed to the collective) to its wiki's scope principal, so no
-    // active fact points at a vanished sender (the sender-scrub invariant). In
-    // a wiki nobody owns there is no scope to pass it to, and the row is
-    // signed with the removed identity instead. Subject and allow-list entries
-    // that name this group are out of scope here — only `sender` is
-    // reassigned. Best-effort — a failure (or absent memory handles) is
+    // Re-sign any fact whose `sender` is this group (e.g. one a prior pass
+    // auto-attributed to the collective), so no active fact points at a
+    // vanished sender — the sender-scrub invariant.
+    //
+    // The name goes to the identity nobody holds, in EVERY wiki, which is the
+    // same answer forgetting a PERSON gives. The wiki's own principal is not
+    // an answer here: `sender` is one of the three axes `acl::can_read` asks,
+    // so passing a contribution to the wiki's owner would let somebody read
+    // what they could not read yesterday, and no line in the disclosure log
+    // would say when. Subject and allow-list entries that name this group are
+    // out of scope — only `sender` is re-signed. Best-effort: a failure is
     // logged, never blocks the delete.
-    if let Some(memory) = state.memory.as_ref() {
-        let gone = mwe_core::types::Principal::Group(group_id.clone());
-        match mwe_core::fact_index::reassign_sender_after_removal(&state.pool, &memory.tree, &gone)
-            .await
-        {
-            Ok(n) => {
-                tracing::info!(group = %group_id, reassigned = n, "group delete re-signed the facts it had authored");
-            },
-            Err(e) => {
-                tracing::warn!(group = %group_id, error = %e, "sender reassignment failed after group delete");
-            },
-        }
-    } else {
-        tracing::warn!(group = %group_id, "memory handles unavailable — facts' sender not reassigned");
+    let gone = mwe_core::types::Principal::Group(group_id.clone());
+    match mwe_core::fact_index::replace_sender(
+        &state.pool,
+        &gone,
+        &mwe_core::gdpr::removed_sender(),
+    )
+    .await
+    {
+        Ok(n) => {
+            tracing::info!(group = %group_id, reassigned = n, "group delete re-signed the facts it had authored");
+        },
+        Err(e) => {
+            tracing::warn!(group = %group_id, error = %e, "sender re-signing failed after group delete");
+        },
     }
 
     tracing::info!(actor = admin.sender_id(), group = %group_id, "dashboard deleted group");

@@ -1526,7 +1526,7 @@ async fn open_target(
             return Err(OpenRefusal::AclUnreadable);
         },
     };
-    let projected = open_projected(d, &page, &db_acl, sender, reader_card)
+    let projected = open_projected(d, &page, &db_acl, sender, reader_card, tree)
         .filter(|text| !text.trim().is_empty())
         .ok_or(OpenRefusal::Unreadable)?;
     let (text, cut) = take_budget(projected, state.remaining);
@@ -1743,6 +1743,7 @@ fn open_projected(
     db_acl: &FactAclMap,
     sender: &SenderContext,
     reader_card: &meta_annotate::ReaderCard,
+    tree: &WikiTree,
 ) -> Option<String> {
     let raw = match std::fs::read_to_string(d.abs_dir.join(page)) {
         Ok(raw) => raw,
@@ -1761,7 +1762,10 @@ fn open_projected(
         sender_groups: &sender.sender_groups,
         page: crate::render::page_for_reader(&d.meta, &sender.sender_id),
         home_wiki: d.meta.wiki_id.as_str(),
-        may_go: Some(reader_card),
+        may_go: Some(crate::render::Destinations {
+            card: reader_card,
+            tree,
+        }),
     };
     Some(render_for_sender(&raw, db_acl, &view).text)
 }
@@ -4190,7 +4194,10 @@ mod tests {
             0x90,
             "alice",
             "rails.md",
-            "# Rails\n\nDetail at [[famiglia/hobbies|the hobbies]] and [[famiglia/missing]].",
+            // Two sentences on purpose: an alias-less rail the reader cannot
+            // follow takes ITS sentence with it, and a live rail beside it in
+            // the same sentence would go too.
+            "# Rails\n\nDetail at [[famiglia/hobbies|the hobbies]]. Nothing at [[famiglia/missing]].",
             Principal::User("alice".into()),
         )
         .await;

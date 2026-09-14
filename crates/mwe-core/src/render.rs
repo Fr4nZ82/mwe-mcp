@@ -319,12 +319,26 @@ pub struct ReaderView<'a> {
     pub page: PageForReader,
     /// The wiki this page lives in, so a bare `[[page]]` resolves against it.
     pub home_wiki: &'a str,
-    /// Where this reader may be sent. A `[[link]]` to a page they read no
-    /// fact of becomes the name it points at, because a page's NAME is
-    /// content like any other prose. `None` leaves every link as written —
+    /// Where this reader may be sent. `None` leaves every link as written —
     /// for a markerless page, and for an injected copy that has nothing to
     /// navigate from anyway.
-    pub may_go: Option<&'a crate::meta_annotate::ReaderCard>,
+    pub may_go: Option<Destinations<'a>>,
+}
+
+/// What a `[[link]]` is asked, and what it takes to ask it.
+///
+/// The two travel together because the question needs both: the card says
+/// which pages this reader reads a fact of, and the tree says what a page of a
+/// given wiki is actually CALLED — a smart wiki lives under its person's
+/// (`wikis/<user>/<slug>/`) while its id is `<user>-<slug>`, so a path glued
+/// together from the id misses every nested wiki and the answer comes back no
+/// by accident instead of by rule.
+#[derive(Clone, Copy)]
+pub struct Destinations<'a> {
+    /// Which pages this reader reads a fact of.
+    pub card: &'a crate::meta_annotate::ReaderCard,
+    /// The tree the addresses are resolved against.
+    pub tree: &'a crate::wiki::WikiTree,
 }
 
 impl<'a> ReaderView<'a> {
@@ -372,77 +386,158 @@ const SEE_ALSO_PREFIX: &str = "See also:";
 /// **A qualified `[[wiki/page]]` is an ADDRESS**, and an address the reader
 /// may not use tells them a page exists, in whose memory, and what it is
 /// about. So it survives only where they demonstrably read a fact of the page
-/// it names — which a page of a markerless wiki never does, since it holds no
-/// facts at all.
+/// it names.
 ///
-/// **A bare `[[name]]` is not an address and is left alone.** It carries one
-/// word, and that word is exactly what flattening it would leave behind
-/// ([`crate::ingest::wikilink_label`] takes the last path segment), so taking
-/// the brackets off tells the reader nothing it did not already say — while
-/// costing the navigator the rail it walks on. Which page a bare name resolves
-/// to is a question only the tree can answer, and the answer is asked again,
-/// against this same reader, before any page is opened.
+/// **A bare `[[name]]` is not an address and is left alone.** Which page it
+/// resolves to is a question only the tree can answer, and the answer is asked
+/// again, against this same reader, before any page is opened.
+///
+/// The page's address is asked OF ITS WIKI, never glued together from the id:
+/// a smart wiki lives under its person's directory while its id is
+/// `<user>-<slug>`, so a hand-built path misses every nested wiki. And a
+/// **markerless wiki is refused outright, by the rule and not by accident**:
+/// it holds no facts at all, so there is no fact of its pages for anybody to
+/// read and no address into one can survive this question.
 fn may_follow(inner: &str, view: &ReaderView<'_>) -> bool {
-    let Some(card) = view.may_go else {
+    let Some(dest) = view.may_go else {
         return true;
     };
     let target = inner.split('|').next().unwrap_or(inner).trim();
     let Some((wiki, page)) = target.split_once('/') else {
         return true;
     };
-    let page = page.trim();
-    let stem = page.strip_suffix(".md").unwrap_or(page);
-    let wiki = wiki.trim();
-    card.reader_can_read_page(wiki, &format!("wikis/{wiki}/{stem}.md"))
+    let (wiki, page) = (wiki.trim(), page.trim());
+    let Ok(id) = crate::types::WikiId::parse(wiki) else {
+        return false;
+    };
+    let Ok(handle) = dest.tree.locate(&id) else {
+        return false;
+    };
+    if handle.meta().smart {
+        return false;
+    }
+    // A rail is written without the extension; a hand-typed one may carry it.
+    let rel = format!("{}.md", page.strip_suffix(".md").unwrap_or(page));
+    dest.card
+        .reader_can_read_page(wiki, &handle.source_path(std::path::Path::new(&rel)))
 }
 
-/// Rewrite one line of prose so it names only what this reader may open.
+/// The words the author chose for a reader to see, when they chose any.
 ///
-/// A link they may follow is left exactly as written. One they may not becomes
-/// the name it points at ([`crate::ingest::wikilink_label`], the same rule an
-/// injected copy uses): deleting it outright would leave the sentence
-/// mutilated, and leaving it would hand them an address they cannot use and a
-/// page name they were not to be told.
+/// An alias is presentation: it is already in the sentence, in the sentence's
+/// own grammar. What sits on the other side of the `|` is an ADDRESS, and the
+/// last segment of an address is the file's SLUG — `acquisti_conad_neonata` —
+/// which is the page's name written out, in no grammar at all. So a link with
+/// no alias has nothing a reader may be given in its place.
+fn wikilink_alias(inner: &str) -> Option<&str> {
+    inner
+        .split_once('|')
+        .map(|(_, alias)| alias.trim())
+        .filter(|alias| !alias.is_empty())
+}
+
+/// Split one line into sentences, each keeping its own terminator.
 ///
-/// Returns `None` when the line was a `See also:` list and nothing on it
-/// survived — an empty list of addresses is not a line, it is a leftover.
-fn line_for_reader(line: &str, view: &ReaderView<'_>) -> Option<String> {
-    if view.may_go.is_none() {
-        return Some(line.to_owned());
+/// A full stop, a question or an exclamation mark followed by a space ends
+/// one. An abbreviation («Sig. Rossi») splits a sentence in two, which errs
+/// towards keeping prose: the address is taken out either way, and only less
+/// of the line goes with it.
+fn sentences(line: &str) -> Vec<&str> {
+    let mut out = Vec::new();
+    let bytes = line.as_bytes();
+    let mut start = 0usize;
+    for (i, ch) in line.char_indices() {
+        if !matches!(ch, '.' | '!' | '?' | '\u{2026}') {
+            continue;
+        }
+        let after = i + ch.len_utf8();
+        if after >= bytes.len() {
+            continue;
+        }
+        // Run on through a cluster of terminators («?!», «...»), then cut
+        // when whitespace follows.
+        if matches!(line[after..].chars().next(), Some('.' | '!' | '?')) {
+            continue;
+        }
+        if line[after..].starts_with(char::is_whitespace) {
+            let cut = after + line[after..].len() - line[after..].trim_start().len();
+            out.push(&line[start..cut]);
+            start = cut;
+        }
     }
-    let see_also = line.trim_start().starts_with(SEE_ALSO_PREFIX);
-    let mut out = String::with_capacity(line.len());
-    let mut kept: Vec<String> = Vec::new();
-    let mut rest = line;
+    if start < line.len() || out.is_empty() {
+        out.push(&line[start..]);
+    }
+    out
+}
+
+/// One sentence, as this reader is served it — or `None` when it goes.
+///
+/// **A sentence that points where the reader may not go is a sentence about
+/// what they may not read.** Where the author wrote an alias, the alias stays
+/// and the sentence stands: those words were chosen for a reader to see and
+/// they are already part of it. Where they wrote none, there is nothing to put
+/// in the link's place that is not the page's own name — its slug, or its
+/// title, which says as much — so the sentence goes with the address.
+fn sentence_for_reader(sentence: &str, view: &ReaderView<'_>) -> Option<String> {
+    let mut out = String::with_capacity(sentence.len());
+    let mut rest = sentence;
     while let Some(open) = rest.find("[[") {
         let (before, from_open) = rest.split_at(open);
         let Some(close) = from_open.find("]]") else {
             break;
         };
         let inner = &from_open[2..close];
-        if see_also {
-            if may_follow(inner, view) {
-                kept.push(format!("[[{inner}]]"));
-            }
+        out.push_str(before);
+        if may_follow(inner, view) {
+            out.push_str(&from_open[..=close + 1]);
         } else {
-            out.push_str(before);
-            if may_follow(inner, view) {
-                out.push_str(&from_open[..=close + 1]);
-            } else {
-                out.push_str(crate::ingest::wikilink_label(inner));
-            }
+            out.push_str(wikilink_alias(inner)?);
         }
         rest = &from_open[close + 2..];
     }
-    if see_also {
+    out.push_str(rest);
+    Some(out)
+}
+
+/// Rewrite one line of prose so it names only what this reader may open.
+///
+/// Sentence by sentence ([`sentence_for_reader`]), so what goes with an
+/// address is the sentence that carried it and not the paragraph around it. A
+/// line left with nothing but whitespace goes entirely.
+///
+/// A `See also:` line is not prose and is handled apart: it is a list of
+/// addresses and nothing else, so an address the reader may not follow is
+/// REMOVED from it rather than replaced, and a line left with none goes.
+fn line_for_reader(line: &str, view: &ReaderView<'_>) -> Option<String> {
+    if view.may_go.is_none() || !line.contains("[[") {
+        return Some(line.to_owned());
+    }
+    if line.trim_start().starts_with(SEE_ALSO_PREFIX) {
+        let mut kept: Vec<String> = Vec::new();
+        let mut rest = line;
+        while let Some(open) = rest.find("[[") {
+            let from_open = &rest[open..];
+            let Some(close) = from_open.find("]]") else {
+                break;
+            };
+            let inner = &from_open[2..close];
+            if may_follow(inner, view) {
+                kept.push(format!("[[{inner}]]"));
+            }
+            rest = &from_open[close + 2..];
+        }
         if kept.is_empty() {
             return None;
         }
         let indent: String = line.chars().take_while(|c| c.is_whitespace()).collect();
         return Some(format!("{indent}{SEE_ALSO_PREFIX} {}", kept.join(", ")));
     }
-    out.push_str(rest);
-    Some(out)
+    let kept: String = sentences(line)
+        .into_iter()
+        .filter_map(|s| sentence_for_reader(s, view))
+        .collect();
+    (!kept.trim().is_empty()).then_some(kept)
 }
 
 /// Rewrite a run of prose for this reader, line by line.
@@ -1006,7 +1101,11 @@ mod tests {
     /// one they may not.
     async fn card_over_two_pages(
         reader: &str,
-    ) -> (tempfile::TempDir, crate::meta_annotate::ReaderCard) {
+    ) -> (
+        tempfile::TempDir,
+        crate::wiki::WikiTree,
+        crate::meta_annotate::ReaderCard,
+    ) {
         use sqlx::sqlite::SqlitePoolOptions;
         let pool = SqlitePoolOptions::new()
             .max_connections(1)
@@ -1068,27 +1167,34 @@ mod tests {
         let card = crate::meta_annotate::build_reader_card(&pool, &tree, reader, &[])
             .await
             .unwrap();
-        (dir, card)
+        (dir, tree, card)
     }
 
-    /// **An address the reader cannot use is not served as an address.**
+    /// **An address the reader cannot use is not served as an address — and
+    /// what takes its place is either the author's own words or nothing.**
     ///
     /// `[[zoe/private]]` says three things at once: that a page exists, whose
-    /// memory it is in, and what it is about. A reader who may read no fact of
-    /// it has been told all three. So the address becomes the name the
-    /// sentence was already about, and the sentence still reads.
+    /// memory it is in, and what it is about. Writing out the last segment
+    /// instead would say the same thing in a worse grammar — it is the file's
+    /// SLUG — so a link with no alias takes its SENTENCE with it: a sentence
+    /// pointing where the reader may not go is a sentence about what they may
+    /// not read. An alias is different: those words were chosen for a reader
+    /// to see and are already part of the sentence, so they stay and the
+    /// sentence stands.
     ///
-    /// Zoe herself follows it, on the very same page — the rule is about the
+    /// Zoe herself follows both, on the very same page — the rule is about the
     /// reader, not about the link.
     #[tokio::test]
     async fn an_address_the_reader_may_not_use_is_not_served_as_one() {
         let input = format!(
-            "The list is in [[alice/shopping]] and the rest in [[zoe/private]].\n\n\
+            "The list is in [[alice/shopping]]. The rest is in [[zoe/private]]. \
+             She keeps [[zoe/private|the quiet things]] apart. Both live in \
+             [[alice/shopping]] and [[zoe/private]].\n\n\
              {{{{subject=global f={SAMPLE_UUID_V7}}}}}a fact{{{{/}}}}\n"
         );
         let map = db_acl("global", &[], None);
 
-        let (_d, alices) = card_over_two_pages("alice").await;
+        let (_d, tree, alices) = card_over_two_pages("alice").await;
         let out = render_for_sender(
             &input,
             &map,
@@ -1097,17 +1203,36 @@ mod tests {
                 sender_groups: &[],
                 page: PageForReader::SectionBySection,
                 home_wiki: "famiglia",
-                may_go: Some(&alices),
+                may_go: Some(Destinations {
+                    card: &alices,
+                    tree: &tree,
+                }),
             },
         );
-        assert!(out.text.contains("[[alice/shopping]]"), "{}", out.text);
+        assert!(out.text.contains("The list is in [[alice/shopping]]."));
         assert!(
-            !out.text.contains("zoe/private") && out.text.contains("the rest in private."),
-            "zoe's page is named to alice as a bare noun, not as an address: {}",
+            !out.text.contains("The rest is in"),
+            "the sentence goes with the address it carried: {}",
+            out.text
+        );
+        assert!(
+            out.text.contains("She keeps the quiet things apart."),
+            "the author's own words stay, and the sentence with them: {}",
+            out.text
+        );
+        assert!(
+            !out.text.contains("Both live in"),
+            "one address she may not use takes the sentence, however many \
+             others it holds: {}",
+            out.text
+        );
+        assert!(
+            !out.text.contains("zoe") && !out.text.contains("private"),
+            "neither the slug nor the wiki it names may survive: {}",
             out.text
         );
 
-        let (_d, zoes) = card_over_two_pages("zoe").await;
+        let (_d, ztree, zoes) = card_over_two_pages("zoe").await;
         let out = render_for_sender(
             &input,
             &map,
@@ -1116,10 +1241,14 @@ mod tests {
                 sender_groups: &[],
                 page: PageForReader::SectionBySection,
                 home_wiki: "famiglia",
-                may_go: Some(&zoes),
+                may_go: Some(Destinations {
+                    card: &zoes,
+                    tree: &ztree,
+                }),
             },
         );
-        assert!(out.text.contains("[[zoe/private]]"), "{}", out.text);
+        assert!(out.text.contains("The rest is in [[zoe/private]]."));
+        assert!(out.text.contains("Both live in"));
     }
 
     /// **A `See also:` line loses the entry, not its brackets — and an empty
@@ -1131,13 +1260,16 @@ mod tests {
     #[tokio::test]
     async fn a_see_also_line_loses_what_the_reader_may_not_follow() {
         let map = db_acl("global", &[], None);
-        let (_d, alices) = card_over_two_pages("alice").await;
+        let (_d, tree, alices) = card_over_two_pages("alice").await;
         let view = ReaderView {
             sender_id: "alice",
             sender_groups: &[],
             page: PageForReader::SectionBySection,
             home_wiki: "famiglia",
-            may_go: Some(&alices),
+            may_go: Some(Destinations {
+                card: &alices,
+                tree: &tree,
+            }),
         };
 
         let input = format!(

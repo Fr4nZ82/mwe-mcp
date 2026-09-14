@@ -30,8 +30,10 @@ Opening a wiki shows its id, title, kind, short name and how many facts still
 hold, then the list of its **Pages** with their sizes. Both the count and the
 list are **yours**: the number counts the facts you can read, and a page whose
 every fact was written for somebody else is not listed for you, because its
-name would tell you what is on it. A page that holds no facts at all is still
-listed, and opening it shows nothing. Two page names recur:
+name would tell you what is on it. A page that holds no facts at all is not
+listed either, to anybody — not even to you on your own wiki — because opening
+it would show nothing: what is left on it describes things that are no longer
+there. Two page names recur:
 `@profile.md`, the identity card, and `@rules.md`, the standing rules.
 
 ## One page
@@ -51,11 +53,15 @@ by the memory, about somebody, and it says again what their facts say.
   section, and go with it when you cannot.
 - **A page whose facts have all gone** — forgotten, or replaced — shows
   nothing to anybody. What was left on it described things that are no longer
-  there.
+  there, which is also why it stops being listed.
 
-**Links follow the same rule.** A link that names a page in somebody's memory
-arrives as plain text when you cannot read a fact of that page: the sentence
-still reads, and it no longer tells you where something is filed.
+**Links follow the same rule.** A link that names a page in somebody's
+memory — *[[zoe/health]]* — says a page exists, whose it is and what it is
+about. When you cannot read a fact of that page, what happens depends on how
+it was written: if whoever wrote it gave the link words of its own, those words
+stay and the sentence reads as it always did; if they did not, **the sentence
+goes with the link**, because the only thing left to put in its place would be
+the page's own name.
 
 At the bottom, the page states what it is and is not: *"To change this page:
 leave inline comments, talk to the chat, or change the facts themselves on the

@@ -974,7 +974,10 @@ pub(super) async fn call_wiki_read(
         sender_groups: &sender_groups,
         page: mwe_core::render::page_for_reader(meta, &identity.sender_id),
         home_wiki: meta.wiki_id.as_str(),
-        may_go: Some(&reader_card),
+        may_go: Some(mwe_core::render::Destinations {
+            card: &reader_card,
+            tree: &state.tree,
+        }),
     };
     let rendered = mwe_core::render::render_for_sender(&raw, &db_acl, &view);
     Ok(json!({

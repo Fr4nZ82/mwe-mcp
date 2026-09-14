@@ -743,15 +743,8 @@ async fn view(
         return Err(DashboardError::NotFound);
     }
     let handle = memory.tree.locate(&wiki_id).map_err(map_wiki_err)?;
-    let (pages, fact_count) = pages_and_count_for(
-        &state,
-        &handle,
-        &wiki_id,
-        &user.sender_id,
-        meta.smart,
-        reveal,
-    )
-    .await?;
+    let (pages, fact_count) =
+        pages_and_count_for(&state, &handle, &wiki_id, &user.sender_id, reveal).await?;
     // No wiki is assumed to have an `index.md`. A standard wiki has none at
     // all, and nothing may coin one; a smart
     // wiki has whatever pages its consumer pushed, which may or may not
@@ -837,27 +830,26 @@ async fn view(
     )))
 }
 
-/// What this home shows of a wiki: the pages this reader may be told exist,
-/// and the number of facts they may read.
+/// What this home shows of a wiki: the pages that would open with something on
+/// them for this reader, and the number of facts they may read.
 ///
 /// A reader's view, not the wiki's shape. A page name is content —
 /// `blood_test_june.md` says what is on a page before anybody opens it — and a
 /// count of everything says how much there is that you are not being shown.
 ///
-/// The question a listing asks is «may this reader be told this page exists»,
-/// and the product answers it in ONE place,
-/// [`fact_index::page_visible_to`]: the comment surface asks it, the notice
-/// queue asks it, and so does this listing. Opening a page is a different
-/// road — it gates on the wiki and redacts region by region — so a page this
-/// list withholds can still be reached by its URL and come back empty. What it refuses is a page whose facts are
-/// all out of reach; a page with no active fact keeps nothing from anybody,
-/// which is what an `@rules.md` of plain prose is, and what a page looks like
-/// once the night has moved its facts away. The strict twin answers a different
-/// question — «send this person to that page» — and that one is `/cite`'s.
+/// **The listing names the pages that would open with something on them**, and
+/// it asks the render's own question to know which those are
+/// ([`render::page_for_reader`]) — so the list and the page agree, and nobody
+/// is sent to an empty page or kept from a full one:
 ///
-/// A SMART wiki holds no facts at all by construction, so there is nothing per
-/// page to ask: its gate is the roster, asked by the caller before this, and
-/// past it the whole shelf shows.
+/// - a MARKERLESS wiki holds no facts to ask about; its gate is the roster,
+///   asked by the caller before this, and past it the whole shelf shows;
+/// - your OWN memory is served whole, prose and all, so a page arrives with
+///   something on it exactly when it still holds a fact — anybody's fact
+///   ([`fact_index::has_an_active_fact`]);
+/// - anybody ELSE's is served as the facts you may read, so it arrives with
+///   something on it exactly when one of them is yours
+///   ([`fact_index::readable_fact_on_page`]).
 ///
 /// `reveal` shows the whole shelf and the whole count, which is what the lens
 /// is for.
@@ -866,25 +858,38 @@ async fn pages_and_count_for(
     handle: &mwe_core::wiki::WikiHandle,
     wiki_id: &WikiId,
     sender_id: &str,
-    smart: bool,
     reveal: bool,
 ) -> Result<(Vec<mwe_core::wiki::PageInfo>, i64)> {
     let all_pages = handle.list_pages().map_err(map_wiki_err)?;
     let sender_groups = mwe_core::enrollment::groups_for(&state.pool, sender_id)
         .await
         .map_err(|e| DashboardError::Internal(format!("groups_for: {e}")))?;
+    let serves = render::page_for_reader(handle.meta(), sender_id);
     let mut pages = Vec::with_capacity(all_pages.len());
     for p in all_pages {
         // Built by the handle, never by hand: a smart wiki lives UNDER its
         // person's (`wikis/<user>/<slug>/`) while its id is `<user>-<slug>`,
         // so a path glued together from the id misses every nested wiki.
         let source_path = handle.source_path(&p.rel_path);
-        if reveal
-            || smart
-            || fact_index::page_visible_to(&state.pool, &source_path, sender_id, &sender_groups)
+        let opens_with_something = match serves {
+            render::PageForReader::AsWritten => true,
+            render::PageForReader::Whole => {
+                fact_index::has_an_active_fact(&state.pool, &source_path)
+                    .await
+                    .map_err(|e| DashboardError::Internal(format!("has_an_active_fact: {e}")))?
+            },
+            render::PageForReader::FactsAlone | render::PageForReader::SectionBySection => {
+                fact_index::readable_fact_on_page(
+                    &state.pool,
+                    &source_path,
+                    sender_id,
+                    &sender_groups,
+                )
                 .await
-                .map_err(|e| DashboardError::Internal(format!("page_visible_to: {e}")))?
-        {
+                .map_err(|e| DashboardError::Internal(format!("readable_fact_on_page: {e}")))?
+            },
+        };
+        if reveal || opens_with_something {
             pages.push(p);
         }
     }
@@ -1324,7 +1329,10 @@ async fn project_page(
         sender_groups: &sender_groups,
         page: render::page_for_reader(meta, sender_id),
         home_wiki: meta.wiki_id.as_str(),
-        may_go: Some(&reader_card),
+        may_go: Some(render::Destinations {
+            card: &reader_card,
+            tree,
+        }),
     };
     Ok(render::render_for_sender_segments(raw, &db_acl, &view))
 }

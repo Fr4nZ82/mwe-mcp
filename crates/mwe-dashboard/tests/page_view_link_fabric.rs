@@ -119,11 +119,14 @@ async fn page_view_linkifies_canonical_wikilinks_and_leaves_dangling_literal() {
     seed_bob_wiki(&tree);
     let alice_dir = tree.wikis_dir().join("alice");
     std::fs::write(alice_dir.join("appunti.md"), "# Notes\n\nTarget page.\n").unwrap();
+    // One claim per sentence: an address the reader may not use takes its own
+    // sentence with it, so a fixture that crams them together tests nothing.
     std::fs::write(
         alice_dir.join("links.md"),
-        "# Links\n\nA wiki hop [[bob]], a page hop [[alice/appunti]], an aliased \
-         [[alice/appunti|My Notes]], a ghost [[ghost]], a missing [[alice/missing]] \
-         and the mutant [[famiglia_carol/referto_oculistica]].\n",
+        "# Links\n\nA wiki hop [[bob]] and a page hop [[alice/appunti]]. \
+         An aliased [[alice/appunti|My Notes]]. A ghost [[ghost]]. \
+         A missing [[alice/missing]]. The mutant \
+         [[famiglia_carol/referto_oculistica]].\n",
     )
     .unwrap();
     // Both pages need a fact alice may read: a page with none serves nothing,
@@ -181,16 +184,18 @@ async fn page_view_linkifies_canonical_wikilinks_and_leaves_dangling_literal() {
         html.contains("[[ghost]]"),
         "a bare dangling name stays: {html}"
     );
-    // A QUALIFIED address the reader may not use is not shown as an address at
-    // all. It becomes the page name the sentence was about, and nothing says
-    // whose memory it was in.
+    // A QUALIFIED address the reader may not use is not shown at all — and
+    // neither is the sentence that carried it, because the only thing left to
+    // put in its place is the page's own name.
     assert!(
-        !html.contains("alice/missing") && html.contains("a missing missing"),
-        "an address behind no readable fact is flattened to its name: {html}"
+        !html.contains("alice/missing") && !html.contains("A missing"),
+        "the sentence goes with the address: {html}"
     );
     assert!(
-        !html.contains("famiglia_carol") && html.contains("the mutant referto_oculistica"),
-        "and so is one whose grammar the dashboard could not resolve: {html}"
+        !html.contains("famiglia_carol")
+            && !html.contains("referto_oculistica")
+            && !html.contains("The mutant"),
+        "and so does one whose grammar the dashboard could not resolve: {html}"
     );
     assert!(
         !html.contains(r#"href="/dashboard/wiki/ghost"#),

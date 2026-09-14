@@ -9440,6 +9440,15 @@ async fn identity_card(
 /// one, otherwise the last path segment — the page's own name, which is the
 /// noun the sentence is about. Unclosed `[[` is left verbatim.
 ///
+/// **Not an ACL decision.** Where the question is whether a reader may be told
+/// a page exists, the answer is [`crate::render::render_for_sender`]'s, and
+/// there an alias-less address takes its sentence with it rather than leaving
+/// the page's name in the open. This is the other half: a copy handed to a
+/// consumer that cannot navigate, where the only thing at stake is a broken
+/// affordance. The one card served through it whose prose reaches a reader is
+/// their OWN ([`identity_card`]); anybody else's is served as its facts alone
+/// and carries no prose for a link to sit in.
+///
 /// Injection only. On disk the links stay: they are the navigator's rails, and
 /// the REM rewiring pass exists to *add* them, not to remove them.
 pub(crate) fn plain_wikilinks(text: &str) -> String {

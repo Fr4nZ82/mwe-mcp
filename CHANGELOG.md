@@ -13,6 +13,30 @@ semver-governed surface: breaking changes are called out explicitly.
 
 ### Fixed
 
+- **A link you cannot follow no longer writes out the page's name.** Serving
+  the plain name in its place looked harmless and was not: without the words
+  an author chose, the only thing left to write is the file's own name —
+  *acquisti_conad_neonata* — which says exactly what the link was saying, in no
+  grammar at all. Now: where whoever wrote the link gave it words of its own,
+  those words stay and the sentence reads as it always did; where they did not,
+  **the sentence goes with the link**, because a sentence pointing where you
+  cannot go is a sentence about what you cannot read. A *See also* line loses
+  the entry instead, and an empty one goes.
+
+- **The list of a wiki's pages and the pages themselves now agree.** The list
+  names what would open with something on it: your own pages while they still
+  hold a fact, anybody else's while they hold one of yours, and every page of a
+  shared working memory. Nobody is sent to a page that opens empty, and nobody
+  is kept from one that does not.
+
+- **Deleting a group takes its name off what it wrote, and gives it to
+  nobody.** Those contributions used to pass to whoever owns the wiki they were
+  filed in — and *who said it* is one of the three things that decide who may
+  read a fact, so the wiki's owner quietly started reading things they could
+  not read the day before, with nothing anywhere to say when. The name now goes
+  to an identity nobody holds, in every wiki, which is what forgetting a person
+  already did.
+
 - **What is written around a fact is part of that fact, and it is served the
   same way.** A page is prose with the facts marked inside it, and only the
   marked parts carried a permission. Everything else — the headings, the
