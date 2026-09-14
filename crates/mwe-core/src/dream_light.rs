@@ -418,19 +418,18 @@ pub async fn drain_deterministically(
 }
 
 /// Do two waiting claims have the same audience — same subject, same author,
-/// same `allow` set?
+/// same reach, and kept from the same people?
 ///
 /// The intra-queue half of the rule the DB scan applies row-side
 /// ([`crate::capture::Audience`]): two people saying the same thing with
 /// different reach are two facts, not one (founder, 2026-08-18: *«i duplicati
 /// possono esistere … se due utenti hanno detto la stessa cosa ma con acl
-/// diversa»*).
+/// diversa»*). An exclusion IS a different reach — one of the two is kept from
+/// somebody and the other is not — so it is part of the same question, asked
+/// through the same predicate ([`crate::acl::reader_set`]).
 fn same_audience(a: &BufferedCapture, b: &BufferedCapture) -> bool {
-    a.subject == b.subject
-        && a.sender == b.sender
-        && a.allow.len() == b.allow.len()
-        && a.allow.iter().all(|p| b.allow.contains(p))
-        && b.allow.iter().all(|p| a.allow.contains(p))
+    crate::acl::reader_set(&a.subject, &a.allow, a.sender.as_ref(), &a.excluded)
+        == crate::acl::reader_set(&b.subject, &b.allow, b.sender.as_ref(), &b.excluded)
 }
 
 /// Screen one claim: is it already remembered, and is there a wiki for it?
@@ -467,6 +466,7 @@ async fn screen_one(
     let audience = crate::capture::Audience {
         subject: &cap.subject,
         allow: &cap.allow,
+        excluded: &cap.excluded,
         sender: cap.sender.as_ref(),
     };
     if let Some((dup, score)) = crate::capture::best_dedup_candidate(

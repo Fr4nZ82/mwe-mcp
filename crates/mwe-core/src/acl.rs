@@ -211,8 +211,9 @@ pub fn can_delete(sender_of_fact: Option<&Principal>, caller: &str, is_admin: bo
 /// bare **user ids**.
 ///
 /// This is the finite electorate a non-sender subject's forget request is
-/// put to. The audience is the same effective read-set [`can_read`] checks,
-/// `subject ∪ allow ∪ {sender}`, but resolved to concrete humans: each
+/// put to. The audience is the same effective read-set [`can_read`] checks —
+/// `subject ∪ allow ∪ {sender}`, **less whoever the fact is kept from** — but
+/// resolved to concrete humans: each
 /// [`Principal::Group`] is expanded to its members via
 /// [`crate::enrollment::members_for`], and the builtin `global` group is
 /// **dropped** (a public fact has no finite electorate — there is nobody to
@@ -220,6 +221,13 @@ pub fn can_delete(sender_of_fact: Option<&Principal>, caller: &str, is_admin: bo
 /// identity nobody holds is nobody to ask). A `None` sender contributes
 /// nothing. The result is sorted and deduped so the caller can compare /
 /// store it deterministically.
+///
+/// **The excluded are not electors.** Putting the question to somebody the
+/// fact was kept from tells them it exists, which is the one thing the
+/// exclusion was for, and it miscounts the poll: they can never vote, so a
+/// forget request would wait for a voice that is not coming. They are taken
+/// out last, after the groups are expanded, because that is where they would
+/// otherwise appear.
 ///
 /// # Errors
 ///
@@ -229,6 +237,7 @@ pub async fn audience(
     subject: &Principal,
     allow: &[Principal],
     sender: Option<&Principal>,
+    excluded: &[Principal],
 ) -> Result<Vec<String>, sqlx::Error> {
     use std::collections::BTreeSet;
     let mut users: BTreeSet<String> = BTreeSet::new();
@@ -247,6 +256,20 @@ pub async fn audience(
             Principal::Group(id) => {
                 for member in crate::enrollment::members_for(pool, id).await? {
                     users.insert(member);
+                }
+            },
+        }
+    }
+    // Last, and after the groups are expanded: the excluded reach the list
+    // through a group far more often than by name.
+    for kept_out in excluded {
+        match kept_out {
+            Principal::User(id) => {
+                users.remove(id);
+            },
+            Principal::Group(id) => {
+                for member in crate::enrollment::members_for(pool, id).await? {
+                    users.remove(&member);
                 }
             },
         }
@@ -407,6 +430,51 @@ mod tests {
     use super::*;
     use proptest::collection::vec;
     use proptest::prelude::*;
+
+    /// **The two edges of an exclusion: its author, and the administrator.**
+    ///
+    /// Nobody keeps a claim from themselves. The author reads what they wrote
+    /// through the sender axis and cannot be talked out of it — a model that
+    /// wrote the speaker into `excluded` would make the fact unreadable by the
+    /// person who said it, so the engine drops that at the door
+    /// (`ingest::read_exclusions`) and this is the shape the predicate would
+    /// see if it ever got through.
+    ///
+    /// The ADMINISTRATOR is the other edge, and the answer is the one the
+    /// product already gives everywhere: an exclusion is part of the ordinary
+    /// permission, so an admin reading through the ordinary gate does not see
+    /// it, and an admin who turns on the reveal lens skips that gate and does
+    /// — the same bargain as every other private fact, visibly taken.
+    #[test]
+    fn an_exclusion_binds_its_author_and_leaves_the_reveal_lens_alone() {
+        let bob = Principal::User("bob".into());
+        // The shape that must never be written. If it ever is, the author is
+        // still shut out — which is exactly why it is refused upstream rather
+        // than being made harmless here.
+        let self_excluded = Acl {
+            subject: Some(Principal::Group("parents".into())),
+            allow: Vec::new(),
+            excluded: vec![bob.clone()],
+        };
+        assert!(
+            !can_read(&self_excluded, "bob", &["parents".to_owned()], Some(&bob)),
+            "even as the author he is shut out — so the engine must not let it be written"
+        );
+
+        // An admin is not a principal this check knows about: they read as
+        // themselves, and the exclusion holds. The reveal lens is a caller-side
+        // bypass of the whole gate ([`crate::recall::wiki_facts_full_for`]),
+        // so it is not weakened here and not strengthened either.
+        let kept_from_the_admin = Acl {
+            subject: Some(Principal::Group("parents".into())),
+            allow: Vec::new(),
+            excluded: vec![Principal::User("franz".into())],
+        };
+        assert!(
+            !can_read(&kept_from_the_admin, "franz", &["parents".to_owned()], None),
+            "the ordinary gate shuts the administrator out like anybody else"
+        );
+    }
 
     /// **«Not for her» holds against the group she is already in.**
     ///
@@ -1014,12 +1082,29 @@ mod tests {
             &Principal::User("franz".into()),
             &[Principal::Group("famiglia".into()), Principal::global()],
             Some(&Principal::User("nina".into())),
+            &[],
         )
         .await
         .expect("audience");
         // Group expanded; global dropped; sender included; sorted + deduped
         // (franz appears as both subject and a famiglia member → once).
         assert_eq!(aud, vec!["bilbo", "franz", "morgana", "nina"]);
+
+        // **The excluded are not electors.** Putting the question to somebody
+        // the fact was kept from tells them it exists, which is what the
+        // exclusion was for — and they can never vote, so the poll would wait
+        // for a voice that is not coming. They come off after the group is
+        // expanded, which is how they got on the list.
+        let aud = audience(
+            &pool,
+            &Principal::User("franz".into()),
+            &[Principal::Group("famiglia".into()), Principal::global()],
+            Some(&Principal::User("nina".into())),
+            &[Principal::User("morgana".into())],
+        )
+        .await
+        .expect("audience");
+        assert_eq!(aud, vec!["bilbo", "franz", "nina"]);
     }
 
     #[tokio::test]
@@ -1027,7 +1112,7 @@ mod tests {
         let (_workdir, pool) = crate::test_db::TestWorkdir::with_db().await;
         // A purely public fact (subject=global, no allow, no sender) has nobody
         // finite to poll.
-        let aud = audience(&pool, &Principal::global(), &[], None)
+        let aud = audience(&pool, &Principal::global(), &[], None, &[])
             .await
             .expect("audience");
         assert!(aud.is_empty(), "global subject yields no finite electorate");

@@ -907,6 +907,8 @@ async fn apply_add(
         &crate::capture::Audience {
             subject: &subject_id,
             allow: &allow_ids,
+            // A comment states no exclusion (see the `NewFact` beside it).
+            excluded: &[],
             sender: commenter,
         },
         channel,

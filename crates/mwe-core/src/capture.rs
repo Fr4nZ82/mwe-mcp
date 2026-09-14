@@ -353,6 +353,8 @@ pub(crate) struct Audience<'a> {
     pub subject: &'a Principal,
     /// Who else may read it.
     pub allow: &'a [Principal],
+    /// Who it must NOT reach, whatever the other three say.
+    pub excluded: &'a [Principal],
     /// Who reported it (`None` ⇒ the subject).
     pub sender: Option<&'a Principal>,
 }
@@ -389,15 +391,15 @@ impl Audience<'_> {
     /// [`list_entry_to_replace`] carries them onto the replacement rather than
     /// letting the row narrow.
     fn same_read_set_as(&self, row: &FactIndexRow) -> bool {
-        if &row.subject_id != self.subject {
-            return false;
-        }
-        // `allow` is a small hand-written list — a linear contains beats
-        // building two sorted copies, and it is order-insensitive by
-        // construction.
-        row.allow_ids.len() == self.allow.len()
-            && self.allow.iter().all(|p| row.allow_ids.contains(p))
-            && row.allow_ids.iter().all(|p| self.allow.contains(p))
+        // One question, one answer: `reader_set` is what «who reads this»
+        // means everywhere, exclusions included, and a claim somebody asked
+        // to keep from one person is not the same claim as the one already
+        // stored without that wish — folding it in would drop the wish on the
+        // floor and tell nobody ([`crate::acl::reader_set`]). The reporter is
+        // left out on both sides here, which is what makes this the ACL half
+        // of [`Self::same_as_row`].
+        crate::acl::reader_set(self.subject, self.allow, None, self.excluded)
+            == crate::acl::reader_set(&row.subject_id, &row.allow_ids, None, &row.excluded_ids)
     }
 }
 
@@ -633,6 +635,7 @@ fn list_entry_of_the_same_name<'a>(
     let audience = Audience {
         subject: &req.subject,
         allow: &req.allow,
+        excluded: &req.excluded,
         sender: req.sender.as_ref(),
     };
     // `candidates` arrives oldest first, so the last match is the entry as it
@@ -844,6 +847,7 @@ pub async fn wiki_capture_with_source(
     let audience = Audience {
         subject: &req.subject,
         allow: &req.allow,
+        excluded: &req.excluded,
         sender: req.sender.as_ref(),
     };
     let best = best_dedup_candidate(&candidates, &audience, channel, &req.body, None);
@@ -2161,6 +2165,47 @@ mod tests {
             matches!(second.action, CaptureAction::Skipped { .. }),
             "same words, same audience: {:?}",
             second.action
+        );
+    }
+
+    /// **A claim somebody asked to keep from one person is not the claim
+    /// already stored without that wish.**
+    ///
+    /// The write-time gate folds a near-identical claim into the fact already
+    /// there when the two are readable by the same people. An exclusion is
+    /// part of who reads it: folded in, the wish would land nowhere at all —
+    /// the second capture returns `Skipped`, nothing is written, and nobody is
+    /// told the memory did not keep it.
+    #[tokio::test]
+    async fn the_same_claim_kept_from_somebody_is_not_a_duplicate() {
+        let dir = tempdir().unwrap();
+        let tree = WikiTree::open(dir.path()).unwrap();
+        seed_alice(&tree);
+        let pool = make_pool().await;
+
+        let mut first = sample_request("andiamo in Norvegia a luglio");
+        first.allow = vec!["group:famiglia".parse().unwrap()];
+        wiki_capture(&tree, &pool, embedder(), first).await.unwrap();
+
+        let mut kept_from_zoe = sample_request("Andiamo in Norvegia a luglio.");
+        kept_from_zoe.allow = vec!["group:famiglia".parse().unwrap()];
+        kept_from_zoe.excluded = vec!["user:zoe".parse().unwrap()];
+        let second = wiki_capture(&tree, &pool, embedder(), kept_from_zoe)
+            .await
+            .unwrap();
+
+        assert!(
+            !matches!(second.action, CaptureAction::Skipped { .. }),
+            "same words, but one of them is kept from Zoe: {:?}",
+            second.action
+        );
+        assert_eq!(
+            sqlx::query_scalar::<_, i64>("SELECT COUNT(*) FROM fact_index")
+                .fetch_one(&pool)
+                .await
+                .unwrap(),
+            2,
+            "both stand, or the wish is lost with nobody told"
         );
     }
 

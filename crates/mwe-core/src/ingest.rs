@@ -2461,10 +2461,17 @@ fn subject_of_the_claim(
 /// A name it cannot read is dropped rather than failing the turn: an
 /// unparseable exclusion must not take the fact down with it, and the audience
 /// settling beside it is what makes the ones it CAN read binding.
-fn read_exclusions(unit: &CaptureUnit<'_>) -> Vec<Principal> {
+fn read_exclusions(unit: &CaptureUnit<'_>, speaker: &Principal) -> Vec<Principal> {
     unit.excluded_ids
         .iter()
         .filter_map(|s| Principal::from_str(s).ok())
+        // **Nobody keeps a claim from themselves.** «Don't tell me» is not a
+        // thing a person says about their own turn, and a model that writes it
+        // would make the fact unreadable by its own author — who is a reader of
+        // it through the sender axis and cannot be talked out of that. The
+        // sender is stripped from `allow` a few lines up for the mirror-image
+        // reason, and this is the same correction on the other side.
+        .filter(|p| p != speaker)
         .collect()
 }
 
@@ -2653,7 +2660,8 @@ fn validate_capture_plan(
     // protects hand-written calls) cannot kill the whole ingest turn.
     let sender_principal = Principal::User(request.sender_id.clone());
     allow.retain(|p| *p != sender_principal);
-    let (allow, excluded) = audience_without_the_excluded(allow, read_exclusions(unit), groups);
+    let (allow, excluded) =
+        audience_without_the_excluded(allow, read_exclusions(unit, &sender_principal), groups);
     // Body: the legacy single-fact shape may omit it (fall back to the raw
     // message); a multi-fact extraction MUST carry its own body, else filing
     // the whole message under every extraction would duplicate it.

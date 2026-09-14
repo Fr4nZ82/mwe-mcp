@@ -438,6 +438,7 @@ pub async fn open_forget_request(
         &row.subject_id,
         &row.allow_ids,
         row.sender_id.as_ref(),
+        &row.excluded_ids,
     )
     .await?;
     eligible.retain(|u| u != requester);
