@@ -46,7 +46,7 @@
 //! the language. **A wiki that answers to nobody** — every one the nightly
 //! grouping raises, since it hangs under nothing — has no principal to name
 //! it, and falls back to [`memory_wide_locale`]: the language every enrolled
-//! person shares, or none. A slot with no wiki in hand resolves the principal
+//! PERSON shares, or none — an assistant declares none and is not asked. A slot with no wiki in hand resolves the principal
 //! itself and calls [`render_memory_language_directive`]: document
 //! ingest does that once per job, from the job's subject. All of it is
 //! best-effort — any lookup failure logs and degrades to the English
@@ -193,7 +193,7 @@ pub async fn memory_directive_for_wiki_meta(
 }
 
 /// The language the memory writes in when no single wiki answers for the
-/// text — the one every enrolled person shares, or none.
+/// text — the one every enrolled PERSON shares, or none.
 ///
 /// Two callers, one question. A wiki that does not exist yet declares no
 /// language, and the pages a grouping would gather come from several that need
@@ -202,6 +202,16 @@ pub async fn memory_directive_for_wiki_meta(
 /// [`crate::enrollment::locale_for_principal`] applies to a group's members,
 /// and `None` renders the ordinary mirror fallback.
 ///
+/// **An assistant is not asked.** A language is a fact about the people a
+/// memory is for, not about the programs that talk to them: an assistant is
+/// enrolled so it can be addressed and answered for, and its row carries no
+/// declared language because nobody declares one for it. Counting it made a
+/// single empty row say the household agrees on nothing — measured on the live
+/// memory, four people all `it` and one agent with an empty row, which left
+/// four topic wikis answering to nobody writing 23 pages of English inside an
+/// Italian memory, among them a pregnancy record and a father's clinical
+/// notes.
+///
 /// # Errors
 ///
 /// None: a lookup that fails reads as "no shared language", which is the
@@ -209,7 +219,7 @@ pub async fn memory_directive_for_wiki_meta(
 pub async fn memory_wide_locale(pool: &sqlx::SqlitePool) -> Option<String> {
     let users = crate::enrollment::list_users(pool).await.ok()?;
     let mut locales = Vec::new();
-    for u in users {
+    for u in users.iter().filter(|u| !u.is_agent) {
         locales.push(
             crate::enrollment::locale_for(pool, &u.user_id)
                 .await
@@ -326,6 +336,50 @@ mod tests {
         assert!(
             directive.contains("Respond in English"),
             "no unanimity, no language: {directive}"
+        );
+        drop(dir);
+    }
+
+    /// **An assistant has no language of its own to break the household's.**
+    ///
+    /// A language is a fact about the people a memory is for. An assistant is
+    /// enrolled so it can be addressed and answered for, and nobody declares a
+    /// language for it — so counting its empty row said the household agreed
+    /// on nothing. On the live memory that was four people all `it` and one
+    /// agent with an empty row, and the four wikis answering to nobody wrote
+    /// 23 pages of English inside an Italian memory.
+    #[tokio::test]
+    async fn an_assistant_does_not_break_the_language_the_people_share() {
+        let dir = tempfile::tempdir().unwrap();
+        let pool = crate::db::open_or_init(dir.path()).await.expect("db");
+        for (u, locale, is_agent) in [("alice", "it", 0), ("bob", "it", 0), ("frodo", "", 1)] {
+            sqlx::query(
+                "INSERT INTO enrollment_users (user_id, aliases, is_admin, locale, is_agent) \
+                 VALUES (?, '[]', 0, ?, ?)",
+            )
+            .bind(u)
+            .bind(locale)
+            .bind(is_agent)
+            .execute(&pool)
+            .await
+            .unwrap();
+        }
+        assert_eq!(
+            memory_wide_locale(&pool).await.as_deref(),
+            Some("it"),
+            "the people agree, and the assistant was not asked"
+        );
+
+        // And a PERSON with no language still means no agreement: the rule is
+        // unanimity among the people, not «ignore whoever is inconvenient».
+        sqlx::query("UPDATE enrollment_users SET locale = '' WHERE user_id = 'bob'")
+            .execute(&pool)
+            .await
+            .unwrap();
+        assert_eq!(
+            memory_wide_locale(&pool).await,
+            None,
+            "a person without a declared language is still a person"
         );
         drop(dir);
     }

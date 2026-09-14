@@ -37,7 +37,10 @@ One account per person. The table lists **User id**, **Email**, **Role**,
   the [Settings](settings.md) page.
 - **Language** (BCP-47, e.g. `en-GB` or `it`) — not only the language a
   consumer answers them in: **every page the engine compiles for them is
-  written in it**. Empty falls back to English.
+  written in it**. Empty falls back to English. A wiki that answers to nobody —
+  every one the nightly reorganisation raises by topic — is written in the
+  language every enrolled **person** shares; an assistant is not asked, so its
+  empty row does not leave the memory without one.
 
 Press **Create user + invitation link**. The list comes back with a green line
 carrying a **single-use link** — by default it expires in 24 hours. Hand it

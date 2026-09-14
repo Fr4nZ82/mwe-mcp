@@ -13,6 +13,17 @@ semver-governed surface: breaking changes are called out explicitly.
 
 ### Fixed
 
+- **An assistant's blank language no longer leaves a whole memory without
+  one.** Pages the engine groups by topic belong to nobody in particular, so
+  they are written in the language everyone enrolled shares. The assistants
+  were being counted in that «everyone», and nobody sets a language for an
+  assistant — so one blank row meant *«these people agree on nothing»* and the
+  engine fell back to English. On a live memory that was four people all set to
+  Italian, and four topic wikis holding 23 pages of English, a pregnancy record
+  and a father's clinical notes among them. A language is a fact about the
+  people a memory is for; the assistants are not asked. Those pages come back
+  into Italian on their own the next time they are rewritten.
+
 - **A tidy-up catching up on old messages dates what it closes by the story,
   not by the evening it runs on.** When a background pass has to close a fact
   and nothing in the conversation said when it stopped being true, it has to
