@@ -197,6 +197,16 @@ pub struct CompileReport {
     /// one, and a louder one: what is outside a marker has no ACL, so a page
     /// that lands here was publishing something.
     pub prose_restated: Vec<String>,
+    /// Pages still written in a language the directive did not ask for after
+    /// being asked twice (`"<slug>: <the language found>"`), and therefore
+    /// kept as they came.
+    ///
+    /// A **prompt** signal, not a failure: the page is written and readable,
+    /// and only its language is wrong, so it never touches the
+    /// `compile_failure_streak` alarm. Two languages can be read
+    /// ([`crate::locale::language_of_prose`]); for the rest the check is
+    /// silent and this stays empty.
+    pub wrong_language: Vec<String>,
 }
 
 impl CompileReport {
@@ -213,6 +223,9 @@ impl CompileReport {
         }
         if let Some(evidence) = &notes.prose_restated {
             self.prose_restated.push(format!("{slug}: {evidence}"));
+        }
+        if let Some(found) = &notes.wrong_language {
+            self.wrong_language.push(format!("{slug}: {found}"));
         }
     }
 
@@ -553,6 +566,10 @@ struct PageNotes {
     /// not to ([`prose_restates_fact`]). Set means the page was served as its
     /// facts alone.
     prose_restated: Option<String>,
+    /// The language the page turned out to be in, after being asked twice for
+    /// the one the directive named ([`write_it_in_the_asked_language`]). Set
+    /// means the page was kept as it came.
+    wrong_language: Option<String>,
 }
 
 /// Pre-point every dirty-page fact whose `fact_index` row still lives on a
@@ -948,6 +965,23 @@ async fn compile_leaf_page(
     let prose_restated =
         stop_the_prose_restating(llm, &prompt, page, max_tokens, &mut merged_body).await;
 
+    // **A page in the wrong language is unreadable to the person it is for.**
+    // The LANGUAGE directive is in the prompt and the model mostly obeys it;
+    // when it does not, nothing downstream notices, and the page sits there in
+    // a language its reader did not ask for. One rewrite with the language
+    // named again, then the page is kept as it came — a second miss is the
+    // model, and an endless retry would spend a call a night on a page that
+    // will not change.
+    let wrong_language = write_it_in_the_asked_language(
+        llm,
+        &prompt,
+        page,
+        max_tokens,
+        language_directive,
+        &mut merged_body,
+    )
+    .await;
+
     // Every assigned fact must end up wrapped in a marker on the page.
     let known: std::collections::BTreeSet<&str> = page
         .primary_facts
@@ -1010,6 +1044,7 @@ async fn compile_leaf_page(
         over_budget_chars: card_over_budget(page, &contents),
         rails_appended,
         prose_restated,
+        wrong_language,
     }))
 }
 
@@ -2363,6 +2398,120 @@ async fn stop_the_prose_restating(
         *merged_body = keep_only_the_marked_regions(merged_body);
     }
     still
+}
+
+/// **The page has to be in the language it was told to write in.**
+///
+/// The directive is in the prompt and the model mostly obeys it; when it does
+/// not — intermittently, which is what says it is the model and not the
+/// instruction — the page sits in a language its reader did not ask for and
+/// nothing downstream notices. On the demo corpus that was one compiled page
+/// of 48: an English memory with an Italian page of family suppers in it.
+///
+/// The measurement is deterministic ([`crate::locale::written_in_another_language`]):
+/// grammar words per language, no model, no network, so deciding whether to
+/// spend a call is not itself a call. It compares against the DIRECTIVE THIS
+/// PAGE RECEIVED rather than any instance-wide setting: a page obeying its
+/// instruction is not in the wrong language, and disagreeing with the
+/// instruction would send the same page back every night to come out the same.
+///
+/// One rewrite, and then the page is KEPT. A second miss is the model, and
+/// this is not a compile failure — the page is written, readable, and merely
+/// in the wrong language — so it never reaches
+/// [`compile_failures::record_failure`] and the `compile_failure_streak`
+/// notice stays what it is: the alarm for a compiler that cannot write a page
+/// at all.
+///
+/// Cost: one Cronista call per page that misses, and only for the two
+/// languages the check can read.
+async fn write_it_in_the_asked_language(
+    llm: &dyn LlmBackend,
+    prompt: &str,
+    page: &PagePlan,
+    max_tokens: u32,
+    language_directive: &str,
+    merged_body: &mut String,
+) -> Option<String> {
+    let found = crate::locale::written_in_another_language(
+        language_directive,
+        &all_the_prose(merged_body),
+    )?;
+    tracing::warn!(
+        slug = %page.slug,
+        found,
+        "compiler: the page is not in the language the directive asked for — asking again"
+    );
+    let mut still = Some(found.to_owned());
+    if let Some(second) =
+        cronista_in_the_asked_language(llm, prompt, &page.slug, max_tokens, language_directive)
+            .await
+    {
+        let second_body = expand_and_complete_fact_markers(&second.merged_body, page);
+        still = crate::locale::written_in_another_language(
+            language_directive,
+            &all_the_prose(&second_body),
+        )
+        .map(str::to_owned);
+        *merged_body = second_body;
+    }
+    if let Some(again) = &still {
+        tracing::warn!(
+            slug = %page.slug,
+            found = again.as_str(),
+            "compiler: it is in the wrong language again — the page is kept as it came"
+        );
+    }
+    still
+}
+
+/// Everything on the page a reader reads, marked regions included.
+///
+/// Not [`prose_outside_markers`]: the Cronista writes BOTH halves, and a page
+/// whose connective lines are right while every fact's sentence is in the
+/// other language is exactly the shape that has to be caught.
+fn all_the_prose(body: &str) -> String {
+    crate::parser::parse(body)
+        .events
+        .into_iter()
+        .filter_map(|e| match e {
+            crate::parser::ParseEvent::Prose { text, .. } => Some(text),
+            crate::parser::ParseEvent::Region { body, .. } => Some(body),
+            crate::parser::ParseEvent::Embed { .. } => None,
+        })
+        .collect::<Vec<_>>()
+        .join(" ")
+}
+
+/// One rewrite that names the language again and asks for the same page in it.
+///
+/// The same shape as the two guards beside it: one extra call, the draft kept
+/// when the second answer cannot be used, and what to do with a second failure
+/// left to the caller — here, keeping the page.
+async fn cronista_in_the_asked_language(
+    llm: &dyn LlmBackend,
+    prompt: &str,
+    slug: &str,
+    max_tokens: u32,
+    language_directive: &str,
+) -> Option<CronistaOutput> {
+    let (system, task) = split_cronista_prompt(prompt);
+    let msg = format!(
+        "Your draft is not written in the language you were asked for. {language_directive} \
+         Write the page again, complete: the same facts in the same order, the same <fN> \
+         tags, the same completeness rules, in that language and no other. Return the JSON \
+         object only."
+    );
+    match cronista_attempt(llm, system, task, &msg, max_tokens).await {
+        Ok(second) => Some(second),
+        Err(e) => {
+            tracing::warn!(
+                slug,
+                error = e.message(),
+                "compiler: the rewrite that should change language was unusable"
+            );
+            None
+        },
+    }
 }
 
 /// One rewrite that says what the draft repeated and asks for it to be linked
@@ -3934,6 +4083,61 @@ mod tests {
         std::fs::write(wikis.join("alice/cucina.md"), "# alice\n").unwrap();
         let tree = WikiTree::open(dir.path()).expect("tree");
         (dir, tree, pool)
+    }
+
+    /// **A page written in the wrong language is asked again, once, and then
+    /// kept.**
+    ///
+    /// The LANGUAGE directive is in the prompt and the writer mostly obeys it.
+    /// When it does not, the page sits there in a language its reader did not
+    /// ask for and nothing downstream notices: on the demo corpus, one
+    /// compiled page of 48 — an English memory with an Italian page of family
+    /// suppers in it.
+    ///
+    /// This drives a writer that will not switch. The page is still written:
+    /// a page in the wrong language is readable, which a missing page is not,
+    /// and the streak that alarms about a compiler which cannot write at all
+    /// must not learn to cry about this instead.
+    #[tokio::test]
+    async fn a_page_in_the_wrong_language_is_asked_again_and_then_kept() {
+        let (dir, tree, pool) = setup().await;
+        let supper = ffp(0x22, "Zoe ate outside in the garden on Tuesday evening.");
+        let plan = concept_leaf_plan(supper, "cena", None);
+        // A writer that answers in Italian however often it is asked.
+        let stubborn = FakeLlmBackend::new(
+            "cronista",
+            "{\"mergedBody\":\"Non tutti i pasti in giardino restano documentati qui in \
+             dettaglio, ma un'occasione compare nei ricordi condivisi della famiglia. \
+             <f1>Una sera hanno mangiato fuori e il gatto è rimasto seduto sul tavolo per \
+             tutto il pasto.</f1>\",\"description\":\"I pasti in giardino\",\
+             \"style\":\"prosa\"}",
+        );
+        let report = compile_dirty_pages(
+            &pool,
+            &tree,
+            &plan,
+            &stubborn,
+            Cadence::Light,
+            "2026-09-13T10:00:00Z",
+        )
+        .await
+        .expect("compile");
+
+        assert_eq!(report.wrong_language.len(), 1, "{report:?}");
+        assert!(
+            report.wrong_language[0].contains("it"),
+            "the receipt names the language it came out in: {:?}",
+            report.wrong_language
+        );
+        assert!(
+            dir.path().join("wikis/alice/cena.md").exists(),
+            "the page is written: wrong language is not a failed compile"
+        );
+        assert!(
+            report.pages_failed() == 0,
+            "and it is not counted as a failure: {report:?}"
+        );
+        drop(dir);
     }
 
     /// **What is outside a marker has no audience, so it may carry no fact's

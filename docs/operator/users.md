@@ -40,7 +40,10 @@ One account per person. The table lists **User id**, **Email**, **Role**,
   written in it**. Empty falls back to English. A wiki that answers to nobody —
   every one the nightly reorganisation raises by topic — is written in the
   language every enrolled **person** shares; an assistant is not asked, so its
-  empty row does not leave the memory without one.
+  empty row does not leave the memory without one. When a page comes back in
+  the wrong language anyway, the engine notices and asks for it again once;
+  it can read **Italian and English**, and for the other languages it says
+  nothing rather than guess.
 
 Press **Create user + invitation link**. The list comes back with a green line
 carrying a **single-use link** — by default it expires in 24 hours. Hand it

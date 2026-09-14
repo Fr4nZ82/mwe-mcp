@@ -13,6 +13,21 @@ semver-governed surface: breaking changes are called out explicitly.
 
 ### Fixed
 
+- **A page that comes out in the wrong language is asked for again.** The
+  instruction naming the language is in front of the page writer every time,
+  and it mostly obeys — but when it slips, nothing noticed, and the page sat
+  there in a language its reader had not asked for. On the demo corpus that
+  was one compiled page of 48: an English memory with an Italian page about
+  family suppers in the garden. The finished page is now read back before it
+  is accepted, by counting grammar words rather than by asking a model, and a
+  page in the wrong language is written again once. If the second attempt
+  misses too the page is kept as it is — it is readable, and a page nobody can
+  read is the worse outcome — and the alarm that watches for a page writer
+  which cannot write at all is left alone, because this is not that. The check
+  reads Italian and English; for the other languages it says nothing rather
+  than guess, and it never judges a page of fewer than twenty words or one
+  written half in each.
+
 - **An assistant's blank language no longer leaves a whole memory without
   one.** Pages the engine groups by topic belong to nobody in particular, so
   they are written in the language everyone enrolled shares. The assistants

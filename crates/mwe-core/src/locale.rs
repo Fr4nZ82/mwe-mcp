@@ -91,6 +91,137 @@ pub fn render_language_directive(locale: Option<&str>) -> String {
     )
 }
 
+/// The BCP-47 tag a rendered directive names, or `None` when it names none.
+///
+/// The directive is what the page was actually told to do, and reading the tag
+/// back out of it is how a check downstream asks the same question the writer
+/// was asked — rather than asking a different one off the instance's settings
+/// and disagreeing with the instruction the page was given. The mirror
+/// fallback names no language, and a page written against it can be in any.
+#[must_use]
+pub fn tag_of_directive(directive: &str) -> Option<&str> {
+    let rest = directive.strip_prefix("User locale: ")?;
+    let tag = rest.split('.').next()?.trim();
+    (!tag.is_empty()).then_some(tag)
+}
+
+/// The words that carry grammar in a language this engine can recognise —
+/// enough of them, in a page of prose, to say which language it is.
+///
+/// **Two languages, and it abstains for the rest.** These are the ones the
+/// product is written and read in, and a list I can write and defend; a
+/// hand-made list for a language nobody here reads is a guess that would send
+/// good pages back to be rewritten. For the other eleven the check does not
+/// run, and a page in the wrong language there is caught the way it always
+/// was: by somebody reading it. Languages written without spaces between
+/// words — Japanese, Chinese, Korean — cannot be measured this way at all.
+const STOP_WORDS: &[(&str, &[&str])] = &[
+    (
+        "en",
+        &[
+            "the", "and", "of", "to", "in", "is", "that", "it", "for", "with", "was", "on", "as",
+            "at", "by", "from", "this", "are", "be", "has", "have", "had", "not", "but", "they",
+            "their", "she", "he", "will", "would", "which", "been", "were", "there", "when", "who",
+            "what", "an", "or", "if", "into", "after", "before", "than", "then", "its", "his",
+            "her", "them", "also", "any", "all", "how", "out", "up",
+        ],
+    ),
+    (
+        "it",
+        &[
+            "il", "lo", "la", "i", "gli", "le", "un", "una", "uno", "di", "del", "della", "dei",
+            "delle", "dello", "che", "non", "per", "con", "sono", "essere", "stato", "stata",
+            "come", "dove", "quando", "anche", "più", "già", "ma", "se", "nel", "nella", "nei",
+            "sul", "sulla", "alla", "allo", "agli", "alle", "da", "dal", "dalla", "questo",
+            "questa", "quello", "quella", "suo", "sua", "loro", "hanno", "ha", "è", "ed", "o",
+            "al", "ai", "si", "ci", "tra", "fra", "una", "delle",
+        ],
+    ),
+];
+
+/// A page shorter than this says nothing about its own language.
+const TOO_SHORT_TO_JUDGE: usize = 20;
+
+/// The share of a page's words that must be one language's grammar before the
+/// page counts as written in it, as a percentage — counted in whole words, so
+/// the arithmetic is exact and the same on every machine.
+const FLOOR_PERCENT: usize = 8;
+
+/// How far ahead of the runner-up the winner has to be, as a fraction: three
+/// halves.
+const MARGIN: (usize, usize) = (3, 2);
+
+/// **Which language this prose is written in**, or `None` when it cannot be
+/// told.
+///
+/// Grammar words per language, counted: the winner has to carry at least
+/// [`FLOOR_PERCENT`] of the words and stand [`MARGIN`] clear of the second. No
+/// model, no network, the same answer every time — which is what lets it
+/// decide whether to spend a call rather than being one.
+///
+/// **It abstains far more readily than it answers**, and every way of
+/// abstaining is deliberate. Under [`TOO_SHORT_TO_JUDGE`] words there is not
+/// enough grammar in a page to count. A page in two languages splits the
+/// score and neither clears the margin, so nothing is sent back for being
+/// half-translated — which is a judgement about content, not about language.
+/// A page that is mostly names and figures clears no floor, because a proper
+/// noun is nobody's grammar word.
+#[must_use]
+pub fn language_of_prose(text: &str) -> Option<&'static str> {
+    let words: Vec<String> = text
+        .split(|c: char| c.is_whitespace())
+        .map(|w| {
+            w.trim_matches(|c: char| !c.is_alphanumeric())
+                .to_lowercase()
+        })
+        .filter(|w| !w.is_empty())
+        .collect();
+    if words.len() < TOO_SHORT_TO_JUDGE {
+        return None;
+    }
+    let total = words.len();
+    let mut scored: Vec<(&'static str, usize)> = STOP_WORDS
+        .iter()
+        .map(|(tag, stop)| {
+            (
+                *tag,
+                words.iter().filter(|w| stop.contains(&w.as_str())).count(),
+            )
+        })
+        .collect();
+    scored.sort_by_key(|(_, hits)| std::cmp::Reverse(*hits));
+    let (best, hits) = *scored.first()?;
+    let runner_up = scored.get(1).map_or(0, |(_, h)| *h);
+    let clears_the_floor = hits * 100 >= total * FLOOR_PERCENT;
+    let stands_clear = hits * MARGIN.1 >= runner_up * MARGIN.0;
+    (clears_the_floor && stands_clear).then_some(best)
+}
+
+/// **The language this page is in, when it is not the one the page was told to
+/// write in** — and `None` whenever the question cannot be answered.
+///
+/// It compares against the DIRECTIVE the page received, not the instance's
+/// settings: a page obeying the instruction it was given is not a page in the
+/// wrong language, whatever a setting elsewhere says, and disagreeing with the
+/// directive would send the same page back every night for a rewrite that
+/// would come out the same.
+///
+/// Silent unless all of it holds: the directive names a language, that
+/// language is one of the two with a list, and the prose says clearly that it
+/// is in the other one.
+#[must_use]
+pub fn written_in_another_language(directive: &str, prose: &str) -> Option<&'static str> {
+    let asked = tag_of_directive(directive)?
+        .split(['-', '_'])
+        .next()?
+        .to_ascii_lowercase();
+    if !STOP_WORDS.iter().any(|(tag, _)| *tag == asked) {
+        return None;
+    }
+    let found = language_of_prose(prose)?;
+    (found != asked).then_some(found)
+}
+
 /// BCP-47 tag a memory-writing slot falls back to when nobody
 /// declared a locale for the memory it is about to write.
 ///
@@ -338,6 +469,58 @@ mod tests {
             "no unanimity, no language: {directive}"
         );
         drop(dir);
+    }
+
+    /// **A page in the wrong language is sent back; a page that cannot be
+    /// judged is left alone.**
+    ///
+    /// The four answers the check has to get right, and the three of them that
+    /// are ways of saying nothing. Being quiet is what makes this affordable:
+    /// every time it speaks costs one call to the page writer.
+    #[test]
+    fn a_page_is_read_against_the_directive_it_was_given() {
+        let italian = "Non tutti i pasti in giardino restano documentati qui in dettaglio, \
+             ma un'occasione compare nei ricordi condivisi della famiglia: una sera hanno \
+             mangiato fuori e il gatto è rimasto seduto sul tavolo per tutto il pasto.";
+        let english_directive = render_memory_language_directive(Some("en-GB"));
+        let italian_directive = render_memory_language_directive(Some("it"));
+
+        assert_eq!(
+            written_in_another_language(&english_directive, italian),
+            Some("it"),
+            "Italian prose under an English directive goes back"
+        );
+        assert_eq!(
+            written_in_another_language(&italian_directive, italian),
+            None,
+            "the same page under the directive it obeys is right, and costs nothing"
+        );
+
+        // Too short to judge: a page of a dozen words carries no grammar to
+        // count, and a guess there would spend a call on a page that may be
+        // perfectly correct.
+        assert_eq!(
+            written_in_another_language(&english_directive, "Il gatto dorme sul tavolo."),
+            None,
+            "under twenty words nothing is said"
+        );
+
+        // A language with no list: the check abstains rather than guessing,
+        // and a wrong page there is caught the way it always was.
+        let japanese_directive = render_memory_language_directive(Some("ja"));
+        assert_eq!(
+            written_in_another_language(&japanese_directive, italian),
+            None,
+            "no list, no verdict — and a language written without spaces cannot be \
+             measured this way at all"
+        );
+
+        // The mirror fallback names no language, so no page can disobey it.
+        assert_eq!(
+            written_in_another_language(&render_language_directive(None), italian),
+            None,
+            "a directive that names no language asks nothing of the page"
+        );
     }
 
     /// **An assistant has no language of its own to break the household's.**
