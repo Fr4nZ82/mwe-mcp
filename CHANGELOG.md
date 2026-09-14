@@ -38,6 +38,15 @@ semver-governed surface: breaking changes are called out explicitly.
   to is the opposite case: each is the whole of what somebody could act on, so
   one of those in the open is taken with nothing else beside it.
 
+  **Neither is the name of a form, nor how long something lasts.** A number an
+  article introduces is what something is CALLED — *«il 730»*, *«al 118»*,
+  *«the 730»* — and a number with a unit after it says how long or how far:
+  *«14 giorni di recesso»*, *«3 settimane»*, *«5 km da casa»*. Both are the
+  page explaining itself, and both are now outside the check. The one
+  exception is a person's own card: a weight and a height are written in
+  exactly that shape — *«pesa 3 kg»*, *«alta 168 cm»* — and there the number is
+  the value, so it stays in the net.
+
 ### Changed
 
 - **The memory now reads a page where it used to read a list.** When a message

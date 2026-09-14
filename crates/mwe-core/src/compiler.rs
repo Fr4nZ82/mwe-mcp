@@ -1032,13 +1032,20 @@ async fn compile_leaf_page(
 /// - a VALUE: a number one of the page's facts carries, in the open, with
 ///   another word of that same fact beside it in both places
 ///   ([`a_value_in_the_open`]); and
-/// - a run of four or more words shared verbatim with a fact's text.
+/// - a QUOTATION: a run of [`RESTATED_RUN_WORDS`] of a fact's words shared
+///   verbatim with its text.
 ///
 /// Everything else the rule forbids is left to the prompt, because a net that
 /// fires on it would cost pages their prose for writing ordinary English:
 ///
 /// - a proper name on its own — a page about Zoe says «Zoe» in its connective
 ///   prose as a matter of course;
+/// - the NAME of a thing that carries a number, whether an article says so
+///   ([`an_article_names_it`]) or the token itself does
+///   ([`names_a_thing_rather_than_a_value`]);
+/// - how long or how far something is, which a unit after the number says
+///   ([`a_duration_or_a_measure`]) — except on a card, where that shape is a
+///   weight or a height;
 /// - a DATE, a year or a time, wherever it appears. A page whose facts are
 ///   dated is normally organised BY those dates («26 March:», «21–23 May:»),
 ///   and the heading a reader needs is the one the fact also carries. A
@@ -1048,6 +1055,15 @@ async fn compile_leaf_page(
 ///   on that page can see anyway;
 /// - anything in a HEADING line, for the same reason: a heading names the
 ///   section, and naming it is not telling anybody something new.
+///
+/// **Measuring this on a corpus: compare against `fact_index.text`.** The
+/// claim this check is about is the row's, not the span the page happens to
+/// carry inside the marker — a page compiled before a fact was edited still
+/// shows the older words, and a mirror that reads the page for both halves
+/// compares a fact with itself and finds a quotation on every page. Take the
+/// facts from `fact_index` by the id in the marker, and strip the file's
+/// frontmatter first: the `description` is written by the same call and is not
+/// prose on the page, so counting it inflates the hits.
 fn prose_restates_fact(merged_body: &str, facts: &[FactForPage]) -> Option<String> {
     let outside = prose_outside_markers(merged_body);
     if outside.trim().is_empty() {
@@ -1061,7 +1077,11 @@ fn prose_restates_fact(merged_body: &str, facts: &[FactForPage]) -> Option<Strin
         }
         let line_words = words_of(line);
         for fact in facts {
-            if let Some(value) = a_value_in_the_open(&line_words, &words_of(&fact.text)) {
+            if let Some(value) = a_value_in_the_open(
+                &line_words,
+                &words_of(&fact.text),
+                fact.fact_type.as_deref(),
+            ) {
                 return Some(format!(
                     "«{value}» is {}'s, and it is outside its marker",
                     fact.fact_id
@@ -1069,8 +1089,8 @@ fn prose_restates_fact(merged_body: &str, facts: &[FactForPage]) -> Option<Strin
             }
         }
     }
-    // A quotation is judged over the whole of it: four of a fact's words in a
-    // row are a quotation wherever the line breaks fall.
+    // A quotation is judged over the whole of it: a long enough run of a
+    // fact's words is a quotation wherever the line breaks fall.
     let outside_words = words_of(&outside);
     for fact in facts {
         let fact_words = words_of(&fact.text);
@@ -1126,12 +1146,24 @@ const COMPANION_DISTANCE: usize = 5;
 /// the word that would name it («conto», «numero») is often the other side of
 /// the sentence. One of those in the open is a leak whatever stands next to
 /// it.
-fn a_value_in_the_open(prose: &[String], fact: &[String]) -> Option<String> {
+///
+/// **And three shapes are never a value**, whatever stands beside them: a
+/// date, a year or a time ([`reads_as_a_date`]); the name of a thing, whether
+/// the token says so ([`names_a_thing_rather_than_a_value`]) or an article in
+/// front of it does ([`an_article_names_it`]); and a duration or a quantity,
+/// which the unit after the number says ([`a_duration_or_a_measure`]).
+fn a_value_in_the_open(
+    prose: &[String],
+    fact: &[String],
+    fact_type: Option<&str>,
+) -> Option<String> {
     for (i, word) in prose.iter().enumerate() {
         if !word.chars().any(|c| c.is_ascii_digit()) {
             continue;
         }
         // An identifier, in one word or spread over a few — and in the fact.
+        // It is judged before the fences below, because an identifier is a
+        // value whatever stands around it.
         if let Some(len) = an_identifier_at(prose, i)
             && fact
                 .windows(len)
@@ -1139,7 +1171,11 @@ fn a_value_in_the_open(prose: &[String], fact: &[String]) -> Option<String> {
         {
             return Some(prose[i..(i + len).min(prose.len())].join(" "));
         }
-        if reads_as_a_date(prose, i) || names_a_thing_rather_than_a_value(word) {
+        if reads_as_a_date(prose, i)
+            || names_a_thing_rather_than_a_value(word)
+            || an_article_names_it(prose, i)
+            || a_duration_or_a_measure(prose, i, fact_type)
+        {
             continue;
         }
         for (j, same) in fact.iter().enumerate() {
@@ -1248,6 +1284,106 @@ fn names_a_thing_rather_than_a_value(word: &str) -> bool {
 
 /// How short a mixed token has to be to read as a name.
 const NAMED_THING_CHARS: usize = 4;
+
+/// Is this number the NAME of a thing, because an article stands in front of
+/// it?
+///
+/// «il 730», «del 730», «al 118», «the 730». A definite article or an
+/// articulated preposition in front of a number makes the number what
+/// something is CALLED — a form, an emergency line, a bus — and the prose
+/// naming it is naming the subject of its sentence. A value is written the
+/// other way round: the number follows what it measures, «lo stipendio era
+/// 21.000», and no article precedes it.
+fn an_article_names_it(words: &[String], at: usize) -> bool {
+    at > 0 && ARTICLES.contains(&words[at - 1].as_str())
+}
+
+/// The words that make the number after them a name.
+///
+/// **Singular only, and definite only.** A thing has one name: «il 730», «al
+/// 118», «the 730». What follows a PLURAL article is a quantity far more often
+/// than a name — «i 21.000 euro di stipendio» is the value itself — and what
+/// follows an indefinite one («un 730») is a quantity too. Either in this list
+/// would open a hole the size of the check.
+const ARTICLES: &[&str] = &[
+    "il", "lo", "la", "l", "del", "dello", "della", "dell", "al", "allo", "alla", "all", "dal",
+    "dallo", "dalla", "dall", "nel", "nello", "nella", "nell", "sul", "sullo", "sulla", "sull",
+    "col", "the",
+];
+
+/// Is this number a duration or a quantity the prose is explaining, rather
+/// than a value of the fact?
+///
+/// «rileggere la polizza nei 14 giorni di recesso», «l'ha aspettato 3
+/// settimane», «a 5 km da casa»: the unit after the number is what makes it
+/// one, and what it tells a reader is how long or how far, which is the
+/// scaffolding of the sentence rather than anything anybody could act on.
+///
+/// **Except on card material.** A weight and a height are written exactly this
+/// way — «pesa 3,2 kg», «alta 168 cm» — and there the number IS the value, the
+/// one a person may not be entitled to read. So a fact of the kind a card is
+/// made of ([`crate::fact_index::is_an_identity_kind`]) keeps every number it
+/// carries, unit or not: the same predicate every road onto a card asks, so
+/// this one cannot drift away from them.
+fn a_duration_or_a_measure(words: &[String], at: usize, fact_type: Option<&str>) -> bool {
+    if crate::fact_index::is_an_identity_kind(fact_type) {
+        return false;
+    }
+    words
+        .get(at + 1)
+        .is_some_and(|w| UNITS.contains(&w.as_str()))
+}
+
+/// The units of time and measure that turn a number into a duration or a
+/// quantity, in both languages.
+///
+/// Money is deliberately absent: «21.000 euro» is a value and reads exactly
+/// like one. So are the one-letter abbreviations (`g`, `l`, `m`): a single
+/// letter after a number collides with too much else to read as a unit.
+const UNITS: &[&str] = &[
+    "giorno",
+    "giorni",
+    "settimana",
+    "settimane",
+    "mese",
+    "mesi",
+    "anno",
+    "anni",
+    "ora",
+    "ore",
+    "minuto",
+    "minuti",
+    "secondo",
+    "secondi",
+    "day",
+    "days",
+    "week",
+    "weeks",
+    "month",
+    "months",
+    "year",
+    "years",
+    "hour",
+    "hours",
+    "minute",
+    "minutes",
+    "second",
+    "seconds",
+    "km",
+    "chilometro",
+    "chilometri",
+    "metro",
+    "metri",
+    "cm",
+    "mm",
+    "kg",
+    "chilo",
+    "chili",
+    "grammo",
+    "grammi",
+    "litro",
+    "litri",
+];
 
 /// Does this number read as a date, a year or a time?
 ///
@@ -3458,6 +3594,71 @@ mod tests {
         }
     }
 
+    /// **A number an article introduces is the NAME of a thing.**
+    ///
+    /// «il 730» is a tax form and «al 118» an emergency line: the article in
+    /// front makes the number what something is CALLED, and a page naming it
+    /// is naming the subject of its sentence. Measured over a deployment's own
+    /// 159 written pages, this is one of the two hits the value half produced,
+    /// and both were this.
+    #[test]
+    fn a_number_an_article_introduces_is_a_name() {
+        let form = "Alice deve consegnare il 730 al commercialista entro giugno.";
+        let facts = vec![ffp(0x60, form)];
+        let page = format!(
+            "{} Per compilare il 730 il commercialista chiede le ricevute.",
+            marked(0x60, form)
+        );
+        assert_eq!(
+            prose_restates_fact(&page, &facts),
+            None,
+            "the form's name is not its value, however many of the fact's \
+             words stand beside it"
+        );
+
+        // The same digits with nothing in front of them are a value again.
+        let spent = "Alice ha speso 730 euro dal commercialista quest'anno.";
+        let money = vec![ffp(0x61, spent)];
+        let bill = format!(
+            "{} Conta perché 730 euro dal commercialista sono tanti.",
+            marked(0x61, spent)
+        );
+        assert!(
+            prose_restates_fact(&bill, &money).is_some(),
+            "an amount is a value: no article introduces it"
+        );
+    }
+
+    /// **A number with a unit after it says how long or how far.**
+    ///
+    /// «nei 14 giorni di recesso», «3 settimane», «a 5 km da casa»: the unit
+    /// is what makes the number a duration or a quantity, and what it tells a
+    /// reader is the scaffolding of the sentence rather than anything anybody
+    /// could act on. **Except on card material**, where a weight and a height
+    /// are written in exactly that shape and the number IS the value.
+    #[test]
+    fn a_number_with_a_unit_is_a_duration_unless_a_card_carries_it() {
+        let policy = "Alice ha firmato la polizza auto e ha 14 giorni di recesso.";
+        let facts = vec![ffp_of(0x62, policy, "event")];
+        let page = format!(
+            "{} Conviene rileggere la polizza prima che passino 14 giorni.",
+            marked(0x62, policy)
+        );
+        assert_eq!(
+            prose_restates_fact(&page, &facts),
+            None,
+            "the prose is explaining how long, not publishing a value"
+        );
+
+        let weight = "La bambina pesa 3 kg alla nascita.";
+        let card = vec![ffp(0x63, weight)];
+        let with_weight = format!("{} Alla nascita pesava 3 kg.", marked(0x63, weight));
+        assert!(
+            prose_restates_fact(&with_weight, &card).is_some(),
+            "on a card the same shape is the value, and it stays in the net"
+        );
+    }
+
     /// **An identifier is a value on its own.**
     ///
     /// An account number, a telephone number, a tax code: each is the whole of
@@ -3848,6 +4049,12 @@ mod tests {
     }
 
     fn ffp(id_seed: u8, text: &str) -> FactForPage {
+        ffp_of(id_seed, text, "bio")
+    }
+
+    /// The same fixture with the kind spelled out, for the checks that turn on
+    /// it — a card's own material is not read like anybody else's.
+    fn ffp_of(id_seed: u8, text: &str, kind: &str) -> FactForPage {
         FactForPage {
             topics: Vec::new(),
             subject_external: None,
@@ -3855,7 +4062,7 @@ mod tests {
             fact_id: FactId::parse(&format!("0190f3c2-7a4e-7c31-9b02-2f6a1c8e5d{id_seed:02x}"))
                 .unwrap(),
             text: text.to_owned(),
-            fact_type: Some("bio".to_owned()),
+            fact_type: Some(kind.to_owned()),
             subject: "user:alice".parse::<Principal>().unwrap(),
             allow: Vec::new(),
             sender: None,
