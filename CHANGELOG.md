@@ -13,6 +13,16 @@ semver-governed surface: breaking changes are called out explicitly.
 
 ### Fixed
 
+- **The memory names to an assistant only the people you have met in it.** The
+  whole list of everybody enrolled, with the names each of them goes by, went
+  to the model on every turn of every conversation. That list is what the model
+  files a fact against, so a name in it is an invitation to write something
+  onto that person's card — and a resemblance between two names was all it took
+  to put a stranger's life on somebody real. You are now shown yourself, the
+  assistants, whoever you share a group with, and whoever you share something
+  readable with. Somebody you have never met inside this memory is not in the
+  list at all. The administrator still sees everybody.
+
 - **A page that has nothing on it for you answers like a page that is not
   there.** Two different refusals would have told you which of the two it was,
   and *«the page exists, but there is nothing on it for you»* is itself

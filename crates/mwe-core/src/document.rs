@@ -1275,18 +1275,19 @@ fn truncate_chars(s: &str, max: usize) -> String {
 /// document extractor placing a segment benefits from the whole line.
 const DOC_WIKI_DESC_CHARS: usize = 1_000;
 
-/// Render the standard-wiki routing window the document prompts share with
-/// the conversational classifier — literally shared: the same enumerator
-/// ([`available_wikis`]) and the same renderer ([`render_available_wikis`]), so
-/// a change to what a wiki looks like in one prompt can never miss the other.
-/// Each entry carries the wiki's description (authored `scope` + compiled
-/// `holds`) so the extractor reads it as an audience + placement signal exactly
-/// as the message classifier does.
+/// Render the standard-wiki routing window the document extractor places its
+/// segments against — the one prompt in the product that is shown the tree.
+/// The conversational classifier is shown no wiki at all: it decides the
+/// subject and the engine derives the destination from it
+/// (`ingest::derive_target_wiki`), and a document is the case that road cannot
+/// serve, because its segments may legitimately belong anywhere.
 ///
-/// **Uncapped** (`usize::MAX`), unlike the per-turn window: this runs inside an
-/// async document job, not on the conversational hot path, and a document's
-/// segments may legitimately belong anywhere in the tree. Smart wikis are still
-/// dropped, and identity wikis still lead the list.
+/// Each entry carries the wiki's description (authored `scope` + compiled
+/// `holds`), read as an audience + placement signal.
+///
+/// **Uncapped** (`usize::MAX`): this runs inside an async document job, not on
+/// the conversational hot path. Smart wikis are dropped and identity wikis
+/// lead the list.
 fn wikis_block(tree: &WikiTree) -> Result<String> {
     let wikis = available_wikis(tree, usize::MAX)?;
     let mut out = String::new();

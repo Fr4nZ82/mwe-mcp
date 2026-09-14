@@ -11661,9 +11661,13 @@ pub async fn wiki_ingest_message(
         BUNDLED_INGEST_PROMPT_MD,
         &[("locale", language_directive.as_str())],
     )?;
-    // The known-users roster lets the classifier attribute a
-    // fact to the right person by canonical name (cross-user attribution).
-    let known_users = enrollment::list_users(pool)
+    // The known-users roster lets the classifier attribute a fact to the right
+    // person by canonical name (cross-user attribution) — and it is the people
+    // THIS speaker may name, not the enrolment
+    // ([`enrollment::roster_for`]): the model writes facts about whoever it is
+    // shown, and somebody the speaker shares neither a group nor a fact with
+    // has never appeared in their memory at all.
+    let known_users = enrollment::roster_for(pool, &request.sender_id, &sender_ctx.sender_groups)
         .await
         .map_err(|e| IngestError::Recall(RecallError::Db(e)))?;
     // The sender's standing policy, so the classifier
@@ -21031,6 +21035,16 @@ mod tests {
         .execute(&pool)
         .await
         .unwrap();
+        // The two of them share a household: the roster a model is handed is
+        // the people this speaker has met inside the memory
+        // (`enrollment::roster_for`), and a stranger is not one.
+        sqlx::query(
+            "INSERT INTO enrollment_groups (group_id, members) \
+             VALUES ('famiglia', '[\"alice\",\"bob\"]')",
+        )
+        .execute(&pool)
+        .await
+        .unwrap();
         let json = "{\"intent\":\"capture\",\"target_wiki_id\":\"alice\",\"target_page\":\"preferenze.md\",\"subject_id\":\"user:bob\",\"body\":\"Roberto Sackville is retiring in June\",\"fact_type\":\"bio\",\"topics\":[\"work\"],\"requested_container\":true,\"suggested_seed\":\"Noted.\"}";
         let llm = FakeLlmBackend::new("fake", json);
         let policy = IngestPolicy::default();
@@ -26207,7 +26221,108 @@ mod tests {
             .await
             .unwrap();
         }
+        // A household: the three of them share it, which is what makes them
+        // people who may name each other. The roster a model is handed is the
+        // people this speaker has met inside the memory
+        // (`enrollment::roster_for`), and three strangers would not be able to
+        // say a word about one another.
+        sqlx::query(
+            "INSERT INTO enrollment_groups (group_id, members) \
+             VALUES ('famiglia', '[\"alice\",\"zoe\",\"bob\"]')",
+        )
+        .execute(&pool)
+        .await
+        .unwrap();
         (dir, tree, pool)
+    }
+
+    /// **The roster a model is handed is the people this speaker has met inside
+    /// the memory.**
+    ///
+    /// A model writes facts ABOUT the people it is shown, so a name in front of
+    /// the classifier is an invitation to file something onto that person's
+    /// card. Somebody the speaker shares neither a group nor a readable fact
+    /// with has never appeared in their memory at all, and a resemblance is
+    /// enough to put a stranger's life on a real person's card.
+    ///
+    /// The assistant stays whatever happens: the one being spoken to has to be
+    /// recognisable as itself rather than as one more person.
+    #[tokio::test]
+    async fn the_roster_is_the_people_this_speaker_has_met() {
+        let (dir, _tree, pool) = setup_slot_family().await;
+        for (who, agent) in [("carol", false), ("samvisebot", true)] {
+            sqlx::query(
+                "INSERT INTO enrollment_users (user_id, aliases, is_admin, is_agent) \
+                 VALUES (?,'[]',0,?)",
+            )
+            .bind(who)
+            .bind(i64::from(agent))
+            .execute(&pool)
+            .await
+            .unwrap();
+        }
+        let hers = |users: Vec<enrollment::EnrolledUserLite>| {
+            users.into_iter().map(|u| u.user_id).collect::<Vec<_>>()
+        };
+
+        let roster = enrollment::roster_for(&pool, "alice", &["famiglia".to_owned()])
+            .await
+            .expect("roster");
+        assert_eq!(
+            hers(roster),
+            vec![
+                "alice".to_owned(),
+                "bob".to_owned(),
+                "samvisebot".to_owned(),
+                "zoe".to_owned()
+            ],
+            "her household and the assistant — carol is a stranger to her"
+        );
+
+        // One fact they may both read, and they have met.
+        plant_shared_fact(&pool, "alice", "carol").await;
+        let roster = enrollment::roster_for(&pool, "alice", &["famiglia".to_owned()])
+            .await
+            .expect("roster");
+        let names = hers(roster);
+        assert!(
+            names.iter().any(|u| u == "carol"),
+            "a fact they may both read is a meeting: {names:?}"
+        );
+        drop(dir);
+    }
+
+    /// One fact `a` states and shares with `b`, so the two have met.
+    async fn plant_shared_fact(pool: &SqlitePool, a: &str, b: &str) {
+        fact_index::insert(
+            pool,
+            &fact_index::NewFact {
+                fact_id: FactId::parse("018f1234-5678-7abc-9def-0123456789fe").unwrap(),
+                wiki_id: a.to_owned(),
+                source_path: format!("wikis/{a}/note.md"),
+                region_start: None,
+                region_end: None,
+                text: "something they both know".to_owned(),
+                embedding: vec![0.0; 4],
+                subject_id: Principal::User(a.to_owned()),
+                allow_ids: vec![Principal::User(b.to_owned())],
+                sender_id: None,
+                subject_external: None,
+                slot: None,
+                slot_value: None,
+                authored_refs: Vec::new(),
+                fact_type: None,
+                topics: Vec::new(),
+                valid_from: None,
+                valid_to: None,
+                salience: None,
+                target_page: None,
+                style: None,
+                source_ref: None,
+            },
+        )
+        .await
+        .expect("plant");
     }
 
     /// Zoe's own number on her own card, readable by nobody else — the shape
@@ -32194,6 +32309,16 @@ mod tests {
             .execute(&pool)
             .await
             .unwrap();
+        // The two of them share a household: the roster a model is handed is
+        // the people this speaker has met inside the memory
+        // (`enrollment::roster_for`), and a stranger is not one.
+        sqlx::query(
+            "INSERT INTO enrollment_groups (group_id, members) \
+             VALUES ('famiglia', '[\"alice\",\"bob\"]')",
+        )
+        .execute(&pool)
+        .await
+        .unwrap();
         let policy = IngestPolicy::default();
 
         let llm = FakeLlmBackend::new(

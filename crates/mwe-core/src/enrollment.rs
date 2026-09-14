@@ -526,6 +526,98 @@ pub async fn list_users(pool: &SqlitePool) -> Result<Vec<EnrolledUserLite>, sqlx
         .collect())
 }
 
+/// The roster a MODEL is handed: the enrolled people this speaker may name.
+///
+/// [`list_users`] is the whole enrolment and the engine needs that — the
+/// placement pass, the topic ranking and the locale reader all ask about
+/// everybody. A model is a different reader: it writes facts ABOUT the people
+/// it is shown, so the roster it gets is a list of people this speaker could
+/// plausibly be talking about. Somebody they share nothing with is not one —
+/// they have never met inside this memory — and a name in front of the
+/// classifier is an invitation to file a fact about a stranger onto a real
+/// person's card.
+///
+/// Who stays:
+/// - **the speaker**, always;
+/// - **every assistant** (`is_agent`). The one being spoken to has to be
+///   recognisable as itself and not as one more person, which is the whole
+///   reason the flag is in the roster at all;
+/// - anybody they share a **group** with;
+/// - anybody they share a **fact** with — one they may both read. It is the
+///   same three-axis question the rest of the read path asks, so two people
+///   who have never appeared in each other's memory are strangers here too.
+///
+/// The **admin** is handed the whole enrolment, as they are everywhere else.
+///
+/// One query for the facts ([`crate::fact_index::active_card_acl_rows`]) and
+/// one for the roster, whatever the size of either.
+///
+/// # Errors
+///
+/// Propagates the underlying `sqlx` error.
+pub async fn roster_for(
+    pool: &SqlitePool,
+    reader_id: &str,
+    reader_groups: &[String],
+) -> Result<Vec<EnrolledUserLite>, sqlx::Error> {
+    let everybody = list_users(pool).await?;
+    if is_admin(pool, reader_id).await.unwrap_or(false) {
+        return Ok(everybody);
+    }
+    let mut shared: std::collections::BTreeSet<String> = std::collections::BTreeSet::new();
+    shared.insert(reader_id.to_owned());
+    for g in reader_groups {
+        for m in members_for(pool, g).await.unwrap_or_default() {
+            shared.insert(m);
+        }
+    }
+    // A fact either of them may read, read the same way everything else is:
+    // subject ∪ allow ∪ narrator. A row this reader cannot read says nothing
+    // about who else has met them.
+    // A fact-index read failure leaves the roster as the groups alone: a
+    // narrower answer, never a wider one.
+    let rows = crate::fact_index::active_card_acl_rows(pool)
+        .await
+        .unwrap_or_default();
+    let mut theirs: Vec<&crate::fact_index::CardAclRow> = Vec::new();
+    for row in &rows {
+        if crate::acl::can_read(
+            &crate::types::Acl {
+                subject: Some(row.subject_id.clone()),
+                allow: row.allow_ids.clone(),
+            },
+            reader_id,
+            reader_groups,
+            row.sender_id.as_ref(),
+        ) {
+            theirs.push(row);
+        }
+    }
+    for u in &everybody {
+        if shared.contains(&u.user_id) {
+            continue;
+        }
+        let groups = groups_for(pool, &u.user_id).await.unwrap_or_default();
+        if theirs.iter().any(|row| {
+            crate::acl::can_read(
+                &crate::types::Acl {
+                    subject: Some(row.subject_id.clone()),
+                    allow: row.allow_ids.clone(),
+                },
+                &u.user_id,
+                &groups,
+                row.sender_id.as_ref(),
+            )
+        }) {
+            shared.insert(u.user_id.clone());
+        }
+    }
+    Ok(everybody
+        .into_iter()
+        .filter(|u| u.is_agent || shared.contains(&u.user_id))
+        .collect())
+}
+
 /// Add names to a user's declared `aliases`, keeping the ones already there.
 ///
 /// The write behind the roster [`list_users`] hands to a model: a name reaches
