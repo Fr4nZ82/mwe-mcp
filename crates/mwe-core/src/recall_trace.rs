@@ -264,6 +264,19 @@ pub struct RecallTrace {
     /// What the classifier wrote that the engine corrected on its way in —
     /// stored, but not as the model said it ([`TraceCorrectedExtraction`]).
     pub corrected_extractions: Vec<TraceCorrectedExtraction>,
+    /// Claims stored with a **relative time word still in them**, one line
+    /// each, after the engine asked the classifier once for the date.
+    ///
+    /// Not a refusal and not a correction, which is why it is neither
+    /// [`refused_changes`] nor [`corrected_extractions`]: the claim is stored,
+    /// and it is stored exactly as the model wrote it. What the line says is
+    /// that «tonight» went into the memory meaning a day nobody named, so a
+    /// reader who comes back in April cannot tell which night it was — and the
+    /// nightly date normaliser is what will try again.
+    ///
+    /// [`refused_changes`]: Self::refused_changes
+    /// [`corrected_extractions`]: Self::corrected_extractions
+    pub relative_times_left: Vec<String>,
     /// Identity-card lines the block had no room for, one sentence per person
     /// it took from. Empty on a turn that trimmed nothing, which is most.
     ///

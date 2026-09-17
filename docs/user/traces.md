@@ -66,6 +66,13 @@ the same recall as text:
   instead. A row each: **The claim**, **What changed**, **It wrote**, **Stored
   as** and **Why**. Nothing was thrown away — this panel is about the
   difference, not about a loss.
+- **Claims that kept a word meaning «today»** — what you say is written down
+  as a fact that has to stay true for as long as it is kept, so «I'm out
+  tonight» is stored as the night it actually was. When a claim comes back
+  still dating itself against the moment you said it, it is sent to the
+  classifier once more, with the date of the turn, to be written as a date.
+  This panel lists the ones that came back with the word still in them: they
+  are stored as they are, and the nightly pass over your memory tries again.
 - **Card lines there was no room for** — the identity cards handed to the
   classifier are fitted to a budget per person. Your own card is never trimmed
   when you are the one speaking, and neither is anything about health or

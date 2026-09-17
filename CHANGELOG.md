@@ -101,6 +101,21 @@ semver-governed surface: breaking changes are called out explicitly.
   somebody with no account here. The trace of the turn shows what the engine
   changed and why, in a panel of its own.
 
+- **A fact is not stored still saying «tonight».** What you say is written
+  down as a claim meant to hold for as long as it is kept, so *«Zoe is out
+  tonight»* has to become the night it actually was. The classifier resolves
+  *«tomorrow»* and *«Saturday»* and walked straight past the words that feel
+  like no date at all: four of the fifty-one facts of a demo run went in
+  carrying one, and by the next morning the page said something that was no
+  longer true of any night anybody could name. The instructions now list those
+  words one by one, and the engine reads every claim before filing it: one that
+  still dates itself against the moment it was said goes back to the classifier
+  once, with the date of the turn, to be written as a date. Whatever comes back,
+  the claim is filed — a fact that dates itself badly is still what the person
+  said — and the trace of the turn says which claims were rewritten and which
+  kept their word. The period a fact holds for was already read correctly and is
+  not touched.
+
 - **The page writer is no longer shown Italian while being told to write
   English.** Pages kept coming out in Italian in memories where everybody
   speaks English — twice in seven runs of the September bench, and never in any

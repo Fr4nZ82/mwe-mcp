@@ -847,6 +847,36 @@ fn render_corrections(trace: &RecallTrace) -> Markup {
     }
 }
 
+/// The claims that went in still dating themselves against the turn.
+///
+/// A third record beside the refusals and the corrections, and a different one
+/// again: nothing was refused and nothing was corrected — the claim is stored
+/// exactly as the classifier wrote it, and what the panel says is that it went
+/// in meaning a day nobody named.
+fn render_relative_times_left(trace: &RecallTrace) -> Markup {
+    html! {
+        @if !trace.relative_times_left.is_empty() {
+            section class="term-panel mt-4 p-4" {
+                h2 class="mt-0" { "Claims that kept a word meaning «today»" }
+                p.muted {
+                    "A fact has to stay true for as long as it is kept, so a "
+                    "claim that dates itself against the moment it was said — "
+                    "«tonight», «this week» — is sent back to the classifier "
+                    "once, with the date of the turn, to be written as a date. "
+                    "These came back with the word still in them and were "
+                    "stored as they are; the nightly date normaliser tries "
+                    "again."
+                }
+                ul {
+                    @for line in &trace.relative_times_left {
+                        li { (line) }
+                    }
+                }
+            }
+        }
+    }
+}
+
 fn render_reconcile(trace: &RecallTrace) -> Markup {
     if trace.reconcile_candidates.is_empty() && trace.reconcile_verdict.is_none() {
         return html! {};
@@ -881,6 +911,7 @@ fn render_reconcile(trace: &RecallTrace) -> Markup {
             }
         }
         (render_corrections(trace))
+        (render_relative_times_left(trace))
         @if !trace.identity_core_withheld.is_empty() {
             section class="term-panel mt-4 p-4" {
                 h2 class="mt-0" { "Card lines there was no room for" }

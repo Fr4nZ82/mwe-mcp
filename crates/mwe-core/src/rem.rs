@@ -9454,71 +9454,18 @@ struct DateRewrite {
     text: String,
 }
 
-/// Cheap lexical pre-filter: does the text contain a phrase that *looks*
-/// like an unresolved relative date? A resource optimisation only (skip
-/// the LLM on unflagged facts) — the LLM decides whether a flagged fact
-/// really needs the rewrite, and an unflagged miss simply waits for a
-/// richer lexicon. Italian + English, case-insensitive, word-boundary.
-fn looks_deictic(text: &str) -> bool {
-    const LEXICON: &[&str] = &[
-        "oggi",
-        "ieri",
-        "domani",
-        "dopodomani",
-        "stasera",
-        "stamattina",
-        "stanotte",
-        "questa settimana",
-        "settimana prossima",
-        "settimana scorsa",
-        "questo mese",
-        "mese prossimo",
-        "mese scorso",
-        "quest'anno",
-        "anno prossimo",
-        "anno scorso",
-        "today",
-        "yesterday",
-        "tomorrow",
-        "tonight",
-        "this week",
-        "next week",
-        "last week",
-        "this month",
-        "next month",
-        "last month",
-        "this year",
-        "next year",
-    ];
-    let lower = text.to_lowercase();
-    LEXICON.iter().any(|phrase| {
-        lower.match_indices(phrase).any(|(i, _)| {
-            let before_ok = i == 0
-                || !lower[..i]
-                    .chars()
-                    .next_back()
-                    .is_some_and(char::is_alphanumeric);
-            let after = i + phrase.len();
-            let after_ok = after >= lower.len()
-                || !lower[after..]
-                    .chars()
-                    .next()
-                    .is_some_and(char::is_alphanumeric);
-            before_ok && after_ok
-        })
-    })
-}
-
 /// The date normalizer — relative→absolute rewrites on canonical text.
 ///
-/// Capture-side resolution (the ingest prompt's `current_time` anchor)
-/// handles new facts; this sub-job heals what slipped through and the
-/// pre-existing backlog: every active fact the deictic lexicon flags is
-/// sent — oldest first, capped — in ONE batched call to the revisor
-/// model (`llms.revisor`), which rewrites each relative phrase against
-/// **the instant that fact's sentence existed** ([`fact_began`]) — a
-/// backfilled "oggi" belongs to the day it was uttered, not to the day its
-/// row was inserted. An applied rewrite re-embeds the text and updates
+/// The **safety net**, not the place the work happens: a body that keeps a
+/// relative time word is caught at the door and asked again there
+/// ([`crate::relative_time`]), so what reaches this sub-job is what the door
+/// could not fix, plus the backlog that predates it.
+///
+/// Every active fact the shared lexicon flags is sent — oldest first, capped —
+/// in ONE batched call to the revisor model (`llms.revisor`), which rewrites
+/// each relative phrase against **the instant that fact's sentence existed**
+/// ([`fact_began`]) — a backfilled "oggi" belongs to the day it was uttered,
+/// not to the day its row was inserted. An applied rewrite re-embeds the text and updates
 /// the row in place (offsets kept); the render-content fingerprint then
 /// recompiles exactly the touched pages, so prose and `lista` records
 /// alike stop reading "oggi" days later.
@@ -9545,7 +9492,7 @@ async fn run_date_normalizer(
             continue;
         }
         for row in fact_index::find_active_in_wiki(pool, wiki).await? {
-            if looks_deictic(&row.text) {
+            if crate::relative_time::the_relative_time_in(&row.text).is_some() {
                 flagged.push(row);
             }
         }
@@ -18481,18 +18428,6 @@ mod tests {
             "the write instant is the earlier of the two, so it is the anchor: {prompt}"
         );
         drop(dir);
-    }
-
-    /// The lexical pre-filter is word-bounded: "oggi" flags, a word that
-    /// merely contains it ("oggigiorno") does not.
-    #[test]
-    fn looks_deictic_is_word_bounded() {
-        assert!(looks_deictic("Oggi ha giocato 31 minuti"));
-        assert!(looks_deictic("ci vediamo domani alle 9"));
-        assert!(looks_deictic("la recita è la settimana prossima"));
-        assert!(looks_deictic("watched it yesterday evening"));
-        assert!(!looks_deictic("oggigiorno tutto cambia"));
-        assert!(!looks_deictic("il viaggio del 10 giugno 2026"));
     }
 
     // ---------- provenance-hygiene sweep ----------

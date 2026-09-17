@@ -2521,6 +2521,157 @@ fn salience_correction(
     })
 }
 
+/// Output cap of the one rewrite that resolves relative times: a handful of
+/// bodies, each a sentence.
+const RELATIVE_TIME_MAX_TOKENS: u32 = 1024;
+
+/// One body the classifier rewrote with its relative time resolved.
+#[derive(Debug, serde::Deserialize)]
+struct ResolvedBody {
+    /// The number of the body in the list it was handed, 1-based.
+    #[serde(default)]
+    n: usize,
+    /// The whole body again, with the phrase turned into a date.
+    #[serde(default)]
+    body: String,
+}
+
+/// The reply of the rewrite call.
+#[derive(Debug, Default, serde::Deserialize)]
+struct ResolvedBodies {
+    #[serde(default)]
+    bodies: Vec<ResolvedBody>,
+}
+
+/// **A stored fact must not keep a word that only means something today.**
+///
+/// The classifier is told to resolve them (`ingest.md`, the `body` rule) and
+/// mostly does: «tomorrow» and «Saturday» come back as dates. «today» and
+/// «tonight» do not — four of the seventh bench run's fifty-one facts went in
+/// carrying one, «Zoe is out tonight and will not be home.» among them, and
+/// that sentence is wrong by the following morning while the page still shows
+/// it.
+///
+/// So the door reads what the model wrote and asks it once, with the rule in
+/// front of it and the turn's own instant beside it: the same shape as the page
+/// writer's language check ([`crate::compiler`]) — one extra call, only when a
+/// body is flagged, and the claim stored whatever comes back. Prevention at the
+/// door is where this belongs; the nightly date normaliser in [`crate::rem`] is
+/// the net under it, and both read the one lexicon
+/// ([`crate::relative_time::the_relative_time_in`]).
+///
+/// **The validity window is not touched.** The engine already reads «tonight»
+/// correctly into `valid_from`/`valid_to` — it is the sentence a person reads
+/// that keeps the word, and a rewrite that moved the window would be changing
+/// the one half that was right.
+///
+/// Returns the receipts, one per flagged body: the ones it resolved
+/// ([`crate::recall_trace::TraceCorrectedExtraction`]) and the ones that kept
+/// their word anyway ([`crate::recall_trace::RecallTrace::relative_times_left`]).
+async fn resolve_the_relative_times(
+    llm: &dyn LlmBackend,
+    system_prompt: &str,
+    plan: &mut LlmIngestPlan,
+    now: chrono::DateTime<chrono::Utc>,
+) -> (
+    Vec<crate::recall_trace::TraceCorrectedExtraction>,
+    Vec<String>,
+) {
+    let flagged: Vec<usize> = plan
+        .extractions
+        .iter()
+        .enumerate()
+        .filter(|(_, e)| {
+            e.body
+                .as_deref()
+                .and_then(crate::relative_time::the_relative_time_in)
+                .is_some()
+        })
+        .map(|(i, _)| i)
+        .collect();
+    if flagged.is_empty() {
+        return (Vec::new(), Vec::new());
+    }
+    let before: Vec<String> = flagged
+        .iter()
+        .map(|i| plan.extractions[*i].body.clone().unwrap_or_default())
+        .collect();
+    let mut list = String::new();
+    for (n, body) in before.iter().enumerate() {
+        let _ = writeln!(list, "{}. {body}", n + 1);
+    }
+    tracing::warn!(
+        flagged = flagged.len(),
+        "ingest: a body still dates itself against the moment it was said — asking again"
+    );
+    let ask = format!(
+        "Some of the bodies you just wrote still date themselves against the moment they were \
+         said, so they stop being true the next day. current_time: {} ({}).\n\nRewrite each one \
+         with its relative time phrase resolved into an absolute date: «Zoe is out tonight», \
+         said on 7 March 2026, becomes «Zoe is out on the night of 7 March 2026». Change NOTHING \
+         else — same language, same person, same tense, same level of detail, and no extra \
+         specificity. A body whose phrase is not really relative (\"as things stand today\") \
+         needs no rewrite: leave it out of the answer.\n\n{list}\nOutput ONE strict JSON \
+         object, nothing else:\n{{\"bodies\": [{{\"n\": <the number from the list>, \"body\": \
+         \"<the whole rewritten body>\"}}]}}",
+        now.to_rfc3339_opts(chrono::SecondsFormat::Secs, true),
+        now.format("%A")
+    );
+    let answer = llm
+        .complete(
+            CompletionRequest::new(ask)
+                .with_system(system_prompt.to_owned())
+                .with_cached_system()
+                .with_temperature(0.1)
+                .with_max_tokens(RELATIVE_TIME_MAX_TOKENS),
+        )
+        .await;
+    match answer {
+        Ok(resp) => {
+            let rewrites: ResolvedBodies = parse_first_json(&resp.text).unwrap_or_default();
+            for r in rewrites.bodies {
+                let Some(i) = r.n.checked_sub(1).and_then(|k| flagged.get(k)) else {
+                    continue;
+                };
+                let body = r.body.trim();
+                // The buffer validators refuse a body carrying marker braces
+                // or the journal's comment delimiter, and a refused extraction
+                // is a worse outcome than a kept word: a rewrite that brings
+                // one in is dropped, not stored.
+                if body.is_empty()
+                    || body.contains("{{")
+                    || body.contains("}}")
+                    || body.contains("<!--")
+                {
+                    continue;
+                }
+                plan.extractions[*i].body = Some(body.to_owned());
+            }
+        },
+        Err(e) => tracing::warn!(
+            error = %e,
+            "ingest: the rewrite that should date a body was unusable — the bodies stand"
+        ),
+    }
+    let mut corrected = Vec::new();
+    let mut left = Vec::new();
+    for (k, i) in flagged.iter().enumerate() {
+        let after = plan.extractions[*i].body.clone().unwrap_or_default();
+        if let Some(word) = crate::relative_time::the_relative_time_in(&after) {
+            left.push(format!("«{word}» stayed in: {}", truncate(&after, 160)));
+        } else if after != before[k] {
+            corrected.push(crate::recall_trace::TraceCorrectedExtraction {
+                claim: truncate(&after, 160),
+                field: "body".to_owned(),
+                was: truncate(&before[k], 160),
+                now: truncate(&after, 160),
+                reason: "relative_time_resolved".to_owned(),
+            });
+        }
+    }
+    (corrected, left)
+}
+
 /// **Who this claim must not reach**, as the classifier heard it said.
 ///
 /// A name it cannot read is dropped rather than failing the turn: an
@@ -11534,6 +11685,8 @@ struct IngestTraceParts<'a> {
     refused_changes: &'a [crate::recall_trace::TraceRefusedChange],
     /// What the classifier wrote that the engine corrected on its way in.
     corrected_extractions: &'a [crate::recall_trace::TraceCorrectedExtraction],
+    /// Claims stored with a relative time word still in them.
+    relative_times_left: &'a [String],
     /// Identity-card lines the block had no room for.
     identity_core_withheld: &'a [String],
     recall_clock: RecallClock,
@@ -11642,6 +11795,7 @@ async fn record_ingest_trace(
         reconcile_verdict: parts.reconcile_verdict.map(recall_trace::cap_turn_text),
         refused_changes: parts.refused_changes.to_vec(),
         corrected_extractions: parts.corrected_extractions.to_vec(),
+        relative_times_left: parts.relative_times_left.to_vec(),
         identity_core_withheld: parts.identity_core_withheld.to_vec(),
         recall_ms: parts.recall_clock.ms(),
         took_ms: u64::try_from(parts.took.as_millis()).unwrap_or(u64::MAX),
@@ -11755,6 +11909,9 @@ pub async fn wiki_ingest_message(
     // so without this the only sign would be that the fact came out slightly
     // different from what the model said.
     let mut corrected_extractions: Vec<crate::recall_trace::TraceCorrectedExtraction> = Vec::new();
+    // Claims that went in still dating themselves against the moment they were
+    // said, after the engine asked once for the date.
+    let mut relative_times_left: Vec<String> = Vec::new();
     // Identity-card lines the block had no room for, one sentence per person.
     let mut identity_core_withheld: Vec<String> = Vec::new();
 
@@ -12063,6 +12220,7 @@ pub async fn wiki_ingest_message(
                     reconcile_verdict: None,
                     refused_changes: &[],
                     corrected_extractions: &[],
+                    relative_times_left: &[],
                     identity_core_withheld: &[],
                     recall_clock,
                     took: start.elapsed(),
@@ -12337,7 +12495,7 @@ pub async fn wiki_ingest_message(
     // NOTHING, so the capture loop files nothing and the closure verbs close
     // nothing. Only the intent is set, because it is what decides whether the
     // walk runs — and the reading is the half a repeat does pay for.
-    let plan = if let Some(stored) = &repeat {
+    let mut plan = if let Some(stored) = &repeat {
         LlmIngestPlan {
             intent: stored.intent.as_str().to_owned(),
             ..LlmIngestPlan::default()
@@ -12416,6 +12574,15 @@ pub async fn wiki_ingest_message(
         }
     };
     tracing::debug!(intent = plan.intent.as_str(), "ingest: LLM plan parsed");
+
+    // A body that still dates itself against this moment is asked again, once,
+    // before anything downstream reads the plan — and whatever comes back is
+    // what gets filed. A plan with no extractions (a skip, a repeat, a bare
+    // container request) never reaches the call.
+    let (resolved, unresolved) =
+        resolve_the_relative_times(llm, &system_prompt, &mut plan, turn_now).await;
+    corrected_extractions.extend(resolved);
+    relative_times_left.extend(unresolved);
 
     // The classifier's reading of the turn — the message with what the speaker
     // left implicit written in — kept only where it says something the raw
@@ -14627,6 +14794,7 @@ pub async fn wiki_ingest_message(
                 reconcile_verdict: reconcile_verdict.as_deref(),
                 refused_changes: &refused_changes,
                 corrected_extractions: &corrected_extractions,
+                relative_times_left: &relative_times_left,
                 identity_core_withheld: &identity_core_withheld,
                 recall_clock,
                 took: start.elapsed(),
@@ -21561,6 +21729,212 @@ mod tests {
             .expect("read traces");
         assert_eq!(rows.len(), 1, "one turn journals one trace");
         rows[0].parse().expect("payload decodes")
+    }
+
+    // ---------- a fact must not keep a word that means «today» ----------
+
+    /// The classifier plan for one fact about Zoe's evening, as the seventh
+    /// bench run's classifier actually wrote it.
+    const TONIGHT_PLAN: &str = "{\"intent\":\"capture\",\"extractions\":[{\
+        \"subject_id\":\"user:alice\",\"fact_type\":\"episode\",\
+        \"valid_from\":\"2026-03-07T17:30:00Z\",\"valid_to\":\"2026-03-08T23:59:59Z\",\
+        \"body\":\"Zoe is out tonight and will not be home.\"}]}";
+
+    /// The bodies this turn buffered, in order.
+    async fn buffered_bodies(pool: &SqlitePool) -> Vec<String> {
+        capture_buffer::find_all_buffered(pool, 50)
+            .await
+            .expect("read the buffer")
+            .into_iter()
+            .map(|c| c.body)
+            .collect()
+    }
+
+    /// **«Tonight» is asked again and stored as the night it was.**
+    ///
+    /// The prompt has told the classifier to resolve relative dates since it
+    /// existed, and it does resolve «tomorrow» and «Saturday»; «today» and
+    /// «tonight» come back untouched — four of the seventh bench run's
+    /// fifty-one facts carry one. The word is not a small thing left in a
+    /// sentence: read back in April, «tonight» names the wrong night and
+    /// nothing in the fact says which one was meant.
+    #[tokio::test]
+    async fn a_body_that_keeps_a_relative_time_is_asked_again_and_stored_resolved() {
+        let (dir, tree, pool) = setup_workdir().await;
+        let llm = FakeLlmBackend::new("fake", "{}").with_completion_script(vec![
+            TONIGHT_PLAN.to_owned(),
+            "{\"bodies\":[{\"n\":1,\"body\":\"Zoe is out on the night of 7 March 2026 and will \
+             not be home.\"}]}"
+                .to_owned(),
+        ]);
+        wiki_ingest_message(
+            &pool,
+            &tree,
+            fake_embedder(),
+            &llm,
+            None,
+            req("Zoe is out tonight", "alice"),
+            &IngestPolicy::default(),
+        )
+        .await
+        .expect("ingest");
+
+        let bodies = buffered_bodies(&pool).await;
+        assert_eq!(bodies.len(), 1, "one fact filed: {bodies:?}");
+        assert!(
+            bodies[0].contains("7 March 2026") && !bodies[0].contains("tonight"),
+            "the fact is stored dated, not deictic: {bodies:?}"
+        );
+
+        let trace = only_trace(&pool).await;
+        let note = trace
+            .corrected_extractions
+            .iter()
+            .find(|c| c.reason == "relative_time_resolved")
+            .expect("the turn says what it changed");
+        assert_eq!(note.field, "body");
+        assert!(
+            note.was.contains("tonight") && note.now.contains("7 March 2026"),
+            "the receipt names both halves: {note:?}"
+        );
+        assert!(
+            trace.relative_times_left.is_empty(),
+            "nothing was left relative: {:?}",
+            trace.relative_times_left
+        );
+        drop(dir);
+    }
+
+    /// **A word the second answer keeps is stored, and named — not refused,
+    /// and not called a correction.**
+    ///
+    /// The two outcomes are different records and only one of them is true
+    /// here: nothing was corrected, so `corrected_extractions` must stay
+    /// empty — a receipt saying the engine fixed something it did not fix is
+    /// worse than no receipt. The claim is filed all the same: a fact that
+    /// dates itself badly is still the thing the person said, and the nightly
+    /// date normaliser gets another go at it.
+    ///
+    /// The validity window is the half that was already right — the engine
+    /// read «tonight» into `valid_from`/`valid_to` correctly — so the pass
+    /// must not touch it.
+    #[tokio::test]
+    async fn a_relative_time_the_second_answer_keeps_is_stored_and_named_not_corrected() {
+        let (dir, tree, pool) = setup_workdir().await;
+        let llm = FakeLlmBackend::new("fake", "{}").with_completion_script(vec![
+            TONIGHT_PLAN.to_owned(),
+            // The model hands back exactly what it wrote the first time.
+            "{\"bodies\":[{\"n\":1,\"body\":\"Zoe is out tonight and will not be home.\"}]}"
+                .to_owned(),
+        ]);
+        wiki_ingest_message(
+            &pool,
+            &tree,
+            fake_embedder(),
+            &llm,
+            None,
+            req("Zoe is out tonight", "alice"),
+            &IngestPolicy::default(),
+        )
+        .await
+        .expect("ingest");
+
+        let buffered = capture_buffer::find_all_buffered(&pool, 50)
+            .await
+            .expect("read the buffer");
+        assert_eq!(buffered.len(), 1, "the claim is filed, not thrown away");
+        assert!(
+            buffered[0].body.contains("tonight"),
+            "and filed as the model wrote it: {}",
+            buffered[0].body
+        );
+        assert_eq!(
+            (
+                buffered[0].valid_from.as_deref(),
+                buffered[0].valid_to.as_deref()
+            ),
+            (Some("2026-03-07T17:30:00Z"), Some("2026-03-08T23:59:59Z")),
+            "the window was already right and the pass does not touch it"
+        );
+
+        let trace = only_trace(&pool).await;
+        assert_eq!(
+            trace.relative_times_left.len(),
+            1,
+            "the turn says what went in still dating itself: {:?}",
+            trace.relative_times_left
+        );
+        assert!(
+            trace.relative_times_left[0].contains("tonight"),
+            "and names the word: {:?}",
+            trace.relative_times_left
+        );
+        assert!(
+            trace.corrected_extractions.is_empty(),
+            "nothing was corrected, so nothing is recorded as corrected: {:?}",
+            trace.corrected_extractions
+        );
+        drop(dir);
+    }
+
+    /// **A body with no relative time costs no second call.**
+    ///
+    /// The whole cost of the check is one extra call, and only on a turn that
+    /// needs it. A lexicon that fires on ordinary prose would put that call on
+    /// every turn, which is the version of this nobody would ship.
+    #[tokio::test]
+    async fn a_body_with_no_relative_time_is_never_asked_again() {
+        let (dir, tree, pool) = setup_workdir().await;
+        let json = "{\"intent\":\"capture\",\"extractions\":[{\
+            \"subject_id\":\"user:alice\",\
+            \"body\":\"Zoe is out on the night of 7 March 2026.\"}]}";
+        let llm = FakeLlmBackend::new("fake", json);
+        wiki_ingest_message(
+            &pool,
+            &tree,
+            fake_embedder(),
+            &llm,
+            None,
+            req("Zoe is out on 7 March", "alice"),
+            &IngestPolicy::default(),
+        )
+        .await
+        .expect("ingest");
+        assert_eq!(
+            llm.max_tokens_seen().len(),
+            1,
+            "the classifier was asked once and nothing else was"
+        );
+        assert!(
+            only_trace(&pool).await.relative_times_left.is_empty(),
+            "and there is nothing to report"
+        );
+        drop(dir);
+    }
+
+    /// **The prompt names the words that get left behind.**
+    ///
+    /// «tomorrow» and «Saturday» were already in the rule and are resolved;
+    /// the ones the classifier walks past are the ones that feel like no date
+    /// at all, so the rule names them one by one rather than saying «relative
+    /// dates» and trusting the reading.
+    #[test]
+    fn the_body_rule_names_the_words_that_mean_today() {
+        for needle in [
+            "`today`",
+            "`tonight`",
+            "`this evening`",
+            "`this week`",
+            "`yesterday`",
+            "`last night`",
+            "`now`",
+            "Zoe is out on the night of 7 March 2026",
+        ] {
+            assert!(
+                BUNDLED_INGEST_PROMPT_MD.contains(needle),
+                "the body rule does not name {needle}"
+            );
+        }
     }
 
     /// A second page of alice's wiki, holding one fact of its own, so the flat

@@ -77,6 +77,8 @@ pub mod recall_trace;
 pub mod recent_window;
 pub mod recovery;
 pub mod reindex;
+/// The time words a fact must not keep, read by the door and by the night.
+mod relative_time;
 pub mod rem;
 pub mod rem_verdicts;
 pub mod reminders;

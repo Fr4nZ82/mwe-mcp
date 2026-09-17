@@ -5082,13 +5082,10 @@ impl FakeLlmBackend {
         self
     }
 
-    /// Queue a sequence of `chat` responses to be consumed in order
-    /// across subsequent `chat` calls. Useful for tests that exercise
-    /// the dashboard agentic loop: queue (`tool_call_turn`,
-    /// `final_text_turn`) and assert the loop dispatched the tool,
-    /// fed the result back, and rendered the final text.
     /// Hand these replies to `complete` in order, one per call, then fall back
-    /// to the fixed response.
+    /// to the fixed response — how a test drives a stage that asks the model
+    /// twice (the page writer's language check, the door that dates a body)
+    /// and asserts on what the second answer did.
     #[must_use]
     pub fn with_completion_script(mut self, replies: Vec<String>) -> Self {
         self.completion_script = parking_lot::Mutex::new(replies.into_iter().collect());
