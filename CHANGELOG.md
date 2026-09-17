@@ -101,6 +101,16 @@ semver-governed surface: breaking changes are called out explicitly.
   somebody with no account here. The trace of the turn shows what the engine
   changed and why, in a panel of its own.
 
+- **The examples in the page writer's brief no longer teach it a voice.** The
+  worked pair that shows how the prose around a fact is written was written as
+  somebody's diary — *«My favourite colour is teal»* — and it sits in the
+  section every page reads, whatever kind of page it is. A model writing prose
+  reaches for the prose it has just read, so pages that were never meant to
+  speak as their subject came out speaking as their subject. The examples now
+  name the person they are about. Which voice a page takes is decided where it
+  was always decided: by the kind of memory the page belongs to, named on the
+  page's own line.
+
 - **A fact is not stored still saying «tonight».** What you say is written
   down as a claim meant to hold for as long as it is kept, so *«Zoe is out
   tonight»* has to become the night it actually was. The classifier resolves

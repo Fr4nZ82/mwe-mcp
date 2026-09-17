@@ -5825,7 +5825,7 @@ mod tests {
     fn the_brief_shows_its_worked_examples_in_english() {
         for sample in [
             "**Creatinine** — 2.53 mg/dL on 12 May 2026",
-            "The colour I like best is teal.",
+            "The colour Zoe likes best is teal.",
             "\"I helped…\", \"I tend to…\"",
         ] {
             assert!(
@@ -5833,6 +5833,40 @@ mod tests {
                 "a worked example the writer copies its voice from is gone: {sample}"
             );
         }
+    }
+
+    /// **A general example teaches no voice.**
+    ///
+    /// Which voice a page takes is the TONE line's to say, page by page
+    /// ([`resolve_tone`], [`tone_for_page`]). The worked pair in the FACT TAGS
+    /// section is not about voice at all — it is about what may be written
+    /// outside a `<fN>` tag — and every page reads it whatever its tone; so
+    /// written as somebody's diary («My favourite colour is teal») it handed
+    /// the first person to pages no tone had given it to. It names its subject
+    /// now, which is the one thing that lets the TONE line decide alone.
+    ///
+    /// The `I` that stays is the one a tone really does ask for: an agent's
+    /// own wiki, writing its autobiography.
+    #[test]
+    fn the_general_examples_are_written_in_the_third_person() {
+        assert!(
+            BUNDLED_CRONISTA_MD.contains("The colour Zoe likes best is teal."),
+            "the general worked example must name its subject"
+        );
+        for first_person in [
+            "My favourite colour is teal",
+            "The colour I like best",
+            "which I have kept up for years",
+        ] {
+            assert!(
+                !BUNDLED_CRONISTA_MD.contains(first_person),
+                "a general example still writes the page as its subject's diary: {first_person}"
+            );
+        }
+        assert!(
+            BUNDLED_CRONISTA_MD.contains("Write it in the FIRST PERSON (\"I helped…\""),
+            "and the agent's autobiography keeps the voice that is actually its own"
+        );
     }
 
     /// A prompt with no marker — an operator override written against an

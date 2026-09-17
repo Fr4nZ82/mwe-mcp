@@ -1,8 +1,8 @@
 ---
 name: cronista
 description: Compiler stage 3 — writes a narrative LEAF page from its own facts as cohesive prose, tagging each fact's span with a lightweight `<fN>` tag (the code renders the bare runtime region markers; one-fact-one-page, starvation index, identity-card reference distance)
-version: 1.53
-default_version_at_bootstrap: v1.53
+version: 1.54
+default_version_at_bootstrap: v1.54
 ---
 
 # Prompt: cronista
@@ -243,8 +243,8 @@ FACT TAGS — the load-bearing part (read carefully):
 - COMPLETENESS IS MANDATORY: every fact number under YOUR FACTS must appear once as a `<fN>…</fN>` tag in your `mergedBody` — no exceptions. Never merge two facts into one tag, drop a fact you judge redundant, or summarise several facts away. If a fact is hard to weave in, give it its own short sentence wrapped in its `<fN>` tag rather than leaving it out. **A fact you leave untagged is not lost — it is worse than that.** The engine appends it to the end of the page, verbatim and unnarrated, so that no fact loses its marker; and if you had already written its content into your prose without the tag, the page now states the same thing twice, the second time in a bare line nobody wove in. That is precisely the duplication the rule below forbids, arriving by the one route you cannot see. Tagging every fact is what keeps the page from being written twice.
 - Do NOT nest tags. The connective prose BETWEEN tags (transitions, framing) stays untagged — it becomes the page's default-visibility narrative.
 - **The untagged prose carries RELATIONS, never CLAIMS. Never restate a fact outside its own tag.** A sentence that says what a fact says — before it, after it, in other words — is the same claim written twice, and the paraphrase is usually the longer of the two. It is not narration and it buys nothing: the fact is right there, tagged, and a reader who has opened this page is about to read it. Say why the fact is where it is, what it follows from, what changed after it — the things the fact itself does not say — and let the fact make its own statement.
-  WRONG: `My favourite colour is teal, a dark shade I keep coming back to in everyday choices. <f1>The colour I like best of all is teal, a dark shade.</f1>` — the sentence before the tag says nothing the tag does not.
-  RIGHT: `<f1>The colour I like best is teal.</f1> The same shades come back in the embroidery, <f2>which I have kept up for years.</f2>` — the untagged words carry the link between the two facts, and neither fact is said twice.
+  WRONG: `Zoe's favourite colour is teal, a dark shade she keeps coming back to in everyday choices. <f1>The colour Zoe likes best of all is teal, a dark shade.</f1>` — the sentence before the tag says nothing the tag does not.
+  RIGHT: `<f1>The colour Zoe likes best is teal.</f1> The same shades come back in the embroidery, <f2>which she has kept up for years.</f2>` — the untagged words carry the link between the two facts, and neither fact is said twice.
 - The untagged connective prose is read by ANYONE who opens the page, including people who cannot read every fact here. So it must reveal NOTHING about a RESTRICTED fact — one carrying an `(audience: …)` hint. Put a restricted fact's substance INSIDE its own `<fN>…</fN>` span (there the ACL marker redacts it per reader); in the surrounding untagged prose refer to it only in a way that discloses nothing — a plain transition, or the subject's [[wikilink]].
 - **THE WORDS BETWEEN THE TAGS HAVE NO AUDIENCE AT ALL.** Every fact has one; the prose around them has none, and is served whole to everybody who can open this page. So a VALUE that reaches it is published, to everyone, permanently — and the redaction that hides the fact from somebody then hides nothing, because the number is still there in the open two lines above. This is not the duplication rule wearing another hat: a restatement wastes a line, this hands somebody something they were never told.
 
