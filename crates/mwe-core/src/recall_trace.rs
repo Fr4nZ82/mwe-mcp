@@ -42,9 +42,9 @@
 //! **A trace is scoped to the sender it was recorded for**, and the dashboard
 //! surface enforces that per row — your own always, anybody else's only under
 //! the admin reveal switch. Scope the *query*, not the fetched page
-//! ([`recent_traces_for_sender`]): filtering a deployment-wide page in the
-//! handler would show a user fewer of their own traces the busier the
-//! deployment gets.
+//! ([`traces_page`]): filtering a deployment-wide page in the handler would
+//! show a user fewer of their own traces the busier the deployment gets, and
+//! a total counted afterwards would be a number made of somebody else's.
 
 use anyhow::{Context, Result};
 use serde::{Deserialize, Serialize};
@@ -688,50 +688,89 @@ impl From<RawRow> for TraceRow {
     }
 }
 
-/// The most recent traces, newest first, capped at `limit`.
+/// One page of the journal, and what the whole of it holds.
 ///
-/// # Errors
-///
-/// Surfaces the select SQL failure.
-pub async fn recent_traces(pool: &SqlitePool, limit: i64) -> Result<Vec<TraceRow>> {
-    let rows = sqlx::query_as::<_, RawRow>(
-        "SELECT id, created_at, source, sender_id, payload \
-         FROM recall_traces ORDER BY id DESC LIMIT ?",
-    )
-    .bind(limit)
-    .fetch_all(pool)
-    .await
-    .context("recall_trace: recent_traces")?;
-    Ok(rows.into_iter().map(TraceRow::from).collect())
+/// The two travel together because the page cannot be read without the whole:
+/// «50 of 1007, 3 September to 17 September» is what tells a reader that what
+/// they are looking at is a window and roughly where the window sits. Sizes
+/// and dates are the READER's — the count and the range answer the same scope
+/// the rows do — so a person never reads a total that includes traces they
+/// cannot open.
+#[derive(Debug, Default)]
+pub struct TracePage {
+    /// The rows of this page, newest first.
+    pub rows: Vec<TraceRow>,
+    /// How many traces this reader can open in all.
+    pub total: i64,
+    /// The stamp of the oldest of those — `None` when the reader has none at
+    /// all.
+    pub oldest: Option<String>,
+    /// The stamp of the newest, and `None` on the same condition.
+    pub newest: Option<String>,
 }
 
-/// One sender's most recent traces, newest first, capped at `limit`.
+/// One page of the journal, newest first: `limit` rows from `offset`, plus the
+/// total and the date range behind them.
 ///
-/// The scoped sibling of [`recent_traces`], and the one the journal page
-/// uses unless the admin reveal switch is on. The filter belongs in the
-/// query: fetching a deployment-wide page and discarding other senders'
-/// rows in the handler would show each user a shrinking slice of their own
-/// history as the deployment gets busier — which is exactly what the
-/// retention window exists to stop.
+/// `sender` scopes every one of the three answers. **The filter belongs in the
+/// query**: fetching a deployment-wide page and discarding other senders' rows
+/// in the handler would show each user a shrinking slice of their own history
+/// as the deployment gets busier — which is exactly what the retention window
+/// exists to stop — and a total counted after the fact would be somebody
+/// else's number.
+///
+/// A `limit` of **0** asks for the count and the range alone: no rows come
+/// back, which is what a caller wants when it is working out how many pages
+/// there are before it knows which one to fetch.
 ///
 /// # Errors
 ///
 /// Surfaces the select SQL failure.
-pub async fn recent_traces_for_sender(
+pub async fn traces_page(
     pool: &SqlitePool,
-    sender_id: &str,
+    sender: Option<&str>,
     limit: i64,
-) -> Result<Vec<TraceRow>> {
-    let rows = sqlx::query_as::<_, RawRow>(
+    offset: i64,
+) -> Result<TracePage> {
+    let scope = if sender.is_some() {
+        "WHERE sender_id = ?"
+    } else {
+        ""
+    };
+    let list = format!(
         "SELECT id, created_at, source, sender_id, payload \
-         FROM recall_traces WHERE sender_id = ? ORDER BY id DESC LIMIT ?",
-    )
-    .bind(sender_id)
-    .bind(limit)
-    .fetch_all(pool)
-    .await
-    .context("recall_trace: recent_traces_for_sender")?;
-    Ok(rows.into_iter().map(TraceRow::from).collect())
+         FROM recall_traces {scope} ORDER BY id DESC LIMIT ? OFFSET ?"
+    );
+    let mut q = sqlx::query_as::<_, RawRow>(&list);
+    if let Some(s) = sender {
+        q = q.bind(s);
+    }
+    let rows = q
+        .bind(limit)
+        .bind(offset)
+        .fetch_all(pool)
+        .await
+        .context("recall_trace: traces_page rows")?;
+
+    let counted = format!(
+        "SELECT COUNT(*) AS total, MIN(created_at) AS oldest, MAX(created_at) AS newest \
+         FROM recall_traces {scope}"
+    );
+    let mut c = sqlx::query_as::<_, (i64, Option<String>, Option<String>)>(&counted);
+    if let Some(s) = sender {
+        c = c.bind(s);
+    }
+    let (total, oldest, newest) = c
+        .fetch_one(pool)
+        .await
+        .context("recall_trace: traces_page total")?;
+
+    Ok(TracePage {
+        rows: rows.into_iter().map(TraceRow::from).collect(),
+        total,
+        oldest,
+        newest,
+    })
 }
 
 /// One trace by id, or `None` when pruned / never existed. Powers the
@@ -797,7 +836,7 @@ mod tests {
         .await
         .expect("record navigate");
 
-        let rows = recent_traces(&pool, 10).await.expect("recent");
+        let rows = traces_page(&pool, None, 10, 0).await.expect("recent").rows;
         assert_eq!(rows.len(), 2);
         // Newest first: the navigate trace leads.
         assert_eq!(rows[0].source, TraceSource::Navigate);
@@ -845,9 +884,10 @@ mod tests {
             .await
             .expect("record");
 
-        let turns: Vec<String> = recent_traces(&pool, 100)
+        let turns: Vec<String> = traces_page(&pool, None, 100, 0)
             .await
             .expect("recent")
+            .rows
             .iter()
             .map(|r| r.parse().expect("payload").turn_text)
             .collect();
@@ -865,11 +905,19 @@ mod tests {
             .await
             .expect("record");
 
-        assert_eq!(recent_traces(&pool, 100).await.expect("recent").len(), 2);
+        assert_eq!(
+            traces_page(&pool, None, 100, 0)
+                .await
+                .expect("recent")
+                .total,
+            2
+        );
     }
 
     /// The journal page scopes in SQL, so one sender's history does not
-    /// thin out as other senders fill the window.
+    /// thin out as other senders fill the window — and the total and the
+    /// date range are scoped with it: a reader is never told a number that
+    /// counts traces they cannot open.
     #[tokio::test]
     async fn sender_scoped_listing_sees_only_its_own() {
         let (_dir, pool) = pool().await;
@@ -878,12 +926,23 @@ mod tests {
         }
         seed_aged(&pool, "franz", 1, "franz only").await;
 
-        let mine = recent_traces_for_sender(&pool, "franz", 3)
+        let mine = traces_page(&pool, Some("franz"), 3, 0)
             .await
             .expect("scoped");
-        assert_eq!(mine.len(), 1);
-        assert_eq!(mine[0].sender_id, "franz");
-        assert_eq!(mine[0].parse().expect("payload").turn_text, "franz only");
+        assert_eq!(mine.rows.len(), 1);
+        assert_eq!(mine.total, 1, "the count is the reader's own");
+        assert!(mine.oldest.is_some() && mine.newest.is_some());
+        assert_eq!(mine.rows[0].sender_id, "franz");
+        assert_eq!(
+            mine.rows[0].parse().expect("payload").turn_text,
+            "franz only"
+        );
+
+        // The whole journal, from the same rows: six traces, and a window of
+        // three starting at the fourth holds the other three.
+        let all = traces_page(&pool, None, 3, 3).await.expect("page two");
+        assert_eq!(all.total, 6);
+        assert_eq!(all.rows.len(), 3, "a page is a window, not the whole");
     }
 
     /// An older/foreign payload (missing fields, unknown extras) still

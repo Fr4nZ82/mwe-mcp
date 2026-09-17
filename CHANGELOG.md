@@ -111,6 +111,26 @@ semver-governed surface: breaking changes are called out explicitly.
   was always decided: by the kind of memory the page belongs to, named on the
   page's own line.
 
+- **Every recall the memory still holds is on the Traces page.** It listed the
+  newest fifty and said nothing about the rest, while the engine keeps months
+  of them — on a running deployment a thousand traces of which fifty were
+  reachable. The page is now walked fifty at a time: the line above the table
+  says how many there are in all and the days they run between, the links under
+  it go to the newer, the older, the newest and the oldest, and the page you are
+  on is in the address, so a link to one is a link to that one. What you can see
+  is unchanged: your own recalls, and everybody's only under admin reveal — and
+  the count is scoped with the rows, so it is never a number made of traces you
+  cannot open.
+
+- **A page of facts is cut out of an order that cannot change under it.** The
+  fact browser sorted by one column and no more, so facts that tie on it — the
+  ones filed in the same second, or sharing a kind, an importance or a wiki —
+  came back in whatever order the database felt like. A tie that falls across a
+  page boundary is a fact shown twice or not at all, and a list that says
+  "newest first" while a tied group reads oldest first is telling you something
+  untrue. The order now ends with the fact's own id, which is unique, so it is
+  decided all the way down.
+
 - **What you ask for is written down as what you asked for.** «Note this for
   everyone in the house: no rice again tomorrow» was stored as «There is no
   rice in the house on 6 March 2026» — a claim about the cupboard that nobody

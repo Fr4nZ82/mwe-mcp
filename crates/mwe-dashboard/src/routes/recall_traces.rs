@@ -43,13 +43,14 @@
 //! `wiki_navigate` tool. This surface only reads it.
 
 use axum::Router;
-use axum::extract::{Path as AxumPath, State};
+use axum::extract::{Path as AxumPath, Query, State};
 use axum::response::{Html, IntoResponse, Response};
 use axum::routing::get;
 use axum_extra::extract::cookie::CookieJar;
 use maud::{Markup, PreEscaped, html};
 use mwe_core::recall_nav::HopTrace;
-use mwe_core::recall_trace::{self, RecallTrace, TraceRow, TraceSource};
+use mwe_core::recall_trace::{self, RecallTrace, TracePage, TraceRow, TraceSource};
+use serde::Deserialize;
 
 use crate::auth::SessionUser;
 use crate::error::{DashboardError, Result};
@@ -66,12 +67,25 @@ pub fn router() -> Router<DashboardState> {
         .route("/recall-traces/:id/data", get(data))
 }
 
-/// How many traces the journal page lists. A **page size**, not a retention
-/// bound: the window that decides how long a trace exists at all is
-/// `recall.trace_retention_days`, and the journal holds months of it. Sized
-/// to stay a single readable page — this surface is "my recent recalls", and
-/// the analysis surface for anything longer is the table itself.
+/// How many traces one page of the journal lists.
+///
+/// A **page size**, and nothing else: what decides how long a trace exists at
+/// all is `recall.trace_retention_days`, and every trace inside that window is
+/// reachable by walking the pages. Sized to stay a single readable screen.
 const INDEX_PAGE_LIMIT: i64 = 50;
+
+/// Which page of the journal to show.
+///
+/// It rides in the query string rather than in the session so a link to page
+/// 7 is a link to page 7: somebody can send it, keep it, and come back to it.
+/// 1-based, because the number is read by people and «page 0» is nobody's
+/// idea of the first one; anything below that, or past the end, lands on the
+/// nearest real page rather than on a blank screen.
+#[derive(Debug, Default, Deserialize)]
+struct IndexQuery {
+    #[serde(default)]
+    page: Option<i64>,
+}
 
 /// May `user` open the trace `row` was recorded for?
 ///
@@ -92,32 +106,49 @@ async fn index(
     State(state): State<DashboardState>,
     user: SessionUser,
     jar: CookieJar,
+    Query(q): Query<IndexQuery>,
 ) -> Result<Html<String>> {
     let chrome = layout::Chrome::of(&state);
     let reveal = crate::reveal::active(&state, &user, &jar);
-    // Scope in the query, not after the fetch. The journal now holds months
-    // of traffic rather than ten rows, so filtering a deployment-wide page
-    // down to the reader's own would show them fewer and fewer of their own
-    // traces the busier the deployment got — the listing would silently
-    // become a function of everyone else's activity.
-    let rows: Vec<TraceRow> = if reveal {
-        recall_trace::recent_traces(&state.pool, INDEX_PAGE_LIMIT)
-            .await
-            .map_err(|e| DashboardError::Internal(format!("recall_trace::recent_traces: {e}")))?
-    } else {
-        recall_trace::recent_traces_for_sender(&state.pool, &user.sender_id, INDEX_PAGE_LIMIT)
-            .await
-            .map_err(|e| {
-                DashboardError::Internal(format!("recall_trace::recent_traces_for_sender: {e}"))
-            })?
-    };
-    debug_assert!(rows.iter().all(|r| readable(r, &user, reveal)));
+    // Scope in the query, not after the fetch — the rows, the count and the
+    // date range alike. The journal holds months of traffic rather than ten
+    // rows, so filtering a deployment-wide page down to the reader's own would
+    // show them fewer and fewer of their own traces the busier the deployment
+    // got, and a total counted afterwards would be somebody else's number.
+    let scope = (!reveal).then_some(user.sender_id.as_str());
+    let asked = q.page.unwrap_or(1).max(1);
+    // How many there are decides where the asked-for number actually lands: a
+    // link to page 40 of a journal that has since been pruned to 3 shows the
+    // last page rather than an empty screen. Asked with a limit of NO rows —
+    // the count is the whole of what this call is for.
+    let total = recall_trace::traces_page(&state.pool, scope, 0, 0)
+        .await
+        .map_err(|e| DashboardError::Internal(format!("recall_trace::traces_page: {e}")))?
+        .total;
+    let pages = last_page(total);
+    let page = asked.min(pages);
+    let listed = recall_trace::traces_page(
+        &state.pool,
+        scope,
+        INDEX_PAGE_LIMIT,
+        (page - 1) * INDEX_PAGE_LIMIT,
+    )
+    .await
+    .map_err(|e| DashboardError::Internal(format!("recall_trace::traces_page: {e}")))?;
+    debug_assert!(listed.rows.iter().all(|r| readable(r, &user, reveal)));
     Ok(Html(layout::authenticated_page(
         chrome,
         "Recall traces",
         &user,
-        &render_index_body(&rows, reveal, user.is_admin),
+        &render_index_body(&listed, page, reveal, user.is_admin),
     )))
+}
+
+/// The number of the last page — at least 1, so an empty journal still has a
+/// page to be on.
+const fn last_page(total: i64) -> i64 {
+    let pages = (total + INDEX_PAGE_LIMIT - 1) / INDEX_PAGE_LIMIT;
+    if pages < 1 { 1 } else { pages }
 }
 
 /// `GET /dashboard/recall-traces/:id` — the viewer page.
@@ -193,14 +224,15 @@ async fn load_readable(
 /// `is_admin` only decides whether the "widen this with reveal" hint is
 /// worth showing: reveal is admin-only, so pointing a regular user at a
 /// switch they do not have would be an invitation to a dead end.
-fn render_index_body(rows: &[TraceRow], reveal: bool, is_admin: bool) -> Markup {
+fn render_index_body(page: &TracePage, number: i64, reveal: bool, is_admin: bool) -> Markup {
+    let rows = &page.rows;
     html! {
         @if reveal { (crate::reveal::banner()) }
         p class="text-text-dim max-w-prose" {
-            "The most recent recalls, newest first — what your own turns pulled "
-            "out of memory, and what was handed to the consumer (the bot or "
-            "assistant that was talking to you). Open one to watch the walk it "
-            "took through the pages."
+            "Every recall the memory still holds, newest first — what your own "
+            "turns pulled out of memory, and what was handed to the consumer "
+            "(the bot or assistant that was talking to you). Open one to watch "
+            "the walk it took through the pages."
             @if reveal {
                 " Admin reveal is on, so this is every user's recall."
             } @else if is_admin {
@@ -212,6 +244,7 @@ fn render_index_body(rows: &[TraceRow], reveal: bool, is_admin: bool) -> Markup 
         @if rows.is_empty() {
             p class="mt-6" { "No traces yet — they appear as soon as a consumer turn or a deep search runs." }
         } @else {
+            (render_journal_extent(page, number))
             table class="config-table mt-4" {
                 thead {
                     tr {
@@ -230,6 +263,72 @@ fn render_index_body(rows: &[TraceRow], reveal: bool, is_admin: bool) -> Markup 
                     @for row in rows {
                         (render_index_row(row))
                     }
+                }
+            }
+            (render_pager(number, last_page(page.total)))
+        }
+    }
+}
+
+/// What the journal holds, above the page you are on.
+///
+/// A window of fifty rows says nothing about where it sits, and a reader who
+/// cannot see the whole cannot tell «this is everything» from «this is the
+/// newest fiftieth». So the line names the count and the two dates it runs
+/// between — both of them the reader's own, counted under the same scope the
+/// rows were.
+fn render_journal_extent(page: &TracePage, number: i64) -> Markup {
+    let pages = last_page(page.total);
+    html! {
+        p class="text-text-dim text-sm mt-4" {
+            b { (page.total) }
+            @if page.total == 1 { " trace" } @else { " traces" }
+            // The clock is noise in a line whose subject is how far back the
+            // journal goes, and a journal that starts and ends on one day is
+            // one date, not the same date twice.
+            @if let (Some(oldest), Some(newest)) = (day_of(page.oldest.as_deref()), day_of(page.newest.as_deref())) {
+                ", " (oldest)
+                @if oldest != newest { " to " (newest) }
+            }
+            @if pages > 1 {
+                " · page " (number) " of " (pages)
+            }
+        }
+    }
+}
+
+/// The DAY of a journal stamp — what a range is read in.
+fn day_of(stamp: Option<&str>) -> Option<&str> {
+    stamp.and_then(|s| s.get(..10))
+}
+
+/// The way back and the way on, under the table.
+///
+/// Newer is up the page and older is down it, which is the order the rows are
+/// in: a reader walking backwards through their own history goes one way and
+/// one way only, so the two links are named for the direction and not for the
+/// number they carry. The first and last page are links of their own, because
+/// «back to the top» is the move somebody makes after going a long way down,
+/// and counting pages to get there is not a thing to ask of anybody.
+fn render_pager(number: i64, pages: i64) -> Markup {
+    let href = |n: i64| format!("/dashboard/recall-traces?page={n}");
+    html! {
+        @if pages > 1 {
+            nav class="mt-4 flex gap-3 items-center text-sm" aria-label="Journal pages" {
+                @if number > 1 {
+                    a href=(href(1)) { "« newest" }
+                    a href=(href(number - 1)) { "‹ newer" }
+                } @else {
+                    span class="text-text-dim" { "« newest" }
+                    span class="text-text-dim" { "‹ newer" }
+                }
+                span class="text-text-dim" { "page " (number) " of " (pages) }
+                @if number < pages {
+                    a href=(href(number + 1)) { "older ›" }
+                    a href=(href(pages)) { "oldest »" }
+                } @else {
+                    span class="text-text-dim" { "older ›" }
+                    span class="text-text-dim" { "oldest »" }
                 }
             }
         }

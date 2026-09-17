@@ -22479,9 +22479,10 @@ mod tests {
 
     /// The single trace a turn journaled, decoded.
     async fn only_trace(pool: &SqlitePool) -> crate::recall_trace::RecallTrace {
-        let rows = crate::recall_trace::recent_traces(pool, 10)
+        let rows = crate::recall_trace::traces_page(pool, None, 10, 0)
             .await
-            .expect("read traces");
+            .expect("read traces")
+            .rows;
         assert_eq!(rows.len(), 1, "one turn journals one trace");
         rows[0].parse().expect("payload decodes")
     }
@@ -33831,9 +33832,10 @@ mod tests {
 
         // And the journal says the same thing: the trace of the repeat is the
         // reading it actually did, not a copy of the first one.
-        let traces = crate::recall_trace::recent_traces(&pool, 10)
+        let traces = crate::recall_trace::traces_page(&pool, None, 10, 0)
             .await
-            .expect("traces");
+            .expect("traces")
+            .rows;
         assert_eq!(traces.len(), 2, "each delivery journalled its own reading");
         let newest = traces[0].parse().expect("payload decodes");
         assert_eq!(
@@ -33913,10 +33915,10 @@ mod tests {
             .unwrap();
         assert_eq!(live.len(), 1, "the re-delivery wrote nothing: {live:?}");
         assert_eq!(
-            crate::recall_trace::recent_traces(&pool, 10)
+            crate::recall_trace::traces_page(&pool, None, 10, 0)
                 .await
                 .expect("traces")
-                .len(),
+                .total,
             2,
             "both deliveries journalled the reading they actually did"
         );
@@ -34400,10 +34402,10 @@ mod tests {
         )
         .await
         .expect("seed turn");
-        let traces_before = crate::recall_trace::recent_traces(&pool, 100)
+        let traces_before = crate::recall_trace::traces_page(&pool, None, 100, 0)
             .await
             .expect("traces")
-            .len();
+            .total;
 
         let plan = "{\"intent\":\"capture\",\"extractions\":[{\
             \"target_wiki_id\":\"alice\",\"target_page\":\"salute.md\",\"subject_id\":\"user:alice\",\
@@ -34427,16 +34429,20 @@ mod tests {
         )
         .await
         .expect("turn under test");
-        let traces_after = crate::recall_trace::recent_traces(&pool, 100)
+        let traces_after = crate::recall_trace::traces_page(&pool, None, 100, 0)
             .await
             .expect("traces")
-            .len();
+            .total;
         let facts = fact_index::find_active_in_wiki(&pool, "alice")
             .await
             .expect("fact_index")
             .len();
         drop(dir);
-        (resp.context_snippet, traces_after - traces_before, facts)
+        (
+            resp.context_snippet,
+            usize::try_from(traces_after - traces_before).unwrap_or_default(),
+            facts,
+        )
     }
 
     /// The agent's own reply, fed back with `author: assistant`, is an

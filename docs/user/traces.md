@@ -7,6 +7,14 @@ is the record of those recalls — the most recent first, and only your own. The
 page's own empty state says when a row appears: as soon as a turn or a deep
 search runs.
 
+**Every recall the memory still holds is here**, fifty to a page. The line above
+the table says how many there are in all and the days they run between, and the
+links under it walk back through them — *newer*, *older*, and straight to the
+newest or the oldest. The page you are on is in the address, so a link to one is
+a link to that one, keepable and shareable. How far back the journal goes is not
+this page's to say: it is the window the operator sets, and a trace older than
+it is gone rather than on a later page.
+
 The table's columns are **When**, **What ran**, **Who it was for**, **What was
 asked**, **Facts found** (how many, and how), **Steps walked**, **Why it
 stopped** and **Text handed over**.
