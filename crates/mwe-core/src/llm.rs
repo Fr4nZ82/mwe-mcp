@@ -4974,10 +4974,12 @@ impl LlmBackend for OpenAiBackend {
 ///
 /// Two-axis behaviour:
 ///
-/// - `complete` returns the configured `response` string on every
-///   call, with a `prompt_tokens` count equal to the prompt's
-///   whitespace-separated word count. Behaviour predates the chat
-///   API and is unchanged.
+/// - `complete` returns the replies queued in `completion_script` in
+///   order, one per call, and the configured `response` string once
+///   they run out — with a `prompt_tokens` count equal to the prompt's
+///   whitespace-separated word count. A test that drives a guard which
+///   ASKS AGAIN queues the failing draft and the passing one; every
+///   other test leaves the queue empty and sees one fixed reply.
 /// - `chat` consumes responses in order from `chat_script`, a FIFO
 ///   queue populated by the test via [`FakeLlmBackend::with_chat_script`].
 ///   When the queue is empty, falls back to an assistant turn whose
@@ -4990,6 +4992,11 @@ pub struct FakeLlmBackend {
     response: String,
     finish_reason: FinishReason,
     chat_script: parking_lot::Mutex<std::collections::VecDeque<ChatResponse>>,
+    /// Replies `complete` hands back in order, one per call, before falling
+    /// back to [`Self::response`]. For a test that drives a guard which ASKS
+    /// AGAIN: the first reply is the draft that fails and the second is the
+    /// one that passes, which a single fixed reply cannot express.
+    completion_script: parking_lot::Mutex<std::collections::VecDeque<String>>,
     /// `system` prompt of the most recent `complete` call. Tests that
     /// want to assert the orchestrator rendered placeholders into the
     /// system prompt (locale directive, future
@@ -5026,6 +5033,7 @@ impl FakeLlmBackend {
             response: response.into(),
             finish_reason: FinishReason::EndOfTurn,
             chat_script: parking_lot::Mutex::new(std::collections::VecDeque::new()),
+            completion_script: parking_lot::Mutex::new(std::collections::VecDeque::new()),
             last_system_prompt: parking_lot::Mutex::new(None),
             last_prompt: parking_lot::Mutex::new(None),
             last_images: parking_lot::Mutex::new(Vec::new()),
@@ -5079,6 +5087,19 @@ impl FakeLlmBackend {
     /// the dashboard agentic loop: queue (`tool_call_turn`,
     /// `final_text_turn`) and assert the loop dispatched the tool,
     /// fed the result back, and rendered the final text.
+    /// Hand these replies to `complete` in order, one per call, then fall back
+    /// to the fixed response.
+    #[must_use]
+    pub fn with_completion_script(mut self, replies: Vec<String>) -> Self {
+        self.completion_script = parking_lot::Mutex::new(replies.into_iter().collect());
+        self
+    }
+
+    /// Queue a sequence of `chat` responses to be consumed in order
+    /// across subsequent `chat` calls. Useful for tests that exercise
+    /// the dashboard agentic loop: queue (`tool_call_turn`,
+    /// `final_text_turn`) and assert the loop dispatched the tool,
+    /// fed the result back, and rendered the final text.
     #[must_use]
     pub fn with_chat_script(mut self, responses: Vec<ChatResponse>) -> Self {
         self.chat_script = parking_lot::Mutex::new(responses.into_iter().collect());
@@ -5103,8 +5124,13 @@ impl LlmBackend for FakeLlmBackend {
         *self.last_cache_system.lock() = request.cache_system;
         self.max_tokens_seen.lock().push(request.max_tokens);
         let prompt_words = u32::try_from(request.prompt.split_whitespace().count()).unwrap_or(0);
+        let text = self
+            .completion_script
+            .lock()
+            .pop_front()
+            .unwrap_or_else(|| self.response.clone());
         Ok(CompletionResponse {
-            text: self.response.clone(),
+            text,
             finish_reason: self.finish_reason,
             usage: CompletionUsage {
                 prompt_tokens: Some(prompt_words),

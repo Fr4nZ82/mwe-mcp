@@ -945,7 +945,7 @@ async fn compile_leaf_page(
     // The rail guard, model half: the page is usable, but a rail the plan
     // declared may not have reached the prose. Costs a call only when one is
     // missing (see `cronista_relink`).
-    let body = cronista_relink(llm, &prompt, &page.slug, max_tokens, body, &recommended).await;
+    let mut body = cronista_relink(llm, &prompt, &page.slug, max_tokens, body, &recommended).await;
 
     // The Cronista marks each fact's prose span with a lightweight `<fN>…</fN>`
     // tag (N = 1-based index into the page's facts); the load-bearing region
@@ -979,6 +979,7 @@ async fn compile_leaf_page(
         max_tokens,
         language_directive,
         &mut merged_body,
+        &mut body.description,
     )
     .await;
 
@@ -2431,11 +2432,9 @@ async fn write_it_in_the_asked_language(
     max_tokens: u32,
     language_directive: &str,
     merged_body: &mut String,
+    description: &mut String,
 ) -> Option<String> {
-    let found = crate::locale::written_in_another_language(
-        language_directive,
-        &all_the_prose(merged_body),
-    )?;
+    let found = the_wrong_language_in(language_directive, merged_body, description)?;
     tracing::warn!(
         slug = %page.slug,
         found,
@@ -2447,12 +2446,13 @@ async fn write_it_in_the_asked_language(
             .await
     {
         let second_body = expand_and_complete_fact_markers(&second.merged_body, page);
-        still = crate::locale::written_in_another_language(
-            language_directive,
-            &all_the_prose(&second_body),
-        )
-        .map(str::to_owned);
+        still = the_wrong_language_in(language_directive, &second_body, &second.description)
+            .map(str::to_owned);
         *merged_body = second_body;
+        // The description is rewritten with the page, so it is replaced with
+        // the page: keeping the first draft's would leave the one field the
+        // check just objected to exactly as it was.
+        *description = second.description;
     }
     if let Some(again) = &still {
         tracing::warn!(
@@ -2462,6 +2462,29 @@ async fn write_it_in_the_asked_language(
         );
     }
     still
+}
+
+/// **Which part of this page is in the wrong language**, description or body,
+/// or neither.
+///
+/// The two are asked SEPARATELY, and that is the whole of it. A description is
+/// one line and a body is twenty: concatenated, an Italian description inside
+/// an English page does not move the average, the page reads as English and
+/// the line nobody counted stays as it was. That is exactly what happened —
+/// the seventh demo run caught the prose, asked again, accepted an English
+/// second draft, and left «Racconto delle serate cinema condivise in
+/// famiglia» on a page written for three English speakers — and it is the
+/// lesson the dataset's own language sweep had already written down about
+/// judging a whole page at once.
+///
+/// A short description is not judged at all, like any short text: the floor
+/// that says a handful of words prove nothing about their language does not
+/// change because the words are a summary. What this catches is the
+/// description long enough to speak for itself, which is the shape they
+/// usually take.
+fn the_wrong_language_in(directive: &str, body: &str, description: &str) -> Option<&'static str> {
+    crate::locale::written_in_another_language(directive, description)
+        .or_else(|| crate::locale::written_in_another_language(directive, &all_the_prose(body)))
 }
 
 /// Everything on the page a reader reads, marked regions included, with the
@@ -2523,8 +2546,9 @@ async fn cronista_in_the_asked_language(
     let msg = format!(
         "Your draft is not written in the language you were asked for. {language_directive} \
          Write the page again, complete: the same facts in the same order, the same <fN> \
-         tags, the same completeness rules, in that language and no other. Return the JSON \
-         object only."
+         tags, the same completeness rules, in that language and no other — **the \
+         `description` included**, which is read on its own and is as much the page as the \
+         prose is. Return the JSON object only."
     );
     match cronista_attempt(llm, system, task, &msg, max_tokens).await {
         Ok(second) => Some(second),
@@ -4139,6 +4163,68 @@ mod tests {
             prose.contains("giardino") && prose.contains("tavolo"),
             "and the sentence around them is untouched: {prose}"
         );
+    }
+
+    /// **The one line read on its own is part of the page.**
+    ///
+    /// The `description` is not prose on the page — it is a field of the same
+    /// Cronista reply, written into the front matter — and it was outside the
+    /// text the language check counted. The seventh demo run showed exactly
+    /// what that costs: the first draft's prose was Italian, the check asked
+    /// again, the second draft's prose came back English and passed, and the
+    /// description stayed in Italian on a page written for three English
+    /// speakers. Nobody looked at it, so nobody could fix it.
+    ///
+    /// Two drafts here, which is the whole point: the first is a page whose
+    /// PROSE is already right and whose description is not, and it must still
+    /// be sent back; the second has both right and is accepted.
+    #[tokio::test]
+    async fn the_description_is_part_of_the_page_the_language_check_reads() {
+        let (dir, tree, pool) = setup().await;
+        let film = ffp(0x23, "The household abandoned a film halfway through.");
+        let plan = concept_leaf_plan(film, "film_nights", None);
+        let writer = FakeLlmBackend::new("cronista", "{}").with_completion_script(vec![
+            // English prose, Italian description: the shape that slipped past.
+            "{\"mergedBody\":\"The household's shared evenings in front of a film do not \
+             always go the distance. <f1>The household abandoned a film halfway \
+             through.</f1>\",\"description\":\"Racconto delle serate cinema condivise in \
+             famiglia: i film provati, quelli abbandonati a metà e i pareri di chi era \
+             presente.\",\"style\":\"prosa\"}"
+                .to_owned(),
+            // Asked again, both halves in the language that was asked for.
+            "{\"mergedBody\":\"The household's shared evenings in front of a film do not \
+             always go the distance. <f1>The household abandoned a film halfway \
+             through.</f1>\",\"description\":\"Shared film evenings at home: what was \
+             tried and what was given up on.\",\"style\":\"prosa\"}"
+                .to_owned(),
+        ]);
+
+        let report = compile_dirty_pages(
+            &pool,
+            &tree,
+            &plan,
+            &writer,
+            Cadence::Light,
+            "2026-09-16T10:00:00Z",
+        )
+        .await
+        .expect("compile");
+
+        assert!(
+            report.wrong_language.is_empty(),
+            "the second draft was right, so nothing is left over: {report:?}"
+        );
+        let written = std::fs::read_to_string(dir.path().join("wikis/alice/film_nights.md"))
+            .expect("the page was written");
+        assert!(
+            written.contains("Shared film evenings at home"),
+            "the description that was asked for again is the one on the page: {written}"
+        );
+        assert!(
+            !written.contains("Racconto delle serate"),
+            "and the Italian one is gone: {written}"
+        );
+        drop(dir);
     }
 
     /// **A page written in the wrong language is asked again, once, and then

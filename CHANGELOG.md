@@ -101,6 +101,16 @@ semver-governed surface: breaking changes are called out explicitly.
   somebody with no account here. The trace of the turn shows what the engine
   changed and why, in a panel of its own.
 
+- **The one-line summary of a page is part of the page.** The check that reads
+  a finished page back in the language it was asked for was reading the prose
+  and not the summary shown beside it in listings and search. A page came out
+  with English prose and an Italian summary, the check caught the prose, asked
+  for the page again, accepted the English rewrite — and left the summary in
+  Italian on a page written for three English speakers. The summary is read on
+  its own now, and a rewrite is asked for it too. On its own, deliberately: a
+  single foreign line inside a page of English does not move the average, and
+  checking them together is how it stayed invisible.
+
 - **A page that comes out in the wrong language is asked for again.** The
   instruction naming the language is in front of the page writer every time,
   and it mostly obeys — but when it slips, nothing noticed, and the page sat
