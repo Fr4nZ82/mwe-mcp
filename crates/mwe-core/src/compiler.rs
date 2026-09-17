@@ -5869,6 +5869,31 @@ mod tests {
         );
     }
 
+    /// **A page has no today.**
+    ///
+    /// A fact is captured on a day and read on any other, and the page is the
+    /// surface a person actually reads: a cue written as "tonight" is true for
+    /// a few hours and then names a day nobody can recover. The engine hands
+    /// the writer the window (`(validity: …)`) precisely so it can write the
+    /// date, and the rule binds the whole page — the prose between tags and a
+    /// heading included — in whatever voice the TONE line gave it, first
+    /// person included.
+    #[test]
+    fn the_brief_forbids_a_page_dating_itself_against_the_day_it_is_written() {
+        for needle in [
+            "A PAGE IS READ ON ANY DAY",
+            "\"tonight\", \"today\", \"yesterday\", \"this week\", \"now\"",
+            "on the night of 7 March",
+            "On the night of 7 March I slept away from home",
+            "never \"Tonight I'm out\"",
+        ] {
+            assert!(
+                BUNDLED_CRONISTA_MD.contains(needle),
+                "the page's own time rule is gone: {needle}"
+            );
+        }
+    }
+
     /// A prompt with no marker — an operator override written against an
     /// older bundled body — keeps everything in the system prompt, and
     /// (asserted in the unit test below) marks nothing cacheable.

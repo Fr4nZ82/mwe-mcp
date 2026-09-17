@@ -1,8 +1,8 @@
 ---
 name: cronista
 description: Compiler stage 3 — writes a narrative LEAF page from its own facts as cohesive prose, tagging each fact's span with a lightweight `<fN>` tag (the code renders the bare runtime region markers; one-fact-one-page, starvation index, identity-card reference distance)
-version: 1.54
-default_version_at_bootstrap: v1.54
+version: 1.55
+default_version_at_bootstrap: v1.55
 ---
 
 # Prompt: cronista
@@ -259,10 +259,11 @@ FACT TAGS — the load-bearing part (read carefully):
 
 VALIDITY WINDOWS — when a fact tells you WHEN it was/is true:
 - Some facts carry a trailing `(validity: …)` hint. Four shapes: `(validity: from <t> until <t>)` (a closed window), `(validity: until <t>)` (a known end), `(validity: from <t>, open-ended)` (a FUTURE onset — it starts on a date still to come), and `(validity: open-ended)` (durable, no meaningful start or end). It is a recall aid: it tells a future reader the window in which the fact holds.
-- When a fact has a KNOWN HORIZON (an end date) or a FUTURE onset (`from <t>, open-ended`), weave a brief, natural validity cue INTO that fact's prose, inside its own `<fN>` span — e.g. "(valid until 11 June)", "due on 7 June", "from Monday", "until the end of the month". Phrase it naturally in the page's language (see LANGUAGE).
+- When a fact has a KNOWN HORIZON (an end date) or a FUTURE onset (`from <t>, open-ended`), weave a brief, natural validity cue INTO that fact's prose, inside its own `<fN>` span — e.g. "(valid until 11 June)", "due on 7 June", "from 9 June", "until the end of June". Phrase it naturally in the page's language (see LANGUAGE), and date it: a cue is a date, never "from Monday" (see "A PAGE IS READ ON ANY DAY" below).
 - A closed window may also say WHY it closed: `closed: completed` (the intention was spent — bought, watched, done), `closed: retracted` (the user took it back / abandoned it), `closed: contradicted` (what was said made it false — NOT a promise that a replacement exists, and often none does: say it stopped holding, never that a newer version is on file unless the SUCCESSION hint below names one). Phrase the closure with that meaning — "bought on 7 June", "project abandoned", "no longer current" — instead of a generic "until". Never print the reason token itself.
 - Do NOT print the raw ISO timestamps, the literal words "validity"/"closed", or the parentheses from the hint. Never turn it into its own sentence or a calendar line — keep it light and subordinate to the prose (rule 4 still holds: events are evidence, not an agenda).
 - A fact with NO `(validity: …)` hint, or a dateless `(validity: open-ended)`, is durable "true now": it needs no cue — do NOT manufacture one, and never narrate a "since/from" date for it (a durable fact has no onset to announce; the code already withholds the record date precisely so you don't).
+- **A PAGE IS READ ON ANY DAY, so nothing on it may say "tonight".** "tonight", "today", "yesterday", "this week", "now" — and the same words in whatever language this page is written in — are true for a few hours and wrong ever after, and nothing left on the page says which day was meant. Write the DATE instead, or the window the hint handed you: "on the night of 7 March", "on 12 May 2026", "until 11 June". This holds EVERYWHERE on the page — inside a tag, in the prose between tags, in a heading — and in every voice: a page written in the first person says "On the night of 7 March I slept away from home", never "Tonight I'm out".
 
 SUCCESSION — when a closed fact tells you where the current truth lives:
 - Some closed facts carry a trailing `(current: [[wiki_id/page]])` hint: the fact that REPLACED this one lives on that page. History stays, but the reader must be ONE HOP from today's truth — never leave a well-written obituary with no forward door.

@@ -124,7 +124,9 @@ semver-governed surface: breaking changes are called out explicitly.
   the claim is filed — a fact that dates itself badly is still what the person
   said — and the trace of the turn says which claims were rewritten and which
   kept their word. The period a fact holds for was already read correctly and is
-  not touched.
+  not touched. The same rule binds the other end: a page is read on any day, so
+  the writer is told never to put those words on one — the date instead, or the
+  window the engine hands it, in whatever voice the page is written in.
 
 - **The page writer is no longer shown Italian while being told to write
   English.** Pages kept coming out in Italian in memories where everybody
