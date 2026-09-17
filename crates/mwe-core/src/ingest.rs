@@ -2683,6 +2683,36 @@ async fn resolve_the_relative_times(
     (corrected, left)
 }
 
+/// The receipt for a `conflicts_with` the engine dropped because it named a
+/// box on somebody ELSE's identity card.
+///
+/// The sibling of [`salience_correction`], and the same reason for existing:
+/// the claim is stored, so without a line saying the declaration went nobody
+/// would know the engine had disagreed with the model about whose box it was.
+fn conflicts_with_correction(
+    unit: &CaptureUnit<'_>,
+    subject: &Principal,
+    identity_core: &[StoredValue],
+) -> Option<crate::recall_trace::TraceCorrectedExtraction> {
+    let raw = unit
+        .conflicts_with
+        .map(str::trim)
+        .filter(|s| !s.is_empty())?;
+    let named = FactId::parse(raw)
+        .ok()
+        .and_then(|id| identity_core.iter().find(|v| v.fact_id == id))?;
+    if named.subject == *subject {
+        return None;
+    }
+    Some(crate::recall_trace::TraceCorrectedExtraction {
+        claim: truncate(unit.body.unwrap_or_default(), 160),
+        field: "conflicts_with".to_owned(),
+        was: format!("{} ({})", named.fact_id.as_str(), named.subject),
+        now: String::new(),
+        reason: "a_box_of_somebody_elses_card".to_owned(),
+    })
+}
+
 /// **Who this claim must not reach**, as the classifier heard it said.
 ///
 /// A name it cannot read is dropped rather than failing the turn: an
@@ -4760,6 +4790,10 @@ enum SupersedeRefusal {
     /// the old fact was about the wrong person. A supersede would change whose
     /// the fact is, which is a correction and has to be stated to be made.
     ReassignsTheSubjectUnasked,
+    /// The replaced fact is a box on somebody's identity card and the
+    /// replacement is about somebody else: a card holds who one person is, and
+    /// no correction moves a box off it.
+    ABoxOfSomebodyElsesCard,
     /// The stated correction moves the fact between a person and a group, or
     /// between two groups: it widens or narrows who answers for the claim and
     /// who may read it, which `acl_changes` does and this verb does not.
@@ -4805,6 +4839,7 @@ impl SupersedeRefusal {
             Self::SuccessorNotThisTurn => "successor_not_this_turn",
             Self::NotAboutTheSameThing => "not_about_the_same_thing",
             Self::ReassignsTheSubjectUnasked => "reassigns_the_subject_unasked",
+            Self::ABoxOfSomebodyElsesCard => "a_box_of_somebody_elses_card",
             Self::ChangesWhoAnswersForIt => "changes_who_answers_for_it",
             Self::SuccessorSaysTheSame => "successor_says_the_same",
             Self::SaysLessThanTheTarget { .. } => "says_less_than_the_target",
@@ -4934,6 +4969,11 @@ enum Aboutness {
     /// narrows who answers for the claim and who may read it, which is the
     /// permissions verb's work and not this one's.
     ChangesWhoAnswersForIt,
+    /// The fact being replaced is a **box on somebody's identity card**, and
+    /// the replacement is about somebody else. A card holds who ONE person is,
+    /// so the box goes with the card and no correction moves it: the other
+    /// person's own card is where their value belongs.
+    ABoxOfSomebodyElsesCard,
 }
 
 /// Whether a supersede's two facts SPEAK OF THE SAME THING.
@@ -4966,10 +5006,15 @@ enum Aboutness {
 ///   model that looked at both values and said they fill one box, which is a
 ///   stronger statement than anything derivable from the words.
 ///
-/// **A pair that moves the fact to somebody else is a different act**, and
-/// exactly one thing admits it: the message SAYING SO
-/// ([`LlmSupersede::reassigns_subject`]). «Veramente dal dentista giovedì ci va
-/// Bob» corrects who the appointment was about, and the old fact has to go —
+/// **A pair that moves the fact to somebody else is a different act**, and it
+/// takes the message SAYING SO ([`LlmSupersede::reassigns_subject`]) — and
+/// even then it never reaches a box on an identity card, because a card holds
+/// who ONE person is and the box goes with the card. Three housemates each
+/// declaring the same front door are three facts, and the memory already has
+/// all three.
+///
+/// «Veramente dal dentista giovedì ci va Bob» corrects who the appointment was
+/// about, and the old fact has to go —
 /// leaving it puts two people at the dentist on Thursday, which is the very
 /// thing this verb exists to prevent. But «Alice's number is X» beside «Bob's
 /// number is Y» corrects nothing: both hold, they merely share the word
@@ -4997,6 +5042,17 @@ fn speaks_of_the_same_thing(
     if prev.subject_id != successor.subject {
         if !reassigns_subject {
             return Aboutness::ReassignsTheSubjectUnasked;
+        }
+        // **A box belongs to the card it is on.** An identity card holds who
+        // ONE person is, so a value on it is never moved to somebody else by
+        // correcting it: the other person's own card is where theirs goes, and
+        // it usually already has it. The demo run's own triple — Alice, Bob
+        // and Zoe each declaring 7 Farrow Lane — came back as two supersedes
+        // reassigning an address between housemates, and it put a question to
+        // two people about their own front door. What a shared address needs
+        // is three facts, which is what the memory already had.
+        if crate::wiki::is_identity_card_page(&prev.source_path) {
+            return Aboutness::ABoxOfSomebodyElsesCard;
         }
         return match (&prev.subject_id, &successor.subject) {
             (Principal::User(_), Principal::User(_)) => Aboutness::OneThing,
@@ -5069,6 +5125,17 @@ fn aboutness_refusal(
                  never said so — refused"
             );
             Some(SupersedeRefusal::ReassignsTheSubjectUnasked)
+        },
+        Aboutness::ABoxOfSomebodyElsesCard => {
+            tracing::warn!(
+                target = s.target.as_deref().unwrap_or_default(),
+                successor = s.successor.as_deref().unwrap_or_default(),
+                subject = %prev.subject_id,
+                new_subject = %successor.subject,
+                "ingest: reconcile supersede would move a box off somebody's identity card — \
+                 refused (a card holds who one person is; the other card already holds theirs)"
+            );
+            Some(SupersedeRefusal::ABoxOfSomebodyElsesCard)
         },
         Aboutness::ChangesWhoAnswersForIt => {
             tracing::warn!(
@@ -5229,7 +5296,8 @@ fn says_less_refusal(
 ///   fill no common box it is simply false, leaving the retired fact pointing
 ///   at a successor that never mentions it. Where the successor is about
 ///   somebody ELSE the bar is different and higher: only the message saying
-///   the old fact was about the wrong person admits it;
+///   the old fact was about the wrong person admits it, and a box on an
+///   identity card is not admitted at all;
 /// - the successor must not **say less than the target**
 ///   ([`says_less_refusal`]). A claim said again in fewer words is a poorer
 ///   copy of itself, and retiring the richer one for it takes a figure out of
@@ -10815,10 +10883,16 @@ enum SlotVerdict<'a> {
 /// The perimeter is the fact being CONTRADICTED, not the labels on the new
 /// extraction: `conflicts_with` may only name something in this turn's
 /// `identity_core` block, and that block is already exactly `bio` + `high` on a
-/// subject's `@profile.md`. Testing the new extraction's own `fact_type` and
-/// `salience` instead would hand the perimeter to two more fields the same
-/// model filled in — and a birth date that arrived labelled `normal` is still
-/// a birth date landing beside a birth date.
+/// subject's `@profile.md`. **And only on the claim's OWN card.** The block
+/// carries the card of everybody the turn is about, so a declaration naming a
+/// box of somebody else's card is dropped with a receipt
+/// ([`conflicts_with_correction`]) and the engine compares this person's card
+/// itself — which it has always done fenced by subject.
+///
+/// Testing the new extraction's own `fact_type` and `salience` instead would
+/// hand the perimeter to two more fields the same model filled in — and a
+/// birth date that arrived labelled `normal` is still a birth date landing
+/// beside a birth date.
 ///
 /// **A conflict the classifier did not declare is still a conflict.** Every
 /// `bio` claim now names the box it fills, and every card fact remembers the
@@ -10860,14 +10934,36 @@ fn vet_slot_conflict<'a>(
             let found = FactId::parse(raw)
                 .ok()
                 .and_then(|id| identity_core.iter().find(|v| v.fact_id == id));
-            if found.is_none() {
-                tracing::warn!(
-                    conflicts_with = raw,
-                    "ingest: extraction names a conflict with a fact outside this turn's \
-                     identity core — the engine compares the slots itself"
-                );
+            match found {
+                None => {
+                    tracing::warn!(
+                        conflicts_with = raw,
+                        "ingest: extraction names a conflict with a fact outside this turn's \
+                         identity core — the engine compares the slots itself"
+                    );
+                    None
+                },
+                // **A box belongs to the card it is on.** The block carries
+                // the cards of everybody the turn is about, so the classifier
+                // reads «Zoe lives at 7 Farrow Lane» beside Alice's card,
+                // finds the same street on it and declares the pair. Three
+                // people at one address are three facts, not a disagreement —
+                // and the box named is on a card that is not this claim's.
+                // Dropped, and the engine compares this person's own card
+                // instead, where the comparison has always been fenced by
+                // subject ([`value_filling_the_same_slot`]).
+                Some(v) if v.subject != *subject => {
+                    tracing::warn!(
+                        conflicts_with = raw,
+                        declared_about = %v.subject,
+                        claim_about = %subject,
+                        "ingest: extraction declares a conflict with a box on somebody else's \
+                         identity card — dropped"
+                    );
+                    None
+                },
+                some => some,
             }
-            found
         });
     let synthesised = !matches!(declared, Some(Some(_)));
     let stored = match declared {
@@ -13444,6 +13540,21 @@ pub async fn wiki_ingest_message(
                 // arriving later makes this one the true one — so the turn
                 // asks, and writes after the answer. Everything outside the
                 // identity core files exactly as before.
+
+                // What the engine disagreed with the model about, in the
+                // turn's own trace: the claim is stored either way, so
+                // without the line the only sign would be a question that
+                // never came.
+                if let Some(note) =
+                    conflicts_with_correction(&unit, &claim_subject, &identity_core.served)
+                {
+                    tracing::info!(
+                        field = note.field.as_str(),
+                        was = note.was.as_str(),
+                        "ingest: the declared conflict named a box on somebody else's card"
+                    );
+                    corrected_extractions.push(note);
+                }
                 let mut weld_onto: Option<StoredValue> = None;
                 match vet_slot_conflict(
                     &unit,
@@ -17267,6 +17378,194 @@ mod tests {
             verdict("the kitchen budget", &budget, &raised, false),
             "applied",
             "one slot, a new value — the pair the verb exists for"
+        );
+    }
+
+    /// **A conflict is declared against a box of the SAME card.**
+    ///
+    /// The other door into the same defect, and the one the founder named
+    /// first: `conflicts_with` points at a line of the identity-core block,
+    /// and that block carries the card of everybody the turn is about. Zoe
+    /// says where she lives, Alice's card is in front of the classifier with
+    /// the same street on it, and the pair gets declared. The claim files —
+    /// it was never wrong — and the declaration is dropped with a receipt, so
+    /// nobody is asked about their own front door.
+    ///
+    /// The denial is the claim refilling a box of ITS OWN card, which is what
+    /// the mechanism is for and still asks.
+    #[test]
+    fn a_conflict_declared_against_another_persons_card_is_dropped() {
+        let no_ids: [String; 0] = [];
+        let box_on = |who: &str, id: &str, text: &str, value: &str| StoredValue {
+            fact_id: FactId::parse(id).unwrap(),
+            subject: Principal::User(who.to_owned()),
+            text: text.to_owned(),
+            sender: Some(Principal::User(who.to_owned())),
+            said_on: None,
+            slot: Some("home_address".to_owned()),
+            slot_value: Some(value.to_owned()),
+            allow: Vec::new(),
+            topics: Vec::new(),
+        };
+        // Alice's card, holding a DIFFERENT address: where the declaration
+        // does damage. On the bench the two read the same, and a declaration
+        // naming a value equal to the claim's was already a duplicate — what
+        // the fence covers is the pair that differs, which is the two phone
+        // numbers in the guard beside this one.
+        let alices = box_on(
+            "alice",
+            "01a0af44-f79d-7230-80b2-d94a3cd94c13",
+            "Alice lives at 4 Ashby Row, Millbrook.",
+            "4 Ashby Row, Millbrook",
+        );
+        let zoes_old = box_on(
+            "zoe",
+            "01a0af44-b866-7981-b203-627150693066",
+            "Zoe lives at 2 Mill Road, Millbrook.",
+            "2 Mill Road, Millbrook",
+        );
+        let zoe = Principal::User("zoe".into());
+        let claim = |names: &'static str| CaptureUnit {
+            target_wiki_id: None,
+            target_page: None,
+            subject_id: Some("user:zoe"),
+            subject_external: None,
+            excluded_ids: &no_ids,
+            allow_ids: &no_ids,
+            fact_type: Some("bio"),
+            valid_from: None,
+            valid_to: None,
+            style: None,
+            page_description: None,
+            requested_container: false,
+            salience: Some("high"),
+            behaviour_rule: false,
+            behaviour_scope: None,
+            behaviour_about: None,
+            topics: &no_ids,
+            body: Some("Zoe lives at 7 Farrow Lane, Millbrook."),
+            supersede_target: None,
+            conflicts_with: Some(names),
+            slot: Some("home_address"),
+            slot_value: Some("7 Farrow Lane, Millbrook"),
+            attachments: &no_ids,
+        };
+
+        // Declared against Alice's card: dropped, and nothing is asked.
+        let against_alice = claim("01a0af44-f79d-7230-80b2-d94a3cd94c13");
+        let core = [alices];
+        assert!(
+            matches!(
+                vet_slot_conflict(&against_alice, &zoe, &core, None, "zoe", &[], false),
+                SlotVerdict::NotAConflict
+            ),
+            "a box on somebody else's card is not this claim's to contradict, however \
+             differently it reads"
+        );
+        let note = conflicts_with_correction(&against_alice, &zoe, &core)
+            .expect("the turn says the declaration went");
+        assert_eq!(note.field, "conflicts_with");
+        assert_eq!(note.reason, "a_box_of_somebody_elses_card");
+        assert!(note.was.contains("user:alice"), "{note:?}");
+
+        // Declared against her OWN card, where the box really is taken: asked,
+        // exactly as before.
+        let against_her_own = claim("01a0af44-b866-7981-b203-627150693066");
+        let own = [zoes_old];
+        assert!(
+            matches!(
+                vet_slot_conflict(&against_her_own, &zoe, &own, None, "zoe", &[], false),
+                SlotVerdict::Ask(_)
+            ),
+            "one card, one box, two addresses — the question this mechanism exists for"
+        );
+        assert!(
+            conflicts_with_correction(&against_her_own, &zoe, &own).is_none(),
+            "and nothing was corrected, so nothing is reported as corrected"
+        );
+    }
+
+    /// **Three people at one address are three facts.**
+    ///
+    /// The seventh bench run's own triple: Alice, Bob and Zoe each declare
+    /// that they live at 7 Farrow Lane, each on their own identity card, each
+    /// in the `home_address` box. The reconciler read Zoe's as a correction of
+    /// the other two and said so — `reassigns_subject` — and the two
+    /// housemates were each sent a question asking whether they still live at
+    /// their own front door.
+    ///
+    /// A box belongs to the card it is on. An identity card holds who ONE
+    /// person is, so no correction moves a value off it onto somebody else's:
+    /// Zoe's address goes on Zoe's card, which is where the turn had already
+    /// filed it.
+    ///
+    /// The denial is the other half: the dentist still moves. It is the same
+    /// shape to every test the words can run — one slot, two people, the
+    /// message declaring the correction — and it is an ordinary page's fact,
+    /// not a box on a card.
+    #[test]
+    fn an_address_box_is_never_moved_off_its_owners_card() {
+        let card = |id: &str, text: &str, who: &str| {
+            let mut h = stored(
+                id,
+                text,
+                Principal::User(who.to_owned()),
+                &["identity", "address"],
+            );
+            h.source_path = format!("wikis/{who}/@profile.md");
+            h
+        };
+        let alices = card(
+            "01a0af44-f79d-7230-80b2-d94a3cd94c13",
+            "Alice lives at 7 Farrow Lane, Millbrook.",
+            "alice",
+        );
+        let zoes = wrote(
+            "01a0af45-3180-77c2-b99d-3b74ccae5aa3",
+            "Zoe lives at 7 Farrow Lane, Millbrook.",
+            Principal::User("zoe".into()),
+            &["identity", "address"],
+        );
+
+        assert_eq!(
+            verdict_on(
+                "who lives at 7 Farrow Lane, Millbrook",
+                &alices,
+                &zoes,
+                true
+            ),
+            "a_box_of_somebody_elses_card",
+            "a housemate declaring their own address corrects nobody's card but their own"
+        );
+        assert_eq!(
+            verdict_on(
+                "who lives at 7 Farrow Lane, Millbrook",
+                &alices,
+                &zoes,
+                false
+            ),
+            "reassigns_the_subject_unasked",
+            "and with nobody calling it a correction it was already refused, one guard earlier"
+        );
+
+        // The same pair off a card: a fact on an ordinary page still moves
+        // when the message says it was about the wrong person.
+        let on_a_page = stored(
+            "0190f3c2-7a4e-7c31-9b02-2f6a1c8e5e04",
+            "alice ha il dentista giovedì",
+            Principal::User("alice".into()),
+            &["salute", "appuntamenti"],
+        );
+        let bobs = wrote(
+            "0190f3c2-7a4e-7c31-9b02-2f6a1c8e5e05",
+            "bob ha il dentista giovedì",
+            Principal::User("bob".into()),
+            &["salute", "appuntamenti"],
+        );
+        assert_eq!(
+            verdict_on("chi va dal dentista giovedì", &on_a_page, &bobs, true),
+            "applied",
+            "the correction this verb exists for is untouched"
         );
     }
 

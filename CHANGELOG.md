@@ -111,6 +111,18 @@ semver-governed surface: breaking changes are called out explicitly.
   was always decided: by the kind of memory the page belongs to, named on the
   page's own line.
 
+- **Housemates are no longer asked who lives at their own address.** Three
+  people sharing a house each tell the memory where they live, and the stage
+  that decides when one fact replaces another read the third as a correction
+  of the first two: two of them were sent a question asking whether they still
+  live at their own front door. A box on an identity card belongs to that
+  card — a card says who ONE person is — so nothing moves a value off it onto
+  somebody else's, whatever the reading. The same fence now stands on the
+  other side too: when the classifier declares that a new claim contradicts a
+  line of somebody ELSE's card, the declaration is dropped and the turn's
+  trace says so. Correcting who a fact was about still works everywhere it
+  always did: *«actually it's Bob at the dentist on Thursday»* moves as before.
+
 - **Your assistant is no longer read facts that have nothing to do with what
   you said.** Everything the search returned went into the block: a message
   about the potatoes came with the cat's name, a shopping list and somebody
