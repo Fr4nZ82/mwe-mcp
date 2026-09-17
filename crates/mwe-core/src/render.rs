@@ -319,9 +319,9 @@ pub struct ReaderView<'a> {
     pub page: PageForReader,
     /// The wiki this page lives in, so a bare `[[page]]` resolves against it.
     pub home_wiki: &'a str,
-    /// Where this reader may be sent. `None` leaves every link as written —
-    /// for a markerless page, and for an injected copy that has nothing to
-    /// navigate from anyway.
+    /// Where this reader may be sent. `None` leaves every link as written,
+    /// which is what a markerless page gets: it holds no facts, so there is no
+    /// read-set to ask the question with.
     pub may_go: Option<Destinations<'a>>,
 }
 

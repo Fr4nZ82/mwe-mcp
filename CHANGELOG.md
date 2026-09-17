@@ -111,6 +111,17 @@ semver-governed surface: breaking changes are called out explicitly.
   was always decided: by the kind of memory the page belongs to, named on the
   page's own line.
 
+- **The card handed to your assistant says who somebody is, not what file
+  they are in.** A card can point at another person's card — *«Partner is
+  …»* — and the copy served to the assistant turned that pointer into the
+  name of the file it ends in: *«Partner is @profile.»* It happened on 23 of
+  the 29 cards served in a demo run, which is most of the times a card named
+  anybody at all. The pointer is now the person's own name, as your memory
+  already records it: *«Partner is Alice Hollis.»* And the copy is read with
+  the permissions of whoever is being served: a pointer to a page they may
+  not open takes its sentence with it, the way it already does everywhere
+  else, instead of the check being skipped because a copy cannot be clicked.
+
 - **A fact is not stored still saying «tonight».** What you say is written
   down as a claim meant to hold for as long as it is kept, so *«Zoe is out
   tonight»* has to become the night it actually was. The classifier resolves

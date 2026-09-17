@@ -9662,9 +9662,13 @@ struct SpeakerCard {
 ///    may see depends on who is asking. Today the sender owns their own card and the
 ///    projection is nearly a no-op; 69d serves a *subject's* card to a different
 ///    reader, and the invariant has to already be there when it does.
-/// 2. **`[[wikilinks]]` rendered plainly** — at injection only. They are the
-///    navigator's rails and REM authors them deliberately, so they are never
-///    touched on disk ([`plain_wikilinks`]).
+/// 2. **`[[wikilinks]]` judged, then rendered plainly** — at injection only.
+///    A link to somebody's identity card becomes that person's NAME
+///    ([`name_the_people_linked`]); of the rest, an address this reader may
+///    not use takes its sentence with it, exactly as on the page
+///    ([`crate::render::render_for_sender`]), and what survives is flattened
+///    to the name it points at ([`plain_wikilinks`]). They are the navigator's
+///    rails and REM authors them deliberately, so none of this touches disk.
 /// 3. **Injected once, and never re-read.** The page's prose could also arrive
 ///    as a flat hit; [`SpeakerCard::page_path`] is what drops it. It cannot
 ///    arrive as a navigated fragment at all — the funnel is handed the page as
@@ -9678,6 +9682,7 @@ async fn who_is_speaking_section(
     pool: &SqlitePool,
     tree: &WikiTree,
     sender: &SenderContext,
+    reader: CardReader<'_>,
     policy: &IngestPolicy,
 ) -> Option<SpeakerCard> {
     let sender_id = sender.sender_id.as_str();
@@ -9687,7 +9692,7 @@ async fn who_is_speaking_section(
     let summary = crate::wiki::meta_summary(handle.meta())
         .map(|s| s.trim().to_owned())
         .filter(|s| !s.is_empty());
-    let card = identity_card(pool, tree, &handle, sender, policy).await;
+    let card = identity_card(pool, tree, &handle, sender, reader, policy).await;
 
     // The label line is the only thing that names the sender's *id* — the
     // card prose says who they are, never what they are called on the wire.
@@ -9785,7 +9790,7 @@ async fn people_mentioned_section(
     turn_text: &str,
     completed: Option<&str>,
     hits: &[recall::RecallHit],
-    roster: &[enrollment::EnrolledUserLite],
+    reader: CardReader<'_>,
     asked_full_recall: bool,
     intent: IntentKind,
     policy: &IngestPolicy,
@@ -9809,7 +9814,7 @@ async fn people_mentioned_section(
     let subjects = card_subjects(
         &named_in,
         &sender.sender_id,
-        roster,
+        reader.people,
         hits,
         asked_full_recall && intent == IntentKind::Recall,
     );
@@ -9830,7 +9835,7 @@ async fn people_mentioned_section(
         else {
             continue;
         };
-        let Some(card) = identity_card(pool, tree, &handle, sender, policy).await else {
+        let Some(card) = identity_card(pool, tree, &handle, sender, reader, policy).await else {
             continue;
         };
         let _ = write!(section, "\n\n- {subject}\n{}", card.prose);
@@ -9918,16 +9923,109 @@ struct IdentityCard {
     prose: String,
     /// The page's workdir-relative source path.
     source_path: String,
-    /// The **same** projection with its `[[wikilinks]]` intact and before the
-    /// budget cut — the navigator's rails off this card
+    /// The **same** projection with its surviving `[[wikilinks]]` intact and
+    /// before the budget cut — the navigator's rails off this card
     /// ([`recall_nav::navigate`]'s `served_cards`). Kept separate from `prose`
     /// on purpose: the consumer's copy has nothing to navigate from, so its
     /// links are flattened, and a rail dropped by the character budget is
-    /// still a page worth reaching.
+    /// still a page worth reaching. Surviving, because the projection has
+    /// already dropped the addresses this reader may not use — a rail is a
+    /// page they can be sent to, and that was never one.
     rails_source: String,
 }
 
-/// Read, project and prepare the sender's identity page for injection.
+/// What an injected card needs that its own page does not carry.
+///
+/// Two answers, and the card is wrong without either. **Who is reading it** —
+/// so a `[[link]]` on the card is judged with the speaker's own permissions
+/// ([`crate::render::Destinations`]), instead of the gate being switched off
+/// because the copy cannot be navigated anyway. And **who the people are**, so
+/// a link to somebody's identity card reads as their name rather than as the
+/// file the address ends in.
+#[derive(Clone, Copy)]
+struct CardReader<'a> {
+    /// The pages this reader demonstrably reads a fact of.
+    reads: &'a crate::meta_annotate::ReaderCard,
+    /// The roster the classifier was given — the people this speaker may name.
+    people: &'a [enrollment::EnrolledUserLite],
+}
+
+/// The name this person goes by, as the roster carries it.
+///
+/// The FULLEST of their declared names. The first-login form asks for a
+/// display name and a nickname and stores both
+/// ([`enrollment::add_aliases`]), and the one that identifies somebody to a
+/// reader is the whole one: «Ali» names half the street. Most words wins, and
+/// a tie goes to the earliest, which is the order the form declares them in.
+/// No declared name at all leaves the id — what the classifier's own roster
+/// keys on, and a person either way.
+fn the_name_they_go_by(user: &enrollment::EnrolledUserLite) -> &str {
+    user.aliases
+        .iter()
+        .enumerate()
+        .filter(|(_, a)| !a.trim().is_empty())
+        .max_by_key(|(i, a)| (a.split_whitespace().count(), std::cmp::Reverse(*i)))
+        .map_or(user.user_id.as_str(), |(_, a)| a.trim())
+}
+
+/// The person whose identity card this address points at, if that is what it
+/// is.
+///
+/// An address with an alias is left alone: the alias is the words the author
+/// chose, and every road keeps them. So is an address into anything but an
+/// ENROLLED person's `@profile.md` — that one is for the link filter to judge.
+fn the_person_carded_at<'a>(
+    inner: &str,
+    people: &'a [enrollment::EnrolledUserLite],
+) -> Option<&'a enrollment::EnrolledUserLite> {
+    if inner
+        .split_once('|')
+        .is_some_and(|(_, alias)| !alias.trim().is_empty())
+    {
+        return None;
+    }
+    let (wiki, page) = inner.trim().split_once('/')?;
+    let page = page.trim();
+    let page = page.strip_suffix(".md").unwrap_or(page);
+    if page != IDENTITY_PAGE.strip_suffix(".md").unwrap_or(IDENTITY_PAGE) {
+        return None;
+    }
+    let wiki = wiki.trim();
+    people.iter().find(|u| u.user_id == wiki)
+}
+
+/// Write every link to somebody's identity card as that person's name.
+///
+/// «Partner is [[alice/@profile]].» handed to a consumer as the address alone
+/// reads «Partner is @profile.» — the file the address ends in, which names
+/// nobody: 23 of the 29 injected cards of the September bench carried one. A
+/// person's card is not a page the sentence is about, it IS a person, and the
+/// only thing a reader needs from it is their name.
+///
+/// Done BEFORE the link filter sees the page, on purpose. Whether the reader
+/// may open Alice's card is a question about a PAGE; the sentence on Bob's own
+/// card says who his partner is, and her name is his fact, not her page's.
+fn name_the_people_linked(text: &str, people: &[enrollment::EnrolledUserLite]) -> String {
+    let mut out = String::with_capacity(text.len());
+    let mut rest = text;
+    while let Some(open) = rest.find("[[") {
+        let (before, from_open) = rest.split_at(open);
+        out.push_str(before);
+        let Some(close) = from_open.find("]]") else {
+            out.push_str(from_open);
+            return out;
+        };
+        match the_person_carded_at(&from_open[2..close], people) {
+            Some(user) => out.push_str(the_name_they_go_by(user)),
+            None => out.push_str(&from_open[..=close + 1]),
+        }
+        rest = &from_open[close + 2..];
+    }
+    out.push_str(rest);
+    out
+}
+
+/// Read, project and prepare one person's identity page for injection.
 /// `None` — logged at debug, never fatal — when the page is absent,
 /// unreadable, or renders to nothing for this reader.
 async fn identity_card(
@@ -9935,6 +10033,7 @@ async fn identity_card(
     tree: &WikiTree,
     handle: &crate::wiki::WikiHandle,
     sender: &SenderContext,
+    reader: CardReader<'_>,
     policy: &IngestPolicy,
 ) -> Option<IdentityCard> {
     if policy.max_sender_identity_chars == 0 {
@@ -9967,17 +10066,26 @@ async fn identity_card(
             return None;
         },
     };
+    // A link to somebody's identity card is that person, so it becomes their
+    // name before anything else looks at it: the question the filter below
+    // asks is about a PAGE, and a name is not a page.
+    let raw = name_the_people_linked(&raw, reader.people);
     // The card belongs to ONE person, so how much of it this reader gets is
     // the ordinary question: whole when it is their own, its readable facts
-    // alone when it is somebody else's. The links are flattened wholesale a
-    // few lines down — an injected copy has nothing to navigate from — so
-    // there is nothing here for the link filter to decide.
+    // alone when it is somebody else's. **And the links are judged, with this
+    // reader's own permissions.** An injected copy cannot be navigated, which
+    // is why the addresses are flattened a few lines down — but a flattened
+    // address still tells the reader that a page exists, in whose memory, and
+    // what it is about, and that is the question the filter is for.
     let view = crate::render::ReaderView {
         sender_id: &sender.sender_id,
         sender_groups: &sender.sender_groups,
         page: crate::render::page_for_reader(handle.meta(), &sender.sender_id),
         home_wiki: handle.meta().wiki_id.as_str(),
-        may_go: None,
+        may_go: Some(crate::render::Destinations {
+            card: reader.reads,
+            tree,
+        }),
     };
     let projected = crate::render::render_for_sender_segments(&raw, &db_acl, &view);
     // A page whose injected prose carries **no fact this reader may see** is
@@ -10026,16 +10134,17 @@ async fn identity_card(
 /// mutilated sentences ("*i dettagli dei miei lavori su e*"). So the link
 /// becomes the name it points at: the `|display` alias when the author wrote
 /// one, otherwise the last path segment — the page's own name, which is the
-/// noun the sentence is about. Unclosed `[[` is left verbatim.
+/// noun the sentence is about. Unclosed `[[` is left verbatim. A link to
+/// somebody's identity card never reaches here as an address: it is written as
+/// that person's name first ([`name_the_people_linked`]), because the file an
+/// address ends in names nobody.
 ///
-/// **Not an ACL decision.** Where the question is whether a reader may be told
-/// a page exists, the answer is [`crate::render::render_for_sender`]'s, and
-/// there an alias-less address takes its sentence with it rather than leaving
-/// the page's name in the open. This is the other half: a copy handed to a
-/// consumer that cannot navigate, where the only thing at stake is a broken
-/// affordance. The one card served through it whose prose reaches a reader is
-/// their OWN ([`identity_card`]); anybody else's is served as its facts alone
-/// and carries no prose for a link to sit in.
+/// **The ACL question was already asked**, by
+/// [`crate::render::render_for_sender`], before this ever runs: an address
+/// this reader may not use took its sentence with it there, and what survives
+/// to be flattened here is an address they demonstrably read a fact of. So
+/// this is the last step and not a second gate — the affordance is broken,
+/// and nothing about who may know what is decided by it.
 ///
 /// Injection only. On disk the links stay: they are the navigator's rails, and
 /// the REM rewiring pass exists to *add* them, not to remove them.
@@ -14173,10 +14282,47 @@ pub async fn wiki_ingest_message(
     // deterministic slot the other two defer to: it costs no completion, it
     // arrives whatever the navigator decides, and the page it serves must
     // then be injected nowhere else.
-    let speaker = if serves_a_block {
-        who_is_speaking_section(pool, tree, &sender_ctx, policy).await
+
+    // What a card needs beyond its own page: which pages this reader
+    // demonstrably reads a fact of — so an address on a card is judged with
+    // their permissions — and the roster, so a link to somebody's card reads
+    // as their name. Built ONCE: a card is served for the speaker and for
+    // every person the turn is about. **The roster is THE SAME one the
+    // classifier was given** (never the enrolment): the containment below is
+    // an invariant, and a list this slot built for itself would be free to
+    // hold somebody the classifier never saw.
+    //
+    // Unbuildable ⇒ no card is served at all, the way an unreadable ACL map
+    // already ends this slot: a card served with the link filter off is the
+    // defect this reader exists to close.
+    let reads = if serves_a_block {
+        match crate::meta_annotate::build_reader_card(
+            pool,
+            tree,
+            &sender_ctx.sender_id,
+            &sender_ctx.sender_groups,
+        )
+        .await
+        {
+            Ok(card) => Some(card),
+            Err(err) => {
+                tracing::warn!(
+                    error = %err,
+                    "ingest: reader card unbuildable — no identity card is served this turn"
+                );
+                None
+            },
+        }
     } else {
         None
+    };
+    let card_reader = reads.as_ref().map(|reads| CardReader {
+        reads,
+        people: &known_users,
+    });
+    let speaker = match card_reader {
+        Some(reader) => who_is_speaking_section(pool, tree, &sender_ctx, reader, policy).await,
+        None => None,
     };
     let identity_path = speaker.as_ref().and_then(|c| c.page_path.as_deref());
     // The same page in the funnel's own `(wiki, page)` terms, so the walk
@@ -14202,26 +14348,23 @@ pub async fn wiki_ingest_message(
     // of its own, it arrives whatever the navigator decides, and the pages it
     // serves must then be injected nowhere else. Unlike the speaker's card it
     // reads the classifier's completion, which by here is already in hand.
-    let mentioned = if serves_a_block {
-        people_mentioned_section(
-            pool,
-            tree,
-            &sender_ctx,
-            &request.text,
-            completed_message,
-            &recall_hits,
-            // THE SAME roster the classifier was given, never the enrolment:
-            // the invariant below is a containment, and a list this slot built
-            // for itself would be free to hold somebody the classifier never
-            // saw.
-            &known_users,
-            request.metadata.recall == RecallDepth::Full,
-            intent,
-            policy,
-        )
-        .await
-    } else {
-        None
+    let mentioned = match card_reader {
+        Some(reader) => {
+            people_mentioned_section(
+                pool,
+                tree,
+                &sender_ctx,
+                &request.text,
+                completed_message,
+                &recall_hits,
+                reader,
+                request.metadata.recall == RecallDepth::Full,
+                intent,
+                policy,
+            )
+            .await
+        },
+        None => None,
     };
     if let Some(m) = &mentioned {
         served_identity.extend(m.served.iter().cloned());
@@ -20779,7 +20922,10 @@ mod tests {
             "cosa cucino stasera per alice?",
             None,
             &[],
-            &roster_of(&pool).await,
+            CardReader {
+                reads: &reads_of(&pool, &tree, "franz").await,
+                people: &roster_of(&pool).await,
+            },
             true,
             IntentKind::Recall,
             &IngestPolicy::default(),
@@ -20851,7 +20997,10 @@ mod tests {
                 "cosa mangio stasera?",
                 None,
                 &[],
-                &roster_of(&pool).await,
+                CardReader {
+                    reads: &reads_of(&pool, &tree, "alice").await,
+                    people: &roster_of(&pool).await,
+                },
                 true,
                 IntentKind::Recall,
                 &policy,
@@ -20868,7 +21017,10 @@ mod tests {
                 "ricordami di chiamare l'idraulico",
                 None,
                 &[],
-                &roster_of(&pool).await,
+                CardReader {
+                    reads: &reads_of(&pool, &tree, "franz").await,
+                    people: &roster_of(&pool).await,
+                },
                 true,
                 IntentKind::Recall,
                 &policy,
@@ -20882,6 +21034,46 @@ mod tests {
     /// The roster these slot tests hand the section — the same list the
     /// classifier is given on a live turn (`enrollment::roster_for`), so a test
     /// cannot accidentally prove the slot right on a wider one.
+    /// Enrol these people into one household, each with the names they go by.
+    ///
+    /// Sharing a household is what puts each of them in the others' roster at
+    /// all ([`enrollment::roster_for`]), which is the gate every card slot
+    /// stands behind.
+    async fn enrol_household(pool: &SqlitePool, people: &[(&str, &[&str])]) {
+        let file = crate::enrollment::EnrollmentFile {
+            version: 1,
+            users: people
+                .iter()
+                .map(|(id, aliases)| crate::enrollment::UserEntry {
+                    id: (*id).to_owned(),
+                    aliases: aliases.iter().map(|a| (*a).to_owned()).collect(),
+                    is_admin: false,
+                    locale: None,
+                    timezone: None,
+                })
+                .collect(),
+            groups: vec![crate::enrollment::GroupEntry {
+                id: "famiglia".to_owned(),
+                members: people.iter().map(|(id, _)| (*id).to_owned()).collect(),
+                scope: None,
+            }],
+        };
+        crate::enrollment::mirror_to_db(pool, &file)
+            .await
+            .expect("mirror");
+    }
+
+    /// The reader card of one sender — what an injected card is judged with.
+    async fn reads_of(
+        pool: &SqlitePool,
+        tree: &WikiTree,
+        sender: &str,
+    ) -> crate::meta_annotate::ReaderCard {
+        crate::meta_annotate::build_reader_card(pool, tree, sender, &[])
+            .await
+            .expect("reader card")
+    }
+
     async fn roster_of(pool: &SqlitePool) -> Vec<enrollment::EnrolledUserLite> {
         enrollment::roster_for(pool, "franz", &["famiglia".to_owned()])
             .await
@@ -20938,7 +21130,10 @@ mod tests {
                 "cosa cucino stasera per alice?",
                 None,
                 &[],
-                &narrowed,
+                CardReader {
+                    reads: &reads_of(&pool, &tree, "franz").await,
+                    people: &narrowed,
+                },
                 true,
                 IntentKind::Recall,
                 &IngestPolicy::default(),
@@ -20966,7 +21161,10 @@ mod tests {
             "cosa cucino stasera per alice?",
             None,
             &[],
-            &shared,
+            CardReader {
+                reads: &reads_of(&pool, &tree, "franz").await,
+                people: &shared,
+            },
             true,
             IntentKind::Recall,
             &IngestPolicy::default(),
@@ -21005,30 +21203,17 @@ mod tests {
             .execute(&pool)
             .await
             .expect("publish the town");
-        let file = crate::enrollment::EnrollmentFile {
-            version: 1,
-            users: ["alice", "franz"]
-                .into_iter()
-                .map(|id| crate::enrollment::UserEntry {
-                    id: id.to_owned(),
-                    aliases: Vec::new(),
-                    is_admin: false,
-                    locale: None,
-                    timezone: None,
-                })
-                .collect(),
-            // They share a household, which is what puts each of them in the
-            // other's roster at all (`enrollment::roster_for`).
-            groups: vec![crate::enrollment::GroupEntry {
-                id: "famiglia".to_owned(),
-                members: vec!["alice".to_owned(), "franz".to_owned()],
-                scope: None,
-            }],
-        };
-        crate::enrollment::mirror_to_db(&pool, &file)
-            .await
-            .expect("mirror");
+        enrol_household(&pool, &[("alice", &[]), ("franz", &[])]).await;
         let tree = WikiTree::open(dir.path()).expect("reopen tree");
+        // One reader for the whole turn, which is what a turn has.
+        let (reads, roster) = (
+            reads_of(&pool, &tree, "franz").await,
+            roster_of(&pool).await,
+        );
+        let reader = CardReader {
+            reads: &reads,
+            people: &roster,
+        };
         let policy = IngestPolicy::default();
         let printer = "ho mandato in stampa il documento";
         let hits = vec![sample_recall_hit("01a03e05-65da-7b50-9af4-9e40272e1d21")];
@@ -21046,7 +21231,7 @@ mod tests {
                     printer,
                     None,
                     &hits,
-                    &roster_of(&pool).await,
+                    reader,
                     true,
                     intent,
                     &policy,
@@ -21067,7 +21252,7 @@ mod tests {
             "cosa può mangiare mia moglie?",
             None,
             &hits,
-            &roster_of(&pool).await,
+            reader,
             true,
             IntentKind::Recall,
             &policy,
@@ -21089,7 +21274,7 @@ mod tests {
             "lei cosa può mangiare?",
             Some("cosa può mangiare alice?"),
             &[],
-            &roster_of(&pool).await,
+            reader,
             false,
             IntentKind::Capture,
             &policy,
@@ -21154,7 +21339,10 @@ mod tests {
                 turn,
                 None,
                 &[],
-                &roster_of(&pool).await,
+                CardReader {
+                    reads: &reads_of(&pool, &tree, "franz").await,
+                    people: &roster_of(&pool).await,
+                },
                 true,
                 IntentKind::Recall,
                 &policy,
@@ -21172,7 +21360,10 @@ mod tests {
             turn,
             None,
             &hits,
-            &roster_of(&pool).await,
+            CardReader {
+                reads: &reads_of(&pool, &tree, "franz").await,
+                people: &roster_of(&pool).await,
+            },
             true,
             IntentKind::Recall,
             &policy,
@@ -21230,7 +21421,10 @@ mod tests {
                 "cosa mangio stasera?",
                 None,
                 &[group_hit, own_hit],
-                &roster_of(&pool).await,
+                CardReader {
+                    reads: &reads_of(&pool, &tree, "alice").await,
+                    people: &roster_of(&pool).await,
+                },
                 true,
                 IntentKind::Recall,
                 &IngestPolicy::default(),
@@ -21242,10 +21436,15 @@ mod tests {
     }
 
     /// 69a: the slot serves the identity **page**, not one line of
-    /// `_meta.summary`. The testata is dropped, the markers are gone, the
-    /// authored `[[wikilink]]` is rendered plainly for a consumer that has
-    /// nothing to navigate from — and the served page is reported back so
-    /// the other slots can defer to it.
+    /// `_meta.summary`. The testata is dropped, the markers are gone, no
+    /// `[[wikilink]]` syntax reaches a consumer that has nothing to navigate
+    /// from — and the served page is reported back so the other slots can
+    /// defer to it.
+    ///
+    /// The fixture's one address points at a page that holds no fact this
+    /// reader reads, so the sentence carrying it goes: an address is a
+    /// statement that a page exists, in whose memory and what it is about, and
+    /// an injected copy is not an exemption from that.
     #[tokio::test]
     async fn who_is_speaking_serves_the_identity_page_projected_and_link_free() {
         let (dir, _, pool) = setup_workdir().await;
@@ -21256,6 +21455,10 @@ mod tests {
             &pool,
             &tree,
             &SenderContext::user("alice"),
+            CardReader {
+                reads: &reads_of(&pool, &tree, "alice").await,
+                people: &[],
+            },
             &IngestPolicy::default(),
         )
         .await
@@ -21280,8 +21483,13 @@ mod tests {
         assert!(!card.section.contains("{{f="), "{}", card.section);
         assert!(!card.section.contains("[["), "{}", card.section);
         assert!(
-            card.section.contains("written up on hobbies."),
-            "the link becomes the name it points at: {}",
+            !card.section.contains("written up on"),
+            "the sentence goes with the address the reader cannot use: {}",
+            card.section
+        );
+        assert!(
+            !card.section.contains("hobbies"),
+            "and the page's name goes with it — a flattened address still names it: {}",
             card.section
         );
         assert_eq!(
@@ -21289,6 +21497,141 @@ mod tests {
             Some("wikis/alice/@profile.md"),
             "the served page is reported so the flat and navigated slots can drop it"
         );
+        drop(dir);
+    }
+
+    /// The fact on Bob's card in the September bench, word for word.
+    const BOB_PARTNER_FACT: &str = "018f1234-5678-7abc-9def-00000000c009";
+
+    /// **A link to somebody's card is that person, so the card says their
+    /// name.**
+    ///
+    /// The bench's own line, from Bob's `@profile.md`:
+    /// `Partner is [[alice/@profile]].` Flattened by its address alone it
+    /// reached the assistant as «Partner is @profile.» — the file an address
+    /// ends in, which names nobody — on 23 of the 29 injected cards that run
+    /// served. The sentence is not about a page: it is about Alice, and her
+    /// name is what the roster already holds.
+    ///
+    /// Both halves are the assertion: the name arrives, and no address does.
+    #[tokio::test]
+    async fn a_link_to_somebodys_card_is_served_as_their_name() {
+        let (dir, _, pool) = setup_workdir().await;
+        let wikis = dir.path().join("wikis");
+        write_wiki(&wikis, "bob", "Bob", "wiki-user", None);
+        std::fs::write(
+            wikis.join("bob").join("@profile.md"),
+            format!(
+                "---\ntitle: Bob\n---\n\n\
+                 {{{{f={BOB_PARTNER_FACT}}}}}Partner is [[alice/@profile]].{{{{/}}}}\n"
+            ),
+        )
+        .unwrap();
+        insert_page_fact(
+            &pool,
+            BOB_PARTNER_FACT,
+            "bob",
+            "wikis/bob/@profile.md",
+            "Partner is [[alice/@profile]].",
+            Principal::User("bob".into()),
+        )
+        .await;
+        // Alice declares a nickname and a full name, in that order — the way a
+        // memory seeded by hand carries them, and the reverse of the order the
+        // first-login form writes. Neither order decides which one names her.
+        enrol_household(
+            &pool,
+            &[
+                ("alice", &["Ali", "Alice Hollis"]),
+                ("bob", &["Bob Hollis"]),
+            ],
+        )
+        .await;
+        let tree = WikiTree::open(dir.path()).expect("reopen tree");
+        let roster = crate::enrollment::roster_for(&pool, "bob", &["famiglia".to_owned()])
+            .await
+            .expect("roster");
+
+        let card = who_is_speaking_section(
+            &pool,
+            &tree,
+            &SenderContext::user("bob"),
+            CardReader {
+                reads: &reads_of(&pool, &tree, "bob").await,
+                people: &roster,
+            },
+            &IngestPolicy::default(),
+        )
+        .await
+        .expect("card served");
+
+        assert!(
+            card.section.contains("Partner is Alice Hollis."),
+            "the card names the person it links to, in full: {}",
+            card.section
+        );
+        assert!(
+            !card.section.contains("@profile"),
+            "the file an address ends in never reaches a reader: {}",
+            card.section
+        );
+        assert!(
+            !card.section.contains("[["),
+            "and neither does the address: {}",
+            card.section
+        );
+        drop(dir);
+    }
+
+    /// **What the author wrote for a reader to see stays as they wrote it.**
+    ///
+    /// An alias is words, not an address: it is already part of the sentence,
+    /// so it survives whether or not the reader may open what it points at —
+    /// and it is what the card shows even when the target is a person, because
+    /// naming her twice differently is the one thing worse than naming her.
+    #[tokio::test]
+    async fn an_alias_on_a_card_is_what_the_reader_is_served() {
+        let (dir, _, pool) = setup_workdir().await;
+        let wikis = dir.path().join("wikis");
+        write_wiki(&wikis, "bob", "Bob", "wiki-user", None);
+        std::fs::write(
+            wikis.join("bob").join("@profile.md"),
+            format!(
+                "---\ntitle: Bob\n---\n\n\
+                 {{{{f={BOB_PARTNER_FACT}}}}}Partner is [[alice/@profile|his wife]].{{{{/}}}}\n"
+            ),
+        )
+        .unwrap();
+        insert_page_fact(
+            &pool,
+            BOB_PARTNER_FACT,
+            "bob",
+            "wikis/bob/@profile.md",
+            "Partner is [[alice/@profile|his wife]].",
+            Principal::User("bob".into()),
+        )
+        .await;
+        let tree = WikiTree::open(dir.path()).expect("reopen tree");
+
+        let card = who_is_speaking_section(
+            &pool,
+            &tree,
+            &SenderContext::user("bob"),
+            CardReader {
+                reads: &reads_of(&pool, &tree, "bob").await,
+                people: &[],
+            },
+            &IngestPolicy::default(),
+        )
+        .await
+        .expect("card served");
+
+        assert!(
+            card.section.contains("Partner is his wife."),
+            "the alias is the author's own words and they stand: {}",
+            card.section
+        );
+        assert!(!card.section.contains("[["), "{}", card.section);
         drop(dir);
     }
 
@@ -21310,6 +21653,10 @@ mod tests {
             &pool,
             &tree,
             &SenderContext::user("alice"),
+            CardReader {
+                reads: &reads_of(&pool, &tree, "alice").await,
+                people: &[],
+            },
             &IngestPolicy::default(),
         )
         .await
@@ -21333,6 +21680,10 @@ mod tests {
                 &pool,
                 &tree,
                 &SenderContext::user("alice"),
+                CardReader {
+                    reads: &reads_of(&pool, &tree, "alice").await,
+                    people: &[],
+                },
                 &IngestPolicy::default(),
             )
             .await
@@ -21382,6 +21733,10 @@ mod tests {
             &pool,
             &tree,
             &SenderContext::user("alice"),
+            CardReader {
+                reads: &reads_of(&pool, &tree, "alice").await,
+                people: &[],
+            },
             &IngestPolicy::default(),
         )
         .await
@@ -21407,6 +21762,10 @@ mod tests {
             &pool,
             &tree,
             &SenderContext::user("alice"),
+            CardReader {
+                reads: &reads_of(&pool, &tree, "alice").await,
+                people: &[],
+            },
             &IngestPolicy {
                 max_sender_identity_chars: 0,
                 ..IngestPolicy::default()
