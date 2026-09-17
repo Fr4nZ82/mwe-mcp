@@ -2869,12 +2869,26 @@ pub async fn find_by_filters(
         sql.push_str(&preds.join(" AND "));
     }
 
+    // **The order is TOTAL, always.** Every sort key here has ties, and most
+    // have them by the thousand: one turn files several facts in the same
+    // second, an import files a memory's worth, and a sort by `fact_type` or
+    // `salience` puts a whole taxonomy bucket on one value. A tie SQLite is
+    // free to break differently between two executions is what makes a paged
+    // reader see a fact twice, or never — the page boundary falls in the
+    // middle of the tie and the second query deals the tie another way. So
+    // the primary key closes it: unique by construction, and UUIDv7, so it
+    // reads as time within a tie and follows the direction the key was asked
+    // for.
     match filters.sort {
-        None => sql.push_str(" ORDER BY created_at DESC"),
+        None => sql.push_str(" ORDER BY created_at DESC, fact_id DESC"),
         Some(s) => {
             sql.push_str(" ORDER BY ");
             sql.push_str(s.key.order_expr());
-            sql.push_str(if s.desc { " DESC" } else { " ASC" });
+            sql.push_str(if s.desc {
+                " DESC, fact_id DESC"
+            } else {
+                " ASC, fact_id ASC"
+            });
         },
     }
     if filters.limit > 0 {
@@ -4969,6 +4983,67 @@ mod tests {
         assert_eq!(back.embedding, vec![0.1, 0.2, 0.3, 0.4]);
         assert!(back.superseded_at.is_none());
         assert!(back.deleted_at.is_none());
+    }
+
+    /// **The order a page is cut out of is TOTAL.**
+    ///
+    /// A page is a window onto an ordered list, and a window's edge lands
+    /// wherever the order is undecided. Every sort this browser offers has
+    /// ties by the thousand — a turn files several facts in the same second,
+    /// a sort by kind puts a whole taxonomy bucket on one value — so with the
+    /// tie left open two executions of the same query may deal it differently
+    /// and a reader walking the pages sees a fact twice, or never. The fact's
+    /// own id is the last word: unique by construction, and a `UUIDv7`, so it reads as
+    /// time inside the tie and runs the way the key was asked for.
+    #[tokio::test]
+    async fn the_sort_order_is_total_even_when_every_key_ties() {
+        let pool = make_pool().await;
+        // Three facts, one instant, one kind, one salience: every sort key the
+        // browser offers is a tie across all three.
+        let ids = [SAMPLE_UUID_V7_1, SAMPLE_UUID_V7_2, SAMPLE_UUID_V7_3];
+        for id in ids {
+            insert(&pool, &sample_new_fact(id, "alice", "user:alice", "tied"))
+                .await
+                .expect("insert");
+        }
+        sqlx::query("UPDATE fact_index SET created_at = '2026-09-17T09:00:00Z'")
+            .execute(&pool)
+            .await
+            .expect("one instant for all three");
+
+        let newest_first: Vec<String> = find_by_filters(&pool, &FactFilters::default())
+            .await
+            .expect("default sort")
+            .into_iter()
+            .map(|r| r.fact_id.as_str().to_owned())
+            .collect();
+        let mut expected: Vec<String> = ids.iter().map(|i| (*i).to_owned()).collect();
+        expected.sort_by(|a, b| b.cmp(a));
+        assert_eq!(
+            newest_first, expected,
+            "the default sort decides a tie by the id, newest id first"
+        );
+
+        let by_kind: Vec<String> = find_by_filters(
+            &pool,
+            &FactFilters {
+                sort: Some(FactSort {
+                    key: FactSortKey::FactType,
+                    desc: false,
+                }),
+                ..Default::default()
+            },
+        )
+        .await
+        .expect("sorted by kind")
+        .into_iter()
+        .map(|r| r.fact_id.as_str().to_owned())
+        .collect();
+        expected.sort();
+        assert_eq!(
+            by_kind, expected,
+            "and an ascending sort decides it the other way round, by the same key"
+        );
     }
 
     #[tokio::test]
