@@ -604,6 +604,16 @@ pub struct IngestPolicy {
     /// `0` disables it (same off-switch idiom as
     /// [`crate::recall::admitted_smart_wikis`]).
     pub relevance_floor: f32,
+    /// Similarity a recalled fact must reach to be **read to the assistant**:
+    /// the `RELEVANT MEMORY` and `Recent (not yet consolidated)` sections of
+    /// the block, and nothing else. Per fact, where
+    /// [`Self::relevance_floor`] is per turn, and the two ask different
+    /// questions — see
+    /// [`crate::recall::DEFAULT_MIN_SIMILARITY_FOR_THE_ASSISTANT`] for the
+    /// measurement, for why the number is 0.475, and for the two places it
+    /// must never reach: the reconciliation stage's candidates and a turn
+    /// whose intent is `recall`. `0` disables it.
+    pub min_similarity_for_the_assistant: f32,
     /// Jaccard threshold passed through to [`capture::wiki_capture`]
     /// when routing intent `capture`.
     pub dedup_threshold: f32,
@@ -780,6 +790,7 @@ impl Default for IngestPolicy {
             project_docs_signpost_floor: recall::DEFAULT_SIGNPOST_FLOOR,
             smart_corpus_floor: recall::DEFAULT_SMART_CORPUS_FLOOR,
             relevance_floor: recall::DEFAULT_RELEVANCE_FLOOR,
+            min_similarity_for_the_assistant: recall::DEFAULT_MIN_SIMILARITY_FOR_THE_ASSISTANT,
             dedup_threshold: DEFAULT_DEDUP_THRESHOLD,
             max_recent_messages: 16,
             max_recent_message_chars: 280,
@@ -11166,7 +11177,7 @@ fn apply_classifier_vote(hits: &[RecallHit], scores: &[LlmFactScore]) -> Vec<Rec
 }
 
 /// Why the flat slot leaves a recalled hit out of the block, or `None` when
-/// it takes it. The three tokens are what the recall trace journals.
+/// it takes it. The four tokens are what the recall trace journals.
 ///
 /// One function, two readers: [`format_snippet`] filters on it and the trace
 /// records it, so what the page says was dropped is what the block dropped —
@@ -11177,17 +11188,39 @@ fn flat_drop_reason(
     h: &RecallHit,
     navigated_paths: &[String],
     promoted_gate_open: bool,
+    assistant_floor: f32,
 ) -> Option<&'static str> {
     if crate::wiki::is_rules_page(&h.source_path) {
         return Some("rules_page");
     }
+    if !h.fresh && navigated_paths.iter().any(|p| p == &h.source_path) {
+        return Some("on_an_injected_page");
+    }
+    // The only reason that reaches a FRESH hit as well: how close this fact is
+    // to what was just said is a question about the fact, and the labelled
+    // sub-slot is read by the same assistant as the section above it.
+    if assistant_floor > 0.0 && h.score < assistant_floor {
+        return Some("below_the_floor");
+    }
     if h.fresh {
         return None;
     }
-    if navigated_paths.iter().any(|p| p == &h.source_path) {
-        return Some("on_an_injected_page");
-    }
     (!promoted_gate_open).then_some("relevance_floor")
+}
+
+/// The floor under what the **assistant** reads, on this turn.
+///
+/// Off — `0.0` — on a turn that asked to be answered from memory: there the
+/// recall IS the turn, and the best fact one bench turn had scored 0.472. Off
+/// too where no classifier ran at all (a guest turn, a degraded one): the rule
+/// is stated in terms of an intent, and a turn that has none gives it nothing
+/// to stand on while the block is the whole of what that turn produces.
+const fn assistant_floor(policy: &IngestPolicy, asked_for_memory: bool) -> f32 {
+    if asked_for_memory {
+        0.0
+    } else {
+        policy.min_similarity_for_the_assistant
+    }
 }
 
 /// Is the promoted section open at all this turn?
@@ -11229,11 +11262,12 @@ fn promoted_gate_open(hits: &[RecallHit], relevance_floor: f32) -> bool {
 /// `fresh == false`, before the two filters above ever run, so the gate's
 /// outcome depends only on the turn's own recall scores, never on which
 /// pages the navigator happened to open this same turn or on whether a
-/// hit happens to be a rules-page hit. A per-hit threshold cannot do this
-/// job — measured on two real turns: on the one that NEEDED its
-/// recall the right answer scored `0.4813` / `0.4811`, while on the one
-/// that needed none the noise it recited ran to `0.4306` — the bands
-/// overlap, so any per-hit cut that removes one removes the other. Below
+/// hit happens to be a rules-page hit. A per-hit threshold cannot do THIS
+/// job: it can leave out a weak fact, and it cannot say that a turn's
+/// recall found nothing worth opening a section for. Measured on two real
+/// turns: the one that NEEDED its recall had the right answer at `0.4813`
+/// / `0.4811` under a best of `0.5474`, while the one that needed none
+/// recited noise whose best was `0.4306`. Below
 /// the floor, the turn's flat recall has nothing to say and the promoted
 /// section is not opened at all (not "the weak hits are trimmed" — no
 /// promoted hit renders, however strong). At or above it, every promoted
@@ -11242,7 +11276,14 @@ fn promoted_gate_open(hits: &[RecallHit], relevance_floor: f32) -> bool {
 /// because the turn's best was `0.5474`. See
 /// [`recall::DEFAULT_RELEVANCE_FLOOR`] for the measurement.
 ///
-/// Deliberately **NOT** gated by `relevance_floor`:
+/// That is a different question from the one `assistant_floor` below asks,
+/// and the same measurement answers both: this gate reads the turn's BEST
+/// score because a turn whose best is `0.4306` has nothing to say at all,
+/// while the floor under what the assistant reads is per fact and sits
+/// between that `0.4306` and the `0.4811` the other turn depended on.
+///
+/// Deliberately **NOT** gated by `relevance_floor` (the per-fact floor below
+/// is another matter, and it does reach the first of these):
 /// - the **fresh** (un-promoted) captures below — a different signal
 ///   (things said a few turns ago, not durable memory) that keeps
 ///   rendering even when every promoted hit is dropped;
@@ -11260,16 +11301,34 @@ fn promoted_gate_open(hits: &[RecallHit], relevance_floor: f32) -> bool {
 /// [`recall::admitted_smart_wikis`] — and renders every promoted hit,
 /// however weak.
 ///
+/// ## The floor under what the assistant reads
+///
+/// `assistant_floor` is the other one, and it is per FACT: a hit below it is
+/// left out of both sections — the promoted list and the `Recent` sub-slot —
+/// whatever the turn's best did. The two are not the same question asked
+/// twice. The group gate above asks whether this turn's recall has anything
+/// to say; this one asks whether THIS fact is close enough to what was said
+/// to be worth a line in front of a model, and the answer is the fact's own.
+///
+/// It is the caller who decides whether it applies at all
+/// ([`assistant_floor`]), because the rule is about the TURN: a turn that
+/// asked to be answered from memory never gets it. And it reaches this
+/// render alone — the classifier's input and the reconciliation stage's
+/// candidates are read upstream, unfiltered, which is what keeps a shopping
+/// list being ticked off by facts that score 0.41.
+///
 /// `None` when nothing survives — the section is omitted entirely.
 fn format_snippet(
     hits: &[RecallHit],
     navigated_paths: &[String],
     project_docs: &[recall::SectionHit],
     relevance_floor: f32,
+    assistant_floor: f32,
 ) -> Option<String> {
     let gate_open = promoted_gate_open(hits, relevance_floor);
-    let keep =
-        |h: &&RecallHit| -> bool { flat_drop_reason(h, navigated_paths, gate_open).is_none() };
+    let keep = |h: &&RecallHit| -> bool {
+        flat_drop_reason(h, navigated_paths, gate_open, assistant_floor).is_none()
+    };
     let mut out = String::new();
     // Promoted (durable) facts first — withheld as a group when the gate
     // above is shut; never trimmed hit by hit.
@@ -11728,6 +11787,7 @@ fn flat_verdicts(
     revised: &[RecallHit],
     navigated_paths: &[String],
     relevance_floor: f32,
+    assistant_floor: f32,
 ) -> FlatVerdicts {
     let gate_open = promoted_gate_open(revised, relevance_floor);
     revised
@@ -11745,7 +11805,7 @@ fn flat_verdicts(
                     voted_score: before
                         .filter(|b| b.to_bits() != h.score.to_bits())
                         .map(|_| h.score),
-                    dropped: flat_drop_reason(h, navigated_paths, gate_open),
+                    dropped: flat_drop_reason(h, navigated_paths, gate_open, assistant_floor),
                 },
             )
         })
@@ -11942,7 +12002,16 @@ fn fallback_response(
     took: std::time::Duration,
     llm_used: bool,
 ) -> IngestResponse {
-    let context_snippet = format_snippet(recall_hits, &[], &[], policy.relevance_floor);
+    // No classifier ran on this turn, so nothing says it was not asking to be
+    // answered from memory — and the block is the whole of what a degraded
+    // turn produces.
+    let context_snippet = format_snippet(
+        recall_hits,
+        &[],
+        &[],
+        policy.relevance_floor,
+        assistant_floor(policy, true),
+    );
     let suggested_seed = match request.context_hint {
         ContextHint::DashboardCommand => Some(policy.structural_suggested_seed.clone()),
         _ => Some(policy.degraded_suggested_seed.clone()),
@@ -12292,14 +12361,28 @@ pub async fn wiki_ingest_message(
         );
         let stage = std::time::Instant::now();
         let context_snippet = if serves_a_block {
-            format_snippet(&recall_hits, &[], &project_docs, policy.relevance_floor)
+            // A guest turn files nothing: the block IS the turn, and no
+            // classifier read an intent off it.
+            format_snippet(
+                &recall_hits,
+                &[],
+                &project_docs,
+                policy.relevance_floor,
+                assistant_floor(policy, true),
+            )
         } else {
             None
         };
         recall_clock.charge(stage);
         // No classifier ran, so nothing voted: the verdicts are the drop
         // reasons of the very list `format_snippet` was handed.
-        let verdicts = flat_verdicts(&recall_hits, &recall_hits, &[], policy.relevance_floor);
+        let verdicts = flat_verdicts(
+            &recall_hits,
+            &recall_hits,
+            &[],
+            policy.relevance_floor,
+            assistant_floor(policy, true),
+        );
         if serves_a_block {
             record_ingest_trace(
                 pool,
@@ -14626,19 +14709,26 @@ pub async fn wiki_ingest_message(
         // this turn's walk is untouched by construction as well as by
         // intent ([`apply_classifier_vote`]).
         let revised = apply_classifier_vote(&recall_hits, &plan.fact_scores);
+        // A turn that asked to be answered from memory reads every fact its
+        // recall found; any other turn reads the ones close enough to what it
+        // said to be worth the line.
+        let floor = assistant_floor(policy, intent == IntentKind::Recall);
         let snippet = format_snippet(
             &revised,
             &injected_pages,
             &project_docs,
             policy.relevance_floor,
+            floor,
         );
-        // The trace's verdicts come off the same revised list and the same
-        // page set, so what the record says was dropped is what was dropped.
+        // The trace's verdicts come off the same revised list, the same page
+        // set and the same floor, so what the record says was dropped is what
+        // was dropped.
         let verdicts = flat_verdicts(
             &recall_hits,
             &revised,
             &injected_pages,
             policy.relevance_floor,
+            floor,
         );
         (snippet, verdicts)
     } else {
@@ -20331,7 +20421,7 @@ mod tests {
         };
 
         let snippet =
-            format_snippet(std::slice::from_ref(&fact), &[], &[doc], 0.0).expect("renders");
+            format_snippet(std::slice::from_ref(&fact), &[], &[doc], 0.0, 0.0).expect("renders");
         assert!(snippet.contains("franz lives in Bologna"), "{snippet}");
         assert!(
             snippet.contains("Project documentation (reference — never file this as a fact):"),
@@ -20351,7 +20441,7 @@ mod tests {
         );
 
         // No docs → no slot at all, so an ordinary turn's block is unchanged.
-        let plain = format_snippet(&[fact], &[], &[], 0.0).expect("renders");
+        let plain = format_snippet(&[fact], &[], &[], 0.0, 0.0).expect("renders");
         assert!(!plain.contains("Project documentation"), "{plain}");
     }
 
@@ -20707,7 +20797,7 @@ mod tests {
                 link_key_win: false,
             },
         ];
-        let snippet = format_snippet(&hits, &[], &[], 0.0).expect("non-empty hits render");
+        let snippet = format_snippet(&hits, &[], &[], 0.0, 0.0).expect("non-empty hits render");
         // The flat slot is a labelled role section now.
         assert!(snippet.starts_with(HDR_RELEVANT_MEMORY), "{snippet}");
         assert!(snippet.contains("(alice) alice likes coffee"));
@@ -20743,6 +20833,7 @@ mod tests {
             &nav_paths,
             &[],
             0.0,
+            0.0,
         )
         .expect("one hit survives");
         // A hit homed on a navigated page is dropped (its prose rides the
@@ -20752,7 +20843,13 @@ mod tests {
         assert!(snippet.contains("matteo's pronouns are he/him"));
         // All hits filtered → the whole section is omitted.
         assert_eq!(
-            format_snippet(&[kept], &["wikis/matteo/preferenze.md".into()], &[], 0.0),
+            format_snippet(
+                &[kept],
+                &["wikis/matteo/preferenze.md".into()],
+                &[],
+                0.0,
+                0.0
+            ),
             None
         );
     }
@@ -22778,7 +22875,7 @@ mod tests {
         let mut hit = sample_recall_hit("018f1234-5678-7abc-9def-0123456789ab");
         hit.created_at = "2026-05-18T09:30:00Z".into();
         hit.valid_to = Some("2026-06-01T00:00:00Z".into());
-        let snippet = format_snippet(&[hit], &[], &[], 0.0).expect("one hit renders");
+        let snippet = format_snippet(&[hit], &[], &[], 0.0, 0.0).expect("one hit renders");
         // Dates only, raw window — no expired/stale verdict in Rust: the
         // consumer model judges staleness against its own clock.
         assert!(
@@ -22804,7 +22901,7 @@ mod tests {
         passbook.score = 0.41;
 
         assert_eq!(
-            format_snippet(&[pushchair, passbook], &[], &[], TEST_FLOOR),
+            format_snippet(&[pushchair, passbook], &[], &[], TEST_FLOOR, 0.0),
             None,
             "the turn's best promoted hit is below the floor, so it has nothing to say"
         );
@@ -22824,8 +22921,14 @@ mod tests {
         fresh.score = 0.9; // strong, but irrelevant — fresh hits never feed the gate
         fresh.fresh = true;
 
-        let snippet = format_snippet(&[pushchair.clone(), fresh.clone()], &[], &[], TEST_FLOOR)
-            .expect("the fresh capture still renders");
+        let snippet = format_snippet(
+            &[pushchair.clone(), fresh.clone()],
+            &[],
+            &[],
+            TEST_FLOOR,
+            0.0,
+        )
+        .expect("the fresh capture still renders");
         assert!(!snippet.contains(&pushchair.text), "{snippet}");
         assert!(
             snippet.contains("Recent (not yet consolidated):"),
@@ -22854,13 +22957,145 @@ mod tests {
         weak.score = 0.20;
 
         let hits = vec![best.clone(), answer.clone(), weak.clone()];
-        let snippet = format_snippet(&hits, &[], &[], TEST_FLOOR)
+        let snippet = format_snippet(&hits, &[], &[], TEST_FLOOR, 0.0)
             .expect("the turn's best hit clears the floor");
         assert!(snippet.contains(&best.text), "{snippet}");
         assert!(snippet.contains(&answer.text), "{snippet}");
         assert!(
             snippet.contains(&weak.text),
             "a hit scored under the floor still renders once the turn's best clears it: {snippet}"
+        );
+    }
+
+    // ---------- the floor under what the assistant reads ----------
+
+    /// **A turn that stores something reads only what is close to what it
+    /// said; a turn that asks to be answered from memory reads everything.**
+    ///
+    /// Ten facts, none of them near the turn — the shape the seventh bench run
+    /// produced on turn after turn, where the block recited the cat's name and
+    /// a shopping list at a message about potatoes. At the floor the section
+    /// is not opened at all; with the floor off, which is what a `recall` turn
+    /// gets, every one of them is read. One bench turn asked its memory a
+    /// question and its best fact scored 0.472: the exemption is why that turn
+    /// still gets an answer.
+    #[test]
+    fn the_assistant_floor_empties_a_capture_turn_and_leaves_a_recall_turn_whole() {
+        let weak: Vec<RecallHit> = (0..10_u8)
+            .map(|i| {
+                let mut h = sample_recall_hit(&format!("018f1234-5678-7abc-9def-0000000000{i:02}"));
+                h.text = format!("a fact about something else, number {i}");
+                // 0.400 … 0.445, every one of them under the floor.
+                h.score = f32::from(i).mul_add(0.005, 0.40);
+                h
+            })
+            .collect();
+        let floor = recall::DEFAULT_MIN_SIMILARITY_FOR_THE_ASSISTANT;
+
+        assert_eq!(
+            format_snippet(&weak, &[], &[], 0.0, floor),
+            None,
+            "nothing is close enough to what was said, so the assistant is read nothing"
+        );
+
+        let whole = format_snippet(&weak, &[], &[], 0.0, 0.0)
+            .expect("with the floor off every hit renders");
+        for h in &weak {
+            assert!(
+                whole.contains(&h.text),
+                "a turn that asked for memory reads all of it: {whole}"
+            );
+        }
+    }
+
+    /// **The floor is a turn's property, not a fact's.**
+    ///
+    /// It is off wherever being answered from memory is the point of the turn,
+    /// and that is the only thing that turns it off — a `capture` turn gets it
+    /// at whatever the operator set.
+    #[test]
+    fn the_floor_is_off_on_a_turn_that_asked_to_be_answered_from_memory() {
+        let policy = IngestPolicy::default();
+        assert!(assistant_floor(&policy, true).abs() < f32::EPSILON);
+        assert!(
+            (assistant_floor(&policy, false) - recall::DEFAULT_MIN_SIMILARITY_FOR_THE_ASSISTANT)
+                .abs()
+                < f32::EPSILON
+        );
+        assert!(
+            (recall::DEFAULT_MIN_SIMILARITY_FOR_THE_ASSISTANT - 0.475).abs() < f32::EPSILON,
+            "the default sits between the two measured bands, 0.4306 and 0.4813"
+        );
+    }
+
+    /// **What the engine compares against ITSELF is never floored.**
+    ///
+    /// The other half of the same turn: the fact the assistant is not read is
+    /// still put to the classifier, because the reconciliation stage acts on
+    /// facts that score exactly this low — on the bench it closed a shopping
+    /// list's entries and replaced three facts served at 0.41–0.49. A floor
+    /// reaching that list stops the memory from being corrected, which is a
+    /// worse failure than a noisy block.
+    #[test]
+    fn a_fact_below_the_floor_still_reaches_the_classifier() {
+        let mut weak = sample_recall_hit("018f1234-5678-7abc-9def-0000000000d1");
+        weak.text = "the milk is on the shopping list".into();
+        weak.score = 0.41;
+        let floor = recall::DEFAULT_MIN_SIMILARITY_FOR_THE_ASSISTANT;
+
+        assert_eq!(
+            format_snippet(std::slice::from_ref(&weak), &[], &[], 0.0, floor),
+            None,
+            "the assistant is not read it"
+        );
+        assert_eq!(
+            flat_drop_reason(&weak, &[], true, floor),
+            Some("below_the_floor"),
+            "and the trace says why, rather than the fact simply not being there"
+        );
+
+        let now = chrono::Utc::now();
+        let prompt = build_prompt(
+            &req("ho preso il latte", "alice"),
+            std::slice::from_ref(&weak),
+            &[],
+            &[],
+            &[],
+            &[],
+            None,
+            &crate::locale::render_memory_language_directive(Some("it-IT")),
+            &[],
+            now,
+            &IngestPolicy::default(),
+        );
+        assert!(
+            prompt.contains(&weak.text),
+            "the classifier still holds it, which is what lets the list be ticked off: {prompt}"
+        );
+    }
+
+    /// The `Recent` sub-slot is read by the same assistant, so the floor
+    /// reaches it too — the one drop reason that applies to a fresh capture.
+    #[test]
+    fn the_floor_reaches_the_recent_sub_slot_as_well() {
+        let mut fresh = sample_recall_hit("018f1234-5678-7abc-9def-0000000000d2");
+        fresh.text = "somebody mentioned the ceiling".into();
+        fresh.score = 0.30;
+        fresh.fresh = true;
+        let floor = recall::DEFAULT_MIN_SIMILARITY_FOR_THE_ASSISTANT;
+
+        assert_eq!(
+            flat_drop_reason(&fresh, &[], true, floor),
+            Some("below_the_floor")
+        );
+        assert_eq!(
+            format_snippet(std::slice::from_ref(&fresh), &[], &[], 0.0, floor),
+            None,
+            "a fresh capture nobody was talking about is not read out either"
+        );
+        assert!(
+            format_snippet(std::slice::from_ref(&fresh), &[], &[], 0.0, 0.0).is_some(),
+            "and with the floor off it renders as it always did"
         );
     }
 
@@ -22879,7 +23114,7 @@ mod tests {
         weak.text = "an extremely weak hit".into();
         weak.score = 0.01;
 
-        let snippet = format_snippet(&[weak.clone()], &[], &[], 0.0).expect("renders");
+        let snippet = format_snippet(&[weak.clone()], &[], &[], 0.0, 0.0).expect("renders");
         assert!(snippet.contains(&weak.text), "{snippet}");
     }
 

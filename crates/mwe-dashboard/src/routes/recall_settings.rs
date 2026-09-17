@@ -111,6 +111,16 @@ fn knobs() -> Vec<Knob> {
                 .to_owned(),
         },
         Knob {
+            field: "min_similarity_for_the_assistant",
+            label: "Flat slot — floor under what the assistant reads",
+            default: def.min_similarity_for_the_assistant.to_string(),
+            help: "How close a recalled fact must be to what was just said before it is read \
+                   to the assistant at all, fact by fact, in RELEVANT MEMORY and in Recent. \
+                   It never touches what the engine compares against itself, and it is off on \
+                   a turn that asked to be answered from memory. 0 disables it."
+                .to_owned(),
+        },
+        Knob {
             field: "max_hops",
             label: "Navigator — depth (hops)",
             default: def.nav.max_hops.to_string(),
@@ -226,6 +236,7 @@ fn override_value(cfg: &RecallConfig, field: &str) -> String {
         "recall_fresh_top_k" => s(cfg.recall_fresh_top_k),
         "smart_corpus_floor" => s(cfg.smart_corpus_floor),
         "relevance_floor" => s(cfg.relevance_floor),
+        "min_similarity_for_the_assistant" => s(cfg.min_similarity_for_the_assistant),
         "max_hops" => s(cfg.max_hops),
         "pages_per_hop" => s(cfg.pages_per_hop),
         "char_budget" => s(cfg.char_budget),
@@ -445,6 +456,7 @@ fn parse_form(form: &HashMap<String, String>) -> Result<RecallConfig> {
         recall_fresh_top_k: parse_usize(form, "recall_fresh_top_k")?,
         smart_corpus_floor: parse_f32(form, "smart_corpus_floor")?,
         relevance_floor: parse_f32(form, "relevance_floor")?,
+        min_similarity_for_the_assistant: parse_f32(form, "min_similarity_for_the_assistant")?,
         max_hops: parse_usize(form, "max_hops")?,
         pages_per_hop: parse_usize(form, "pages_per_hop")?,
         char_budget: parse_usize(form, "char_budget")?,

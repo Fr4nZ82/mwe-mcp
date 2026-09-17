@@ -35,7 +35,9 @@ the same recall as text:
 - **Facts the search returned** — each with its score, the **seat** it took in
   the block (similarity, a seat kept for its macrotopic, or one fact of its
   kind), its kind, and what happened after the search: handed over, or dropped
-  and why.
+  and why. A fact too far from what you said is not read to your assistant at
+  all; when that happens the panel says how many went that way, so nothing is
+  left out quietly. On a turn that asks to be answered from memory, none are.
 - **Not yet on a page** — captures still waiting to be filed. **Closing
   soon** — dated items, with their date. **Project notes** — documentation a
   coding assistant keeps, handed over as reference.

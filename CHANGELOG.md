@@ -111,6 +111,24 @@ semver-governed surface: breaking changes are called out explicitly.
   was always decided: by the kind of memory the page belongs to, named on the
   page's own line.
 
+- **Your assistant is no longer read facts that have nothing to do with what
+  you said.** Everything the search returned went into the block: a message
+  about the potatoes came with the cat's name, a shopping list and somebody
+  else's commute. A recalled fact now has to be close enough to what was just
+  said to earn its line — the bar is a setting, **Flat slot — floor under what
+  the assistant reads**, and it starts at 0.475. Across a demo run of 32 turns
+  that takes the facts handed over from 141 to 67, and the ones that go are the
+  ones a reader recognises as unrelated.
+
+  Two places it deliberately does not reach. **What the engine compares against
+  itself** — the facts put to the stage that replaces and closes them, and the
+  ones the classifier reads — goes on being read whole, because that is how a
+  shopping list gets ticked off and a superseded fact gets replaced, and those
+  score low by nature. And a **turn that asks to be answered from memory** gets
+  everything, because there the recall is the point. The turn's trace says how
+  many facts stayed below the bar, so nothing goes quietly; set it to 0 to hand
+  over everything again.
+
 - **The card handed to your assistant says who somebody is, not what file
   they are in.** A card can point at another person's card — *«Partner is
   …»* — and the copy served to the assistant turned that pointer into the

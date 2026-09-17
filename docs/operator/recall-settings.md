@@ -18,6 +18,7 @@ prompt, not numbers on this page. These are the resources.
 | Fresh slot — top-K captures | 3 |
 | Project docs — funnel floor | 0.45 |
 | Flat slot — relevance floor | 0 |
+| Flat slot — floor under what the assistant reads | 0.475 |
 | Navigator — depth (hops) | 2 |
 | Navigator — pages per hop | 3 |
 | Navigator — prose budget (chars) | 8000 |
@@ -38,6 +39,16 @@ knowing before you touch anything are the **navigator depth**, which is
 clamped to a hard cap of 10 however high you set it, and the **recent
 window**, which is deliberately short because it serves the live thread and
 not history.
+
+The **floor under what the assistant reads** is the one row that removes
+facts one by one. A recalled fact below it is left out of `RELEVANT MEMORY`
+and of `Recent` — the two lists the assistant is given — while everything the
+engine compares against itself goes on being read whole: the facts put to the
+reconciliation stage, and the ones the classifier is shown. It is also off
+entirely on a turn that asked to be answered from memory, where the recall is
+the point. The turn's [trace](../user/traces.md) says how many facts it left
+out, so nothing goes quietly. Set it to 0 to hand over everything the search
+returned.
 
 The **identity card of somebody else** budget applies per person, and never to
 the card of whoever is speaking: theirs goes whole. Nothing about health or

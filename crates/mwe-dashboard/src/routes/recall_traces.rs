@@ -375,6 +375,7 @@ fn drop_in_words(reason: &str) -> &str {
         "rules_page" => "it sits on a rules page, which is never recalled as a fact",
         "on_an_injected_page" => "the page it sits on was read whole by the walk",
         "relevance_floor" => "below the relevance floor",
+        "below_the_floor" => "below the floor under what the assistant reads",
         "intent_skipped_the_slot" => "this turn did not open the facts slot",
         other => other,
     }
@@ -573,6 +574,14 @@ fn render_facts(trace: &RecallTrace, navigate: bool) -> Markup {
                 "Each fact says which seat it took: similarity ranks most of them, "
                 "but a seat kept for the macrotopic and the one-fact-of-each-kind "
                 "seat put a fact here against the score."
+            }
+            @let below = trace
+                .flat_hits
+                .iter()
+                .filter(|h| h.dropped.as_deref() == Some("below_the_floor"))
+                .count();
+            @if below > 0 {
+                p.muted { (below) " below the floor, not shown." }
             }
             table class="config-table" {
                 thead {

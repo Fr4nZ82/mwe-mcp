@@ -1817,10 +1817,11 @@ pub const DEFAULT_SMART_CORPUS_FLOOR: f32 = 0.45;
 /// Similarity the turn's **best promoted hit** must clear before the recall
 /// block's `RELEVANT MEMORY` slot renders any promoted hit at all.
 ///
-/// Turn-level, never per-hit: measured on the live corpus, the right answer
-/// on one turn (0.4813) and the noise on another (0.4306) sit in the same
-/// band, so no per-hit threshold separates them, while their *best* hits
-/// (0.5474 vs 0.4306) do.
+/// Turn-level, and a different question from the per-fact floor beside it
+/// ([`DEFAULT_MIN_SIMILARITY_FOR_THE_ASSISTANT`]): this one asks whether a
+/// turn's recall found anything worth opening a section for, which only the
+/// turn's BEST hit can answer — measured on the live corpus, 0.5474 on the
+/// turn that needed its recall against 0.4306 on the turn that needed none.
 ///
 /// ## Ships OFF — `0.0` — and why
 ///
@@ -1839,6 +1840,34 @@ pub const DEFAULT_SMART_CORPUS_FLOOR: f32 = 0.45;
 /// `recall.relevance_floor` on the operator panel turns it on; the value the
 /// distribution suggested, if one is ever wanted, was `0.45`.
 pub const DEFAULT_RELEVANCE_FLOOR: f32 = 0.0;
+
+/// Similarity a recalled fact must reach to be **read to the assistant** —
+/// the `RELEVANT MEMORY` and `Recent (not yet consolidated)` sections of the
+/// block, and nothing else.
+///
+/// Per fact, unlike [`DEFAULT_RELEVANCE_FLOOR`] beside it, and the two answer
+/// different questions: that one asks whether the turn's recall has anything
+/// to say at all, this one asks whether THIS fact is close enough to the turn
+/// to be worth a line in front of a model. Measured on the seventh bench run:
+/// of the 290 facts the search returned across its 32 turns, 141 reached the
+/// block; at this floor 67 do, and the ones that go are the ones a reader
+/// recognises as unrelated to what was said.
+///
+/// **0.475 and not 0.5.** The number has to sit between two measured bands —
+/// above the best hit of a turn that needed no recall (0.4306) and below the
+/// answer a turn that needed it depended on (0.4813/0.4811). A floor of 0.5
+/// takes the second with the first.
+///
+/// **Where it must never be applied**, each because the bench says so:
+/// - the reconciliation stage's candidates and the classifier's own input —
+///   the reconciler acted on facts served at 0.41–0.49 (a shopping list's
+///   entries being ticked off, three replacements), so a floor there stops the
+///   memory from being corrected;
+/// - a turn whose intent is `recall` — one bench turn's best fact scored
+///   0.472, and there being answered from memory IS the turn.
+///
+/// `0` disables it, the same off-switch idiom as its neighbour.
+pub const DEFAULT_MIN_SIMILARITY_FOR_THE_ASSISTANT: f32 = 0.475;
 
 /// How much of the project-docs slot one pass may spend.
 ///
