@@ -101,6 +101,20 @@ semver-governed surface: breaking changes are called out explicitly.
   somebody with no account here. The trace of the turn shows what the engine
   changed and why, in a panel of its own.
 
+- **The page writer is no longer shown Italian while being told to write
+  English.** Pages kept coming out in Italian in memories where everybody
+  speaks English — twice in seven runs of the September bench, and never in any
+  other language, which is what said it was not the model wandering. The
+  instructions the page writer reads contained a fully worked example in
+  Italian, a set of Italian linking phrases offered for it to use, and its own
+  role named in Italian in the opening line: it was being shown Italian and
+  told to write English in the same breath. The instructions are English
+  throughout now. What language a page is written in is said by the language
+  setting and nothing else, so an Italian household gets Italian pages exactly
+  as before: the rule is taught in English and applied in whichever language
+  was asked for. The prompt carries a version bump, so an install with a local
+  override sees the drift banner instead of silently keeping the old body.
+
 - **The one-line summary of a page is part of the page.** The check that reads
   a finished page back in the language it was asked for was reading the prose
   and not the summary shown beside it in listings and search. A page came out

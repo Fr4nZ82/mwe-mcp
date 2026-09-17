@@ -32,14 +32,23 @@
 //! The mirror clause only makes sense for a slot that can see the
 //! user's own words. The slots that **write memory** — page prose,
 //! page names, the date normaliser's rewrites — are handed extracted
-//! facts, not a live turn, and their prompt bodies carry Italian
-//! few-shot examples that a "mirror what you see" instruction loses
-//! against in practice. For those,
-//! [`render_memory_language_directive`] resolves an undeclared locale
-//! to English instead: the declared language wins, and the fallback
-//! is a fixed language rather than a guess. Setting the locale on
-//! every user is what an existing deployment does to keep its pages
+//! facts and not a live turn, so there is no message to mirror. For
+//! those, [`render_memory_language_directive`] resolves an undeclared
+//! locale to English instead: the declared language wins, and the
+//! fallback is a fixed language rather than a guess. Setting the locale
+//! on every user is what an existing deployment does to keep its pages
 //! in their own language.
+//!
+//! **The directive is the only thing that names a language.** An
+//! example inside a prompt body teaches the rule and then pulls the
+//! writing towards itself: a worked example in Italian inside the page
+//! writer's brief produced Italian pages in an all-English memory,
+//! twice in seven runs of the September bench, while the directive in
+//! front of it said «Respond in English». So the page writer's brief
+//! is English throughout, examples included — the rule is taught in
+//! English and applied in whatever language the directive names. The
+//! other memory-writing briefs still carry Italian worked examples,
+//! and `ingest.rs` has a test holding one of them in place.
 //!
 //! [`memory_directive_for_wiki`] is how a memory-writing slot gets
 //! there when it is compiling a page — the wiki's scope principal names
