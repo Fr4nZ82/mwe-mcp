@@ -22667,6 +22667,33 @@ mod tests {
         drop(dir);
     }
 
+    /// **What was ASKED FOR is not written down as how the world IS.**
+    ///
+    /// The bench's own turn: «Note this for everyone in the house: no rice
+    /// again tomorrow» was stored as «There is no rice in the house on 6 March
+    /// 2026» — a `state`, and a claim about the cupboard that nobody made and
+    /// that a trip to the shop makes false. Two rules of the brief pulled it
+    /// there and both are answered here: a body is REPHRASED into the third
+    /// person with its dates resolved, never restated as a different kind of
+    /// sentence; and `state` is not the kind a dated instruction belongs to
+    /// merely because `state` is the one defined by having an end.
+    #[test]
+    fn the_brief_keeps_an_instruction_an_instruction() {
+        for needle in [
+            "AN INSTRUCTION STAYS AN INSTRUCTION",
+            "`No rice again on 6 March 2026.`",
+            "There is no rice in the house on 6 March 2026.",
+            "A RULE CAN HOLD FOR A SINGLE DAY",
+            "a condition somebody REPORTS",
+            "a dated instruction is one somebody ASKS FOR",
+        ] {
+            assert!(
+                BUNDLED_INGEST_PROMPT_MD.contains(needle),
+                "the rule that keeps an instruction an instruction is gone: {needle}"
+            );
+        }
+    }
+
     /// **The prompt names the words that get left behind.**
     ///
     /// «tomorrow» and «Saturday» were already in the rule and are resolved;

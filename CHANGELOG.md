@@ -111,6 +111,17 @@ semver-governed surface: breaking changes are called out explicitly.
   was always decided: by the kind of memory the page belongs to, named on the
   page's own line.
 
+- **What you ask for is written down as what you asked for.** «Note this for
+  everyone in the house: no rice again tomorrow» was stored as «There is no
+  rice in the house on 6 March 2026» — a claim about the cupboard that nobody
+  made and that a trip to the shop makes false. Writing a fact in the third
+  person with its dates filled in is how it is phrased, not a licence to turn
+  a request, a ban or a decision into a statement about how the world is. The
+  instructions now say so, with that turn as the worked example, and they say
+  the other half too: a decision can hold for a single day, so a rule about
+  tomorrow's meals is a rule with tomorrow's date on it, not a condition of
+  the house.
+
 - **Housemates are no longer asked who lives at their own address.** Three
   people sharing a house each tell the memory where they live, and the stage
   that decides when one fact replaces another read the third as a correction
