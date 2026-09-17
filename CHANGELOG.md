@@ -61,6 +61,20 @@ semver-governed surface: breaking changes are called out explicitly.
 
 ### Fixed
 
+- **You are not asked to choose between two identical answers.** When two
+  people tell the memory the same thing, both are kept — who said it is part of
+  what is stored — and the second was being read as a correction of the first.
+  Where the second person could not rewrite the first's claim the memory did
+  the right thing and put it to whoever owned it, but the question it asked
+  offered the same words twice. On a fresh memory that was *both* of the
+  questions waiting: somebody set their memory up with their address and
+  timezone, their partner mentioned the same two things afterwards, and they
+  were asked to choose between *«Lives at 7 Farrow Lane, Millbrook»* and
+  *«Lives at 7 Farrow Lane, Millbrook»*. A claim that says what the stored one
+  already says replaces nothing and is nobody's question now. A claim that says
+  something DIFFERENT about somebody else's fact still reaches them, exactly as
+  before.
+
 - **The identity cards handed to the assistant are fitted to a budget, and it
   is told what did not fit.** The cards of everybody a turn is about go to the
   assistant whole, and on a memory with a few people that block grows with the

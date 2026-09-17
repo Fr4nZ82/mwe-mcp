@@ -4602,6 +4602,11 @@ enum SupersedeRefusal {
     /// between two groups: it widens or narrows who answers for the claim and
     /// who may read it, which `acl_changes` does and this verb does not.
     ChangesWhoAnswersForIt,
+    /// The successor says what the target already says, so nothing replaces
+    /// anything. Two people telling the memory one thing are two facts by
+    /// attribution, and the pair reads as a replacement only because they
+    /// arrived in order.
+    SuccessorSaysTheSame,
     /// The successor has lost a VALUE the target carries — a figure, an
     /// amount, a percentage. Said again in fewer words, a claim is a poorer
     /// copy of itself, and retiring the richer one for it takes something out
@@ -4639,6 +4644,7 @@ impl SupersedeRefusal {
             Self::NotAboutTheSameThing => "not_about_the_same_thing",
             Self::ReassignsTheSubjectUnasked => "reassigns_the_subject_unasked",
             Self::ChangesWhoAnswersForIt => "changes_who_answers_for_it",
+            Self::SuccessorSaysTheSame => "successor_says_the_same",
             Self::SaysLessThanTheTarget { .. } => "says_less_than_the_target",
             Self::NotTheSendersToRewrite => "not_the_senders_to_rewrite",
             Self::WeldFailed => "weld_failed",
@@ -4916,6 +4922,72 @@ fn aboutness_refusal(
     }
 }
 
+/// The two refusals that read what the successor SAYS, in the order they have
+/// to be asked.
+///
+/// «Says nothing new» is the narrower of the two and is asked second: a pair
+/// that has dropped a figure has also said something different, so answering
+/// «it says the same» first would swallow the case that names what went.
+fn what_the_successor_says_refusal(
+    s: &LlmSupersede,
+    prev: &RecallHit,
+    successor: &TurnFact,
+) -> Option<SupersedeRefusal> {
+    if let Some(refusal) = says_less_refusal(s, prev, successor) {
+        return Some(refusal);
+    }
+    if says_the_same_thing(prev, successor) {
+        tracing::info!(
+            target = s.target.as_deref().unwrap_or_default(),
+            successor = s.successor.as_deref().unwrap_or_default(),
+            "ingest: reconcile supersede successor says what the target already says — \
+             nothing replaces anything"
+        );
+        return Some(SupersedeRefusal::SuccessorSaysTheSame);
+    }
+    None
+}
+
+/// **A claim that says what the target already says replaces nothing.**
+///
+/// Two people telling the memory the same thing are two facts — the founder's
+/// own rule, 2026-08-18: who said it is part of what is stored, so write-time
+/// dedup keeps them apart by their attribution and neither is folded away.
+/// The reconciler then sees the newer one beside the older and reads the pair
+/// as a replacement, which it is not: nothing changed, and there is nothing to
+/// settle.
+///
+/// Left to run, the pair reaches the authority guard, and where the second
+/// speaker may not rewrite the first's fact it comes back as a real
+/// disagreement and is put to its owner — a question offering two options with
+/// **the same words in both**. The seventh demo run had exactly two pending
+/// questions and both were this: Bob stated his address and his timezone in
+/// the primer, Alice stated the same two things afterwards, and Bob was asked
+/// to choose between «Lives at 7 Farrow Lane, Millbrook.» and «Lives at 7
+/// Farrow Lane, Millbrook.»
+///
+/// **The comparison is the sentence**, folded the way every other same-value
+/// test in this file folds one: whitespace collapsed, case dropped. Neither
+/// side of this road carries the card's `slot_value` — a recalled hit never
+/// did, and the fact this turn wrote is known here by its body — and the
+/// sentence is the answer that matters anyway: on the memories that exist,
+/// nothing fills a card slot at all.
+///
+/// It is a sufficient test and not a complete one: two sentences saying one
+/// thing in different words are not caught, and that is the safe direction —
+/// a pair this misses is a question somebody is asked, which is the behaviour
+/// as it stands; a pair it caught wrongly would be a correction silently
+/// dropped.
+fn says_the_same_thing(prev: &RecallHit, successor: &TurnFact) -> bool {
+    let fold = |s: &str| {
+        s.split_whitespace()
+            .collect::<Vec<_>>()
+            .join(" ")
+            .to_lowercase()
+    };
+    fold(&prev.text) == fold(&successor.body)
+}
+
 /// **A replacement that has lost one of the target's values is not a
 /// replacement.**
 ///
@@ -4960,7 +5032,7 @@ fn says_less_refusal(
 
 /// Vet one requested supersede, refusing rather than guessing.
 ///
-/// Seven guards, and each one answers a different way of being wrong:
+/// Eight guards, and each one answers a different way of being wrong:
 /// - the pair must name the **slot** both facts fill. A supersede is one slot
 ///   holding a new value, so the old and the new cannot both hold; two claims
 ///   that are true together are two facts, and superseding either deletes
@@ -5000,6 +5072,11 @@ fn says_less_refusal(
 ///   ([`says_less_refusal`]). A claim said again in fewer words is a poorer
 ///   copy of itself, and retiring the richer one for it takes a figure out of
 ///   the memory nobody asked to lose;
+/// - the successor must not **say what the target already says**
+///   ([`says_the_same_thing`]). Two people telling the memory one thing are
+///   two facts, kept apart by who said them, and the pair reads as a
+///   replacement only because they arrived in order — there is nothing to
+///   replace and nothing to settle;
 /// - the sender must be entitled to **rewrite** the target, through
 ///   [`crate::acl::sender_may_rewrite`] — its subject, or whoever said it,
 ///   with a group answered for by its members. Reading a fact is not authority
@@ -5010,14 +5087,15 @@ fn says_less_refusal(
 ///   while an ACL change discloses the subject's data and stays with the
 ///   subject alone ([`crate::acl::sender_is_subject`]).
 ///
-/// The first six drop the entry. The last does not: the pair is real and
+/// The first seven drop the entry. The last does not: the pair is real and
 /// only the speaker is wrong for it, so it comes back as
 /// [`VettedSupersede::NotTheirs`] and the caller puts it to somebody who can
-/// answer. The two guards on the pair ITSELF stand AHEAD of it deliberately: a
-/// pair that is not about one thing, or that has simply forgotten half of
-/// what it replaces, is not a disagreement between two people either, and
-/// putting it to the target's owner would ask them to settle a question nobody
-/// asked.
+/// answer. The three guards on the pair ITSELF stand AHEAD of it deliberately:
+/// a pair that is not about one thing, that has forgotten half of what it
+/// replaces, or that says nothing the target does not already say, is not a
+/// disagreement between two people either, and putting it to the target's
+/// owner would ask them to settle a question nobody asked — twice over in the
+/// last case, since both answers would read the same.
 fn vet_supersede<'a>(
     s: &LlmSupersede,
     candidates: &'a [RecallHit],
@@ -5128,7 +5206,7 @@ fn vet_supersede<'a>(
     if let Some(refusal) = aboutness_refusal(s, prev, successor) {
         return VettedSupersede::Unsound(refusal);
     }
-    if let Some(refusal) = says_less_refusal(s, prev, successor) {
+    if let Some(refusal) = what_the_successor_says_refusal(s, prev, successor) {
         return VettedSupersede::Unsound(refusal);
     }
     if !crate::acl::sender_may_rewrite(
@@ -16484,6 +16562,76 @@ mod tests {
         );
         assert_eq!(allow, vec![Principal::Group("parents".into())]);
         assert!(excluded.is_empty());
+    }
+
+    /// **Two people saying one thing is not a disagreement to put to either of
+    /// them.**
+    ///
+    /// The seventh demo run had exactly two questions waiting, and both were
+    /// this: Bob stated his address and his timezone when he set the memory
+    /// up, Alice stated the same two things afterwards, and Bob was asked to
+    /// choose between «Lives at 7 Farrow Lane, Millbrook.» and «Lives at 7
+    /// Farrow Lane, Millbrook.»
+    ///
+    /// Two people telling the memory the same thing are two facts — who said
+    /// it is part of what is stored — so neither is folded away, and the
+    /// reconciler meets the newer beside the older and reads a replacement.
+    /// Nothing changed, so there is nothing to settle; and because the second
+    /// speaker may not rewrite the first's fact, the pair was reaching the
+    /// authority guard and coming back as a real disagreement.
+    ///
+    /// The guard stands AHEAD of that one deliberately, like the two beside
+    /// it: a pair that says nothing new is not a disagreement between two
+    /// people either.
+    #[test]
+    fn a_successor_that_says_what_the_target_says_replaces_nothing() {
+        let bobs = stored(
+            "018f1234-5678-7abc-9def-0123456789cd",
+            "Lives at 7 Farrow Lane, Millbrook.",
+            Principal::User("bob".into()),
+            &["identity", "address"],
+        );
+        // Alice says the same thing, word for word, about Bob.
+        let alices = wrote(
+            "018f1234-5678-7abc-9def-0123456789ab",
+            "Lives at 7 Farrow Lane, Millbrook.",
+            Principal::User("bob".into()),
+            &["identity", "address"],
+        );
+        assert_eq!(
+            verdict_on("the address", &bobs, &alices, false),
+            "successor_says_the_same",
+            "nothing changed, so nobody is asked anything"
+        );
+
+        // Spacing and case are ways of writing a sentence down, not parts of
+        // it: the same claim typed differently is still the same claim.
+        let spaced = wrote(
+            "018f1234-5678-7abc-9def-0123456789ab",
+            "lives at 7 Farrow Lane,   Millbrook.",
+            Principal::User("bob".into()),
+            &["identity", "address"],
+        );
+        assert_eq!(
+            verdict_on("the address", &bobs, &spaced, false),
+            "successor_says_the_same"
+        );
+
+        // And the contrast that gives the guard its shape: Alice saying
+        // something DIFFERENT about Bob's address is a real disagreement, and
+        // it is still put to Bob, exactly as before. What changed is only the
+        // pair that says nothing new.
+        let moved = wrote(
+            "018f1234-5678-7abc-9def-0123456789ab",
+            "Lives at 12 Farrow Lane, Millbrook.",
+            Principal::User("bob".into()),
+            &["identity", "address"],
+        );
+        assert_eq!(
+            verdict_on("the address", &bobs, &moved, false),
+            "asked",
+            "a real correction of somebody else's fact still reaches its owner"
+        );
     }
 
     /// **The poorer sentence does not drive out the richer one.**
@@ -31107,12 +31255,15 @@ mod tests {
                 reassigns_subject: false,
             }],
             &candidates,
+            // A real correction, not the same sentence again: an identical
+            // successor is refused before the weld is ever attempted
+            // ([`says_the_same_thing`]), and this test is about the weld.
             &[TurnFact::filed(
                 ghost.clone(),
-                "serve l'aceto di vino bianco".to_owned(),
+                "serve l'aceto di vino bianco, due cucchiai".to_owned(),
                 Principal::User("alice".into()),
             )],
-            &req("serve l'aceto di vino bianco", "alice"),
+            &req("serve l'aceto di vino bianco, due cucchiai", "alice"),
         )
         .await;
 
