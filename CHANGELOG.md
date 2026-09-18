@@ -111,6 +111,30 @@ semver-governed surface: breaking changes are called out explicitly.
   was always decided: by the kind of memory the page belongs to, named on the
   page's own line.
 
+- **And it asks who you are keeping out.** «I don't want Zoe to hear it from
+  the assistant» is the audience of the fact the same sentence tells you, and
+  the memory has had a field for exactly that since it learned to keep somebody
+  out of a fact. Across a whole demo run it was used **zero** times: the rule
+  was in the instructions, and a rule to remember is remembered sometimes. Now
+  every fact carries the question — *does this message keep somebody out of
+  this one?* — answered `nobody`, or with the people named, and a reason. The
+  answer does what the field always did: the group that may read it becomes the
+  people in it today, minus the one you named. A question left blank counts as
+  nobody and says so on the turn's trace.
+
+  With it, a second thing stops happening: your assistant no longer writes
+  itself a standing rule repeating what you just said about one fact. «Don't
+  tell Bob about the present» is about the present, and a policy filed for it
+  would outlive the present by years. A rule that names somebody the same turn
+  already keeps out is dropped, and the trace says so.
+
+- **The trace shows how the memory decided who may read a fact.** A new panel,
+  **Who this was filed for**, lists for each fact what your assistant answered:
+  one line per group you belong to, with the reason it gave, and who the
+  message keeps out. Until now that could only be guessed at from the result —
+  and a fact nobody can read looks the same whether it was decided or never
+  considered.
+
 - **The memory asks, group by group, who a fact is for.** A fact you tell the
   kitchen assistant about tomorrow's dinner is the household's business, and it
   was being filed where only you could read it. The rule was there and the

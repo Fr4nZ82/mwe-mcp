@@ -69,6 +69,12 @@ the same recall as text:
   by**, **Over** (what the two were said to have in common) and **Why not**.
   It appears only on a turn that had one, and the fact that would have been
   taken away is exactly as it was.
+- **Who this was filed for** — for each fact the turn wrote down, what your
+  assistant's classifier answered about who it is for: one line per group you
+  belong to, saying whether the fact is one of the kinds that group is for and
+  why, and who the message keeps out of it. A group left unanswered counts as a
+  no, and nobody is kept out unless you said so. The last column says what the
+  memory did with the answers.
 - **What it wrote and the engine corrected** — a claim can be stored without
   being stored exactly as the classifier wrote it, when a rule of the memory
   says otherwise: a claim that names who it is about, for instance, is not

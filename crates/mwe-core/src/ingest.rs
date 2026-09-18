@@ -1288,20 +1288,34 @@ struct LlmGroupAudience {
     answer: String,
     /// The few words that say why.
     ///
-    /// Asked for, and deliberately never read: a verdict a model has to
-    /// justify in the same breath is a verdict it has actually made, and that
-    /// is the whole of what this field is for. Reading it here would be the
-    /// engine judging a justification, which is the one thing it must not do
-    /// with an answer it asked for.
-    #[expect(
-        dead_code,
-        reason = "the justification works on the model that writes it, not on the engine that reads the answer"
-    )]
+    /// Asked for because a verdict a model has to justify in the same breath
+    /// is a verdict it has actually made — and never acted on: it is shown in
+    /// the turn's trace beside the answer, and what the engine does is decided
+    /// by the answer alone. Judging a justification it asked for is the one
+    /// thing it must not do with this.
     #[serde(default)]
     why: String,
 }
 
+/// A reason rendered for the trace: « — because …», or nothing at all.
+///
+/// The one place either `why` is read, and it is read to be SHOWN. The engine
+/// never judges a justification it asked for: what it acts on is the answer.
+fn why_line(why: &str) -> String {
+    let why = why.trim();
+    if why.is_empty() {
+        String::new()
+    } else {
+        format!(" — {why}")
+    }
+}
+
 impl LlmGroupAudience {
+    /// The reason, rendered for the trace.
+    fn why_line(&self) -> String {
+        why_line(&self.why)
+    }
+
     /// Whether this answer reads as a yes.
     fn says_yes(&self) -> bool {
         matches!(
@@ -1317,6 +1331,67 @@ impl LlmGroupAudience {
             self.answer.trim().to_ascii_lowercase().as_str(),
             "yes" | "y" | "true" | "no" | "n" | "false"
         )
+    }
+}
+
+/// **Does this message keep somebody out of THIS fact?** — as the classifier
+/// answers it.
+///
+/// The sibling of [`LlmGroupAudience`], and the same lesson twice: the rule
+/// that says «a person named as the one who must NOT know goes in `excluded`»
+/// has been in the brief since the fourth term of a permission landed, and on
+/// the September bench the whole memory holds **zero** exclusions — including
+/// the turn that says «I don't want Zoe to hear it from the assistant», which
+/// came back as a permissions change with an empty exclusion list and a second
+/// standing rule saying the same thing in prose. A rule to remember is
+/// remembered sometimes; a question with a box gets answered.
+#[derive(Debug, Default, Deserialize)]
+struct LlmKeptFrom {
+    /// `nobody`, or `somebody` when [`Self::people`] names them. Anything else
+    /// is not an answer and is read as `nobody` with a receipt.
+    #[serde(default)]
+    answer: String,
+    /// The people kept out, as principals — enrolled users only, resolved
+    /// through `known_users`. Read only when the answer says somebody.
+    #[serde(default)]
+    people: Vec<String>,
+    /// The few words that say why.
+    ///
+    /// Shown and never acted on, like [`LlmGroupAudience::why`]: it works on
+    /// the model that writes it, and it reaches a reader through the turn's
+    /// trace. It is also where a name that belongs to nobody enrolled goes —
+    /// said in words, never minted into an id the memory has no person for.
+    #[serde(default)]
+    why: String,
+}
+
+/// The unanswered question, for a shape that never carried it.
+static NO_KEPT_FROM_ANSWER: LlmKeptFrom = LlmKeptFrom {
+    answer: String::new(),
+    people: Vec::new(),
+    why: String::new(),
+};
+
+impl LlmKeptFrom {
+    /// The reason, rendered for the trace.
+    fn why_line(&self) -> String {
+        why_line(&self.why)
+    }
+
+    /// Whether this is an answer at all. `nobody` is an answer; a blank is not.
+    fn is_readable(&self) -> bool {
+        matches!(
+            self.answer.trim().to_ascii_lowercase().as_str(),
+            "nobody" | "none" | "no" | "somebody" | "someone" | "yes"
+        )
+    }
+
+    /// The people it names, when it names any.
+    fn people(&self) -> &[String] {
+        match self.answer.trim().to_ascii_lowercase().as_str() {
+            "somebody" | "someone" | "yes" => &self.people,
+            _ => &[],
+        }
     }
 }
 
@@ -1448,6 +1523,13 @@ struct LlmExtraction {
     /// exactly as it did before rather than failing the turn.
     #[serde(default)]
     group_audience: Vec<LlmGroupAudience>,
+    /// The answer to «does this message keep somebody out of THIS fact?»
+    /// ([`LlmKeptFrom`]). Joined with [`Self::excluded`]: the two are one
+    /// question asked two ways, and an answer on either road is binding. No
+    /// answer at all is read as `nobody`, and the turn's trace says the
+    /// question went unanswered.
+    #[serde(default)]
+    kept_from: LlmKeptFrom,
     /// Who this claim must NOT reach, whatever its audience turns out to be:
     /// «I'd rather Zoe didn't know the number». It is not a narrower
     /// audience — it names somebody who must stay out of whichever audience
@@ -1649,6 +1731,9 @@ struct CaptureUnit<'a> {
     /// Borrowed view of [`LlmExtraction::group_audience`] — the per-group
     /// answers the readers are read off.
     group_audience: &'a [LlmGroupAudience],
+    /// Borrowed view of [`LlmExtraction::kept_from`] — who the message keeps
+    /// out of this one fact.
+    kept_from: &'a LlmKeptFrom,
     allow_ids: &'a [String],
     fact_type: Option<&'a str>,
     /// Borrowed view of the per-fact
@@ -1770,6 +1855,7 @@ impl LlmIngestPlan {
                     allow_ids: &e.allow_ids,
                     excluded_ids: &e.excluded,
                     group_audience: &e.group_audience,
+                    kept_from: &e.kept_from,
                     fact_type: e.fact_type.as_deref(),
                     valid_from: e.valid_from.as_deref(),
                     valid_to: e.valid_to.as_deref(),
@@ -1811,10 +1897,12 @@ impl LlmIngestPlan {
                 subject_external: named_or_absent(self.subject_external.as_deref()),
                 allow_ids: &self.allow_ids,
                 excluded_ids: &self.excluded,
-                // The legacy single-fact shape predates the question, and the
-                // shipped prompt does not produce it: no answers, which the
-                // engine reads as «no group» and says so in the trace.
+                // The legacy single-fact shape predates both questions, and
+                // the shipped prompt does not produce it: no answers, which
+                // the engine reads as «no group» and «nobody», and says so in
+                // the trace.
                 group_audience: &[],
+                kept_from: &NO_KEPT_FROM_ANSWER,
                 fact_type: self.fact_type.as_deref(),
                 valid_from: self.valid_from.as_deref(),
                 valid_to: self.valid_to.as_deref(),
@@ -2899,6 +2987,98 @@ fn group_audience_correction(
     })
 }
 
+/// The group answers as a reader reads them: one line each, in the order the
+/// question was asked.
+fn answers_as_lines(
+    unit: &CaptureUnit<'_>,
+    sender_id: &str,
+    groups: &std::collections::BTreeMap<String, Vec<String>>,
+) -> Vec<String> {
+    groups_the_question_covers(sender_id, groups)
+        .into_iter()
+        .map(|id| {
+            unit.group_audience
+                .iter()
+                .find(|a| a.group.trim() == id && a.is_readable())
+                .map_or_else(
+                    || format!("{id}: (unanswered — read as no)"),
+                    |a| {
+                        let answer = if a.says_yes() { "yes" } else { "no" };
+                        format!("{id}: {answer}{}", a.why_line())
+                    },
+                )
+        })
+        .collect()
+}
+
+/// The exclusion answer as a reader reads it.
+fn kept_from_as_line(unit: &CaptureUnit<'_>) -> String {
+    if !unit.kept_from.is_readable() {
+        return "(unanswered — read as nobody)".to_owned();
+    }
+    let people = unit.kept_from.people();
+    let why = unit.kept_from.why_line();
+    if people.is_empty() {
+        return format!("nobody{why}");
+    }
+    format!("{}{why}", people.join(", "))
+}
+
+/// The receipt for the exclusion question left unanswered.
+///
+/// A twin of [`group_audience_correction`], and the same reason: a claim
+/// nobody was kept from and a claim nobody was ASKED about read the same in
+/// the memory, and only one of them is a decision.
+fn kept_from_correction(
+    unit: &CaptureUnit<'_>,
+) -> Option<crate::recall_trace::TraceCorrectedExtraction> {
+    if unit.kept_from.is_readable() {
+        return None;
+    }
+    Some(crate::recall_trace::TraceCorrectedExtraction {
+        claim: truncate(unit.body.unwrap_or_default(), 160),
+        field: "kept_from".to_owned(),
+        was: String::new(),
+        now: "nobody".to_owned(),
+        reason: "the_kept_from_question_was_not_answered".to_owned(),
+    })
+}
+
+/// **A standing rule that says what an exclusion on the same turn already
+/// says.**
+///
+/// «I don't want Zoe to hear it from the assistant» is the audience of the
+/// fact the same sentence states, and the brief has said so since exclusions
+/// existed (Part 7, question 1). The September bench answered it with BOTH: an
+/// exclusion that named nobody, and a second standing rule in prose repeating
+/// the sentence. A rule filed for that is a policy struck off one afternoon,
+/// and it outlives the fact it was about — so a rule naming somebody this
+/// turn's own answers already keep out is dropped, and the trace says which
+/// person it named.
+///
+/// The fence is deliberately narrow: the SAME TURN, and a person named in
+/// BOTH. A genuine standing policy about the same person («never tell Zoe
+/// anything about my mother») arrives on a turn that excludes nobody, and
+/// nothing here touches it.
+fn a_rule_restating_an_exclusion(
+    unit: &CaptureUnit<'_>,
+    turn: &[CaptureUnit<'_>],
+    roster: &[enrollment::EnrolledUserLite],
+) -> Option<String> {
+    if !unit.behaviour_rule && unit.fact_type != Some("rule") {
+        return None;
+    }
+    let body = unit.body.map(str::trim).filter(|b| !b.is_empty())?;
+    let named = recall::turn_subjects(body, "", roster);
+    turn.iter()
+        .flat_map(|other| other.kept_from.people())
+        .filter_map(|p| Principal::from_str(p).ok())
+        .find_map(|p| match &p {
+            Principal::User(id) if named.contains(id) => Some(id.clone()),
+            _ => None,
+        })
+}
+
 /// The receipt for a `conflicts_with` the engine dropped because it named a
 /// box on somebody ELSE's identity card.
 ///
@@ -2931,13 +3111,24 @@ fn conflicts_with_correction(
 
 /// **Who this claim must not reach**, as the classifier heard it said.
 ///
-/// A name it cannot read is dropped rather than failing the turn: an
-/// unparseable exclusion must not take the fact down with it, and the audience
-/// settling beside it is what makes the ones it CAN read binding.
+/// Two roads, one list: the `excluded` field the classifier writes directly,
+/// and the answer to «does this message keep somebody out of THIS fact?»
+/// ([`LlmKeptFrom`]). An answer on either is binding — they are one question
+/// asked twice, and the one that gets answered is the one with a box.
+///
+/// Only a PERSON is kept out. A name it cannot read is dropped rather than
+/// failing the turn: an unparseable exclusion must not take the fact down with
+/// it, and the audience settling beside it is what makes the ones it CAN read
+/// binding.
 fn read_exclusions(unit: &CaptureUnit<'_>, speaker: &Principal) -> Vec<Principal> {
     unit.excluded_ids
         .iter()
+        .chain(unit.kept_from.people())
         .filter_map(|s| Principal::from_str(s).ok())
+        // Only a PERSON is kept out. A group in this list would be a promise
+        // about a list that changes — the very thing the expansion beside this
+        // exists to stop — and the prompt asks for enrolled people by id.
+        .filter(|p| matches!(p, Principal::User(_)))
         // **Nobody keeps a claim from themselves.** «Don't tell me» is not a
         // thing a person says about their own turn, and a model that writes it
         // would make the fact unreadable by its own author — who is a reader of
@@ -12171,6 +12362,8 @@ struct IngestTraceParts<'a> {
     refused_changes: &'a [crate::recall_trace::TraceRefusedChange],
     /// What the classifier wrote that the engine corrected on its way in.
     corrected_extractions: &'a [crate::recall_trace::TraceCorrectedExtraction],
+    /// How each extraction answered the two questions about who it is for.
+    filed_for: &'a [crate::recall_trace::TraceFiledFor],
     /// Claims stored with a relative time word still in them.
     relative_times_left: &'a [String],
     /// Identity-card lines the block had no room for.
@@ -12281,6 +12474,7 @@ async fn record_ingest_trace(
         reconcile_verdict: parts.reconcile_verdict.map(recall_trace::cap_turn_text),
         refused_changes: parts.refused_changes.to_vec(),
         corrected_extractions: parts.corrected_extractions.to_vec(),
+        filed_for: parts.filed_for.to_vec(),
         relative_times_left: parts.relative_times_left.to_vec(),
         identity_core_withheld: parts.identity_core_withheld.to_vec(),
         recall_ms: parts.recall_clock.ms(),
@@ -12404,6 +12598,9 @@ pub async fn wiki_ingest_message(
     // so without this the only sign would be that the fact came out slightly
     // different from what the model said.
     let mut corrected_extractions: Vec<crate::recall_trace::TraceCorrectedExtraction> = Vec::new();
+    // How each extraction answered the two questions about who its fact is
+    // for, as the model gave the answers.
+    let mut filed_for: Vec<crate::recall_trace::TraceFiledFor> = Vec::new();
     // Claims that went in still dating themselves against the moment they were
     // said, after the engine asked once for the date.
     let mut relative_times_left: Vec<String> = Vec::new();
@@ -12729,6 +12926,7 @@ pub async fn wiki_ingest_message(
                     reconcile_verdict: None,
                     refused_changes: &[],
                     corrected_extractions: &[],
+                    filed_for: &[],
                     relative_times_left: &[],
                     identity_core_withheld: &[],
                     recall_clock,
@@ -13762,10 +13960,39 @@ pub async fn wiki_ingest_message(
                 // asks, and writes after the answer. Everything outside the
                 // identity core files exactly as before.
 
+                // How this extraction answered the two questions about who
+                // its fact is for, journaled as given — before the engine acts
+                // on the answers, and whatever it does with them.
+                let mut answered = crate::recall_trace::TraceFiledFor {
+                    claim: truncate(unit.body.unwrap_or_default(), 160),
+                    groups: answers_as_lines(&unit, &request.sender_id, &groups),
+                    kept_from: kept_from_as_line(&unit),
+                    dropped: None,
+                };
+                // «Don't tell her» about ONE fact is that fact's audience, and
+                // a standing rule saying it again is a policy struck off one
+                // afternoon that outlives the fact it was about.
+                if let Some(person) = a_rule_restating_an_exclusion(&unit, &units, &known_users) {
+                    tracing::info!(
+                        person = person.as_str(),
+                        body = unit.body.unwrap_or(""),
+                        "ingest: a standing rule repeats an exclusion this turn already makes \
+                         — dropped"
+                    );
+                    answered.dropped = Some(format!(
+                        "a rule repeating the exclusion of {person}, which the fact already carries"
+                    ));
+                    filed_for.push(answered);
+                    continue;
+                }
+                filed_for.push(answered);
                 // What the engine disagreed with the model about, in the
                 // turn's own trace: the claim is stored either way, so
                 // without the line the only sign would be a question that
                 // never came.
+                if let Some(note) = kept_from_correction(&unit) {
+                    corrected_extractions.push(note);
+                }
                 if let Some(note) = group_audience_correction(&unit, &request.sender_id, &groups) {
                     tracing::info!(
                         unanswered = note.was.as_str(),
@@ -15366,6 +15593,7 @@ pub async fn wiki_ingest_message(
                 reconcile_verdict: reconcile_verdict.as_deref(),
                 refused_changes: &refused_changes,
                 corrected_extractions: &corrected_extractions,
+                filed_for: &filed_for,
                 relative_times_left: &relative_times_left,
                 identity_core_withheld: &identity_core_withheld,
                 recall_clock,
@@ -16075,6 +16303,7 @@ mod tests {
         let unit = |style: Option<&'static str>, requested: bool| CaptureUnit {
             excluded_ids: &no_ids,
             group_audience: &[],
+            kept_from: &NO_KEPT_FROM_ANSWER,
             subject_external: None,
             target_wiki_id: None,
             target_page: Some("spesa.md"),
@@ -16163,6 +16392,7 @@ mod tests {
         let unit = |wiki: Option<&'static str>, page: Option<&'static str>| CaptureUnit {
             excluded_ids: &no_ids,
             group_audience: &[],
+            kept_from: &NO_KEPT_FROM_ANSWER,
             subject_external: None,
             target_wiki_id: wiki,
             target_page: page,
@@ -16376,6 +16606,7 @@ mod tests {
         CaptureUnit {
             excluded_ids: excluded,
             group_audience: answers,
+            kept_from: &NO_KEPT_FROM_ANSWER,
             subject_external: None,
             target_wiki_id: None,
             target_page: None,
@@ -16541,6 +16772,156 @@ mod tests {
         );
     }
 
+    /// One answered exclusion, as the classifier hands it over.
+    fn kept_from(answer: &str, people: &[&str]) -> LlmKeptFrom {
+        LlmKeptFrom {
+            answer: answer.to_owned(),
+            people: people.iter().map(|p| (*p).to_owned()).collect(),
+            why: "he said so".to_owned(),
+        }
+    }
+
+    /// A claim of alice's carrying both answers.
+    fn alice_claim_kept<'a>(
+        answers: &'a [LlmGroupAudience],
+        kept: &'a LlmKeptFrom,
+        no_ids: &'a [String],
+    ) -> CaptureUnit<'a> {
+        CaptureUnit {
+            kept_from: kept,
+            ..alice_claim(answers, no_ids, no_ids)
+        }
+    }
+
+    /// **The answer to «who is kept out of this?» is the exclusion.**
+    ///
+    /// The rule has said since the fourth term of a permission landed that a
+    /// person named as the one who must not know goes in `excluded`. On the
+    /// September bench the whole memory holds zero exclusions — including the
+    /// turn that says «I don't want Zoe to hear it from the assistant». Asked
+    /// as a question with a box, it is answered, and the answer does what the
+    /// field always did: the group in the audience becomes the people in it
+    /// today, minus the one named.
+    #[test]
+    fn the_kept_from_answer_becomes_the_exclusion() {
+        let no_ids: [String; 0] = [];
+        let groups = bench_groups();
+        let answers = answered(&[("household", "yes"), ("parents", "no")]);
+        let kept = kept_from("somebody", &["user:zoe"]);
+        let cap = validate_capture_plan(
+            &alice_claim_kept(&answers, &kept, &no_ids),
+            &req("Mum's scan came back — and I don't want Zoe told.", "alice"),
+            &IngestPolicy::default(),
+            &[sample_available("alice")],
+            &[],
+            false,
+            &groups,
+        )
+        .expect("filed");
+        assert_eq!(cap.excluded, vec![Principal::User("zoe".to_owned())]);
+        assert!(
+            cap.allow.contains(&Principal::User("bob".to_owned()))
+                && !cap.allow.contains(&Principal::User("zoe".to_owned()))
+                && !cap
+                    .allow
+                    .contains(&Principal::Group("household".to_owned())),
+            "the household becomes its members minus the one named: {:?}",
+            cap.allow
+        );
+    }
+
+    /// **Nobody is kept out unless the message says so — and an unanswered
+    /// question says so out loud.**
+    #[test]
+    fn an_unanswered_kept_from_is_nobody_with_a_receipt() {
+        let no_ids: [String; 0] = [];
+        let groups = bench_groups();
+        let answers = answered(&[("household", "yes"), ("parents", "no")]);
+        let unanswered = alice_claim_kept(&answers, &NO_KEPT_FROM_ANSWER, &no_ids);
+        let cap = validate_capture_plan(
+            &unanswered,
+            &req("I'm not cooking tomorrow, I'm shattered.", "alice"),
+            &IngestPolicy::default(),
+            &[sample_available("alice")],
+            &[],
+            false,
+            &groups,
+        )
+        .expect("filed");
+        assert!(cap.excluded.is_empty(), "nobody is kept out by silence");
+        assert_eq!(
+            cap.allow,
+            vec![Principal::Group("household".to_owned())],
+            "and the audience is untouched by it"
+        );
+        let note = kept_from_correction(&unanswered).expect("a receipt");
+        assert_eq!(note.field, "kept_from");
+        assert_eq!(note.now, "nobody");
+        assert_eq!(note.reason, "the_kept_from_question_was_not_answered");
+
+        let answered_nobody = kept_from("nobody", &[]);
+        assert!(
+            kept_from_correction(&alice_claim_kept(&answers, &answered_nobody, &no_ids)).is_none(),
+            "«nobody» is an answer, and answering it costs no line"
+        );
+    }
+
+    /// **«Don't tell her» about one fact is that fact's audience, not a
+    /// policy.**
+    ///
+    /// The bench answered that sentence with both: an exclusion naming nobody
+    /// and a second standing rule repeating it in prose. A rule filed for one
+    /// afternoon's fact outlives the fact, and nothing ever retires it. So a
+    /// rule naming somebody this turn's own answers already keep out is
+    /// dropped — and only that: a standing policy about the same person,
+    /// arriving on a turn that excludes nobody, is untouched.
+    #[test]
+    fn a_rule_that_repeats_this_turns_exclusion_is_dropped() {
+        let no_ids: [String; 0] = [];
+        let answers = answered(&[("household", "no"), ("parents", "no")]);
+        let kept = kept_from("somebody", &["user:zoe"]);
+        let fact = alice_claim_kept(&answers, &kept, &no_ids);
+        let roster = vec![
+            enrollment::EnrolledUserLite {
+                user_id: "zoe".to_owned(),
+                aliases: vec!["Zoe".to_owned()],
+                is_agent: false,
+            },
+            enrollment::EnrolledUserLite {
+                user_id: "bob".to_owned(),
+                aliases: vec!["Bob".to_owned()],
+                is_agent: false,
+            },
+        ];
+        let rule = CaptureUnit {
+            behaviour_rule: true,
+            body: Some("Do not tell Zoe about the scan result."),
+            ..alice_claim_kept(&answers, &NO_KEPT_FROM_ANSWER, &no_ids)
+        };
+        let turn = [fact, rule];
+        assert_eq!(
+            a_rule_restating_an_exclusion(&turn[1], &turn, &roster).as_deref(),
+            Some("zoe"),
+            "the rule says what the fact's own answer already says"
+        );
+        assert!(
+            a_rule_restating_an_exclusion(&turn[0], &turn, &roster).is_none(),
+            "the fact itself is not a rule and is never the one dropped"
+        );
+
+        // A rule about somebody this turn keeps out of nothing stands.
+        let elsewhere = CaptureUnit {
+            behaviour_rule: true,
+            body: Some("Never tell Bob anything about my work."),
+            ..alice_claim_kept(&answers, &NO_KEPT_FROM_ANSWER, &no_ids)
+        };
+        let ordinary = [elsewhere];
+        assert!(
+            a_rule_restating_an_exclusion(&ordinary[0], &ordinary, &roster).is_none(),
+            "a standing policy is not a restatement of an exclusion nobody made"
+        );
+    }
+
     /// **The question is in the brief, in the shape the engine reads.**
     #[test]
     fn the_prompt_asks_the_group_question_per_group() {
@@ -16551,6 +16932,11 @@ mod tests {
             "Answer for all of them, the noes included",
             "\"group\": \"household\", \"answer\": \"yes\"",
             "`excluded: [\"user:bob\"]`",
+            "\"kept_from\"",
+            "AND THAT ONE IS A QUESTION TOO, ON EVERY FACT",
+            "\"answer\": \"somebody\", \"people\": [\"user:zoe\"]",
+            "A name that belongs to nobody enrolled is said in `why`",
+            "**And no rule.**",
         ] {
             assert!(
                 BUNDLED_INGEST_PROMPT_MD.contains(needle),
@@ -17396,6 +17782,7 @@ mod tests {
             subject_external: external,
             excluded_ids: &no_ids,
             group_audience: &[],
+            kept_from: &NO_KEPT_FROM_ANSWER,
             allow_ids: &no_ids,
             fact_type: Some("bio"),
             valid_from: None,
@@ -17879,6 +18266,7 @@ mod tests {
             subject_external: None,
             excluded_ids: &no_ids,
             group_audience: &[],
+            kept_from: &NO_KEPT_FROM_ANSWER,
             allow_ids: &no_ids,
             fact_type: Some("bio"),
             valid_from: None,
@@ -23074,8 +23462,11 @@ mod tests {
             trace.relative_times_left
         );
         assert!(
-            trace.corrected_extractions.is_empty(),
-            "nothing was corrected, so nothing is recorded as corrected: {:?}",
+            !trace
+                .corrected_extractions
+                .iter()
+                .any(|c| c.reason == "relative_time_resolved"),
+            "nothing was corrected about the time, so nothing is recorded as corrected: {:?}",
             trace.corrected_extractions
         );
         drop(dir);
@@ -27414,6 +27805,7 @@ mod tests {
         CaptureUnit {
             excluded_ids: &[],
             group_audience: &[],
+            kept_from: &NO_KEPT_FROM_ANSWER,
             target_wiki_id: None,
             target_page: None,
             subject_id: None,

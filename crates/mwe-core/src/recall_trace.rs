@@ -83,7 +83,13 @@ pub const DEFAULT_TRACE_RETENTION_DAYS: i64 = 90;
 ///   answer it gave, verbatim. It is the one call in the turn that can retire
 ///   a stored fact, and until this it was the one call that left no record of
 ///   what it was asked or what it said.
-pub const TRACE_PAYLOAD_VERSION: u32 = 3;
+/// - **4** — how each extraction answered the two questions the engine puts to
+///   it: which groups its subject matter belongs to, and who the message keeps
+///   out of it ([`TraceFiledFor`]). Who a fact ended up readable by was
+///   recoverable only from the fact itself, which says what happened and never
+///   what was asked — and these two answers are the whole of how a memory
+///   decides who may know a thing.
+pub const TRACE_PAYLOAD_VERSION: u32 = 4;
 
 /// Byte cap on the journaled turn / query text.
 const TURN_TEXT_CAP: usize = 1_200;
@@ -264,6 +270,10 @@ pub struct RecallTrace {
     /// What the classifier wrote that the engine corrected on its way in —
     /// stored, but not as the model said it ([`TraceCorrectedExtraction`]).
     pub corrected_extractions: Vec<TraceCorrectedExtraction>,
+    /// How each of this turn's extractions answered the two questions about
+    /// who the fact is for ([`TraceFiledFor`]). Empty on a turn that filed
+    /// nothing.
+    pub filed_for: Vec<TraceFiledFor>,
     /// Claims stored with a **relative time word still in them**, one line
     /// each, after the engine asked the classifier once for the date.
     ///
@@ -384,6 +394,30 @@ pub struct TraceCorrectedExtraction {
     /// Why — one stable token, so a reader can count the same correction
     /// across many turns.
     pub reason: String,
+}
+
+/// **How one extraction answered the two questions about who a fact is for**,
+/// and what the engine did with the answers.
+///
+/// Who a fact ends up readable by can be read off the fact — but a fact says
+/// what happened and never what was asked, and the two come apart precisely
+/// where the trouble is: a claim nobody in the house can read looks the same
+/// whether the model said «this is nobody's business» or was never asked. So
+/// the answers are journaled as given, before the engine acts on them.
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[serde(default)]
+pub struct TraceFiledFor {
+    /// The claim, capped.
+    pub claim: String,
+    /// One line per group the speaker belongs to: the group, the answer, and
+    /// the few words the model gave for it.
+    pub groups: Vec<String>,
+    /// The exclusion answer, as given — `nobody`, the people named, or a note
+    /// that the question went unanswered.
+    pub kept_from: String,
+    /// Why the engine did not file this extraction as it was written, when it
+    /// did not. `None` on the ordinary claim, which is most.
+    pub dropped: Option<String>,
 }
 
 /// One page the identity slot served whole, as journaled.
@@ -1050,7 +1084,7 @@ mod tests {
     #[test]
     fn the_payload_version_names_every_shape_it_has_had() {
         assert_eq!(
-            TRACE_PAYLOAD_VERSION, 3,
+            TRACE_PAYLOAD_VERSION, 4,
             "bumping this means adding the new version's line to the constant's doc"
         );
     }

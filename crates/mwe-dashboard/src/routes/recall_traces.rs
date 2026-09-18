@@ -955,6 +955,60 @@ fn render_corrections(trace: &RecallTrace) -> Markup {
     }
 }
 
+/// Who each claim was filed for, as the classifier answered it.
+///
+/// Two questions decide who may read a fact: which of the speaker's groups the
+/// material belongs to, and whether the message keeps somebody out of this one
+/// fact. The fact afterwards says what happened; only this says what was
+/// asked, and the two come apart exactly where the trouble is — a claim nobody
+/// can read looks the same whether it was decided or never considered.
+fn render_filed_for(trace: &RecallTrace) -> Markup {
+    html! {
+        @if !trace.filed_for.is_empty() {
+            section class="term-panel mt-4 p-4" {
+                h2 class="mt-0" { "Who this was filed for" }
+                p.muted {
+                    "For every fact the turn wrote down, what the classifier "
+                    "answered about who it is for: one line per group you "
+                    "belong to, and who the message keeps out of it. A group "
+                    "left unanswered counts as a no; nobody is kept out unless "
+                    "the message says so."
+                }
+                table class="config-table" {
+                    thead {
+                        tr {
+                            th { "The claim" }
+                            th { "Groups" }
+                            th { "Kept from" }
+                            th { "What the engine did" }
+                        }
+                    }
+                    tbody {
+                        @for f in &trace.filed_for {
+                            tr {
+                                td { (f.claim) }
+                                td {
+                                    @for line in &f.groups {
+                                        (line) br;
+                                    }
+                                    @if f.groups.is_empty() { "—" }
+                                }
+                                td { (f.kept_from) }
+                                td {
+                                    @match &f.dropped {
+                                        Some(why) => { span class="text-amber" { "not filed: " (why) } },
+                                        None => { "filed" },
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+}
+
 /// The claims that went in still dating themselves against the turn.
 ///
 /// A third record beside the refusals and the corrections, and a different one
@@ -1018,6 +1072,7 @@ fn render_reconcile(trace: &RecallTrace) -> Markup {
                 p.muted { "It gave no answer: the model was unreachable, or no call was made." }
             }
         }
+        (render_filed_for(trace))
         (render_corrections(trace))
         (render_relative_times_left(trace))
         @if !trace.identity_core_withheld.is_empty() {
