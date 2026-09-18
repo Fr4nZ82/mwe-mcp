@@ -128,6 +128,14 @@ semver-governed surface: breaking changes are called out explicitly.
   would outlive the present by years. A rule that names somebody the same turn
   already keeps out is dropped, and the trace says so.
 
+- **And the person you keep out is named once.** The memory asks who a claim
+  must be kept from in two places — a field the assistant fills in, and a
+  question it answers in words — because one of the two always gets answered.
+  When it hears you plainly it answers both, which is the ordinary case and
+  not the odd one, and the two answers were being stacked rather than read as
+  one: the same person came out listed twice, and the **Not for** column said
+  her name twice over. Once is the answer.
+
 - **And what you keep out stays kept out while the claim waits.** Most of what
   you tell the memory is not written the moment you say it: it waits in line,
   and an hourly round decides where it belongs and writes it. On that road the

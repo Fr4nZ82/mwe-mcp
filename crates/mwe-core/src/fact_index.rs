@@ -1311,7 +1311,22 @@ pub async fn set_acl(
     // claim from, and writing an empty list on its behalf would revoke a wish
     // nobody withdrew. Only a caller with something to say about them passes
     // `Some`, and only then does the column move.
-    let excluded_json = excluded.map(principals_to_json).transpose()?;
+    //
+    // A person appears once. The column answers «may she read this», which a
+    // second copy of her name cannot answer twice, and the repeat would then
+    // be read back and shown as two — the same rule [`restrict_to`] applies
+    // when it takes its union.
+    let excluded_json = excluded
+        .map(|list| {
+            let mut once: Vec<Principal> = Vec::with_capacity(list.len());
+            for principal in list {
+                if !once.contains(principal) {
+                    once.push(principal.clone());
+                }
+            }
+            principals_to_json(&once)
+        })
+        .transpose()?;
     sqlx::query(
         "UPDATE fact_index
             SET subject_id = ?, allow_ids = ?, sender_id = ?, updated_at = ?,
@@ -6200,6 +6215,58 @@ mod tests {
     /// engine added her by name to a fact whose own words read «this figure is
     /// not to be shared with Zoe». An audience change leaves the column alone;
     /// only a caller with something to say about the exclusions moves it.
+    /// **A person named twice is kept out once.**
+    ///
+    /// The column answers «may she read this», and a second copy of her name
+    /// answers nothing — it is read back as two and shown as two. A caller
+    /// handing in a complete list is the one place a repeat can arrive, since
+    /// [`restrict_to`] takes its union name by name.
+    #[tokio::test]
+    async fn a_person_named_twice_in_one_list_is_kept_out_once() {
+        let dir = tempfile::tempdir().expect("tmp");
+        let pool = crate::db::open_or_init(dir.path()).await.expect("open");
+        let zoe: Principal = "user:zoe".parse().unwrap();
+        let parents: Principal = "group:parents".parse().unwrap();
+        let id = FactId::parse("0190f3c2-7a4e-7c31-9b02-2f6a1c8e5e0a").unwrap();
+        sqlx::query(
+            "INSERT INTO fact_index (fact_id, wiki_id, source_path, \"text\", subject_id, \
+                                     allow_ids, excluded_ids, embedding, embedding_dim, \
+                                     created_at, updated_at) \
+             VALUES (?, 'famiglia', 'casa.md', 'the ceiling is 14k', 'group:parents', \
+                     '[]', '[]', ?, 1, ?, ?)",
+        )
+        .bind(id.as_str())
+        .bind(vec![0u8; 4])
+        .bind("2026-09-12T13:00:00Z")
+        .bind("2026-09-12T13:00:00Z")
+        .execute(&pool)
+        .await
+        .expect("plant");
+
+        set_acl(
+            &pool,
+            &id,
+            &parents,
+            &[],
+            None,
+            Some(&[zoe.clone(), zoe.clone()]),
+        )
+        .await
+        .expect("set")
+        .expect("active row");
+        let row = find_by_id(&pool, &id).await.unwrap().expect("row");
+        assert_eq!(
+            row.excluded_ids,
+            vec![zoe],
+            "one entry per person: {:?}",
+            row.excluded_ids
+        );
+        assert!(
+            !row_readable_by(&row, "zoe", &["parents".to_owned()]),
+            "and once is what keeps her out"
+        );
+    }
+
     #[tokio::test]
     async fn widening_an_audience_leaves_an_exclusion_standing() {
         let dir = tempfile::tempdir().expect("tempdir");

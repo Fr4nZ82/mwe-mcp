@@ -3116,15 +3116,15 @@ fn conflicts_with_correction(
 /// ([`LlmKeptFrom`]). An answer on either is binding — they are one question
 /// asked twice, and the one that gets answered is the one with a box.
 ///
-/// Only a PERSON is kept out. A name it cannot read is dropped rather than
-/// failing the turn: an unparseable exclusion must not take the fact down with
-/// it, and the audience settling beside it is what makes the ones it CAN read
-/// binding.
+/// **One question, so one answer per person.** A model that hears «I don't
+/// want Zoe to hear it» plainly answers BOTH roads with her, which is the
+/// ordinary case and not the odd one; chained with nothing said about repeats
+/// she arrives twice and the fact is kept from her once per road the answer
+/// came down ([`kept_out_once`], which also decides what an unreadable name
+/// costs).
 fn read_exclusions(unit: &CaptureUnit<'_>, speaker: &Principal) -> Vec<Principal> {
-    unit.excluded_ids
-        .iter()
-        .chain(unit.kept_from.people())
-        .filter_map(|s| Principal::from_str(s).ok())
+    kept_out_once(unit.excluded_ids.iter().chain(unit.kept_from.people()))
+        .into_iter()
         // Only a PERSON is kept out. A group in this list would be a promise
         // about a list that changes — the very thing the expansion beside this
         // exists to stop — and the prompt asks for enrolled people by id.
@@ -3137,6 +3137,26 @@ fn read_exclusions(unit: &CaptureUnit<'_>, speaker: &Principal) -> Vec<Principal
         // reason, and this is the same correction on the other side.
         .filter(|p| p != speaker)
         .collect()
+}
+
+/// Read a list of exclusions the model wrote: what parses, in the order it was
+/// said, **each person once**.
+///
+/// An exclusion list is a set of people wearing the shape of a sequence — the
+/// question it answers is «may she read this», which a second copy of her name
+/// cannot answer twice.
+///
+/// A name that cannot be read is dropped rather than failing the turn: an
+/// unparseable exclusion must not take the fact down with it, and the audience
+/// settling beside it is what makes the ones it CAN read binding.
+fn kept_out_once<'a, I: IntoIterator<Item = &'a String>>(ids: I) -> Vec<Principal> {
+    let mut out: Vec<Principal> = Vec::new();
+    for principal in ids.into_iter().filter_map(|s| Principal::from_str(s).ok()) {
+        if !out.contains(&principal) {
+            out.push(principal);
+        }
+    }
+    out
 }
 
 /// **The audience a fact is written with, once somebody has been excluded
@@ -8126,11 +8146,10 @@ async fn apply_plan_acl_changes(
         let keep_sender = hit.sender_id.as_ref();
         // The exclusions move only when the message says so of THIS fact.
         // Widening a group is not that, and `None` is what keeps the wish.
-        let new_excluded: Option<Vec<Principal>> = change.excluded_ids.as_ref().map(|ids| {
-            ids.iter()
-                .filter_map(|s| Principal::from_str(s).ok())
-                .collect()
-        });
+        let new_excluded: Option<Vec<Principal>> = change
+            .excluded_ids
+            .as_ref()
+            .map(|ids| kept_out_once(ids.iter()));
         let fact_set = fact_index::set_acl(
             pool,
             &hit.fact_id,
@@ -16827,6 +16846,41 @@ mod tests {
                     .contains(&Principal::Group("household".to_owned())),
             "the household becomes its members minus the one named: {:?}",
             cap.allow
+        );
+    }
+
+    /// **One question asked twice is answered once.**
+    ///
+    /// `excluded` and `kept_from` are two ways of asking who must not read
+    /// this, and a model that hears the sentence plainly writes the same
+    /// person in both — which is the ordinary case, not the odd one. Read as
+    /// two lists chained together the person lands twice, and the fact is
+    /// then kept from her once for each road the answer came down.
+    #[test]
+    fn the_same_person_named_on_both_roads_is_kept_out_once() {
+        let no_ids: [String; 0] = [];
+        let groups = bench_groups();
+        let answers = answered(&[("household", "yes"), ("parents", "no")]);
+        let both = [String::from("user:zoe")];
+        let kept = kept_from("somebody", &["user:zoe"]);
+        let cap = validate_capture_plan(
+            &CaptureUnit {
+                kept_from: &kept,
+                ..alice_claim(&answers, &both, &no_ids)
+            },
+            &req("Mum's scan came back — and I don't want Zoe told.", "alice"),
+            &IngestPolicy::default(),
+            &[sample_available("alice")],
+            &[],
+            false,
+            &groups,
+        )
+        .expect("filed");
+        assert_eq!(
+            cap.excluded,
+            vec![Principal::User("zoe".to_owned())],
+            "named on both roads, kept out once: {:?}",
+            cap.excluded
         );
     }
 
