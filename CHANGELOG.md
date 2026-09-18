@@ -111,6 +111,19 @@ semver-governed surface: breaking changes are called out explicitly.
   was always decided: by the kind of memory the page belongs to, named on the
   page's own line.
 
+- **The memory asks, group by group, who a fact is for.** A fact you tell the
+  kitchen assistant about tomorrow's dinner is the household's business, and it
+  was being filed where only you could read it. The rule was there and the
+  words that define each group — «meals, chores, and who is in or out of the
+  house» — were in front of the classifier on every turn; what was missing was
+  being made to answer. Now each fact carries one answer per group you belong
+  to: *is this one of the kinds this group's scope names?*, yes or no, with a
+  reason in a few words. A yes puts that group among the readers. A group left
+  unanswered counts as a no and the turn's trace says the question went
+  unanswered, so a fact nobody can read is never a silence. Nothing changes
+  about a person you asked to be left out: they stay out, by the field that
+  names them, and that beats every yes.
+
 - **Every recall the memory still holds is on the Traces page.** It listed the
   newest fifty and said nothing about the rest, while the engine keeps months
   of them — on a running deployment a thousand traces of which fifty were

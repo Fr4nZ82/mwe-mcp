@@ -1265,6 +1265,61 @@ struct LlmAclChange {
     named_in_the_message: bool,
 }
 
+/// One group's answer to **«is this fact one of the kinds your scope
+/// names?»**, as the classifier answers it.
+///
+/// The scope has been in the prompt, at the top of every turn, since groups
+/// had scopes — and the rule telling the model to read it is right beside the
+/// audience decision. Measured on the September bench: of 67 stored facts a
+/// group reached the readers of **three**, while eighteen facts were made the
+/// group's outright. A step written as a rule to remember is a step that gets
+/// remembered sometimes; asked as a question with a box to fill, it gets
+/// answered. So the model answers per group, in writing, and the engine reads
+/// the answers rather than the intention behind them.
+#[derive(Debug, Default, Deserialize)]
+struct LlmGroupAudience {
+    /// The group being answered about — an id from `sender_groups`.
+    #[serde(default)]
+    group: String,
+    /// `yes` or `no`. Anything else is not an answer, and is read as `no`
+    /// with a receipt, because a reader of the trace has to be able to tell
+    /// «the model said no» from «the model said something nobody can act on».
+    #[serde(default)]
+    answer: String,
+    /// The few words that say why.
+    ///
+    /// Asked for, and deliberately never read: a verdict a model has to
+    /// justify in the same breath is a verdict it has actually made, and that
+    /// is the whole of what this field is for. Reading it here would be the
+    /// engine judging a justification, which is the one thing it must not do
+    /// with an answer it asked for.
+    #[expect(
+        dead_code,
+        reason = "the justification works on the model that writes it, not on the engine that reads the answer"
+    )]
+    #[serde(default)]
+    why: String,
+}
+
+impl LlmGroupAudience {
+    /// Whether this answer reads as a yes.
+    fn says_yes(&self) -> bool {
+        matches!(
+            self.answer.trim().to_ascii_lowercase().as_str(),
+            "yes" | "y" | "true"
+        )
+    }
+
+    /// Whether this is an answer at all. `no` is an answer; a blank, or a word
+    /// that means neither, is not.
+    fn is_readable(&self) -> bool {
+        matches!(
+            self.answer.trim().to_ascii_lowercase().as_str(),
+            "yes" | "y" | "true" | "no" | "n" | "false"
+        )
+    }
+}
+
 /// One atomic fact in a multi-fact `capture` plan. Mirrors the per-fact
 /// subset of [`LlmIngestPlan`]; the turn-level fields (`intent`,
 /// `suggested_seed`, disambiguation) stay on the plan.
@@ -1382,6 +1437,17 @@ struct LlmExtraction {
     /// writes marker syntax.
     #[serde(default)]
     attachments: Vec<String>,
+    /// One entry per group in `sender_groups` (never `global`), answering
+    /// whether this fact is of a kind that group's scope names
+    /// ([`LlmGroupAudience`]). A `yes` puts the group among the readers; a
+    /// group the model did not answer for is read as `no`, and the turn's
+    /// trace says the question went unanswered.
+    ///
+    /// `#[serde(default)]` like every other field here: an operator running an
+    /// older prompt, or an override that never learned the field, files facts
+    /// exactly as it did before rather than failing the turn.
+    #[serde(default)]
+    group_audience: Vec<LlmGroupAudience>,
     /// Who this claim must NOT reach, whatever its audience turns out to be:
     /// «I'd rather Zoe didn't know the number». It is not a narrower
     /// audience — it names somebody who must stay out of whichever audience
@@ -1580,6 +1646,9 @@ struct CaptureUnit<'a> {
     /// Borrowed view of [`LlmExtraction::excluded`] — who this claim must not
     /// reach, whatever its audience turns out to be.
     excluded_ids: &'a [String],
+    /// Borrowed view of [`LlmExtraction::group_audience`] — the per-group
+    /// answers the readers are read off.
+    group_audience: &'a [LlmGroupAudience],
     allow_ids: &'a [String],
     fact_type: Option<&'a str>,
     /// Borrowed view of the per-fact
@@ -1700,6 +1769,7 @@ impl LlmIngestPlan {
                     subject_external: named_or_absent(e.subject_external.as_deref()),
                     allow_ids: &e.allow_ids,
                     excluded_ids: &e.excluded,
+                    group_audience: &e.group_audience,
                     fact_type: e.fact_type.as_deref(),
                     valid_from: e.valid_from.as_deref(),
                     valid_to: e.valid_to.as_deref(),
@@ -1741,6 +1811,10 @@ impl LlmIngestPlan {
                 subject_external: named_or_absent(self.subject_external.as_deref()),
                 allow_ids: &self.allow_ids,
                 excluded_ids: &self.excluded,
+                // The legacy single-fact shape predates the question, and the
+                // shipped prompt does not produce it: no answers, which the
+                // engine reads as «no group» and says so in the trace.
+                group_audience: &[],
                 fact_type: self.fact_type.as_deref(),
                 valid_from: self.valid_from.as_deref(),
                 valid_to: self.valid_to.as_deref(),
@@ -2447,19 +2521,60 @@ async fn refuse_new_list_over_cap(
 /// household. **Exactly one** group, because two is a fact the classifier
 /// scoped to an audience and not to an owner. And never the builtin `global`,
 /// which is the public marker and answers for nothing.
-fn subject_from_the_audience(unit: &CaptureUnit<'_>) -> Option<Principal> {
+fn subject_from_the_audience(
+    unit: &CaptureUnit<'_>,
+    sender_id: &str,
+    groups: &std::collections::BTreeMap<String, Vec<String>>,
+) -> Option<Principal> {
     unit.subject_external
         .map(str::trim)
         .filter(|n| !n.is_empty())?;
-    let mut groups = unit
+    // **The same list the audience is built from**, both roads included: the
+    // group the claim names in `allow_ids` and the group it answered `yes`
+    // for. Reading one road here and both a few lines down is how «the
+    // household may read it» and «nobody in the household answers for her»
+    // end up on the same fact — the combination the prompt rules out.
+    let mut named = audience_groups_named(unit, sender_id, groups).into_iter();
+    let only = named.next()?;
+    named.next().is_none().then_some(only)
+}
+
+/// Every group this claim names as its audience, by either road, once each.
+///
+/// `allow_ids` is what the classifier writes directly; `group_audience` is
+/// what it answers about each group's scope. Never `global` on either road —
+/// the public marker is its own step and answers for nobody.
+///
+/// **The membership fence is the answers', not `allow_ids`'.** A group the
+/// speaker is not in was never among the ones they were asked about, so an
+/// answer naming one is an answer about nothing. `allow_ids` is the older
+/// road, honoured as the classifier writes it and gated where it always was;
+/// narrowing it here would quietly stop sharing facts that are shared today.
+fn audience_groups_named(
+    unit: &CaptureUnit<'_>,
+    sender_id: &str,
+    groups: &std::collections::BTreeMap<String, Vec<String>>,
+) -> Vec<Principal> {
+    let mut out: Vec<Principal> = Vec::new();
+    let mut take = |p: Principal| {
+        if !out.contains(&p) {
+            out.push(p);
+        }
+    };
+    for id in unit
         .allow_ids
         .iter()
         .filter_map(|s| match Principal::from_str(s) {
-            Ok(p) if matches!(p, Principal::Group(_)) && !p.is_global() => Some(p),
+            Ok(Principal::Group(id)) if id != "global" => Some(id),
             _ => None,
-        });
-    let only = groups.next()?;
-    groups.next().is_none().then_some(only)
+        })
+    {
+        take(Principal::Group(id));
+    }
+    for group in groups_answered_yes(unit, sender_id, groups) {
+        take(group);
+    }
+    out
 }
 
 /// Who a claim is ABOUT, decided once for everybody who has to know.
@@ -2478,10 +2593,11 @@ fn subject_from_the_audience(unit: &CaptureUnit<'_>) -> Option<Principal> {
 fn subject_of_the_claim(
     unit: &CaptureUnit<'_>,
     request: &IngestRequest,
+    groups: &std::collections::BTreeMap<String, Vec<String>>,
 ) -> std::result::Result<Principal, crate::types::PrincipalParseError> {
     unit.subject_id.map_or_else(
         || {
-            Ok(subject_from_the_audience(unit)
+            Ok(subject_from_the_audience(unit, &request.sender_id, groups)
                 .unwrap_or_else(|| Principal::User(request.sender_id.clone())))
         },
         Principal::from_str,
@@ -2683,6 +2799,106 @@ async fn resolve_the_relative_times(
     (corrected, left)
 }
 
+/// The groups the sender is in, `global` aside — the ones the question is
+/// asked about.
+///
+/// Read off the same map the audience expansion reads, so «which groups was
+/// the model asked about» and «which groups can be expanded into people» can
+/// never be two different lists.
+fn groups_the_question_covers<'a>(
+    sender_id: &str,
+    groups: &'a std::collections::BTreeMap<String, Vec<String>>,
+) -> Vec<&'a str> {
+    groups
+        .iter()
+        .filter(|(id, members)| id.as_str() != "global" && members.iter().any(|m| m == sender_id))
+        .map(|(id, _)| id.as_str())
+        .collect()
+}
+
+/// **The groups this claim is for, as the classifier answered.**
+///
+/// A `yes` puts the group among the readers; everything else puts nothing
+/// there. Two fences: `global` is never an answer — it is the public marker
+/// and comes from its own step — and an answer about a group the SENDER is not
+/// in is ignored, because a speaker cannot hand a fact to a room they are not
+/// in and a model naming one has misread the roster rather than the scope.
+///
+/// The exclusion is not consulted here and must not be: it wins afterwards,
+/// where it always has ([`audience_without_the_excluded`]), by turning the
+/// group it names into its members minus that person. Resolving the two in one
+/// place would be the same rule written twice.
+///
+/// **A standing directive never comes through here.** A `behaviour_rule` claim
+/// is routed to its scope's rules page before the capture router runs, so the
+/// answers can never widen a rule's audience — `allow_ids` on a directive is a
+/// different field with a different meaning («who else the speaker extended it
+/// to»), and it is almost always empty.
+fn fold_in_the_yes_groups(
+    allow: &mut Vec<Principal>,
+    unit: &CaptureUnit<'_>,
+    sender_id: &str,
+    groups: &std::collections::BTreeMap<String, Vec<String>>,
+) {
+    for group in groups_answered_yes(unit, sender_id, groups) {
+        if !allow.contains(&group) {
+            allow.push(group);
+        }
+    }
+}
+
+/// The groups this claim answered `yes` for — see [`fold_in_the_yes_groups`],
+/// which is where they join the audience.
+fn groups_answered_yes(
+    unit: &CaptureUnit<'_>,
+    sender_id: &str,
+    groups: &std::collections::BTreeMap<String, Vec<String>>,
+) -> Vec<Principal> {
+    let asked = groups_the_question_covers(sender_id, groups);
+    unit.group_audience
+        .iter()
+        .filter(|a| a.says_yes())
+        .map(|a| a.group.trim())
+        .filter(|id| asked.contains(id))
+        .map(|id| Principal::Group(id.to_owned()))
+        .collect()
+}
+
+/// The receipt for a question the classifier left unanswered.
+///
+/// The sibling of [`salience_correction`] and [`conflicts_with_correction`],
+/// and the same reason for existing: the claim is stored either way, so
+/// without a line the only sign that a group was never considered is a fact
+/// nobody in the house can read — which reads exactly like a fact nobody in
+/// the house was meant to read. A missing answer is a `no` **and** a line, so
+/// how often the question goes unanswered is a number somebody can look up
+/// rather than a suspicion.
+fn group_audience_correction(
+    unit: &CaptureUnit<'_>,
+    sender_id: &str,
+    groups: &std::collections::BTreeMap<String, Vec<String>>,
+) -> Option<crate::recall_trace::TraceCorrectedExtraction> {
+    let unanswered: Vec<&str> = groups_the_question_covers(sender_id, groups)
+        .into_iter()
+        .filter(|id| {
+            !unit
+                .group_audience
+                .iter()
+                .any(|a| a.group.trim() == *id && a.is_readable())
+        })
+        .collect();
+    if unanswered.is_empty() {
+        return None;
+    }
+    Some(crate::recall_trace::TraceCorrectedExtraction {
+        claim: truncate(unit.body.unwrap_or_default(), 160),
+        field: "group_audience".to_owned(),
+        was: unanswered.join(", "),
+        now: "no".to_owned(),
+        reason: "the_group_question_was_not_answered".to_owned(),
+    })
+}
+
 /// The receipt for a `conflicts_with` the engine dropped because it named a
 /// box on somebody ELSE's identity card.
 ///
@@ -2793,7 +3009,7 @@ fn validate_capture_plan(
 ) -> std::result::Result<CaptureRequest, CapturePlanError> {
     // Subject first: since the classifier stopped choosing a wiki, the subject
     // is an INPUT to the destination rather than a sibling decision.
-    let subject = subject_of_the_claim(unit, request)?;
+    let subject = subject_of_the_claim(unit, request, groups)?;
     // A page name is honoured exactly when THE WRITE CANNOT WAIT.
     //
     // **The classifier does not choose where a fact goes** (founder,
@@ -2917,6 +3133,11 @@ fn validate_capture_plan(
     // protects hand-written calls) cannot kill the whole ingest turn.
     let sender_principal = Principal::User(request.sender_id.clone());
     allow.retain(|p| *p != sender_principal);
+    // The answers to «is this fact one of the kinds your scope names?» join
+    // whatever the model already put in `allow_ids`: the two say the same
+    // thing by two roads, and neither is a reason to drop the other. What the
+    // exclusion does to the result is decided one line down, unchanged.
+    fold_in_the_yes_groups(&mut allow, unit, &request.sender_id, groups);
     let (allow, excluded) =
         audience_without_the_excluded(allow, read_exclusions(unit, &sender_principal), groups);
     // Body: the legacy single-fact shape may omit it (fall back to the raw
@@ -13525,7 +13746,7 @@ pub async fn wiki_ingest_message(
                 // same way the write reads it: it is the fence that keeps a
                 // box of one person's card from being compared against
                 // another's.
-                let claim_subject = match subject_of_the_claim(&unit, &request) {
+                let claim_subject = match subject_of_the_claim(&unit, &request, &groups) {
                     Ok(subject) => subject,
                     // Not a principal at all. `validate_capture_plan` costs
                     // the extraction for it a few lines down; there is nothing
@@ -13545,6 +13766,13 @@ pub async fn wiki_ingest_message(
                 // turn's own trace: the claim is stored either way, so
                 // without the line the only sign would be a question that
                 // never came.
+                if let Some(note) = group_audience_correction(&unit, &request.sender_id, &groups) {
+                    tracing::info!(
+                        unanswered = note.was.as_str(),
+                        "ingest: the classifier left the group question unanswered"
+                    );
+                    corrected_extractions.push(note);
+                }
                 if let Some(note) =
                     conflicts_with_correction(&unit, &claim_subject, &identity_core.served)
                 {
@@ -15846,6 +16074,7 @@ mod tests {
         let no_ids: [String; 0] = [];
         let unit = |style: Option<&'static str>, requested: bool| CaptureUnit {
             excluded_ids: &no_ids,
+            group_audience: &[],
             subject_external: None,
             target_wiki_id: None,
             target_page: Some("spesa.md"),
@@ -15924,12 +16153,7 @@ mod tests {
     #[test]
     fn derive_target_wiki_walks_list_then_subject_then_sender() {
         let request = req("qualcosa", "alice");
-        let available = [
-            sample_available("alice"),
-            sample_available("bob"),
-            sample_available("famiglia"),
-            sample_available("casa"),
-        ];
+        let available = ["alice", "bob", "famiglia", "casa"].map(sample_available);
         let lists = [fact_index::ListPage {
             wiki_id: "casa".into(),
             page: "spesa.md".into(),
@@ -15938,6 +16162,7 @@ mod tests {
         let no_ids: [String; 0] = [];
         let unit = |wiki: Option<&'static str>, page: Option<&'static str>| CaptureUnit {
             excluded_ids: &no_ids,
+            group_audience: &[],
             subject_external: None,
             target_wiki_id: wiki,
             target_page: page,
@@ -16111,6 +16336,227 @@ mod tests {
             cap.body, "comprare il latte",
             "and the fact itself is never the thing thrown away"
         );
+    }
+
+    // ---------- the group question: «does your scope name this?» ----------
+
+    /// The three people of the September bench and the two groups they share.
+    fn bench_groups() -> std::collections::BTreeMap<String, Vec<String>> {
+        let mut g = std::collections::BTreeMap::new();
+        g.insert(
+            "household".to_owned(),
+            vec!["alice".to_owned(), "bob".to_owned(), "zoe".to_owned()],
+        );
+        g.insert(
+            "parents".to_owned(),
+            vec!["alice".to_owned(), "bob".to_owned()],
+        );
+        g.insert("global".to_owned(), Vec::new());
+        g
+    }
+
+    /// One answered claim, as the classifier hands it over.
+    fn answered(answers: &'static [(&'static str, &'static str)]) -> Vec<LlmGroupAudience> {
+        answers
+            .iter()
+            .map(|(group, answer)| LlmGroupAudience {
+                group: (*group).to_owned(),
+                answer: (*answer).to_owned(),
+                why: "measured on the bench".to_owned(),
+            })
+            .collect()
+    }
+
+    /// A claim of alice's with the given answers and exclusions.
+    fn alice_claim<'a>(
+        answers: &'a [LlmGroupAudience],
+        excluded: &'a [String],
+        no_ids: &'a [String],
+    ) -> CaptureUnit<'a> {
+        CaptureUnit {
+            excluded_ids: excluded,
+            group_audience: answers,
+            subject_external: None,
+            target_wiki_id: None,
+            target_page: None,
+            subject_id: Some("user:alice"),
+            allow_ids: no_ids,
+            fact_type: Some("state"),
+            valid_from: None,
+            valid_to: None,
+            style: None,
+            page_description: None,
+            salience: Some("normal"),
+            requested_container: false,
+            behaviour_rule: false,
+            behaviour_scope: None,
+            behaviour_about: None,
+            topics: no_ids,
+            body: Some("Alice is not cooking on 14 March 2026."),
+            supersede_target: None,
+            conflicts_with: None,
+            slot: None,
+            slot_value: None,
+            attachments: no_ids,
+        }
+    }
+
+    /// **A `yes` to the group's scope puts the group among the readers.**
+    ///
+    /// The bench's own turn: «I'm not cooking tomorrow» is about Alice, so the
+    /// subject stays hers — and it is meals and who is in or out of the house,
+    /// which is what the household's scope names, so the house reads it.
+    /// Before this the audience came off a rule the model had to remember, and
+    /// it remembered it three times in sixty-seven facts.
+    #[test]
+    fn a_yes_to_the_scope_question_puts_the_group_among_the_readers() {
+        let no_ids: [String; 0] = [];
+        let groups = bench_groups();
+        let answers = answered(&[("household", "yes"), ("parents", "no")]);
+        let cap = validate_capture_plan(
+            &alice_claim(&answers, &no_ids, &no_ids),
+            &req("I'm not cooking tomorrow, I'm shattered.", "alice"),
+            &IngestPolicy::default(),
+            &[sample_available("alice")],
+            &[],
+            false,
+            &groups,
+        )
+        .expect("filed");
+        assert_eq!(
+            cap.allow,
+            vec![Principal::Group("household".to_owned())],
+            "the yes is the audience; the no adds nothing"
+        );
+        assert_eq!(
+            cap.subject,
+            Principal::User("alice".to_owned()),
+            "and the scope never moves the subject off the person it is about"
+        );
+    }
+
+    /// **The exclusion still wins, and it wins over the answer too.**
+    ///
+    /// A `yes` and an excluded person are not a contradiction: the group is
+    /// the audience the speaker meant, and the person they named is taken out
+    /// of it — the group becoming the people in it today, minus them. That is
+    /// the rule the fourth term of a permission already had; the question does
+    /// not get to reopen it.
+    #[test]
+    fn an_exclusion_beats_a_yes_and_the_group_becomes_its_members() {
+        let no_ids: [String; 0] = [];
+        let groups = bench_groups();
+        let answers = answered(&[("household", "yes"), ("parents", "no")]);
+        let excluded = ["user:zoe".to_owned()];
+        let cap = validate_capture_plan(
+            &alice_claim(&answers, &excluded, &no_ids),
+            &req("I'm not cooking tomorrow — and don't tell Zoe.", "alice"),
+            &IngestPolicy::default(),
+            &[sample_available("alice")],
+            &[],
+            false,
+            &groups,
+        )
+        .expect("filed");
+        assert!(
+            !cap.allow
+                .contains(&Principal::Group("household".to_owned())),
+            "no group survives an exclusion: {:?}",
+            cap.allow
+        );
+        assert!(
+            cap.allow.contains(&Principal::User("bob".to_owned())),
+            "the members do, minus the one named: {:?}",
+            cap.allow
+        );
+        assert!(
+            !cap.allow.contains(&Principal::User("zoe".to_owned())),
+            "and she is the one named: {:?}",
+            cap.allow
+        );
+        assert_eq!(cap.excluded, vec![Principal::User("zoe".to_owned())]);
+    }
+
+    /// **A question nobody answered is a `no`, and the turn says so.**
+    ///
+    /// The silent version of this is the one that cost the bench: a fact
+    /// readable by nobody looks exactly like a fact meant for nobody. So the
+    /// unanswered groups are named in the turn's trace, with the claim they
+    /// were asked about.
+    #[test]
+    fn an_unanswered_group_is_a_no_with_a_receipt() {
+        let no_ids: [String; 0] = [];
+        let groups = bench_groups();
+        let answers = answered(&[("household", "yes")]);
+        let unit = alice_claim(&answers, &no_ids, &no_ids);
+        let cap = validate_capture_plan(
+            &unit,
+            &req("I'm not cooking tomorrow, I'm shattered.", "alice"),
+            &IngestPolicy::default(),
+            &[sample_available("alice")],
+            &[],
+            false,
+            &groups,
+        )
+        .expect("filed");
+        assert_eq!(
+            cap.allow,
+            vec![Principal::Group("household".to_owned())],
+            "the answered group still lands"
+        );
+        let note = group_audience_correction(&unit, "alice", &groups).expect("a receipt");
+        assert_eq!(note.field, "group_audience");
+        assert_eq!(note.was, "parents", "the group nobody answered about");
+        assert_eq!(note.now, "no");
+        assert_eq!(note.reason, "the_group_question_was_not_answered");
+
+        // Every group answered: nothing to report.
+        let all = answered(&[("household", "yes"), ("parents", "no")]);
+        assert!(
+            group_audience_correction(&alice_claim(&all, &no_ids, &no_ids), "alice", &groups)
+                .is_none()
+        );
+        // `global` is never asked about, and an answer about a group the
+        // sender is not in is not an answer about anything.
+        let stray = answered(&[
+            ("household", "yes"),
+            ("parents", "no"),
+            ("renovation", "yes"),
+        ]);
+        let cap = validate_capture_plan(
+            &alice_claim(&stray, &no_ids, &no_ids),
+            &req("I'm not cooking tomorrow, I'm shattered.", "alice"),
+            &IngestPolicy::default(),
+            &[sample_available("alice")],
+            &[],
+            false,
+            &groups,
+        )
+        .expect("filed");
+        assert_eq!(
+            cap.allow,
+            vec![Principal::Group("household".to_owned())],
+            "a room the speaker is not in is not theirs to open: {:?}",
+            cap.allow
+        );
+    }
+
+    /// **The question is in the brief, in the shape the engine reads.**
+    #[test]
+    fn the_prompt_asks_the_group_question_per_group() {
+        for needle in [
+            "\"group_audience\"",
+            "AND YOU ANSWER IT GROUP BY GROUP, IN WRITING",
+            "ONE entry for EACH group listed in `sender_groups` except `global`",
+            "Answer for all of them, the noes included",
+            "\"group\": \"household\", \"answer\": \"yes\"",
+            "`excluded: [\"user:bob\"]`",
+        ] {
+            assert!(
+                BUNDLED_INGEST_PROMPT_MD.contains(needle),
+                "the group question is not in the brief: {needle}"
+            );
+        }
     }
 
     #[test]
@@ -16949,6 +17395,7 @@ mod tests {
             subject_id: Some("group:parents"),
             subject_external: external,
             excluded_ids: &no_ids,
+            group_audience: &[],
             allow_ids: &no_ids,
             fact_type: Some("bio"),
             valid_from: None,
@@ -17431,6 +17878,7 @@ mod tests {
             subject_id: Some("user:zoe"),
             subject_external: None,
             excluded_ids: &no_ids,
+            group_audience: &[],
             allow_ids: &no_ids,
             fact_type: Some("bio"),
             valid_from: None,
@@ -23993,7 +24441,7 @@ mod tests {
                 body: Some("Pepper is asleep on the new kitchen floor."),
                 ..bare_unit()
             };
-            subject_from_the_audience(&unit)
+            subject_from_the_audience(&unit, "franz", &std::collections::BTreeMap::new())
         };
         assert_eq!(
             read(Some("Pepper"), &["group:famiglia"]),
@@ -26945,7 +27393,7 @@ mod tests {
                 body: Some("Pepper is asleep on the new kitchen floor."),
                 ..bare_unit()
             };
-            subject_from_the_audience(&unit)
+            subject_from_the_audience(&unit, "franz", &std::collections::BTreeMap::new())
         };
         assert_eq!(
             named_thing(&["group:famiglia"]),
@@ -26965,6 +27413,7 @@ mod tests {
     const fn bare_unit() -> CaptureUnit<'static> {
         CaptureUnit {
             excluded_ids: &[],
+            group_audience: &[],
             target_wiki_id: None,
             target_page: None,
             subject_id: None,
