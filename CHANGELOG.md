@@ -150,9 +150,23 @@ semver-governed surface: breaking changes are called out explicitly.
   And when the claim that waited turns out to be something the memory already
   holds — which is the ordinary case, because the second time you say a thing
   is usually the time you add the fence — the restriction lands on the claim
-  that is there instead of vanishing with the copy. Same rule, same limits, as
-  when you say it and it is written straight away: it only ever narrows, and
-  only somebody who could have changed that claim anyway can narrow it.
+  that is there instead of vanishing with the copy, and you are left with one
+  answer rather than a protected copy sitting beside a bare one. Same rule,
+  same limits, as when you say it and it is written straight away: it only
+  ever narrows, and only somebody who could have changed that claim anyway
+  can narrow it.
+
+  **And the whole of what you asked for lands, not half of it.** A claim you
+  ask to be kept quiet is written with its readers named one by one instead of
+  «the parents», so that whoever joins the parents next year does not walk
+  into it — and now a claim that was already in the memory gets the same
+  treatment when the fence reaches it. Everybody reading it a moment ago goes
+  on reading it, minus the person you named. The one thing the fence does NOT
+  do is hand the claim to somebody new: if you say it again and also widen who
+  may see it, those are two different things and the memory keeps them apart —
+  widening is something you say in your own words, and it leaves what was
+  there standing. Each of these changes leaves the same record as any other
+  change to who may read a fact.
 
 - **The trace shows how the memory decided who may read a fact.** A new panel,
   **Who this was filed for**, lists for each fact what your assistant answered:

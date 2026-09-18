@@ -509,10 +509,12 @@ async fn screen_one(
     // **The wish reaches the fact that is already there**, before the ordinary
     // dedup scan gets a chance to call the two claims different. A claim that
     // matches one in the memory in everything but being kept from somebody is
-    // that claim with the wish added, and its audience is narrower, so the
-    // ordinary scan — which folds only same-audience rows — would never see
-    // it. Asked through the live road's own rule, so a claim that waited an
-    // hour in the queue is answered exactly as one that did not
+    // that claim with the wish added — and the scan below folds only rows
+    // whose audience matches AS STORED, which these two never do: carrying an
+    // exclusion is what turns an audience from groups into the people in them,
+    // so the pair is written in two alphabets and only the rule called here
+    // reads both. Asked exactly as the live road asks it, so a claim that
+    // waited an hour is answered like one that did not
     // ([`crate::capture::apply_exclusion_to_the_fact_already_there`]).
     //
     // Two things the scan below does are absent here on purpose. Self is not
@@ -1151,6 +1153,237 @@ mod tests {
             vec![kept_from],
             "but what the second telling added is on the fact: {:?}",
             after[0].excluded_ids
+        );
+    }
+
+    /// Plant `parents` with the three of them in it, so a fact filed for the
+    /// group has people behind the name.
+    async fn parents_are(pool: &SqlitePool, members: &[&str]) {
+        sqlx::query("INSERT OR REPLACE INTO enrollment_groups (group_id, members) VALUES (?, ?)")
+            .bind("parents")
+            .bind(serde_json::to_string(members).unwrap())
+            .execute(pool)
+            .await
+            .expect("group");
+    }
+
+    /// **The second telling reaches the fact the first one wrote, and the
+    /// whole act lands on it.**
+    ///
+    /// The bench pair, as it stands: yesterday's fact is filed for
+    /// `group:parents` and keeps nobody out; today the same sentence comes
+    /// back with «and not her». It folds — no second copy of a scan result
+    /// living beside the protected one — and the fact takes BOTH halves of
+    /// what the founder ruled (Q7): the exclusion, and readers named person by
+    /// person, so that whoever joins `parents` next year does not reach it.
+    #[tokio::test]
+    async fn the_fence_lands_on_the_fact_and_freezes_its_readers() {
+        let (_dir, tree, pool) = setup().await;
+        parents_are(&pool, &["bob", "alice"]).await;
+        let parents = Principal::Group("parents".to_owned());
+        let told_once = CaptureRequest {
+            allow: vec![parents.clone()],
+            ..cap_req("Alice is planning a surprise party")
+        };
+        capture_buffer::buffer_capture(&pool, told_once, None)
+            .await
+            .unwrap();
+        drain_deterministically(&pool, &tree, &embedder(), &LightPolicy::default(), NOW)
+            .await
+            .unwrap();
+        let before = fact_index::find_active_in_wiki(&pool, "alice")
+            .await
+            .unwrap();
+        assert_eq!(before.len(), 1);
+        assert_eq!(
+            before[0].allow_ids,
+            vec![parents.clone()],
+            "the first telling is filed for the group, by its name"
+        );
+
+        // Said again, this time with somebody kept out — and the claim's own
+        // audience comes in already frozen, which is how the engine writes an
+        // audience the moment a claim carries an exclusion.
+        let zoe = Principal::User("zoe".to_owned());
+        capture_buffer::buffer_capture(
+            &pool,
+            CaptureRequest {
+                allow: vec![
+                    Principal::User("bob".to_owned()),
+                    Principal::User("alice".to_owned()),
+                ],
+                excluded: vec![zoe.clone()],
+                ..cap_req("alice   IS planning a surprise party")
+            },
+            None,
+        )
+        .await
+        .unwrap();
+        let report =
+            drain_deterministically(&pool, &tree, &embedder(), &LightPolicy::default(), NOW)
+                .await
+                .unwrap();
+        assert_eq!(report.skipped_dup, 1, "the words are the same claim");
+
+        let after = fact_index::find_active_in_wiki(&pool, "alice")
+            .await
+            .unwrap();
+        assert_eq!(
+            after.len(),
+            1,
+            "one fact, not a protected copy beside a bare one"
+        );
+        assert_eq!(
+            after[0].fact_id, before[0].fact_id,
+            "and it is the first one"
+        );
+        assert_eq!(
+            after[0].excluded_ids,
+            vec![zoe],
+            "kept from the person named: {:?}",
+            after[0].excluded_ids
+        );
+        // Compared as a set: the order is the roster's, which is not part of
+        // what was decided.
+        assert_eq!(
+            crate::acl::reader_set(&after[0].subject_id, &after[0].allow_ids, None, &[]),
+            crate::acl::reader_set(
+                &after[0].subject_id,
+                &[
+                    Principal::User("bob".to_owned()),
+                    Principal::User("alice".to_owned())
+                ],
+                None,
+                &[]
+            ),
+            "and its readers are people now, never the group: {:?}",
+            after[0].allow_ids
+        );
+
+        // Narrowing, demonstrated rather than trusted: everybody who read it
+        // a moment ago still reads it, the one named does not, and joining
+        // the group afterwards no longer reaches it.
+        let acl = crate::types::Acl {
+            subject: Some(after[0].subject_id.clone()),
+            allow: after[0].allow_ids.clone(),
+            excluded: after[0].excluded_ids.clone(),
+        };
+        let in_parents = ["parents".to_owned()];
+        let sender = after[0].sender_id.as_ref();
+        assert!(crate::acl::can_read(&acl, "bob", &in_parents, sender));
+        assert!(crate::acl::can_read(&acl, "alice", &in_parents, sender));
+        assert!(
+            !crate::acl::can_read(&acl, "zoe", &in_parents, sender),
+            "the one named does not read it"
+        );
+        assert!(
+            !crate::acl::can_read(&acl, "carol", &in_parents, sender),
+            "and neither does tomorrow's member of the group"
+        );
+
+        let audited: i64 =
+            sqlx::query_scalar("SELECT COUNT(*) FROM disclosure_audit WHERE fact_id = ?")
+                .bind(after[0].fact_id.as_str())
+                .fetch_one(&pool)
+                .await
+                .unwrap();
+        assert_eq!(audited, 1, "the change leaves a receipt like any other");
+    }
+
+    /// **Reaching different people is not the same claim said again.**
+    ///
+    /// The fence rides on a fold, and a fold is for a claim the memory already
+    /// holds. One that would ALSO hand the fact to somebody new is a different
+    /// act with a verb of its own — it is stated in full, and both facts are
+    /// left standing — so the words matching is not enough and the claim is
+    /// written as its own fact.
+    #[tokio::test]
+    async fn a_claim_that_reaches_new_people_is_not_folded_into_the_old_one() {
+        let (_dir, tree, pool) = setup().await;
+        parents_are(&pool, &["bob", "alice"]).await;
+        capture_buffer::buffer_capture(&pool, cap_req("Alice is planning a surprise party"), None)
+            .await
+            .unwrap();
+        drain_deterministically(&pool, &tree, &embedder(), &LightPolicy::default(), NOW)
+            .await
+            .unwrap();
+
+        // Same words, a fence — and the parents reading it now, which the
+        // stored fact never said.
+        capture_buffer::buffer_capture(
+            &pool,
+            CaptureRequest {
+                allow: vec![
+                    Principal::User("bob".to_owned()),
+                    Principal::User("alice".to_owned()),
+                ],
+                excluded: vec![Principal::User("zoe".to_owned())],
+                ..cap_req("alice   IS planning a surprise party")
+            },
+            None,
+        )
+        .await
+        .unwrap();
+        drain_deterministically(&pool, &tree, &embedder(), &LightPolicy::default(), NOW)
+            .await
+            .unwrap();
+
+        let after = fact_index::find_active_in_wiki(&pool, "alice")
+            .await
+            .unwrap();
+        assert_eq!(
+            after.len(),
+            2,
+            "two facts: one reaches people the other never did, {:?}",
+            after.iter().map(|r| &r.allow_ids).collect::<Vec<_>>()
+        );
+        assert!(
+            after.iter().any(|r| r.allow_ids.is_empty()),
+            "the stored fact keeps the audience it was written with"
+        );
+    }
+
+    /// The same refusal when the new reach is written as a GROUP.
+    ///
+    /// «Same claim, and the parents can see it now, and not her» reaches two
+    /// people the stored fact never reached. It is the same rule as the case
+    /// above and it has to survive the group being resolved: a roster that
+    /// only covered the stored fact's own groups would expand `parents` to
+    /// nobody here, and two lists reaching different people would look alike.
+    #[tokio::test]
+    async fn a_group_the_stored_fact_never_named_is_new_reach_too() {
+        let (_dir, tree, pool) = setup().await;
+        parents_are(&pool, &["bob", "alice"]).await;
+        capture_buffer::buffer_capture(&pool, cap_req("Alice is planning a surprise party"), None)
+            .await
+            .unwrap();
+        drain_deterministically(&pool, &tree, &embedder(), &LightPolicy::default(), NOW)
+            .await
+            .unwrap();
+
+        capture_buffer::buffer_capture(
+            &pool,
+            CaptureRequest {
+                allow: vec![Principal::Group("parents".to_owned())],
+                excluded: vec![Principal::User("zoe".to_owned())],
+                ..cap_req("alice   IS planning a surprise party")
+            },
+            None,
+        )
+        .await
+        .unwrap();
+        drain_deterministically(&pool, &tree, &embedder(), &LightPolicy::default(), NOW)
+            .await
+            .unwrap();
+
+        let after = fact_index::find_active_in_wiki(&pool, "alice")
+            .await
+            .unwrap();
+        assert_eq!(
+            after.len(),
+            2,
+            "the parents are new readers, so this is not the same claim again: {:?}",
+            after.iter().map(|r| &r.allow_ids).collect::<Vec<_>>()
         );
     }
 

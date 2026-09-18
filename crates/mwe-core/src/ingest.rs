@@ -3177,7 +3177,7 @@ fn kept_out_once<'a, I: IntoIterator<Item = &'a String>>(ids: I) -> Vec<Principa
 /// fact's SUBJECT can be a group she is already in, a later widening can name
 /// her, and neither of those is the audience this function froze. One is a
 /// list; the other is a wish, and only the person who made it takes it back.
-fn audience_without_the_excluded(
+pub(crate) fn audience_without_the_excluded(
     allow: Vec<Principal>,
     excluded: Vec<Principal>,
     groups: &std::collections::BTreeMap<String, Vec<String>>,

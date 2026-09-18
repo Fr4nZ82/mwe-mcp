@@ -1344,33 +1344,47 @@ pub async fn set_acl(
     Ok(Some(prev))
 }
 
-/// **Add `excluded` to a fact's exclusions** — nothing else on the row moves,
-/// and `updated_at` is bumped.
+/// **Keep a fact from `excluded`, and freeze its readers to `readers` while
+/// doing it** — nothing else on the row moves, and `updated_at` is bumped.
 ///
 /// The write half of «and don't tell her» about something the memory already
 /// holds ([`crate::capture`]'s dedup gate).
 ///
-/// **It can only ever narrow, and that is enforced HERE.** The union is taken
-/// inside the function, against what the row already holds, rather than by the
-/// caller handing in a complete list: a caller that passed only its own names
-/// would otherwise drop somebody else's restriction by writing over it, and
-/// that is a mistake nobody would see. Lifting a restriction is a different
-/// act — something a person says of that fact, with a receipt — and it does
-/// not come through this door at all ([`set_acl`]'s `excluded` argument).
+/// **The two columns move together because they are one act** (founder, Q7):
+/// a fact carrying an explicit exclusion is written with readers named PERSON
+/// by person and never by group, so that joining the group next year does not
+/// reach it. Writing the exclusion and leaving `group:parents` in the audience
+/// is the half he ruled against — it keeps her out today and lets tomorrow's
+/// members in. `readers` is that same audience already frozen by the caller,
+/// which is where the membership of the day is known.
 ///
-/// Returns `false` when `fact_id` has no active row.
+/// **The exclusion can only ever narrow, and that is enforced HERE.** The
+/// union is taken inside the function, against what the row already holds,
+/// rather than by the caller handing in a complete list: a caller that passed
+/// only its own names would otherwise drop somebody else's restriction by
+/// writing over it, and that is a mistake nobody would see. Lifting a
+/// restriction is a different act — something a person says of that fact, with
+/// a receipt — and it does not come through this door at all ([`set_acl`]'s
+/// `excluded` argument).
+///
+/// Returns the row's previous ACL for the audit row the caller writes, or
+/// `None` when `fact_id` has no active row.
 ///
 /// # Errors
 ///
-/// `sqlx::Error` + JSON serialization failures on `excluded_ids`.
+/// `sqlx::Error` + JSON serialization failures on the principal lists.
 pub async fn restrict_to(
     pool: &SqlitePool,
     fact_id: &FactId,
     excluded: &[Principal],
-) -> Result<bool> {
+    readers: &[Principal],
+) -> Result<Option<PrevAcl>> {
     let Some(row) = find_by_id(pool, fact_id).await? else {
-        return Ok(false);
+        return Ok(None);
     };
+    if row.deleted_at.is_some() {
+        return Ok(None);
+    }
     let mut union = row.excluded_ids;
     for principal in excluded {
         if !union.contains(principal) {
@@ -1378,16 +1392,25 @@ pub async fn restrict_to(
         }
     }
     let excluded_json = principals_to_json(&union)?;
+    let allow_json = principals_to_json(readers)?;
     let res = sqlx::query(
-        "UPDATE fact_index SET excluded_ids = ?, updated_at = ?
+        "UPDATE fact_index SET excluded_ids = ?, allow_ids = ?, updated_at = ?
           WHERE fact_id = ? AND deleted_at IS NULL",
     )
     .bind(&excluded_json)
+    .bind(&allow_json)
     .bind(chrono::Utc::now().to_rfc3339())
     .bind(fact_id.as_str())
     .execute(pool)
     .await?;
-    Ok(res.rows_affected() > 0)
+    if res.rows_affected() == 0 {
+        return Ok(None);
+    }
+    Ok(Some(PrevAcl {
+        prev_subject_id: row.subject_id,
+        prev_allow_ids: row.allow_ids,
+        prev_sender_id: row.sender_id,
+    }))
 }
 
 /// Replace **only** a fact's `allow_ids`, leaving `subject_id` and `sender_id`
@@ -6184,10 +6207,17 @@ mod tests {
 
         // A caller that knows nothing of Zoe adds its own name.
         let carol: Principal = "user:carol".parse().unwrap();
+        let bob: Principal = "user:bob".parse().unwrap();
         assert!(
-            restrict_to(&pool, &id, std::slice::from_ref(&carol))
-                .await
-                .expect("restrict")
+            restrict_to(
+                &pool,
+                &id,
+                std::slice::from_ref(&carol),
+                std::slice::from_ref(&bob),
+            )
+            .await
+            .expect("restrict")
+            .is_some()
         );
         let row = find_by_id(&pool, &id).await.unwrap().expect("row");
         assert_eq!(
@@ -6195,12 +6225,23 @@ mod tests {
             vec!["user:zoe".parse::<Principal>().unwrap(), carol.clone()],
             "both stand: the union is taken here, not by whoever calls"
         );
+        assert_eq!(
+            row.allow_ids,
+            vec![bob.clone()],
+            "and the readers the caller froze are what the row now names"
+        );
 
         // And saying the same name twice changes nothing.
         assert!(
-            restrict_to(&pool, &id, std::slice::from_ref(&carol))
-                .await
-                .expect("restrict")
+            restrict_to(
+                &pool,
+                &id,
+                std::slice::from_ref(&carol),
+                std::slice::from_ref(&bob),
+            )
+            .await
+            .expect("restrict")
+            .is_some()
         );
         let row = find_by_id(&pool, &id).await.unwrap().expect("row");
         assert_eq!(row.excluded_ids.len(), 2, "no duplicate");

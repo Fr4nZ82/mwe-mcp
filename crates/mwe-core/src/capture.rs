@@ -380,25 +380,29 @@ impl Audience<'_> {
         self.same_read_set_as(row) && row.sender_id.as_ref() == self.sender
     }
 
-    /// The same claim, told to the same people, **except that this one is
-    /// kept from somebody the stored one is not**.
+    /// The same claim by the same person about the same subject, **kept from
+    /// somebody the stored one is not**.
     ///
     /// «I'd rather Zoe didn't know» almost always means the thing said
     /// yesterday too. Written as a second fact, the wish would sit beside a
     /// copy she can still read, which is the shape of not being kept at all —
     /// so this pair is not two facts, it is the old one with something added
-    /// to it ([`Audience::restricts`]).
+    /// to it.
     ///
     /// Strictly a RESTRICTION: the incoming exclusion has to contain
     /// everything the row already keeps it from, and at least one name more.
     /// A capture that keeps it from FEWER people is not this — lifting a
     /// restriction is something somebody says of that fact, not something a
     /// resemblance may do on their behalf.
+    ///
+    /// **The audience is NOT compared here**, because the two are not written
+    /// in the same alphabet: a claim carrying an exclusion has already had its
+    /// groups expanded into today's people, while the stored fact may still
+    /// name the group. That comparison needs the roster and so cannot live on
+    /// a pure predicate — [`the_same_readers_once_frozen`] does it.
     fn restricts(&self, row: &FactIndexRow) -> bool {
         &row.subject_id == self.subject
             && row.sender_id.as_ref() == self.sender
-            && crate::acl::reader_set(self.subject, self.allow, None, &[])
-                == crate::acl::reader_set(&row.subject_id, &row.allow_ids, None, &[])
             && row.excluded_ids.iter().all(|p| self.excluded.contains(p))
             && self.excluded.iter().any(|p| !row.excluded_ids.contains(p))
     }
@@ -485,24 +489,38 @@ impl<'a> ChannelScope<'a> {
 /// constantly, because the second time somebody says a thing is usually the
 /// time they add the fence.
 ///
-/// Three conditions, and each one is a way of not overstepping. The claim has
-/// to be the same claim (the same dedup threshold every other fold uses); the
-/// change has to NARROW ([`Audience::restricts`]); and this speaker has to be
-/// somebody who could have rewritten that fact anyway
-/// ([`crate::acl::sender_may_rewrite`]) — otherwise a resemblance would let
-/// one person add a restriction to another person's memory, and the answer
-/// there is the ordinary one: their own fact, with their own wish on it, and
-/// the other left alone.
+/// Four conditions, and each one is a way of not overstepping:
 ///
-/// **The authority test is asked with no groups**, because this path does not
-/// carry the speaker's: a fact a group answers for, which the speaker answers
-/// for through that group, is left alone rather than rewritten on a guess. It
-/// is the same predicate asked with less, and it errs towards touching
-/// nothing.
+/// - the claim is the same claim, by the same author about the same subject,
+///   at the same dedup threshold every other fold uses;
+/// - the change NARROWS ([`Audience::restricts`]) — an exclusion this fact
+///   does not already carry, and none of its own dropped;
+/// - the same people read it, once both audiences are read in the same
+///   alphabet ([`the_same_readers_once_frozen`]);
+/// - and this speaker could have rewritten that fact anyway
+///   ([`crate::acl::sender_may_rewrite`]) — otherwise a resemblance would let
+///   one person add a restriction to another person's memory, and the answer
+///   there is the ordinary one: their own fact, with their own wish on it, and
+///   the other left alone.
 ///
-/// Only the names this claim adds are passed on — the union against what the
-/// row already holds is taken inside [`fact_index::restrict_to`], so no caller
-/// can drop somebody else's restriction by writing over it.
+/// **Somebody else's fact is turned away by the second condition, before the
+/// fourth is reached**: [`Audience::restricts`] asks for the same AUTHOR, so a
+/// claim of Alice's never meets a fact Bob wrote. The authority test stands
+/// behind it as the floor, for the day that predicate is loosened — it is not
+/// what does the work today, and a reader who takes it for the guard is
+/// reading the wrong line. It is asked with no groups, because this path does
+/// not carry the speaker's: a fact a group answers for, which the speaker
+/// answers for through that group, would be rewritten on a guess. The same
+/// predicate asked with less, erring towards touching nothing.
+///
+/// **What lands is the whole act, not half of it** (founder, Q7): the fact
+/// takes the exclusion AND its readers are frozen to the people in its groups
+/// today, so that joining `parents` next year does not reach a fact somebody
+/// asked to be kept quiet. Only the names this claim adds are passed on — the
+/// union against what the row already holds is taken inside
+/// [`fact_index::restrict_to`], so no caller can drop somebody else's
+/// restriction by writing over it — and the change leaves an audit row like
+/// every other per-fact permission change.
 ///
 /// **Two roads ask this, and they ask it identically**: the live capture, and
 /// the hourly round promoting a claim that waited in the queue
@@ -512,7 +530,7 @@ impl<'a> ChannelScope<'a> {
 ///
 /// # Errors
 ///
-/// Surfaces the fact-index write, which is the only thing here that can fail.
+/// Surfaces the fact-index and roster reads and the write.
 pub(crate) async fn apply_exclusion_to_the_fact_already_there<'a>(
     pool: &SqlitePool,
     candidates: &'a [FactIndexRow],
@@ -528,19 +546,25 @@ pub(crate) async fn apply_exclusion_to_the_fact_already_there<'a>(
     let Principal::User(speaker_id) = speaker else {
         return Ok(None);
     };
-    // Scored with the exclusion set aside: the words are what is being
-    // compared, and the wish is the very thing this claim adds to them.
-    let widened = Audience {
-        excluded: &[],
-        ..*audience
-    };
-    let Some((row, similarity)) = best_dedup_candidate(
-        candidates.iter().filter(|row| audience.restricts(row)),
-        &widened,
-        channel,
-        body,
-        None,
-    ) else {
+    let narrowing: Vec<&FactIndexRow> = candidates
+        .iter()
+        .filter(|row| audience.restricts(row))
+        .collect();
+    if narrowing.is_empty() {
+        return Ok(None);
+    }
+    // Each eligible row carries the readers it would be written with, so the
+    // list the winner is written with is never looked up again by id: an
+    // audience is the one thing here that must not be guessed at, and an empty
+    // list is not a harmless default but every reader removed.
+    let mut eligible: Vec<(&'a FactIndexRow, Vec<Principal>)> = Vec::with_capacity(narrowing.len());
+    for row in narrowing {
+        if let Some(readers) = the_same_readers_once_frozen(pool, row, audience).await? {
+            eligible.push((row, readers));
+        }
+    }
+    let Some((row, similarity)) = closest_by_words(eligible.iter().map(|(r, _)| *r), channel, body)
+    else {
         return Ok(None);
     };
     if similarity < threshold {
@@ -549,15 +573,105 @@ pub(crate) async fn apply_exclusion_to_the_fact_already_there<'a>(
     if !crate::acl::sender_may_rewrite(&row.subject_id, row.sender_id.as_ref(), speaker_id, &[]) {
         return Ok(None);
     }
-    if !fact_index::restrict_to(pool, &row.fact_id, audience.excluded).await? {
+    let Some((row, readers)) = eligible.iter().find(|(r, _)| r.fact_id == row.fact_id) else {
         return Ok(None);
+    };
+    let Some(prev) =
+        fact_index::restrict_to(pool, &row.fact_id, audience.excluded, readers).await?
+    else {
+        return Ok(None);
+    };
+    // The same receipt any other per-fact permission change leaves, and it is
+    // recorded as a NARROWING because it cannot be anything else here: the
+    // readers written are this fact's own audience resolved into the people in
+    // it today, minus the one named, and everybody in that list was already
+    // reading the fact a moment ago — being in `parents` today is what makes
+    // somebody a reader of a fact filed for `parents`. What it takes away is
+    // the person named, and the members who join tomorrow.
+    //
+    // `acl::widens` is not asked: it compares principals as written, and this
+    // is the one change that deliberately rewrites the same audience in a
+    // different alphabet — it would read `group:parents` → `[bob, alice]` as
+    // two new readers and say the opposite of what happened.
+    if let Err(e) = crate::disclosure_audit::record(
+        pool,
+        &row.fact_id,
+        &row.wiki_id,
+        speaker_id,
+        &prev,
+        &row.subject_id,
+        readers,
+        row.sender_id.as_ref(),
+        false,
+    )
+    .await
+    {
+        tracing::warn!(error = %e, fact_id = row.fact_id.as_str(),
+            "capture: exclusion applied but its audit row was not written");
     }
     tracing::info!(
         fact_id = row.fact_id.as_str(),
         similarity,
-        "capture: exclusion applied to an existing fact — the claim folds into it"
+        readers = ?readers,
+        "capture: exclusion applied to an existing fact — the claim folds into it, \
+         and its readers are frozen to today's members"
     );
     Ok(Some((row, similarity)))
+}
+
+/// **Do the claim and the stored fact reach the same people** — once both
+/// audiences are read in the same alphabet?
+///
+/// They are written in two, and that is the whole reason this cannot be a
+/// plain comparison. A claim carrying an exclusion has already had its groups
+/// resolved into the people in them today
+/// ([`crate::ingest::audience_without_the_excluded`]); the fact it would fold
+/// into may have been written without one and still name `group:parents`. Read
+/// as stored the two never match, and the fold this exists for could never
+/// happen.
+///
+/// So the stored fact's audience is put through the SAME freezing, with the
+/// same exclusion, and the two are compared after that. Returns those frozen
+/// readers when they match — they are what the row is about to be written with
+/// — and `None` when they do not, because then the claim is not the same claim
+/// said again with a fence: it reaches different people, and reaching
+/// different people is something a person says in their own words, through the
+/// permissions verb, with both facts left standing.
+async fn the_same_readers_once_frozen(
+    pool: &SqlitePool,
+    row: &FactIndexRow,
+    audience: &Audience<'_>,
+) -> std::result::Result<Option<Vec<Principal>>, FactIndexError> {
+    // The roster covers the groups named on BOTH sides. A group missing from
+    // it expands to nobody, which would quietly shrink whichever audience
+    // named it and let two lists that reach different people look alike —
+    // the claim's own groups are usually gone by here (the engine resolves
+    // them the moment a claim carries an exclusion) but a caller writing
+    // straight through `wiki_capture` hands them in as written.
+    let mut roster: std::collections::BTreeMap<String, Vec<String>> =
+        std::collections::BTreeMap::new();
+    for principal in row.allow_ids.iter().chain(audience.allow.iter()) {
+        if let Principal::Group(id) = principal
+            && !roster.contains_key(id)
+        {
+            roster.insert(id.clone(), crate::enrollment::members_for(pool, id).await?);
+        }
+    }
+    let excluded = audience.excluded.to_vec();
+    let (frozen, _) = crate::ingest::audience_without_the_excluded(
+        row.allow_ids.clone(),
+        excluded.clone(),
+        &roster,
+    );
+    let (claim, _) =
+        crate::ingest::audience_without_the_excluded(audience.allow.to_vec(), excluded, &roster);
+    if crate::acl::reader_set(&row.subject_id, &frozen, None, &[])
+        == crate::acl::reader_set(audience.subject, &claim, None, &[])
+    {
+        Ok(Some(frozen))
+    } else {
+        Ok(None)
+    }
 }
 
 pub(crate) fn best_dedup_candidate<'a, I>(
@@ -570,18 +684,40 @@ pub(crate) fn best_dedup_candidate<'a, I>(
 where
     I: IntoIterator<Item = &'a FactIndexRow>,
 {
+    closest_by_words(
+        candidates.into_iter().filter(|row| {
+            !exclude.is_some_and(|id| id == &row.fact_id) && audience.same_as_row(row)
+        }),
+        channel,
+        body,
+    )
+}
+
+/// **How near the words are**, over rows somebody else has already decided are
+/// eligible.
+///
+/// The measuring half of a dedup question, with no say in who may be
+/// compared: the channel-page boundary (a rule is read back by its own
+/// reader, so prose and a rule are never each other's duplicate) and the
+/// jaccard 6-gram over the marker-stripped bodies. Two callers admit rows on
+/// different grounds — [`best_dedup_candidate`] on the audience matching as
+/// stored, the exclusion rule on the audience matching once frozen — and this
+/// is the part that must not differ between them, since it is what «the same
+/// claim» means everywhere else in the engine.
+fn closest_by_words<'a, I>(
+    candidates: I,
+    channel: Option<ChannelScope<'_>>,
+    body: &str,
+) -> Option<(&'a FactIndexRow, f32)>
+where
+    I: IntoIterator<Item = &'a FactIndexRow>,
+{
     let needle = recall::ngrams(
         &crate::parser::strip_embed_markers(body),
         recall::DEFAULT_NGRAM,
     );
     let mut best: Option<(&'a FactIndexRow, f32)> = None;
     for row in candidates {
-        if exclude.is_some_and(|id| id == &row.fact_id) {
-            continue;
-        }
-        if !audience.same_as_row(row) {
-            continue;
-        }
         let same_channel = channel.as_ref().map_or_else(
             || !crate::wiki::is_channel_page(&row.source_path),
             |scope| scope.holds(row),
@@ -961,9 +1097,10 @@ pub async fn wiki_capture_with_source(
         sender: req.sender.as_ref(),
     };
     // **The wish reaches the fact that is already there**, before the dedup
-    // scan below gets a chance to call the two claims different: their
-    // audiences differ by exactly the thing this claim adds, so that scan —
-    // which folds only same-audience rows — would never see the pair
+    // scan below gets a chance to call the two claims different: that scan
+    // folds only rows whose audience matches AS STORED, and carrying an
+    // exclusion is what turns an audience from groups into the people in
+    // them, so the pair is written in two alphabets and it would never see it
     // ([`apply_exclusion_to_the_fact_already_there`] carries the rule, and the
     // hourly round asks it the same way).
     let speaker = req.sender.as_ref().unwrap_or(&req.subject);
