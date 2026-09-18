@@ -519,8 +519,9 @@ impl<'a> ChannelScope<'a> {
 /// asked to be kept quiet. Only the names this claim adds are passed on — the
 /// union against what the row already holds is taken inside
 /// [`fact_index::restrict_to`], so no caller can drop somebody else's
-/// restriction by writing over it — and the change leaves an audit row like
-/// every other per-fact permission change.
+/// restriction by writing over it — and the change leaves the same audit row
+/// and the same receipt as every other per-fact permission change
+/// ([`receipt_for_the_frozen_readers`]).
 ///
 /// **Two roads ask this, and they ask it identically**: the live capture, and
 /// the hourly round promoting a claim that waited in the queue
@@ -593,7 +594,7 @@ pub(crate) async fn apply_exclusion_to_the_fact_already_there<'a>(
     // is the one change that deliberately rewrites the same audience in a
     // different alphabet — it would read `group:parents` → `[bob, alice]` as
     // two new readers and say the opposite of what happened.
-    if let Err(e) = crate::disclosure_audit::record(
+    match crate::disclosure_audit::record(
         pool,
         &row.fact_id,
         &row.wiki_id,
@@ -606,8 +607,13 @@ pub(crate) async fn apply_exclusion_to_the_fact_already_there<'a>(
     )
     .await
     {
-        tracing::warn!(error = %e, fact_id = row.fact_id.as_str(),
-            "capture: exclusion applied but its audit row was not written");
+        Ok(audit_id) => {
+            receipt_for_the_frozen_readers(pool, row, readers, &prev, audit_id, speaker_id).await;
+        },
+        Err(e) => {
+            tracing::warn!(error = %e, fact_id = row.fact_id.as_str(),
+                "capture: exclusion applied but its audit row was not written");
+        },
     }
     tracing::info!(
         fact_id = row.fact_id.as_str(),
@@ -617,6 +623,91 @@ pub(crate) async fn apply_exclusion_to_the_fact_already_there<'a>(
          and its readers are frozen to today's members"
     );
     Ok(Some((row, similarity)))
+}
+
+/// **Say, where a person can read it, that the readers were frozen.**
+///
+/// The same born-applied receipt the permissions verb writes when somebody
+/// re-shares a fact from the chat ([`crate::promote::emit_acl_change_receipt`]
+/// — the dashboard renders «Was readable by» / «Now readable by» and the
+/// disclosure record from it), because this IS that: who may read the fact
+/// changed, and a change to that is never left to be inferred from the fact
+/// afterwards. It carries a reason, because nobody typed a sentence asking
+/// for this one — it fell out of a claim folding away.
+///
+/// It must reach BOTH roads, which is why it is a receipt and not a line in
+/// the turn's trace: the hourly round folds a claim long after the trace of
+/// the turn that made it was written and closed.
+///
+/// Best-effort. The permission has already moved and the audit row already
+/// stands; a receipt that cannot be written is logged and does not undo them.
+async fn receipt_for_the_frozen_readers(
+    pool: &SqlitePool,
+    row: &FactIndexRow,
+    readers: &[Principal],
+    prev: &fact_index::PrevAcl,
+    audit_id: i64,
+    speaker_id: &str,
+) {
+    let applied = crate::promote::AppliedAclChange {
+        fact_id: row.fact_id.clone(),
+        wiki_id: row.wiki_id.clone(),
+        preview: row.text.chars().take(120).collect(),
+        new_subject: row.subject_id.clone(),
+        new_allow: readers.to_vec(),
+        prev: prev.clone(),
+        audit_id,
+        widening: false,
+        surface: crate::promote::ClosureSurface::Fact,
+    };
+    // One recipient, and the fact is theirs to see: `Audience::restricts` asks
+    // for the same author as the claim, and the speaker is that author (or,
+    // on a claim with no author, the subject it is about). Either way the
+    // preview this carries is text they already read — which is what the
+    // receipt's own warning about batches spanning two owners is for.
+    if let Err(e) = crate::promote::emit_acl_change_receipt(
+        pool,
+        std::slice::from_ref(&applied),
+        None,
+        Some(&the_freezing_in_words(&prev.prev_allow_ids, readers)),
+        Some(speaker_id),
+        Some(speaker_id.to_owned()),
+    )
+    .await
+    {
+        tracing::warn!(error = %e, fact_id = row.fact_id.as_str(),
+            "capture: exclusion applied but its receipt was not written");
+    }
+}
+
+/// The sentence on that receipt: which groups stopped being a promise about a
+/// list, and who the fact is now written for.
+///
+/// Named groups first because they are what changed — a reader looking at
+/// «Was readable by the parents» beside «Now readable by alice, bob» needs the
+/// line that says why, or the change reads as somebody having retyped the
+/// audience by hand.
+fn the_freezing_in_words(was: &[Principal], now: &[Principal]) -> String {
+    let groups: Vec<&str> = was
+        .iter()
+        .filter_map(|p| match p {
+            Principal::Group(id) => Some(id.as_str()),
+            Principal::User(_) => None,
+        })
+        .collect();
+    let people = now
+        .iter()
+        .map(ToString::to_string)
+        .collect::<Vec<_>>()
+        .join(", ");
+    if groups.is_empty() {
+        format!("kept from somebody, so its readers are named one by one: {people}")
+    } else {
+        format!(
+            "readers frozen to today's members of {}, minus whoever it is kept from: {people}",
+            groups.join(", ")
+        )
+    }
 }
 
 /// **Do the claim and the stored fact reach the same people** — once both

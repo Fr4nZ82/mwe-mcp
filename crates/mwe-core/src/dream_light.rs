@@ -1167,6 +1167,21 @@ mod tests {
             .expect("group");
     }
 
+    /// Does `who`, a member of `parents`, read this fact — asked of the
+    /// engine's own predicate rather than by eye.
+    fn reads_it(row: &fact_index::FactIndexRow, who: &str) -> bool {
+        crate::acl::can_read(
+            &crate::types::Acl {
+                subject: Some(row.subject_id.clone()),
+                allow: row.allow_ids.clone(),
+                excluded: row.excluded_ids.clone(),
+            },
+            who,
+            &["parents".to_owned()],
+            row.sender_id.as_ref(),
+        )
+    }
+
     /// **The second telling reaches the fact the first one wrote, and the
     /// whole act lands on it.**
     ///
@@ -1263,31 +1278,50 @@ mod tests {
         // Narrowing, demonstrated rather than trusted: everybody who read it
         // a moment ago still reads it, the one named does not, and joining
         // the group afterwards no longer reaches it.
-        let acl = crate::types::Acl {
-            subject: Some(after[0].subject_id.clone()),
-            allow: after[0].allow_ids.clone(),
-            excluded: after[0].excluded_ids.clone(),
-        };
-        let in_parents = ["parents".to_owned()];
-        let sender = after[0].sender_id.as_ref();
-        assert!(crate::acl::can_read(&acl, "bob", &in_parents, sender));
-        assert!(crate::acl::can_read(&acl, "alice", &in_parents, sender));
+        assert!(reads_it(&after[0], "bob"));
+        assert!(reads_it(&after[0], "alice"));
         assert!(
-            !crate::acl::can_read(&acl, "zoe", &in_parents, sender),
+            !reads_it(&after[0], "zoe"),
             "the one named does not read it"
         );
         assert!(
-            !crate::acl::can_read(&acl, "carol", &in_parents, sender),
+            !reads_it(&after[0], "carol"),
             "and neither does tomorrow's member of the group"
         );
 
+        the_change_is_on_the_record(&pool, &after[0].fact_id).await;
+    }
+
+    /// The two things a change to who may read a fact always leaves: the
+    /// disclosure record, and the receipt a person reads.
+    ///
+    /// The receipt has to say the readers were frozen and which group stopped
+    /// being a promise about a list — nobody typed a sentence asking for this
+    /// change, so without that line it reads as somebody having retyped the
+    /// audience by hand.
+    async fn the_change_is_on_the_record(pool: &SqlitePool, fact_id: &crate::types::FactId) {
         let audited: i64 =
             sqlx::query_scalar("SELECT COUNT(*) FROM disclosure_audit WHERE fact_id = ?")
-                .bind(after[0].fact_id.as_str())
-                .fetch_one(&pool)
+                .bind(fact_id.as_str())
+                .fetch_one(pool)
                 .await
                 .unwrap();
-        assert_eq!(audited, 1, "the change leaves a receipt like any other");
+        assert_eq!(audited, 1, "the change leaves a record like any other");
+
+        let context: String = sqlx::query_scalar(
+            "SELECT context FROM structure_proposals ORDER BY rowid DESC LIMIT 1",
+        )
+        .fetch_one(pool)
+        .await
+        .expect("a receipt was written");
+        assert!(
+            context.contains("readers frozen to today's members of parents"),
+            "the receipt names the freezing and the group: {context}"
+        );
+        assert!(
+            context.contains("group:parents") && context.contains("user:alice"),
+            "and carries what it was and what it is now: {context}"
+        );
     }
 
     /// **Reaching different people is not the same claim said again.**

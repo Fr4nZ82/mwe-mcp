@@ -165,8 +165,11 @@ semver-governed surface: breaking changes are called out explicitly.
   do is hand the claim to somebody new: if you say it again and also widen who
   may see it, those are two different things and the memory keeps them apart —
   widening is something you say in your own words, and it leaves what was
-  there standing. Each of these changes leaves the same record as any other
-  change to who may read a fact.
+  there standing. Each of these changes shows up where every other change to
+  who may read a fact shows up, saying in a line that the readers were written
+  out one by one and which group they were read from — nobody typed a sentence
+  asking for this one, so without that line it would look like somebody had
+  retyped the audience by hand.
 
 - **The trace shows how the memory decided who may read a fact.** A new panel,
   **Who this was filed for**, lists for each fact what your assistant answered:

@@ -167,6 +167,7 @@ pub async fn acl_change_operator(
         pool,
         std::slice::from_ref(&applied),
         Some(preview),
+        None,
         Some(actor_id),
         recipient,
     )

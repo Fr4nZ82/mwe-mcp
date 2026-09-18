@@ -213,10 +213,12 @@ pub(crate) async fn apply_wiki_promote(
         VARIANT_VALIDITY_CLOSE => Err(ApplyError::InvalidPayload(
             "validity_close receipts are born applied at ingest; no chassis apply path".into(),
         )),
-        // Like validity_close, the validity-edit and acl-change verbs are
-        // born-applied by the ingest orchestrator before any receipt
-        // exists; a pending row of either variant cannot occur, so the
-        // chassis apply path refuses it loudly.
+        // Like validity_close, these two are born-applied before any receipt
+        // exists — the validity edit by the ingest orchestrator, a sharing
+        // change by whoever made it (the chat verb, the operator's edit, or
+        // the capture rule that puts an exclusion on a fact already held). A
+        // pending row of either variant cannot occur, so the chassis apply
+        // path refuses it loudly.
         VARIANT_VALIDITY_EDIT => Err(ApplyError::InvalidPayload(
             "validity_edit receipts are born applied at ingest; no chassis apply path".into(),
         )),
@@ -3000,7 +3002,16 @@ fn acl_change_questions(changes: &[AppliedAclChange]) -> Value {
 
 /// Context JSON stored on an `acl_change` receipt — what the dashboard
 /// renders (old → new read-set per fact, plus the widening flag).
-fn acl_change_context(changes: &[AppliedAclChange], gesture: Option<&str>) -> Value {
+///
+/// `reason` is for a change nobody typed a sentence for: the permissions verb
+/// leaves it out, because the gesture beside it already says what was said at
+/// the time, while a change the engine made on its own says here why the
+/// read-set is written the way it is.
+fn acl_change_context(
+    changes: &[AppliedAclChange],
+    gesture: Option<&str>,
+    reason: Option<&str>,
+) -> Value {
     let mut context = serde_json::Map::new();
     context.insert("variant".into(), json!(VARIANT_ACL_CHANGE));
     context.insert(
@@ -3028,6 +3039,9 @@ fn acl_change_context(changes: &[AppliedAclChange], gesture: Option<&str>) -> Va
     if let Some(g) = gesture {
         context.insert("gesture".into(), json!(g));
     }
+    if let Some(r) = reason {
+        context.insert("reason".into(), json!(r));
+    }
     Value::Object(context)
 }
 
@@ -3041,10 +3055,13 @@ fn acl_change_context(changes: &[AppliedAclChange], gesture: Option<&str>) -> Va
 /// group first ([`crate::proposals::group_by_recipient`]) and call this
 /// once per group.
 ///
-/// The sibling of [`emit_validity_close_receipt`], for a sharing change:
-/// the ingest orchestrator has already stamped every target's ACL
-/// ([`fact_index::set_acl`] / [`capture_buffer::set_acl`]) and written the
-/// [`crate::disclosure_audit`] rows; this writes the receipt.
+/// The sibling of [`emit_validity_close_receipt`], for a sharing change: the
+/// caller has already stamped every target's ACL ([`fact_index::set_acl`],
+/// [`capture_buffer::set_acl`], or [`fact_index::restrict_to`] where the
+/// change is an exclusion landing on a fact the memory already held) and
+/// written the [`crate::disclosure_audit`] rows; this writes the receipt.
+///
+/// `reason` says why, for a change nobody typed a sentence asking for.
 ///
 /// # Errors
 ///
@@ -3054,6 +3071,7 @@ pub async fn emit_acl_change_receipt(
     pool: &SqlitePool,
     changes: &[AppliedAclChange],
     gesture: Option<&str>,
+    reason: Option<&str>,
     applied_by: Option<&str>,
     recipient: Option<String>,
 ) -> Result<DirectApplied, DirectPromoteError> {
@@ -3084,7 +3102,7 @@ pub async fn emit_acl_change_receipt(
         pool,
         EmitParams::new(
             kind::WIKI_PROMOTE,
-            acl_change_context(changes, gesture),
+            acl_change_context(changes, gesture, reason),
             acl_change_questions(changes),
         )
         .with_recipient(recipient),

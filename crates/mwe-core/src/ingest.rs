@@ -8268,6 +8268,7 @@ async fn emit_acl_change_paper_trail(
             pool,
             &changed,
             said,
+            None,
             Some(request.sender_id.as_str()),
             recipient.clone(),
         )

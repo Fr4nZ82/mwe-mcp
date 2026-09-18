@@ -1385,8 +1385,12 @@ pub async fn restrict_to(
     if row.deleted_at.is_some() {
         return Ok(None);
     }
-    let mut union = row.excluded_ids;
-    for principal in excluded {
+    // The union is taken over the RESULT, not just over what arrives: a row
+    // written before the two roads were read as one question can already hold
+    // the same person twice, and a union that only guards its input carries
+    // that forward for ever. What is written is the set.
+    let mut union: Vec<Principal> = Vec::with_capacity(row.excluded_ids.len() + excluded.len());
+    for principal in row.excluded_ids.iter().chain(excluded) {
         if !union.contains(principal) {
             union.push(principal.clone());
         }
@@ -6229,6 +6233,34 @@ mod tests {
             row.allow_ids,
             vec![bob.clone()],
             "and the readers the caller froze are what the row now names"
+        );
+
+        // A row that already held a repeat comes out holding one name. The
+        // union is over the result, so a write from before the two roads were
+        // read as one question is cleaned by the next one rather than kept.
+        sqlx::query("UPDATE fact_index SET excluded_ids = ? WHERE fact_id = ?")
+            .bind(r#"["user:zoe","user:zoe"]"#)
+            .bind(id.as_str())
+            .execute(&pool)
+            .await
+            .expect("plant the repeat");
+        assert!(
+            restrict_to(
+                &pool,
+                &id,
+                std::slice::from_ref(&carol),
+                std::slice::from_ref(&bob),
+            )
+            .await
+            .expect("restrict")
+            .is_some()
+        );
+        let row = find_by_id(&pool, &id).await.unwrap().expect("row");
+        assert_eq!(
+            row.excluded_ids,
+            vec!["user:zoe".parse::<Principal>().unwrap(), carol.clone()],
+            "the old repeat is gone, not carried forward: {:?}",
+            row.excluded_ids
         );
 
         // And saying the same name twice changes nothing.
