@@ -481,7 +481,9 @@ impl<'a> ChannelScope<'a> {
 /// Somebody saying «and don't tell her» about something the memory already
 /// holds means the thing it already holds. Written as a new fact, the wish
 /// would sit beside a copy she can still read — which is not being kept from
-/// her at all, and nobody would be told.
+/// her at all, and nobody would be told. It is the shape a memory meets
+/// constantly, because the second time somebody says a thing is usually the
+/// time they add the fence.
 ///
 /// Three conditions, and each one is a way of not overstepping. The claim has
 /// to be the same claim (the same dedup threshold every other fold uses); the
@@ -497,73 +499,82 @@ impl<'a> ChannelScope<'a> {
 /// for through that group, is left alone rather than rewritten on a guess. It
 /// is the same predicate asked with less, and it errs towards touching
 /// nothing.
-async fn apply_exclusion_to_the_fact_already_there(
+///
+/// Only the names this claim adds are passed on — the union against what the
+/// row already holds is taken inside [`fact_index::restrict_to`], so no caller
+/// can drop somebody else's restriction by writing over it.
+///
+/// **Two roads ask this, and they ask it identically**: the live capture, and
+/// the hourly round promoting a claim that waited in the queue
+/// ([`crate::dream_light`]). Returns the fact the claim folds into and how
+/// close the words were, or `None` when nothing here applies and the claim
+/// goes on to be dedup-scored like any other.
+///
+/// # Errors
+///
+/// Surfaces the fact-index write, which is the only thing here that can fail.
+pub(crate) async fn apply_exclusion_to_the_fact_already_there<'a>(
     pool: &SqlitePool,
-    candidates: &[FactIndexRow],
+    candidates: &'a [FactIndexRow],
     audience: &Audience<'_>,
     channel: Option<ChannelScope<'_>>,
-    req: &CaptureRequest,
+    body: &str,
+    speaker: &Principal,
     threshold: f32,
-) -> Result<Option<CaptureOutcome>> {
+) -> std::result::Result<Option<(&'a FactIndexRow, f32)>, FactIndexError> {
     if audience.excluded.is_empty() {
         return Ok(None);
     }
-    let restricting: Vec<FactIndexRow> = candidates
-        .iter()
-        .filter(|row| audience.restricts(row))
-        .cloned()
-        .collect();
+    let Principal::User(speaker_id) = speaker else {
+        return Ok(None);
+    };
+    // Scored with the exclusion set aside: the words are what is being
+    // compared, and the wish is the very thing this claim adds to them.
     let widened = Audience {
         excluded: &[],
         ..*audience
     };
-    let Some((row, similarity)) =
-        best_dedup_candidate(&restricting, &widened, channel, &req.body, None)
-    else {
+    let Some((row, similarity)) = best_dedup_candidate(
+        candidates.iter().filter(|row| audience.restricts(row)),
+        &widened,
+        channel,
+        body,
+        None,
+    ) else {
         return Ok(None);
     };
     if similarity < threshold {
         return Ok(None);
     }
-    let speaker = match req.sender.as_ref().unwrap_or(&req.subject) {
-        Principal::User(id) => id.clone(),
-        Principal::Group(_) => return Ok(None),
-    };
-    if !crate::acl::sender_may_rewrite(&row.subject_id, row.sender_id.as_ref(), &speaker, &[]) {
+    if !crate::acl::sender_may_rewrite(&row.subject_id, row.sender_id.as_ref(), speaker_id, &[]) {
         return Ok(None);
     }
-    // Only the names this capture adds: the union against what the row
-    // already holds is taken inside `restrict_to`, so no caller can drop
-    // somebody else's restriction by writing over it.
     if !fact_index::restrict_to(pool, &row.fact_id, audience.excluded).await? {
         return Ok(None);
     }
     tracing::info!(
         fact_id = row.fact_id.as_str(),
         similarity,
-        "capture: exclusion applied to an existing fact — the capture folds into it"
+        "capture: exclusion applied to an existing fact — the claim folds into it"
     );
-    Ok(Some(CaptureOutcome {
-        fact_id: new_fact_id()?,
-        action: CaptureAction::Skipped {
-            matched_fact_id: row.fact_id.clone(),
-            similarity,
-        },
-    }))
+    Ok(Some((row, similarity)))
 }
 
-pub(crate) fn best_dedup_candidate<'a>(
-    candidates: &'a [FactIndexRow],
+pub(crate) fn best_dedup_candidate<'a, I>(
+    candidates: I,
     audience: &Audience<'_>,
     channel: Option<ChannelScope<'_>>,
     body: &str,
     exclude: Option<&FactId>,
-) -> Option<(&'a FactIndexRow, f32)> {
+) -> Option<(&'a FactIndexRow, f32)>
+where
+    I: IntoIterator<Item = &'a FactIndexRow>,
+{
     let needle = recall::ngrams(
         &crate::parser::strip_embed_markers(body),
         recall::DEFAULT_NGRAM,
     );
-    let mut best: Option<(&FactIndexRow, f32)> = None;
+    let mut best: Option<(&'a FactIndexRow, f32)> = None;
     for row in candidates {
         if exclude.is_some_and(|id| id == &row.fact_id) {
             continue;
@@ -949,24 +960,31 @@ pub async fn wiki_capture_with_source(
         excluded: &req.excluded,
         sender: req.sender.as_ref(),
     };
-    // **The wish reaches the fact that is already there.** A claim that
-    // matches one in the memory in everything but being kept from somebody is
-    // that claim with the wish added, not a second copy of it: written anew,
-    // the restriction would stand beside a copy she can still read. The old
-    // row takes the exclusion and the capture folds into it as any duplicate
-    // does — but only when this speaker could have rewritten it anyway, and
-    // only ever NARROWING ([`Audience::restricts`]).
-    if let Some(outcome) = apply_exclusion_to_the_fact_already_there(
+    // **The wish reaches the fact that is already there**, before the dedup
+    // scan below gets a chance to call the two claims different: their
+    // audiences differ by exactly the thing this claim adds, so that scan —
+    // which folds only same-audience rows — would never see the pair
+    // ([`apply_exclusion_to_the_fact_already_there`] carries the rule, and the
+    // hourly round asks it the same way).
+    let speaker = req.sender.as_ref().unwrap_or(&req.subject);
+    if let Some((matched_row, similarity)) = apply_exclusion_to_the_fact_already_there(
         pool,
         &candidates,
         &audience,
         channel,
-        &req,
+        &req.body,
+        speaker,
         threshold,
     )
     .await?
     {
-        return Ok(outcome);
+        return Ok(CaptureOutcome {
+            fact_id: new_fact_id()?,
+            action: CaptureAction::Skipped {
+                matched_fact_id: matched_row.fact_id.clone(),
+                similarity,
+            },
+        });
     }
     let best = best_dedup_candidate(&candidates, &audience, channel, &req.body, None);
     tracing::debug!(

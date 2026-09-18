@@ -128,6 +128,24 @@ semver-governed surface: breaking changes are called out explicitly.
   would outlive the present by years. A rule that names somebody the same turn
   already keeps out is dropped, and the trace says so.
 
+- **And what you keep out stays kept out while the claim waits.** Most of what
+  you tell the memory is not written the moment you say it: it waits in line,
+  and an hourly round decides where it belongs and writes it. On that road the
+  one thing your message added — the person it must not reach — was being left
+  behind, so the fact came out of the wait readable by exactly the person you
+  named. It is the kind of failure nothing shows you: the question is answered
+  correctly on the turn, the memory holds no trace of the answer, and the
+  demo run that asked for it ended with **zero** facts kept from anybody. The
+  queue now carries it like every other part of who may read a claim, and so
+  does a claim put back in the queue for rewriting.
+
+  And when the claim that waited turns out to be something the memory already
+  holds — which is the ordinary case, because the second time you say a thing
+  is usually the time you add the fence — the restriction lands on the claim
+  that is there instead of vanishing with the copy. Same rule, same limits, as
+  when you say it and it is written straight away: it only ever narrows, and
+  only somebody who could have changed that claim anyway can narrow it.
+
 - **The trace shows how the memory decided who may read a fact.** A new panel,
   **Who this was filed for**, lists for each fact what your assistant answered:
   one line per group you belong to, with the reason it gave, and who the

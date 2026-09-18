@@ -892,15 +892,18 @@ pub async fn rebuffer_fact(pool: &SqlitePool, fact_id: &FactId, now: &str) -> Re
     )?;
     let topics_json = serde_json::to_string(&row.topics)?;
     let authored_refs_json = serde_json::to_string(&row.authored_refs)?;
+    // A fact going back into the queue keeps who it is kept from: the wait is
+    // not a place where a permission loses a term.
+    let excluded_json = crate::fact_index::principals_to_json(&row.excluded_ids)?;
     let mut tx = pool.begin().await?;
     sqlx::query(
         "INSERT INTO capture_buffer
-            (capture_id, body, subject_id, allow_ids, sender_id, fact_type,
+            (capture_id, body, subject_id, allow_ids, excluded_ids, sender_id, fact_type,
              topics, status, captured_at, source_kind, source_ref,
              valid_from, valid_to, decay_reason, style, salience,
              authored_refs, embedding, embedding_dim, subject_external, slot,
              slot_value)
-         VALUES (?, ?, ?, ?, ?, ?, ?, 'buffered', ?, 'rebuffer', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'buffered', ?, 'rebuffer', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
          ON CONFLICT(capture_id) DO UPDATE SET
              status = 'buffered', processed_at = NULL, resolved_fact_id = NULL",
     )
@@ -908,6 +911,7 @@ pub async fn rebuffer_fact(pool: &SqlitePool, fact_id: &FactId, now: &str) -> Re
     .bind(&row.text)
     .bind(row.subject_id.to_string())
     .bind(allow_json)
+    .bind(excluded_json)
     .bind(row.sender_id.as_ref().map(ToString::to_string))
     .bind(row.fact_type.clone())
     .bind(topics_json)
@@ -1349,20 +1353,27 @@ async fn insert_row(pool: &SqlitePool, cap: &BufferedCapture) -> Result<u64> {
     )?;
     let topics_json = serde_json::to_string(&cap.topics)?;
     let authored_refs_json = serde_json::to_string(&cap.authored_refs)?;
+    // **Every axis of the permission is written, the fourth one included.** A
+    // column left out of this list takes the table's default, and the default
+    // for an exclusion is nobody — so the claim comes out of the wait
+    // shareable with the very person it is kept from, and the promotion that
+    // reads this row back has nothing to carry.
+    let excluded_json = crate::fact_index::principals_to_json(&cap.excluded)?;
     let res = sqlx::query(
         "INSERT INTO capture_buffer
-            (capture_id, body, subject_id, allow_ids, sender_id, fact_type,
+            (capture_id, body, subject_id, allow_ids, excluded_ids, sender_id, fact_type,
              topics, supersede_hint, status, captured_at, processed_at, resolved_fact_id,
              source_kind, source_ref, valid_from, valid_to, decay_reason, style,
              salience, authored_refs, embedding, embedding_dim,
              origin_message_hash, subject_external, slot, slot_value)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
          ON CONFLICT(capture_id) DO NOTHING",
     )
     .bind(cap.capture_id.as_str())
     .bind(&cap.body)
     .bind(cap.subject.to_string())
     .bind(allow_json)
+    .bind(excluded_json)
     .bind(cap.sender.as_ref().map(ToString::to_string))
     .bind(cap.fact_type.clone())
     .bind(topics_json)
@@ -1463,6 +1474,108 @@ mod tests {
             page_description: None,
             salience: None,
         }
+    }
+
+    /// **The wait does not cost a permission its fourth term.**
+    ///
+    /// A claim that names somebody who must not read it goes into the queue
+    /// like any other, and comes out of it hours later on the hourly round.
+    /// The exclusion is a column of that row like the audience beside it: a
+    /// write that leaves it out lets the table's default stand — nobody is
+    /// kept out — and the promotion that reads the row back has nothing to
+    /// carry, so the answer the turn gave correctly reaches the memory as
+    /// silence.
+    #[tokio::test]
+    async fn a_buffered_claim_keeps_who_it_is_kept_from() {
+        let (_dir, pool) = setup().await;
+        let kept_from = Principal::User("zoe".to_owned());
+        let request = CaptureRequest {
+            excluded: vec![kept_from.clone()],
+            allow: vec![Principal::Group("household".to_owned())],
+            ..req(
+                "alice",
+                "Mum's scan came back and it is not good.",
+                "user:alice",
+            )
+        };
+        let out = buffer_capture(&pool, request, None).await.expect("buffer");
+
+        let back = find_all_buffered(&pool, 10).await.expect("read back");
+        let row = back
+            .iter()
+            .find(|c| c.capture_id == out.capture_id)
+            .expect("the row is in the queue");
+        assert_eq!(
+            row.excluded,
+            vec![kept_from],
+            "the queue holds the exclusion the turn asked for: {:?}",
+            row.excluded
+        );
+        assert_eq!(
+            row.allow,
+            vec![Principal::Group("household".to_owned())],
+            "and the audience beside it, untouched"
+        );
+    }
+
+    /// **A fact going back into the queue keeps it too.**
+    ///
+    /// `rebuffer_fact` rebuilds the buffered row from the stored fact, and a
+    /// rebuild that names its columns is a rebuild that can forget one. Here
+    /// the fact already carries the exclusion, so a forgotten column is a
+    /// permission the memory widens by putting a claim back in the queue.
+    #[tokio::test]
+    async fn a_fact_put_back_in_the_queue_keeps_who_it_is_kept_from() {
+        let (_dir, pool) = setup().await;
+        let kept_from = Principal::User("zoe".to_owned());
+        let fact_id = crate::types::FactId::parse("018f1234-5678-7abc-9def-00000000e001").unwrap();
+        crate::fact_index::insert(
+            &pool,
+            &crate::fact_index::NewFact {
+                excluded_ids: vec![kept_from.clone()],
+                subject_external: None,
+                slot: None,
+                slot_value: None,
+                authored_refs: Vec::new(),
+                fact_id: fact_id.clone(),
+                wiki_id: "alice".to_owned(),
+                source_path: "wikis/alice/cucina.md".to_owned(),
+                region_start: None,
+                region_end: None,
+                text: "Mum's scan came back and it is not good.".to_owned(),
+                embedding: vec![0.1, 0.2, 0.3, 0.4],
+                subject_id: Principal::User("alice".to_owned()),
+                allow_ids: vec![Principal::Group("household".to_owned())],
+                sender_id: Some(Principal::User("alice".to_owned())),
+                fact_type: Some("state".to_owned()),
+                topics: Vec::new(),
+                valid_from: None,
+                valid_to: None,
+                target_page: None,
+                style: None,
+                salience: None,
+                source_ref: None,
+            },
+        )
+        .await
+        .expect("insert the fact");
+
+        assert!(
+            rebuffer_fact(&pool, &fact_id, "2026-09-18T10:00:00Z")
+                .await
+                .expect("rebuffer")
+        );
+        let back = find_all_buffered(&pool, 10).await.expect("read back");
+        let row = back
+            .iter()
+            .find(|c| c.capture_id.as_str() == fact_id.as_str())
+            .expect("the fact is back in the queue");
+        assert_eq!(
+            row.excluded,
+            vec![kept_from],
+            "who it is kept from survives the round trip: {:?}",
+            row.excluded
+        );
     }
 
     /// A capture lands in the table, and **writes no file**: the published

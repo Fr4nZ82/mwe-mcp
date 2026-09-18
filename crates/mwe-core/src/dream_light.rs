@@ -19,8 +19,10 @@
 //! claim already remembered? The same jaccard 6-gram scan a live
 //! [`crate::capture::wiki_capture`] runs (same-subject scope across the whole
 //! forest, channel-page boundary, embed-set guard, the same `dedup_threshold`),
-//! plus the same comparison against the other claims in this queue — none of
-//! which is a row yet, so the DB scan cannot see them. A duplicate resolves to
+//! with the same exclusion rule ahead of it
+//! ([`crate::capture::apply_exclusion_to_the_fact_already_there`]), plus the
+//! same comparison against the other claims in this queue — none of which is a
+//! row yet, so the DB scan cannot see them. A duplicate resolves to
 //! its survivor (`skipped_dup`) and never reaches the plan. Parity is the point:
 //! a claim that waited must get exactly the dedup it would have gotten written
 //! live. Sub-threshold paraphrases remain the REM night's semantic dedup job.
@@ -120,7 +122,9 @@ pub struct LightCycleReport {
     pub scanned: usize,
     /// Captures promoted into a fresh `fact_index` row.
     pub promoted: usize,
-    /// Captures skipped as exact duplicates of an existing fact.
+    /// Claims folded into a fact the memory already holds — a duplicate, or
+    /// the same claim with an exclusion added, which is carried onto that
+    /// fact rather than written as a second copy.
     pub skipped_dup: usize,
     /// Supersede hints applied (a prior fact marked superseded).
     pub superseded: usize,
@@ -364,6 +368,39 @@ async fn miss_check(
     Ok(())
 }
 
+/// Fold a waiting claim into the fact it matched: stamp the queue row, count
+/// it, and take the judge-free miss reading.
+///
+/// Both ways a claim can fold end here — the ordinary dedup hit, and the one
+/// that carried an exclusion onto the fact it matched — so neither can drift
+/// into counting differently from the other.
+async fn fold_into(
+    pool: &SqlitePool,
+    cap: &BufferedCapture,
+    dup: &crate::fact_index::FactIndexRow,
+    score: f32,
+    report: &mut LightCycleReport,
+) -> Result<()> {
+    capture_buffer::mark_skipped_dup(pool, &cap.capture_id, &dup.fact_id, &now()).await?;
+    report.skipped_dup += 1;
+    // The judge-free restated-known-fact miss signal ([`crate::recall_log`]):
+    // the user restated a fact memory already held — did the ORIGINAL turn's
+    // recall surface it? The buffer row carries the turn linkage; a row
+    // without one is skipped, and the whole check is best-effort telemetry —
+    // a failure never touches the queue. Channel-page facts are out of scope:
+    // a rule is channel-delivered and a signpost is owned end-to-end by its
+    // writer, so neither is a recall miss the repair loop could act on.
+    if !crate::wiki::is_channel_page(&dup.source_path) {
+        match miss_check(pool, cap, dup, score).await {
+            Ok(()) => {},
+            Err(e) => {
+                tracing::warn!(error = %e, "light dream: recall-miss check failed (ignored)");
+            },
+        }
+    }
+    Ok(())
+}
+
 /// How old a parked claim must be before the sweep will consider it an
 /// orphan.
 ///
@@ -469,6 +506,43 @@ async fn screen_one(
         excluded: &cap.excluded,
         sender: cap.sender.as_ref(),
     };
+    // **The wish reaches the fact that is already there**, before the ordinary
+    // dedup scan gets a chance to call the two claims different. A claim that
+    // matches one in the memory in everything but being kept from somebody is
+    // that claim with the wish added, and its audience is narrower, so the
+    // ordinary scan — which folds only same-audience rows — would never see
+    // it. Asked through the live road's own rule, so a claim that waited an
+    // hour in the queue is answered exactly as one that did not
+    // ([`crate::capture::apply_exclusion_to_the_fact_already_there`]).
+    //
+    // Two things the scan below does are absent here on purpose. Self is not
+    // excluded because it cannot match: a claim already promoted became a fact
+    // carrying this very exclusion, and the rule folds only onto a fact the
+    // claim NARROWS. And the embed sets are not compared, because the turn
+    // that adds the fence is usually the turn that does not re-send the photo
+    // — requiring the media to match again would drop the fence on the floor,
+    // which is the whole thing this road exists to stop.
+    let speaker = cap.sender.as_ref().unwrap_or(&cap.subject);
+    if let Some((dup, score)) = crate::capture::apply_exclusion_to_the_fact_already_there(
+        pool,
+        &active,
+        &audience,
+        channel,
+        &cap.body,
+        speaker,
+        policy.dedup_threshold,
+    )
+    .await?
+    {
+        tracing::info!(
+            capture_id = %cap.capture_id,
+            matched_fact_id = dup.fact_id.as_str(),
+            similarity = score,
+            "light dream: SKIPPED (the claim's exclusion is carried onto the fact it folds into)"
+        );
+        fold_into(pool, cap, dup, score, report).await?;
+        return Ok(None);
+    }
     if let Some((dup, score)) = crate::capture::best_dedup_candidate(
         &active,
         &audience,
@@ -485,24 +559,7 @@ async fn screen_one(
             threshold = policy.dedup_threshold,
             "light dream: SKIPPED (dedup hit)"
         );
-        capture_buffer::mark_skipped_dup(pool, &cap.capture_id, &dup.fact_id, &now()).await?;
-        report.skipped_dup += 1;
-        // The judge-free restated-known-fact miss signal
-        // ([`crate::recall_log`]): the user restated a fact memory already
-        // held — did the ORIGINAL turn's recall surface it? The buffer row
-        // carries the turn linkage; a row without one is skipped, and the whole
-        // check is best-effort telemetry — a failure never touches the queue.
-        // Channel-page facts are out of scope: a rule is channel-delivered and
-        // a signpost is owned end-to-end by its writer, so neither is a recall
-        // miss the repair loop could act on.
-        if !crate::wiki::is_channel_page(&dup.source_path) {
-            match miss_check(pool, cap, dup, score).await {
-                Ok(()) => {},
-                Err(e) => {
-                    tracing::warn!(error = %e, "light dream: recall-miss check failed (ignored)");
-                },
-            }
-        }
+        fold_into(pool, cap, dup, score, report).await?;
         return Ok(None);
     }
 
@@ -1039,6 +1096,117 @@ mod tests {
                 .len(),
             1,
             "only one fact for two exact-duplicate captures"
+        );
+    }
+
+    /// **The second time somebody says a thing is when they add the fence.**
+    ///
+    /// The words dedup and the claim folds away; «and not her» is the whole of
+    /// what was new, and dropping it leaves the stored fact shareable with
+    /// exactly the person who was named. So the exclusion is carried onto the
+    /// fact the claim folds into — by the same rule the live road uses, and
+    /// only for somebody entitled to rewrite what they are restricting.
+    #[tokio::test]
+    async fn a_dedup_fold_carries_the_exclusion_onto_the_fact_it_folds_into() {
+        let (_dir, tree, pool) = setup().await;
+        capture_buffer::buffer_capture(&pool, cap_req("Alice loves pasta"), None)
+            .await
+            .unwrap();
+        drain_deterministically(&pool, &tree, &embedder(), &LightPolicy::default(), NOW)
+            .await
+            .unwrap();
+        let before = fact_index::find_active_in_wiki(&pool, "alice")
+            .await
+            .unwrap();
+        assert_eq!(before.len(), 1);
+        assert!(
+            before[0].excluded_ids.is_empty(),
+            "the first telling kept nobody out"
+        );
+
+        // Said again, this time with somebody kept out of it.
+        let kept_from = Principal::User("zoe".to_owned());
+        capture_buffer::buffer_capture(
+            &pool,
+            CaptureRequest {
+                excluded: vec![kept_from.clone()],
+                ..cap_req("alice   LOVES pasta")
+            },
+            None,
+        )
+        .await
+        .unwrap();
+        let report =
+            drain_deterministically(&pool, &tree, &embedder(), &LightPolicy::default(), NOW)
+                .await
+                .unwrap();
+        assert_eq!(report.skipped_dup, 1, "the words are the same claim");
+
+        let after = fact_index::find_active_in_wiki(&pool, "alice")
+            .await
+            .unwrap();
+        assert_eq!(after.len(), 1, "and no second fact is born");
+        assert_eq!(
+            after[0].excluded_ids,
+            vec![kept_from],
+            "but what the second telling added is on the fact: {:?}",
+            after[0].excluded_ids
+        );
+    }
+
+    /// **A claim that waited comes out of the wait still kept from somebody.**
+    ///
+    /// The whole road, end to end: the turn names who must not read it, the
+    /// claim goes into the queue, the hourly round promotes it, and the fact
+    /// is born with the exclusion on it. Every step in between has to carry
+    /// the fourth term, and the one that does not is invisible from either
+    /// end — the turn is answered correctly and the memory holds nothing.
+    #[tokio::test]
+    async fn a_promoted_claim_is_born_kept_from_the_person_the_turn_named() {
+        let (_dir, tree, pool) = setup().await;
+        let kept_from = Principal::User("zoe".to_owned());
+        let buffered = capture_buffer::buffer_capture(
+            &pool,
+            CaptureRequest {
+                excluded: vec![kept_from.clone()],
+                allow: vec![Principal::Group("famiglia".to_owned())],
+                ..cap_req("Alice is planning a surprise party")
+            },
+            None,
+        )
+        .await
+        .unwrap();
+
+        drain_deterministically(&pool, &tree, &embedder(), &LightPolicy::default(), NOW)
+            .await
+            .unwrap();
+
+        let row = fact_index::find_by_id(&pool, &buffered.capture_id)
+            .await
+            .unwrap()
+            .expect("promoted fact exists");
+        assert_eq!(
+            row.excluded_ids,
+            vec![kept_from],
+            "the fact is born kept from the person the turn named: {:?}",
+            row.excluded_ids
+        );
+        // And the fourth term does its subtracting: the audience is a group
+        // both of them are in, which is the shape that defeats an exclusion
+        // written as a narrower audience.
+        let acl = crate::types::Acl {
+            subject: Some(row.subject_id.clone()),
+            allow: row.allow_ids.clone(),
+            excluded: row.excluded_ids.clone(),
+        };
+        let famiglia = ["famiglia".to_owned()];
+        assert!(
+            !crate::acl::can_read(&acl, "zoe", &famiglia, row.sender_id.as_ref()),
+            "she does not read it, group or no group"
+        );
+        assert!(
+            crate::acl::can_read(&acl, "bob", &famiglia, row.sender_id.as_ref()),
+            "and everybody else in the group still does"
         );
     }
 
