@@ -8237,6 +8237,34 @@ async fn apply_plan_acl_changes(
         if applied.iter().any(|a| a.fact_id == hit.fact_id) {
             continue; // the model repeated a target — first one wins
         }
+        // **«Open it to everyone» is the administrator's word here too.** The
+        // capture door already asks who may say it, and lets a claim through
+        // only when it belongs on an identity card — a card is published at
+        // birth, by the person introducing themselves. A fact the memory
+        // already holds is not that: widening one to every reader there will
+        // ever be, a guest included, is something said in conversation, and
+        // only the administrator says it. The rest of the change — the
+        // groups, the people — goes through as it does today, because the
+        // person meant to share it and being wrong about how far is not a
+        // reason to share nothing.
+        let mut new_allow = new_allow;
+        if new_allow.iter().any(Principal::is_global)
+            && !enrollment::is_admin(pool, request.sender_id.as_str())
+                .await
+                .unwrap_or(false)
+        {
+            new_allow.retain(|p| !p.is_global());
+            tracing::warn!(
+                fact_id = %hit.fact_id,
+                sender_id = request.sender_id.as_str(),
+                "ingest: acl_change asked for global — refused (only the administrator may open \
+                 a fact to everyone); the rest of the change stands"
+            );
+            refused.push(refused_acl(
+                change,
+                "global_refused_only_the_administrator_may_open_a_fact_to_everyone",
+            ));
+        }
         // 6j.4: a per-fragment ACL change needs a standard wiki to land in.
         // Smart wikis have none — their governance is wiki-level and
         // markerless — and a hit with no resolvable wiki has no family to
@@ -19499,21 +19527,23 @@ mod tests {
             "and the person can see what was asked for and did not happen"
         );
 
-        // And the thing the speaker DID point at is shared.
+        // And the thing the speaker DID point at is shared. With the family:
+        // «everyone» is the administrator's word, and this is an ordinary
+        // person sharing an ordinary thing.
         let named = apply_plan_acl_changes(
             &pool,
             &tree,
             &[LlmAclChange {
                 target: Some(theirs.fact_id.as_str().to_owned()),
                 subject_id: None,
-                allow_ids: vec!["global".to_owned()],
+                allow_ids: vec!["group:famiglia".to_owned()],
                 excluded_ids: None,
                 named_in_the_message: true,
             }],
             &candidates,
             &[],
             &req(
-                "fai vedere a tutti quello che ti ho detto del giardino",
+                "fai vedere alla famiglia quello che ti ho detto del giardino",
                 "zoe",
             ),
         )
@@ -19525,7 +19555,7 @@ mod tests {
                 .unwrap()
                 .unwrap()
                 .allow_ids,
-            vec![Principal::global()],
+            vec!["group:famiglia".parse::<Principal>().unwrap()],
         );
         drop(dir);
     }
@@ -34311,8 +34341,9 @@ mod tests {
         let llm_resp = format!(
             "{{\"intent\":\"capture\",\"extractions\":[],\
              \"acl_changes\":[{{\"target\":\"{}\",\"subject_id\":null,\
-             \"allow_ids\":[\"global\"],\"named_in_the_message\":true}}],\
-             \"suggested_seed\":\"Reso pubblico.\"}}",
+             \"allow_ids\":[\"global\",\"group:famiglia\"],\
+             \"named_in_the_message\":true}}],\
+             \"suggested_seed\":\"Condiviso.\"}}",
             planted.fact_id.as_str()
         );
         let llm = FakeLlmBackend::new("fake", &llm_resp);
@@ -34322,7 +34353,10 @@ mod tests {
             fake_embedder(),
             &llm,
             None,
-            req("esponi a tutti che ho un orto sul balcone", "alice"),
+            req(
+                "fai vedere alla famiglia che ho un orto sul balcone",
+                "alice",
+            ),
             &IngestPolicy::default(),
         )
         .await
@@ -34339,8 +34373,9 @@ mod tests {
             .expect("row");
         assert_eq!(
             row.allow_ids,
-            vec!["global".parse().unwrap()],
-            "the allow-list widened to global"
+            vec!["group:famiglia".parse().unwrap()],
+            "the family the turn named reads it, and nobody beyond: {:?}",
+            row.allow_ids
         );
 
         // One disclosure_audit row, flagged widening.
@@ -34350,7 +34385,89 @@ mod tests {
                 .fetch_one(&pool)
                 .await
                 .expect("audit row");
-        assert_eq!(widening, 1, "going global is a widening");
+        assert_eq!(widening, 1, "letting the family in is a widening");
+
+        let trace: String =
+            sqlx::query_scalar("SELECT payload FROM recall_traces ORDER BY id DESC LIMIT 1")
+                .fetch_one(&pool)
+                .await
+                .expect("a trace was written");
+        assert!(
+            trace.contains("global_refused_only_the_administrator_may_open_a_fact_to_everyone"),
+            "and the turn's record says the word was taken off: {trace}"
+        );
+    }
+
+    /// **And the administrator's «everyone» stands.**
+    ///
+    /// «For everyone» has been theirs since a rule could bind every user of an
+    /// assistant; opening a stored fact to every reader there will ever be is
+    /// the same word at a different door.
+    #[tokio::test]
+    async fn the_administrator_may_open_a_fact_to_everyone() {
+        let (_dir, tree, pool) = setup_workdir().await;
+        sqlx::query("UPDATE enrollment_users SET is_admin = 1 WHERE user_id = 'alice'")
+            .execute(&pool)
+            .await
+            .expect("make her the administrator");
+        let planted = capture::wiki_capture(
+            &tree,
+            &pool,
+            fake_embedder(),
+            CaptureRequest {
+                excluded: Vec::new(),
+                subject_external: None,
+                slot: None,
+                slot_value: None,
+                authored_refs: Vec::new(),
+                wiki_id: WikiId::parse("alice").unwrap(),
+                page: Some(PathBuf::from("cucina.md")),
+                body: "alice ha un orto sul balcone".into(),
+                subject: Principal::User("alice".into()),
+                allow: Vec::new(),
+                sender: None,
+                fact_type: Some("bio".into()),
+                page_description: None,
+                topics: vec!["orto".into()],
+                dedup_threshold: Some(0.99),
+                valid_from: None,
+                valid_to: None,
+                style: None,
+                salience: None,
+            },
+        )
+        .await
+        .expect("plant");
+
+        let llm_resp = format!(
+            "{{\"intent\":\"capture\",\"extractions\":[],\
+             \"acl_changes\":[{{\"target\":\"{}\",\"subject_id\":null,\
+             \"allow_ids\":[\"global\"],\"named_in_the_message\":true}}]}}",
+            planted.fact_id.as_str()
+        );
+        let llm = FakeLlmBackend::new("fake", &llm_resp);
+        wiki_ingest_message(
+            &pool,
+            &tree,
+            fake_embedder(),
+            &llm,
+            None,
+            req("esponi a tutti che ho un orto sul balcone", "alice"),
+            &IngestPolicy::default(),
+        )
+        .await
+        .expect("ingest");
+
+        let row = fact_index::find_by_id(&pool, &planted.fact_id)
+            .await
+            .expect("find")
+            .expect("row");
+        assert_eq!(
+            row.allow_ids,
+            vec!["global".parse().unwrap()],
+            "the word stands when the person saying it may say it: {:?}",
+            row.allow_ids
+        );
     }
 
     #[tokio::test]

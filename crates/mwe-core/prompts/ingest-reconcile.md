@@ -1,8 +1,8 @@
 ---
 name: ingest-reconcile
 description: Reconciler — after the memory has been read, decide what this turn closes, replaces, re-dates or re-shares on the pages the turn actually opened, which it reads as prose with every fact marked; names them by marker; strict JSON out; change nothing rather than the wrong thing
-version: 2.0
-default_version_at_bootstrap: v2.0
+version: 2.1
+default_version_at_bootstrap: v2.1
 ---
 
 # Prompt: ingest-reconcile
@@ -131,6 +131,8 @@ Four verbs, and each one has to be plainly stated by the message:
 4. `acl_changes` — WHO MAY READ the fact changes, and the message says so: "make that visible to everyone", "share it with the family", "keep that one private". `allow_ids` REPLACES the current audience list, so restate it in full: copy the audience shown on that marker's line and add to or remove from it. An empty array means "subject only".
 
    **A fact somebody asked to be kept from a person carries that on its own line, and widening the audience does NOT lift it.** «I'm putting Zoe on the money side» widens who may read; it says nothing about the claim somebody asked to keep from her, and the engine leaves that alone whatever you write in `allow_ids`. **Omit `excluded_ids` entirely** unless the message takes the restriction back OF THAT FACT — «Zoe may know the figure now», «tell her about the excess» — and only then write it, restated in full: `[]` to lift it, or the names that remain. A message about anybody else's access is not that message.
+
+   **«EVERYONE» IS THE ADMINISTRATOR'S WORD.** `global` in `allow_ids` opens the fact to every reader there will ever be, a guest with no account included, and only the administrator may say that of a fact the memory already holds — the same rule that governs a standing directive binding every user. Write what the message asks for; where the speaker is not the administrator the engine takes `global` off and applies the rest of the audience, with the refusal on the turn's trace. A person sharing something of their own reaches their groups, and that is what «share it with the family» means.
 
    **THE MESSAGE HAS TO NAME THE THING.** Set `named_in_the_message: true` on every entry, and only where it is true: the speaker pointed at THAT claim — «fai vedere a tutti quello che ti ho detto del giardino», «questa tienila per te». The engine refuses an entry without it and writes the refusal to the trace.
 

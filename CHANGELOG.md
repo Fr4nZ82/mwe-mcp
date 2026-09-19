@@ -220,6 +220,11 @@ semver-governed surface: breaking changes are called out explicitly.
   something that really is for everyone is said again by somebody who may say
   it, and nothing widens a claim to public on its own afterwards.
 
+  The same holds for opening up something the memory already has. «Show that
+  to everyone» about a claim already stored is the administrator's to say;
+  from anybody else the memory shares it with the people and groups the
+  message named and stops there, rather than with the world.
+
 - **The trace shows how the memory decided who may read a fact.** A new panel,
   **Who this was filed for**, lists for each fact what your assistant answered:
   one line per group you belong to, with the reason it gave, and who the
