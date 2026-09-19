@@ -205,6 +205,21 @@ semver-governed surface: breaking changes are called out explicitly.
   standing-rule half; the claim is kept, and so is who it is kept from. The
   turn's record says the memory read it that way.
 
+- **What you say in conversation does not come out public.** «Anyone may see
+  this» is a real thing to say, and it was being taken at face value on any
+  claim at all: on a fresh run four facts came out readable by everybody —
+  including somebody with no account here — and one of them was an ordinary
+  work note, filed off a turn where every group question had been answered
+  «no». Public now stays where it belongs: on an **identity card**, which is
+  what a person publishes about themselves (the name they go by, how to reach
+  them, the allergy an assistant must never work around), and on whatever the
+  **administrator** marks that way, because «for everyone» has been theirs to
+  say since a rule could bind every user. Anything else keeps the groups it
+  was filed for — your household, not the world — and the turn's record says
+  the memory took the word off. It only ever errs towards fewer readers:
+  something that really is for everyone is said again by somebody who may say
+  it, and nothing widens a claim to public on its own afterwards.
+
 - **The trace shows how the memory decided who may read a fact.** A new panel,
   **Who this was filed for**, lists for each fact what your assistant answered:
   one line per group you belong to, with the reason it gave, and who the

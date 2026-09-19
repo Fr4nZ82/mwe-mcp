@@ -3088,6 +3088,67 @@ fn a_rule_restating_an_exclusion(
         })
 }
 
+/// **«Everyone may know this» is the administrator's word, and a card's.**
+///
+/// `global` in an audience means every reader there will ever be, including a
+/// guest the memory has never met. Two rules already decide who may say that,
+/// and this is them applied to an ordinary claim rather than to a standing
+/// rule:
+///
+/// - the **administrator** says it, because «for everyone» has been theirs
+///   since a rule could bind every user of an assistant — they keep `global`
+///   wherever they put it;
+/// - and an **identity card** carries it, because a card is what a person
+///   publishes about themselves: the name they go by, how to reach them, the
+///   allergy an assistant must never work around. The first-login primer
+///   states all of it in one breath and calls it public, and that is the card.
+///   The definition is the single one the rest of the engine uses
+///   ([`fact_index::belongs_on_an_identity_card`]).
+///
+/// Everything else said in conversation stays with the groups that answered
+/// `yes`. The household is the widest a claim reaches by being told, and that
+/// is the safe direction: nothing downstream promotes a fact to public on its
+/// own, so a claim that really is for everyone is said again by somebody who
+/// may say it.
+///
+/// Returns the receipt when it takes `global` off, and `None` when there was
+/// none to take or the speaker was entitled to it.
+fn global_is_not_a_conversation_fact(
+    cap: &mut CaptureRequest,
+    body: &str,
+    speaker_is_admin: bool,
+) -> Option<crate::recall_trace::TraceCorrectedExtraction> {
+    if speaker_is_admin || !cap.allow.iter().any(Principal::is_global) {
+        return None;
+    }
+    if fact_index::belongs_on_an_identity_card(cap.fact_type.as_deref(), cap.salience.as_deref()) {
+        return None;
+    }
+    let was = cap
+        .allow
+        .iter()
+        .map(ToString::to_string)
+        .collect::<Vec<_>>()
+        .join(", ");
+    cap.allow.retain(|p| !p.is_global());
+    let now = if cap.allow.is_empty() {
+        "the subject and the sender".to_owned()
+    } else {
+        cap.allow
+            .iter()
+            .map(ToString::to_string)
+            .collect::<Vec<_>>()
+            .join(", ")
+    };
+    Some(crate::recall_trace::TraceCorrectedExtraction {
+        claim: truncate(body, 160),
+        field: "allow_ids".to_owned(),
+        was,
+        now,
+        reason: "global_refused_only_a_card_fact_may_be_public".to_owned(),
+    })
+}
+
 /// **Is this extraction both the claim and the fence?**
 ///
 /// The same question [`a_rule_restating_an_exclusion`] asks, turned on the
@@ -13591,6 +13652,12 @@ pub async fn wiki_ingest_message(
                 String,
                 Vec<(FactId, WikiId, String)>,
             > = std::collections::BTreeMap::new();
+            // Read once for the turn: «for everyone» is the administrator's
+            // word, and whether this speaker has it does not change between
+            // one extraction and the next.
+            let speaker_is_admin = enrollment::is_admin(pool, request.sender_id.as_str())
+                .await
+                .unwrap_or(false);
             for (at, unit) in units.iter().enumerate() {
                 let mut unit = *unit;
                 // **The claim and the fence arrive as one extraction, marked
@@ -14337,6 +14404,23 @@ pub async fn wiki_ingest_message(
                         continue;
                     },
                 };
+                // **«Everyone may know this» is not something a claim picks
+                // up by being said.** The administrator keeps it, and so does
+                // a fact that belongs on an identity card — the primer's own
+                // material. Everything else keeps the groups that answered
+                // yes ([`global_is_not_a_conversation_fact`]).
+                if let Some(note) = global_is_not_a_conversation_fact(
+                    &mut cap_req,
+                    unit.body.unwrap_or_default(),
+                    speaker_is_admin,
+                ) {
+                    tracing::info!(
+                        was = note.was.as_str(),
+                        now = note.now.as_str(),
+                        "ingest: global refused — only a card fact may be public"
+                    );
+                    corrected_extractions.push(note);
+                }
 
                 // Product limit: a wiki holds at most `MAX_LIST_PAGES_PER_WIKI`
                 // lists, and the limit is enforced by refusing to MINT the
@@ -27567,6 +27651,189 @@ mod tests {
     /// classifier answering `skip` has thrown the rule away before a single
     /// line of Part 7 applies. Filing per scope is covered by its own tests;
     /// what this one pins is the gate over them.
+    /// One extraction, as the classifier hands it over, ready to be validated.
+    fn cap_with(
+        fact_type: &'static str,
+        salience: &'static str,
+        allow: &'static [String],
+        body: &'static str,
+    ) -> CaptureRequest {
+        CaptureRequest {
+            fact_type: Some(fact_type.to_owned()),
+            salience: Some(salience.to_owned()),
+            allow: allow
+                .iter()
+                .map(|s| s.parse::<Principal>().unwrap())
+                .collect(),
+            body: body.to_owned(),
+            excluded: Vec::new(),
+            subject_external: None,
+            slot: None,
+            slot_value: None,
+            authored_refs: Vec::new(),
+            wiki_id: WikiId::parse("alice").unwrap(),
+            page: None,
+            subject: "user:alice".parse().unwrap(),
+            sender: Some("user:alice".parse().unwrap()),
+            topics: Vec::new(),
+            dedup_threshold: None,
+            valid_from: None,
+            valid_to: None,
+            style: None,
+            page_description: None,
+        }
+    }
+
+    /// **«Everyone may know this» is the administrator's word, and a card's.**
+    ///
+    /// On the bench, four facts came out readable by anybody at all — a guest
+    /// included — and one of them arrived on an ordinary turn: «write Kestrel
+    /// up properly», with every group question answered `no` and `global` in
+    /// the audience anyway. A claim does not become public by being said.
+    #[test]
+    fn global_survives_only_on_a_card_or_from_the_administrator() {
+        let both: Vec<String> = vec!["global".to_owned(), "group:household".to_owned()];
+        let only_global: Vec<String> = vec!["global".to_owned()];
+
+        // The bench turn: an ordinary claim, from somebody who is not the
+        // administrator, asking for everyone.
+        let mut kestrel = CaptureRequest {
+            allow: only_global
+                .iter()
+                .map(|s| s.parse::<Principal>().unwrap())
+                .collect(),
+            ..cap_with(
+                "plan",
+                "normal",
+                &[],
+                "Alice is writing Kestrel up properly.",
+            )
+        };
+        let note = global_is_not_a_conversation_fact(
+            &mut kestrel,
+            "Alice is writing Kestrel up properly.",
+            false,
+        )
+        .expect("global is taken off");
+        assert!(
+            kestrel.allow.is_empty(),
+            "nothing is left to read it but its subject and sender: {:?}",
+            kestrel.allow
+        );
+        assert_eq!(note.reason, "global_refused_only_a_card_fact_may_be_public");
+
+        // The same claim, with the groups that answered yes: those stay.
+        let mut with_house = CaptureRequest {
+            allow: both
+                .iter()
+                .map(|s| s.parse::<Principal>().unwrap())
+                .collect(),
+            ..cap_with(
+                "state",
+                "normal",
+                &[],
+                "Alice is out a fair amount in the evenings.",
+            )
+        };
+        assert!(
+            global_is_not_a_conversation_fact(&mut with_house, "x", false).is_some(),
+            "not a card, so not public"
+        );
+        assert_eq!(
+            with_house.allow,
+            vec!["group:household".parse::<Principal>().unwrap()],
+            "and the group that answered yes is what is left: {:?}",
+            with_house.allow
+        );
+
+        // A card fact keeps it, even though the speaker is not the
+        // administrator: publishing a card is what the primer is for.
+        let mut card = CaptureRequest {
+            allow: both
+                .iter()
+                .map(|s| s.parse::<Principal>().unwrap())
+                .collect(),
+            ..cap_with("bio", "high", &[], "Alice is allergic to walnuts.")
+        };
+        assert!(
+            global_is_not_a_conversation_fact(&mut card, "x", false).is_none(),
+            "a card fact is published on purpose"
+        );
+        assert!(card.allow.iter().any(Principal::is_global));
+
+        // And the administrator keeps it wherever they put it.
+        let mut theirs = CaptureRequest {
+            allow: only_global
+                .iter()
+                .map(|s| s.parse::<Principal>().unwrap())
+                .collect(),
+            ..cap_with("plan", "normal", &[], "The office is closed on the 24th.")
+        };
+        assert!(
+            global_is_not_a_conversation_fact(&mut theirs, "x", true).is_none(),
+            "«for everyone» is theirs to say"
+        );
+        assert!(theirs.allow.iter().any(Principal::is_global));
+    }
+
+    /// **The bench turn, end to end: a claim said in conversation does not
+    /// come out public.**
+    ///
+    /// «Before I lose the thread, write Kestrel up properly» — every group
+    /// question answered `no`, and `global` in the audience anyway. What is
+    /// left is what the groups said, and the turn's record says the engine
+    /// took it off.
+    #[tokio::test]
+    async fn a_conversation_claim_does_not_come_out_public() {
+        let (dir, tree, pool) = setup_workdir().await;
+        let llm = FakeLlmBackend::new(
+            "fake",
+            "{\"intent\":\"capture\",\"extractions\":[{\
+              \"subject_id\":\"user:alice\",\"fact_type\":\"plan\",\
+              \"salience\":\"normal\",\"allow_ids\":[\"global\"],\
+              \"body\":\"Alice is writing up Kestrel properly: the ingest path and \
+              the storage options.\"}]}",
+        );
+        wiki_ingest_message(
+            &pool,
+            &tree,
+            fake_embedder(),
+            &llm,
+            None,
+            req(
+                "Before I lose the thread, write Kestrel up properly.",
+                "alice",
+            ),
+            &IngestPolicy::default(),
+        )
+        .await
+        .expect("ingest");
+
+        let queued = capture_buffer::find_all_buffered(&pool, 10)
+            .await
+            .expect("queue");
+        let held = queued
+            .iter()
+            .find(|c| c.body.contains("Kestrel"))
+            .expect("the claim is filed");
+        assert!(
+            !held.allow.iter().any(Principal::is_global),
+            "a guest does not read it: {:?}",
+            held.allow
+        );
+
+        let trace: String =
+            sqlx::query_scalar("SELECT payload FROM recall_traces ORDER BY id DESC LIMIT 1")
+                .fetch_one(&pool)
+                .await
+                .expect("a trace was written");
+        assert!(
+            trace.contains("global_refused_only_a_card_fact_may_be_public"),
+            "and the record says so: {trace}"
+        );
+        drop(dir);
+    }
+
     /// **The turn that states a figure and fences it keeps the figure.**
     ///
     /// The bench turn, with the extraction the classifier really sent: one

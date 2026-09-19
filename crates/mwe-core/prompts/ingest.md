@@ -1,8 +1,8 @@
 ---
 name: ingest
 description: Classifier driving `wiki_ingest_message` — one JSON object per turn (intent + an `extractions[]` array of atomic facts, the SOLE fact container; every fact is prose except a `lista` entry, which is the bare item with its values; each carrying a per-fact validity interval `valid_from`/`valid_to`, a per-fact `style` (and, for `lista` material or a requested container, a `target_page` + `page_description`), a `requested_container` live-write flag, a per-fact `salience`, a `behaviour_rule` flag (with a `behaviour_scope` of `per-user`/`agent-wide`/`user-global`, read from the addressee) routing a standing directive — how an agent converses or operates, and who may see what — to the calling consumer's own `@rules.md`, or, user-global, to the sender's own for every assistant serving them, and an `attachments` claim list linking the turn's media to the fact that describes them; plus three turn-level fields for a turn that TAKES SOMETHING BACK — `withdrawal`, `erasure` when the speaker asks for it to be taken OUT of the memory rather than merely ended, and, when what it takes back is a standing rule, `withdraw_target` naming that rule from the block of directives in force — and `consumer_acts` for a turn that asks the agent to DO something rather than to remember, which costs the turn the deeper pass); targets the strong-model tier
-version: 3.15
-default_version_at_bootstrap: v3.15
+version: 3.16
+default_version_at_bootstrap: v3.16
 source_of_truth: crates/mwe-core/src/ingest.rs (fn wiki_ingest_message)
 ---
 
@@ -641,6 +641,8 @@ The audience axis, **independent of `subject_id`** (the subject — the section 
 3. **What the user says in THIS message** — the strongest signal. Public cues, in whatever language the user speaks — "public", "public information", "visible to anyone / to everyone", "not confidential", "public profile", "anyone can see", "shared with all" and their equivalents — → add `"global"`. An explicit restriction ("keep it private", "just for me", "for now just the two of us") → `allow_ids: []`, even when a group scope would otherwise match.
 
 A sentence that states a fact AND carries a public cue is a `capture`, never `skip`: do not demote a clearly-stated public fact (a website, a public phone number, a public handle) to private or drop it. `allow_ids` only ever WIDENS reading beyond subject+sender; `subject_id` stays the subject.
+
+**`global` keeps its place on two kinds of claim, and the engine takes it off every other.** It stays where the speaker is the ADMINISTRATOR — «for everyone» is theirs to say, exactly as it is for a rule that binds every user — and where the claim belongs on the person's IDENTITY CARD, which is what the public cue is almost always about: the name they go by, how to reach them, the site they publish, the allergy an assistant must never work around. Mark those `fact_type: "bio"` with `salience: "high"`, which is what says «this is card material»; a public cue on a claim that is not card material does not make it public, and the audience falls back to the groups that answered `yes`. That is the safe direction and it costs nothing: a claim that really is for everyone is said again by somebody who may say it.
 
 
 ## `subject_external` — the NAME of what a fact is about, when that is not a principal (per extraction)
