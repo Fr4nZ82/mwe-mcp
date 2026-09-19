@@ -20,7 +20,7 @@
 //! [`crate::capture::wiki_capture`] runs (same-subject scope across the whole
 //! forest, channel-page boundary, embed-set guard, the same `dedup_threshold`),
 //! with the same exclusion rule ahead of it
-//! ([`crate::capture::apply_the_audience_to_the_fact_already_there`]), plus the
+//! ([`crate::capture::apply_exclusion_to_the_fact_already_there`]), plus the
 //! same comparison against the other claims in this queue — none of which is a
 //! row yet, so the DB scan cannot see them. A duplicate resolves to
 //! its survivor (`skipped_dup`) and never reaches the plan. Parity is the point:
@@ -506,25 +506,26 @@ async fn screen_one(
         excluded: &cap.excluded,
         sender: cap.sender.as_ref(),
     };
-    // **The audience reaches the fact that is already there**, before the
-    // ordinary dedup scan gets a chance to call the two claims different. A
-    // claim that matches one in the memory in everything but who may see it is
-    // that claim said again to change exactly that — and the scan below folds
-    // only rows whose audience matches AS STORED, so it is the one pair it can
-    // never see. Asked exactly as the live road asks it, so a claim that
+    // **The wish reaches the fact that is already there**, before the ordinary
+    // dedup scan gets a chance to call the two claims different. A claim that
+    // matches one in the memory in everything but being kept from somebody is
+    // that claim with the wish added — and the scan below folds only rows
+    // whose audience matches AS STORED, which these two never do: carrying an
+    // exclusion is what turns an audience from groups into the people in them,
+    // so the pair is written in two alphabets and only the rule called here
+    // reads both. Asked exactly as the live road asks it, so a claim that
     // waited an hour is answered like one that did not
-    // ([`crate::capture::apply_the_audience_to_the_fact_already_there`]).
+    // ([`crate::capture::apply_exclusion_to_the_fact_already_there`]).
     //
     // Two things the scan below does are absent here on purpose. Self is not
-    // excluded, and does not need to be: a claim already promoted by a partial
-    // run became a fact holding the very audience it carries, so there is
-    // nothing left to settle and the rule passes over it. And the embed sets
-    // are not compared, because the telling that changes who may see a thing
-    // is usually the one that does not re-send the photo — requiring the media
-    // to match again would drop what it came to say, which is the whole thing
-    // this road exists to stop.
+    // excluded because it cannot match: a claim already promoted became a fact
+    // carrying this very exclusion, and the rule folds only onto a fact the
+    // claim NARROWS. And the embed sets are not compared, because the turn
+    // that adds the fence is usually the turn that does not re-send the photo
+    // — requiring the media to match again would drop the fence on the floor,
+    // which is the whole thing this road exists to stop.
     let speaker = cap.sender.as_ref().unwrap_or(&cap.subject);
-    if let Some((dup, score)) = crate::capture::apply_the_audience_to_the_fact_already_there(
+    if let Some((dup, score)) = crate::capture::apply_exclusion_to_the_fact_already_there(
         pool,
         &active,
         &audience,
@@ -1323,14 +1324,15 @@ mod tests {
         );
     }
 
-    /// **A claim that reaches new people AND keeps somebody out does both.**
+    /// **Reaching different people is not the same claim said again.**
     ///
-    /// Founder, 96w: who ends up reading it is the union, and the exclusion is
-    /// taken out of the result — so the parents are let in, the one named is
-    /// not, and there is one fact rather than a protected copy beside a bare
-    /// one.
+    /// The fence rides on a fold, and a fold is for a claim the memory already
+    /// holds. One that would ALSO hand the fact to somebody new is a different
+    /// act with a verb of its own — it is stated in full, and both facts are
+    /// left standing — so the words matching is not enough and the claim is
+    /// written as its own fact.
     #[tokio::test]
-    async fn a_claim_that_reaches_new_people_widens_the_fact_and_still_fences_it() {
+    async fn a_claim_that_reaches_new_people_is_not_folded_into_the_old_one() {
         let (_dir, tree, pool) = setup().await;
         parents_are(&pool, &["bob", "alice"]).await;
         capture_buffer::buffer_capture(&pool, cap_req("Alice is planning a surprise party"), None)
@@ -1363,28 +1365,29 @@ mod tests {
         let after = fact_index::find_active_in_wiki(&pool, "alice")
             .await
             .unwrap();
-        assert_eq!(after.len(), 1, "one fact, not two");
-        assert!(reads_it(&after[0], "bob") && reads_it(&after[0], "alice"));
+        assert_eq!(
+            after.len(),
+            2,
+            "two facts: one reaches people the other never did, {:?}",
+            after.iter().map(|r| &r.allow_ids).collect::<Vec<_>>()
+        );
         assert!(
-            !reads_it(&after[0], "zoe"),
-            "let in by the widening, kept out by the fence: {:?} / {:?}",
-            after[0].allow_ids,
-            after[0].excluded_ids
+            after.iter().any(|r| r.allow_ids.is_empty()),
+            "the stored fact keeps the audience it was written with"
         );
     }
 
-    /// **The widening names a group the one kept out is IN, and she still
-    /// does not get it.**
+    /// The same refusal when the new reach is written as a GROUP.
     ///
-    /// The case the fourth term exists for, arriving through the widening
-    /// door instead: «the parents can see it, and not her» where she is one
-    /// of the parents. The group is resolved so the fence can be taken out of
-    /// it — her name never enters the reader list — and the stored exclusion
-    /// holds behind that against whatever the audience becomes later.
+    /// «Same claim, and the parents can see it now, and not her» reaches two
+    /// people the stored fact never reached. It is the same rule as the case
+    /// above and it has to survive the group being resolved: a roster that
+    /// only covered the stored fact's own groups would expand `parents` to
+    /// nobody here, and two lists reaching different people would look alike.
     #[tokio::test]
-    async fn the_one_kept_out_does_not_come_back_in_through_her_own_group() {
+    async fn a_group_the_stored_fact_never_named_is_new_reach_too() {
         let (_dir, tree, pool) = setup().await;
-        parents_are(&pool, &["bob", "alice", "zoe"]).await;
+        parents_are(&pool, &["bob", "alice"]).await;
         capture_buffer::buffer_capture(&pool, cap_req("Alice is planning a surprise party"), None)
             .await
             .unwrap();
@@ -1410,22 +1413,11 @@ mod tests {
         let after = fact_index::find_active_in_wiki(&pool, "alice")
             .await
             .unwrap();
-        assert_eq!(after.len(), 1, "one fact");
-        assert!(
-            reads_it(&after[0], "bob") && reads_it(&after[0], "alice"),
-            "the group named this turn reads it: {:?}",
-            after[0].allow_ids
-        );
-        assert!(
-            !after[0]
-                .allow_ids
-                .contains(&Principal::User("zoe".to_owned())),
-            "her name never enters the reader list, though she is a parent: {:?}",
-            after[0].allow_ids
-        );
-        assert!(
-            !reads_it(&after[0], "zoe"),
-            "and she does not read it, group or no group"
+        assert_eq!(
+            after.len(),
+            2,
+            "the parents are new readers, so this is not the same claim again: {:?}",
+            after.iter().map(|r| &r.allow_ids).collect::<Vec<_>>()
         );
     }
 

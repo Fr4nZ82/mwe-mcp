@@ -413,12 +413,6 @@ pub enum IntentKind {
     /// `suggested_seed` nudges the agent toward `dashboard_link`.
     Structural,
     /// Nothing actionable. Greeting, ack, off-topic. No write.
-    ///
-    /// The classifier asks for this one; it does not always get it. A turn
-    /// that says something the memory already holds is a capture whatever the
-    /// classifier answered ([`LlmAlreadyInMemory`]), because a repetition
-    /// routed here is one the dedup never sees — and the second telling's
-    /// audience goes with it.
     Skip,
 }
 
@@ -893,12 +887,6 @@ pub type Result<T> = std::result::Result<T, IngestError>;
 #[allow(clippy::struct_excessive_bools)]
 struct LlmIngestPlan {
     intent: String,
-    /// **Does this turn say something the memory already holds?** Answered
-    /// before the intent is chosen, and read after
-    /// ([`LlmAlreadyInMemory`]): on any answer but `no`, `skip` is refused
-    /// and the turn is a capture.
-    #[serde(default)]
-    already_in_memory: Option<LlmAlreadyInMemory>,
     /// The turn is a WITHDRAWAL: the speaker is taking something back rather
     /// than saying something new («forget what I told you about the
     /// greenhouse», «drop that rule about short answers»).
@@ -1376,77 +1364,6 @@ struct LlmKeptFrom {
     #[serde(default)]
     why: String,
 }
-
-/// **Does this turn say something the memory already holds?** — the box the
-/// classifier ticks before it picks an intent.
-///
-/// A question with a box, because three times now a rule written in prose has
-/// not been enough for this classifier and twice a question has (96r, the
-/// group's scope; 96q; and this one). The prose said «never ask yourself
-/// whether a fact is NEW» and «"the memory already holds this" is not a
-/// reason to skip», and the turn that repeats a standing directive came back
-/// `skip` anyway, with the audience question never asked.
-///
-/// The answer does not decide anything on its own. What it does is make the
-/// model look at `recalled_memory` and `agent_behaviour_rules` BEFORE
-/// choosing, and the engine reads it afterwards: an intent of `skip` is
-/// refused on any answer but `no`, because a repetition routed to `skip` is
-/// one the dedup never sees, and with it goes who was in the room this time —
-/// which is the only thing a second telling has to add.
-#[derive(Debug, Clone, Deserialize)]
-struct LlmAlreadyInMemory {
-    /// `no`, `yes` or `unsure`. Anything else is not an answer and reads as
-    /// `unsure`, which is the cautious side: the turn is treated as a
-    /// repetition and nothing is lost by being wrong about it.
-    #[serde(default)]
-    answer: String,
-    /// What it repeats, as the classifier names it: a `fact_id` from
-    /// `recalled_memory` or `agent_behaviour_rules`. Shown, never resolved —
-    /// the engine's own dedup decides WHICH fact, with every fact and the
-    /// threshold to go on, and an id from here would be a worse answer to the
-    /// same question.
-    #[serde(default)]
-    fact_id: String,
-    /// The few words that say why. Shown and never acted on, like every other
-    /// `why` on this plan: it works on the model that writes it.
-    #[serde(default)]
-    why: String,
-}
-
-impl LlmAlreadyInMemory {
-    /// Whether this answer keeps `skip` available.
-    ///
-    /// Only a plain `no` does. An unanswered box, an unparseable word and
-    /// `unsure` all land on the same side, and it is the side that costs
-    /// nothing to be wrong on: a turn wrongly treated as a repetition is
-    /// filed and folded by the dedup, while one wrongly skipped is gone.
-    fn says_the_turn_is_new(&self) -> bool {
-        self.answer.trim().eq_ignore_ascii_case("no")
-    }
-
-    /// What it says it repeats, for the receipt — the id when the classifier
-    /// named one, the reason when it only gave words, and neither when it
-    /// answered `unsure` with nothing.
-    fn what_it_repeats(&self) -> String {
-        let named = self.fact_id.trim();
-        if !named.is_empty() {
-            return named.to_owned();
-        }
-        let why = self.why.trim();
-        if why.is_empty() {
-            "something the classifier could not name".to_owned()
-        } else {
-            why.to_owned()
-        }
-    }
-}
-
-/// The unanswered box, for a shape that never carried it.
-static NOT_ASKED_IF_ALREADY_HELD: LlmAlreadyInMemory = LlmAlreadyInMemory {
-    answer: String::new(),
-    fact_id: String::new(),
-    why: String::new(),
-};
 
 /// The unanswered question, for a shape that never carried it.
 static NO_KEPT_FROM_ANSWER: LlmKeptFrom = LlmKeptFrom {
@@ -13307,7 +13224,6 @@ pub async fn wiki_ingest_message(
     // walk runs — and the reading is the half a repeat does pay for.
     let mut plan = if let Some(stored) = &repeat {
         LlmIngestPlan {
-            already_in_memory: None,
             intent: stored.intent.as_str().to_owned(),
             ..LlmIngestPlan::default()
         }
@@ -13474,56 +13390,7 @@ pub async fn wiki_ingest_message(
     }
 
     // Step 4 — route based on intent.
-    //
-    // **A turn that repeats something the memory holds is never a skip.**
-    // Whether two claims are the same one is the engine's question — it has
-    // every fact and the threshold — and a repetition routed to `skip` is one
-    // the dedup never sees. What goes with it is not the words, which are
-    // already stored, but who was in the room the second time: said privately
-    // and then said in the kitchen, the second telling is the same sentence
-    // with a different audience, and the audience is the whole of what is new
-    // ([`crate::capture::apply_the_audience_to_the_fact_already_there`] is
-    // what settles it, and it only ever runs on a capture).
-    //
-    // The box is answered before the intent is chosen and read here after
-    // ([`LlmAlreadyInMemory`]). An unanswered one counts as `unsure` and lands
-    // on the same side as `yes` — the cautious side, and cheap enough to be
-    // wrong on because the two things a wrongly promoted turn would otherwise
-    // cost are both closed: a capture carrying no extraction writes nothing,
-    // and a turn promoted here pays for no navigator call (the gate a few
-    // hundred lines down reads `skip_refused` for exactly that). Otherwise a
-    // model that ignored the box would buy a second model call on every
-    // greeting.
-    let already_held = plan
-        .already_in_memory
-        .as_ref()
-        .unwrap_or(&NOT_ASKED_IF_ALREADY_HELD);
-    let mut intent = parse_intent(&plan.intent);
-    let skip_refused = if intent == IntentKind::Skip && !already_held.says_the_turn_is_new() {
-        intent = IntentKind::Capture;
-        let repeats = already_held.what_it_repeats();
-        tracing::info!(
-            repeats,
-            answer = %already_held.answer,
-            "ingest: skip refused — the turn repeats something the memory already holds"
-        );
-        Some(repeats)
-    } else {
-        None
-    };
-    let intent = intent;
-    // The refusal, where a reader can count it: the same channel every other
-    // engine correction of a classifier answer goes down, so «how often is a
-    // repetition routed to skip?» is one query and not a log trawl.
-    if let Some(repeats) = &skip_refused {
-        corrected_extractions.push(crate::recall_trace::TraceCorrectedExtraction {
-            claim: truncate(&request.text, 160),
-            field: "intent".to_owned(),
-            was: "skip".to_owned(),
-            now: "capture".to_owned(),
-            reason: format!("the_turn_repeats:{repeats}"),
-        });
-    }
+    let intent = parse_intent(&plan.intent);
     // A withdrawal is settled here, against the rules the classifier was
     // shown, and not by the closing stages: those judge what RECALL surfaced,
     // and a rule is never in it.
@@ -15195,16 +15062,10 @@ pub async fn wiki_ingest_message(
     // costs seconds; nothing else about the turn changes either way.
     let stage = std::time::Instant::now();
     let depth = depth_of_this_turn(request.metadata.recall, plan.consumer_acts);
-    // A turn promoted out of `skip` because it repeats something held is NOT
-    // a turn that asked the memory anything: what it has is something to
-    // WRITE, and the navigator is the deep read. Paying for one here would
-    // put a model call on every turn whose box came back unanswered — a
-    // greeting included, since an unanswered box counts as `unsure`.
     let nav_tail = match navigator {
         Some(nav_llm)
             if serves_a_block
                 && depth == RecallDepth::Full
-                && skip_refused.is_none()
                 && (matches!(intent, IntentKind::Capture | IntentKind::Recall)
                     || plan.needs_disambig) =>
         {
@@ -16667,7 +16528,6 @@ mod tests {
         // name was already gone. A list-shaped unit is the case that reaches
         // disk inside the turn, so it is the one that had to be closed.
         let plan = LlmIngestPlan {
-            already_in_memory: None,
             excluded: Vec::new(),
             withdrawal: false,
             erasure: false,
@@ -17143,7 +17003,6 @@ mod tests {
     #[test]
     fn validate_capture_plan_derives_the_wiki_from_the_sender() {
         let plan = LlmIngestPlan {
-            already_in_memory: None,
             excluded: Vec::new(),
             withdrawal: false,
             erasure: false,
@@ -17203,7 +17062,6 @@ mod tests {
     #[test]
     fn validate_capture_plan_defaults_subject_to_sender() {
         let plan = LlmIngestPlan {
-            already_in_memory: None,
             excluded: Vec::new(),
             withdrawal: false,
             erasure: false,
@@ -17271,7 +17129,6 @@ mod tests {
         // SenderRedundantInAllow lint would otherwise kill the turn)
         // while keeping the legitimate entries.
         let plan = LlmIngestPlan {
-            already_in_memory: None,
             excluded: Vec::new(),
             withdrawal: false,
             erasure: false,
@@ -17327,7 +17184,6 @@ mod tests {
     #[test]
     fn validate_capture_plan_rejects_bad_principal() {
         let plan = LlmIngestPlan {
-            already_in_memory: None,
             excluded: Vec::new(),
             withdrawal: false,
             erasure: false,
@@ -17418,7 +17274,6 @@ mod tests {
     #[test]
     fn validate_capture_plan_ignores_a_hallucinated_target_wiki() {
         let plan = LlmIngestPlan {
-            already_in_memory: None,
             excluded: Vec::new(),
             withdrawal: false,
             erasure: false,
@@ -18868,7 +18723,6 @@ mod tests {
 
     fn plan_with_supersede(target: Option<&str>) -> LlmIngestPlan {
         LlmIngestPlan {
-            already_in_memory: None,
             excluded: Vec::new(),
             withdrawal: false,
             erasure: false,
@@ -24097,10 +23951,7 @@ mod tests {
         seed_alice_card(&dir, &pool).await;
         let tree = WikiTree::open(dir.path()).expect("reopen tree");
 
-        let llm = FakeLlmBackend::new(
-            "fake",
-            "{\"already_in_memory\":{\"answer\":\"no\"},\"intent\":\"skip\"}",
-        );
+        let llm = FakeLlmBackend::new("fake", "{\"intent\":\"skip\"}");
         let resp = wiki_ingest_message(
             &pool,
             &tree,
@@ -24493,10 +24344,7 @@ mod tests {
     #[tokio::test]
     async fn ingest_rejects_empty_text() {
         let (dir, tree, pool) = setup_workdir().await;
-        let llm = FakeLlmBackend::new(
-            "fake",
-            "{\"already_in_memory\":{\"answer\":\"no\"},\"intent\":\"skip\"}",
-        );
+        let llm = FakeLlmBackend::new("fake", "{\"intent\":\"skip\"}");
         let policy = IngestPolicy::default();
         let err = wiki_ingest_message(
             &pool,
@@ -24523,7 +24371,7 @@ mod tests {
         // again; the orchestrator must override.
         let llm = FakeLlmBackend::new(
             "fake",
-            "{\"already_in_memory\":{\"answer\":\"no\"},\"intent\":\"skip\",\"needs_disambig\":true,\
+            "{\"intent\":\"skip\",\"needs_disambig\":true,\
              \"disambig_candidates\":[{\"candidate_id\":\"a\",\"description\":\"A\"}]}",
         );
         let policy = IngestPolicy::default();
@@ -24558,7 +24406,6 @@ mod tests {
         let (dir, tree, pool) = setup_workdir().await;
         let llm = FakeLlmBackend::new(
             "fake",
-            // No box at all: the shape a model that ignored the question sends.
             "{\"intent\":\"skip\",\"suggested_seed\":\"You're welcome.\"}",
         );
         let policy = IngestPolicy::default();
@@ -24573,16 +24420,9 @@ mod tests {
         )
         .await
         .expect("ingest");
-        assert_eq!(
-            resp.intent,
-            IntentKind::Capture,
-            "the box came back unanswered, which counts as unsure"
-        );
+        assert_eq!(resp.intent, IntentKind::Skip);
         assert_eq!(resp.suggested_seed.as_deref(), Some("You're welcome."));
-        assert!(
-            resp.capture_id.is_none(),
-            "and a turn with nothing to file still files nothing"
-        );
+        assert!(resp.capture_id.is_none());
         assert!(resp.llm_used);
         drop(dir);
     }
@@ -24596,10 +24436,7 @@ mod tests {
     #[tokio::test]
     async fn ingest_recent_window_crosses_surfaces_and_resumes_blank_sessions() {
         let (dir, tree, pool) = setup_workdir().await;
-        let llm = FakeLlmBackend::new(
-            "fake",
-            "{\"already_in_memory\":{\"answer\":\"no\"},\"intent\":\"skip\",\"suggested_seed\":\"Ok.\"}",
-        );
+        let llm = FakeLlmBackend::new("fake", "{\"intent\":\"skip\",\"suggested_seed\":\"Ok.\"}");
         let policy = IngestPolicy::default();
         let salotto_window = vec![RecentMessage {
             role: MessageRole::User,
@@ -27633,7 +27470,7 @@ mod tests {
         let (dir, tree, pool) = setup_agent_workdir().await;
         let llm = FakeLlmBackend::new(
             "fake",
-            "{\"already_in_memory\":{\"answer\":\"no\"},\"intent\":\"skip\",\"extractions\":[],\"suggested_seed\":\"Ok.\"}",
+            "{\"intent\":\"skip\",\"extractions\":[],\"suggested_seed\":\"Ok.\"}",
         );
         let resp = wiki_ingest_message(
             &pool,
@@ -27866,10 +27703,8 @@ mod tests {
         // assertion below is what a `skip` turn really leaves behind.
         let (dir, tree, pool) = setup_workdir().await;
         let target = plant(&tree, &pool).await;
-        let llm = ScriptedLlm::new(&[
-            "{\"already_in_memory\":{\"answer\":\"no\"},\"intent\":\"skip\",\"extractions\":[],\
-                                      \"suggested_seed\":\"Ok.\"}",
-        ]);
+        let llm = ScriptedLlm::new(&["{\"intent\":\"skip\",\"extractions\":[],\
+                                      \"suggested_seed\":\"Ok.\"}"]);
         let resp = wiki_ingest_message(
             &pool,
             &tree,
@@ -34992,7 +34827,7 @@ mod tests {
             ..req_consumer("due litri di latte", "alice", "botdeploy")
         };
         let own_llm = ScriptedLlm::new(&[
-            "{\"already_in_memory\":{\"answer\":\"no\"},\"intent\":\"skip\",\"extractions\":[],\"suggested_seed\":\"the agent's own pass\"}",
+            "{\"intent\":\"skip\",\"extractions\":[],\"suggested_seed\":\"the agent's own pass\"}",
             "{\"closures\":[],\"supersedes\":[],\"validity_edits\":[],\"acl_changes\":[]}",
         ]);
         let own = wiki_ingest_message(
@@ -36944,11 +36779,8 @@ mod tests {
         // Whether the model truncated at max_tokens or not, the JSON
         // either parses or it doesn't — finish_reason is irrelevant.
         let (dir, tree, pool) = setup_workdir().await;
-        let llm = FakeLlmBackend::new(
-            "fake",
-            "{\"already_in_memory\":{\"answer\":\"no\"},\"intent\":\"skip\"}",
-        )
-        .with_finish_reason(FinishReason::MaxTokens);
+        let llm = FakeLlmBackend::new("fake", "{\"intent\":\"skip\"}")
+            .with_finish_reason(FinishReason::MaxTokens);
         let policy = IngestPolicy::default();
         let resp = wiki_ingest_message(
             &pool,
@@ -37020,10 +36852,7 @@ mod tests {
     #[tokio::test]
     async fn ingest_renders_metadata_locale_into_system_prompt() {
         let (dir, tree, pool) = setup_workdir().await;
-        let llm = FakeLlmBackend::new(
-            "fake",
-            "{\"already_in_memory\":{\"answer\":\"no\"},\"intent\":\"skip\"}",
-        );
+        let llm = FakeLlmBackend::new("fake", "{\"intent\":\"skip\"}");
         let policy = IngestPolicy::default();
         let request = IngestRequest {
             text: "ciao".to_owned(),
@@ -37072,10 +36901,7 @@ mod tests {
     #[tokio::test]
     async fn ingest_marks_its_system_prompt_cacheable() {
         let (dir, tree, pool) = setup_workdir().await;
-        let llm = FakeLlmBackend::new(
-            "fake",
-            "{\"already_in_memory\":{\"answer\":\"no\"},\"intent\":\"skip\"}",
-        );
+        let llm = FakeLlmBackend::new("fake", "{\"intent\":\"skip\"}");
         let policy = IngestPolicy::default();
         let request = IngestRequest {
             text: "the boiler engineer comes on Thursday".to_owned(),
@@ -37105,10 +36931,7 @@ mod tests {
     #[tokio::test]
     async fn ingest_occurred_at_drives_the_current_time_anchor() {
         let (dir, tree, pool) = setup_workdir().await;
-        let llm = FakeLlmBackend::new(
-            "fake",
-            "{\"already_in_memory\":{\"answer\":\"no\"},\"intent\":\"skip\"}",
-        );
+        let llm = FakeLlmBackend::new("fake", "{\"intent\":\"skip\"}");
         let policy = IngestPolicy::default();
         let occurred = chrono::DateTime::parse_from_rfc3339("2026-04-24T09:30:00Z")
             .expect("fixture timestamp")
@@ -37168,10 +36991,7 @@ mod tests {
             .await
             .expect("mirror");
 
-        let llm = FakeLlmBackend::new(
-            "fake",
-            "{\"already_in_memory\":{\"answer\":\"no\"},\"intent\":\"skip\"}",
-        );
+        let llm = FakeLlmBackend::new("fake", "{\"intent\":\"skip\"}");
         let policy = IngestPolicy::default();
         wiki_ingest_message(
             &pool,
@@ -37233,10 +37053,7 @@ mod tests {
             .await
             .expect("mirror");
 
-        let llm = FakeLlmBackend::new(
-            "fake",
-            "{\"already_in_memory\":{\"answer\":\"no\"},\"intent\":\"skip\"}",
-        );
+        let llm = FakeLlmBackend::new("fake", "{\"intent\":\"skip\"}");
         let policy = IngestPolicy::default();
         // Per-call metadata says es-ES (Spanish). MUST win over the
         // it-IT enrollment default.
@@ -37290,10 +37107,7 @@ mod tests {
         let (dir, tree, pool) = setup_workdir().await;
         // `setup_workdir` does not populate enrollment, so no locale
         // is configured and `metadata.locale` is the default `None`.
-        let llm = FakeLlmBackend::new(
-            "fake",
-            "{\"already_in_memory\":{\"answer\":\"no\"},\"intent\":\"skip\"}",
-        );
+        let llm = FakeLlmBackend::new("fake", "{\"intent\":\"skip\"}");
         let policy = IngestPolicy::default();
         wiki_ingest_message(
             &pool,
@@ -37735,90 +37549,9 @@ mod tests {
         assert_eq!(RecallDepth::parse(""), None);
     }
 
-    /// **A turn that repeats what the memory holds is never a skip, and the
-    /// trace says the engine said so.**
-    ///
-    /// The answer that matters is the box, not the intent: the classifier can
-    /// say `skip` and still have ticked «yes, this repeats something», which
-    /// is exactly what it did on the bench turn that restated a standing
-    /// directive. Routed to `skip` the repetition never reaches the dedup, and
-    /// with it goes who was in the room the second time.
     #[tokio::test]
-    async fn a_turn_that_repeats_something_held_is_captured_not_skipped() {
+    async fn ingest_skip_turn_never_consults_the_navigator() {
         let (dir, tree, pool) = setup_workdir().await;
-        let llm = FakeLlmBackend::new(
-            "fake",
-            "{\"intent\":\"skip\",\"already_in_memory\":{\"answer\":\"yes\",\
-             \"fact_id\":\"0190f3c2-7a4e-7c31-9b02-2f6a1c8e5e01\",\
-             \"why\":\"she said this about onions before\"},\
-             \"extractions\":[{\"subject_id\":\"user:alice\",\"fact_type\":\"preference\",\
-             \"body\":\"Alice cannot stand onions.\"}]}",
-        );
-        let resp = wiki_ingest_message(
-            &pool,
-            &tree,
-            fake_embedder(),
-            &llm,
-            None,
-            req("Remember I can't stand onions.", "alice"),
-            &IngestPolicy::default(),
-        )
-        .await
-        .expect("ingest");
-        assert_eq!(
-            resp.intent,
-            IntentKind::Capture,
-            "the box overrides the intent it was asked before"
-        );
-        assert!(
-            resp.capture_id.is_some(),
-            "and the extraction it carried is filed, for the dedup to fold"
-        );
-
-        let trace: String =
-            sqlx::query_scalar("SELECT payload FROM recall_traces ORDER BY id DESC LIMIT 1")
-                .fetch_one(&pool)
-                .await
-                .expect("a trace was written");
-        assert!(
-            trace.contains("the_turn_repeats:0190f3c2-7a4e-7c31-9b02-2f6a1c8e5e01"),
-            "the refusal is countable, and names what it repeats: {trace}"
-        );
-        drop(dir);
-    }
-
-    /// `no` is the one answer that leaves `skip` available.
-    #[tokio::test]
-    async fn a_turn_the_box_says_is_new_may_still_be_skipped() {
-        let (dir, tree, pool) = setup_workdir().await;
-        let llm = FakeLlmBackend::new(
-            "fake",
-            "{\"already_in_memory\":{\"answer\":\"no\"},\"intent\":\"skip\",\"already_in_memory\":{\"answer\":\"no\",\
-             \"why\":\"a greeting, nothing to remember\"}}",
-        );
-        let resp = wiki_ingest_message(
-            &pool,
-            &tree,
-            fake_embedder(),
-            &llm,
-            None,
-            req("thanks!", "alice"),
-            &IngestPolicy::default(),
-        )
-        .await
-        .expect("ingest");
-        assert_eq!(resp.intent, IntentKind::Skip);
-        assert!(resp.capture_id.is_none());
-        drop(dir);
-    }
-
-    #[tokio::test]
-    async fn a_turn_the_box_promoted_out_of_skip_still_pays_no_navigator() {
-        let (dir, tree, pool) = setup_workdir().await;
-        // No box at all: the shape a model that ignored the question sends,
-        // which counts as `unsure` and makes the turn a capture. The
-        // navigator is a second model call, and `PanickingLlm` is what says
-        // out loud that this turn does not pay for one.
         let llm = FakeLlmBackend::new("fake", "{\"intent\":\"skip\"}");
         let policy = IngestPolicy::default();
         let resp = wiki_ingest_message(
@@ -37832,11 +37565,7 @@ mod tests {
         )
         .await
         .expect("ingest");
-        assert_eq!(
-            resp.intent,
-            IntentKind::Capture,
-            "an unanswered box counts as unsure, so the turn is a capture"
-        );
+        assert_eq!(resp.intent, IntentKind::Skip);
         drop(dir);
     }
 
@@ -37875,10 +37604,7 @@ mod tests {
         };
         fact_index::insert(&pool, &fact).await.expect("insert fact");
 
-        let llm = FakeLlmBackend::new(
-            "fake",
-            "{\"already_in_memory\":{\"answer\":\"no\"},\"intent\":\"skip\"}",
-        );
+        let llm = FakeLlmBackend::new("fake", "{\"intent\":\"skip\"}");
         let policy = IngestPolicy::default();
         let resp = wiki_ingest_message(
             &pool,
@@ -38122,10 +37848,7 @@ mod tests {
     async fn consumer_described_attachment_skips_the_vision_bytes() {
         let (dir, tree, pool) = setup_workdir().await;
         let cid = seed_photo(&pool, dir.path(), "user:alice", b"jpegbytes").await;
-        let llm = FakeLlmBackend::new(
-            "fake",
-            "{\"already_in_memory\":{\"answer\":\"no\"},\"intent\":\"skip\"}",
-        );
+        let llm = FakeLlmBackend::new("fake", "{\"intent\":\"skip\"}");
         let policy = IngestPolicy::default();
         let mut request = req("foto", "alice");
         request.attachments = vec![attachment(
@@ -38165,10 +37888,7 @@ mod tests {
             .expect("row");
         assert_eq!(row.mime, "image/jpeg", "canonicalised at the catalog");
 
-        let llm = FakeLlmBackend::new(
-            "fake",
-            "{\"already_in_memory\":{\"answer\":\"no\"},\"intent\":\"skip\"}",
-        );
+        let llm = FakeLlmBackend::new("fake", "{\"intent\":\"skip\"}");
         let mut request = req("guarda", "alice");
         request.attachments = vec![attachment(&cid, Some("al cancello"), None)];
         wiki_ingest_message(
@@ -38238,10 +37958,7 @@ mod tests {
     async fn unclaimed_attachment_is_filed_by_the_deterministic_fallback() {
         let (dir, tree, pool) = setup_workdir().await;
         let cid = seed_photo(&pool, dir.path(), "user:alice", b"jpegbytes").await;
-        let llm = FakeLlmBackend::new(
-            "fake",
-            "{\"already_in_memory\":{\"answer\":\"no\"},\"intent\":\"skip\"}",
-        );
+        let llm = FakeLlmBackend::new("fake", "{\"intent\":\"skip\"}");
         let policy = IngestPolicy::default();
         let mut request = req("guarda", "alice");
         request.attachments = vec![attachment(&cid, Some("tramonto sul porto"), None)];
@@ -38326,10 +38043,7 @@ mod tests {
     async fn textless_unclaimed_attachment_stays_catalogued_unfiled() {
         let (dir, tree, pool) = setup_workdir().await;
         let cid = seed_photo(&pool, dir.path(), "user:alice", b"jpegbytes").await;
-        let llm = FakeLlmBackend::new(
-            "fake",
-            "{\"already_in_memory\":{\"answer\":\"no\"},\"intent\":\"skip\"}",
-        );
+        let llm = FakeLlmBackend::new("fake", "{\"intent\":\"skip\"}");
         let policy = IngestPolicy::default();
         let mut request = req("guarda", "alice");
         request.attachments = vec![attachment(&cid, None, None)];

@@ -3057,8 +3057,8 @@ fn acl_change_context(
 ///
 /// The sibling of [`emit_validity_close_receipt`], for a sharing change: the
 /// caller has already stamped every target's ACL ([`fact_index::set_acl`],
-/// [`capture_buffer::set_acl`], or [`fact_index::settle_audience`] where a
-/// claim said again settles the audience of a fact the memory already held) and
+/// [`capture_buffer::set_acl`], or [`fact_index::restrict_to`] where the
+/// change is an exclusion landing on a fact the memory already held) and
 /// written the [`crate::disclosure_audit`] rows; this writes the receipt.
 ///
 /// `reason` says why, for a change nobody typed a sentence asking for.
