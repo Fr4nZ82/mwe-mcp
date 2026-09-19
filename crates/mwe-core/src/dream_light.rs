@@ -517,13 +517,14 @@ async fn screen_one(
     // waited an hour is answered like one that did not
     // ([`crate::capture::apply_exclusion_to_the_fact_already_there`]).
     //
-    // Two things the scan below does are absent here on purpose. Self is not
-    // excluded because it cannot match: a claim already promoted became a fact
-    // carrying this very exclusion, and the rule folds only onto a fact the
-    // claim NARROWS. And the embed sets are not compared, because the turn
-    // that adds the fence is usually the turn that does not re-send the photo
-    // — requiring the media to match again would drop the fence on the floor,
-    // which is the whole thing this road exists to stop.
+    // Two things the ordinary scan does are absent here, and in the rule
+    // below it, on purpose. Self is not excluded, and does not need to be: a
+    // claim a partial run already promoted became a fact holding the very
+    // audience it carries, so there is nothing left to settle and both rules
+    // pass over it. And the embed sets are not compared, because the telling
+    // that changes who may see a thing is usually the one that does not
+    // re-send the photo — requiring the media to match again would drop what
+    // it came to say, which is the whole thing these two roads exist for.
     let speaker = cap.sender.as_ref().unwrap_or(&cap.subject);
     if let Some((dup, score)) = crate::capture::apply_exclusion_to_the_fact_already_there(
         pool,
@@ -560,6 +561,38 @@ async fn screen_one(
             similarity = score,
             threshold = policy.dedup_threshold,
             "light dream: SKIPPED (dedup hit)"
+        );
+        fold_into(pool, cap, dup, score, report).await?;
+        return Ok(None);
+    }
+
+    // **And the same claim said to a DIFFERENT room settles who reads the one
+    // already there.** The scan above folds only rows whose audience matches
+    // as stored, so the telling that widens — said on the phone, said again in
+    // the kitchen — is exactly the one it cannot see. It is asked last because
+    // it is the one that costs a roster read, and because the common case is
+    // the audience being identical, which the scan above has already folded.
+    //
+    // This belongs to the round and not to the turn (founder): telling two
+    // claims apart is a comparison between FACTS, and the round is what holds
+    // every fact and the threshold. The turn is one call on the smallest
+    // model, spent on what only it can answer.
+    if let Some((dup, score)) = crate::capture::carry_the_new_audience_onto_the_fact_it_folds_into(
+        pool,
+        &active,
+        &audience,
+        channel,
+        &cap.body,
+        speaker,
+        policy.dedup_threshold,
+    )
+    .await?
+    {
+        tracing::info!(
+            capture_id = %cap.capture_id,
+            matched_fact_id = dup.fact_id.as_str(),
+            similarity = score,
+            "light dream: SKIPPED (the claim folds in and changes who reads it)"
         );
         fold_into(pool, cap, dup, score, report).await?;
         return Ok(None);
@@ -1289,7 +1322,12 @@ mod tests {
             "and neither does tomorrow's member of the group"
         );
 
-        the_change_is_on_the_record(&pool, &after[0].fact_id).await;
+        the_change_is_on_the_record(
+            &pool,
+            &after[0].fact_id,
+            "frozen to today's members of parents",
+        )
+        .await;
     }
 
     /// The two things a change to who may read a fact always leaves: the
@@ -1299,7 +1337,11 @@ mod tests {
     /// being a promise about a list — nobody typed a sentence asking for this
     /// change, so without that line it reads as somebody having retyped the
     /// audience by hand.
-    async fn the_change_is_on_the_record(pool: &SqlitePool, fact_id: &crate::types::FactId) {
+    async fn the_change_is_on_the_record(
+        pool: &SqlitePool,
+        fact_id: &crate::types::FactId,
+        says: &str,
+    ) {
         let audited: i64 =
             sqlx::query_scalar("SELECT COUNT(*) FROM disclosure_audit WHERE fact_id = ?")
                 .bind(fact_id.as_str())
@@ -1315,24 +1357,292 @@ mod tests {
         .await
         .expect("a receipt was written");
         assert!(
-            context.contains("readers frozen to today's members of parents"),
-            "the receipt names the freezing and the group: {context}"
-        );
-        assert!(
-            context.contains("group:parents") && context.contains("user:alice"),
-            "and carries what it was and what it is now: {context}"
+            context.contains(says),
+            "the receipt says what moved ({says}): {context}"
         );
     }
 
-    /// **Reaching different people is not the same claim said again.**
+    /// Plant `household` with the three of them in it.
+    async fn household_is(pool: &SqlitePool, members: &[&str]) {
+        sqlx::query("INSERT OR REPLACE INTO enrollment_groups (group_id, members) VALUES (?, ?)")
+            .bind("household")
+            .bind(serde_json::to_string(members).unwrap())
+            .execute(pool)
+            .await
+            .expect("group");
+    }
+
+    /// **Said on the phone, said again in the kitchen — the fact you already
+    /// have is the one the house can read.**
     ///
-    /// The fence rides on a fold, and a fold is for a claim the memory already
-    /// holds. One that would ALSO hand the fact to somebody new is a different
-    /// act with a verb of its own — it is stated in full, and both facts are
-    /// left standing — so the words matching is not enough and the claim is
-    /// written as its own fact.
+    /// The bench case. Her own claim about herself, told where only she could
+    /// read it; the same sentence again where the group question comes back
+    /// `household: yes`. One fact, whose audience is now the house, and a
+    /// receipt saying so.
     #[tokio::test]
-    async fn a_claim_that_reaches_new_people_is_not_folded_into_the_old_one() {
+    async fn the_same_claim_said_to_a_wider_room_widens_the_fact_already_there() {
+        let (_dir, tree, pool) = setup().await;
+        household_is(&pool, &["alice", "bob", "zoe"]).await;
+        let told_alone = capture_buffer::buffer_capture(
+            &pool,
+            cap_req("Alice cannot stand onions and wants none in anything suggested for her"),
+            None,
+        )
+        .await
+        .unwrap();
+        drain_deterministically(&pool, &tree, &embedder(), &LightPolicy::default(), NOW)
+            .await
+            .unwrap();
+        let before = fact_index::find_active_in_wiki(&pool, "alice")
+            .await
+            .unwrap();
+        assert_eq!(before.len(), 1);
+        assert!(
+            before[0].allow_ids.is_empty(),
+            "told alone, it is hers alone: {:?}",
+            before[0].allow_ids
+        );
+
+        capture_buffer::buffer_capture(
+            &pool,
+            CaptureRequest {
+                allow: vec![Principal::Group("household".to_owned())],
+                ..cap_req("alice CANNOT stand onions and wants none in anything suggested for her")
+            },
+            None,
+        )
+        .await
+        .unwrap();
+        let report =
+            drain_deterministically(&pool, &tree, &embedder(), &LightPolicy::default(), NOW)
+                .await
+                .unwrap();
+        assert_eq!(report.skipped_dup, 1, "the words are the same claim");
+
+        let after = fact_index::find_active_in_wiki(&pool, "alice")
+            .await
+            .unwrap();
+        assert_eq!(after.len(), 1, "one answer, not a private copy beside it");
+        assert_eq!(
+            after[0].fact_id.as_str(),
+            told_alone.capture_id.as_str(),
+            "and it is the fact that was already there"
+        );
+        assert_eq!(
+            after[0].allow_ids,
+            vec![Principal::Group("household".to_owned())],
+            "which the house now reads: {:?}",
+            after[0].allow_ids
+        );
+        the_change_is_on_the_record(&pool, &after[0].fact_id, "wider room").await;
+    }
+
+    /// **The same telling, with a fence on it.**
+    ///
+    /// «The ceiling is 14k» on the phone, said again in the kitchen with «but
+    /// not her»: the house is let in, she is not, and because an exclusion is
+    /// on it the group is written out as the people in it today.
+    #[tokio::test]
+    async fn a_wider_room_with_a_fence_widens_and_freezes_at_once() {
+        let (_dir, tree, pool) = setup().await;
+        household_is(&pool, &["alice", "bob", "zoe"]).await;
+        capture_buffer::buffer_capture(&pool, cap_req("The kitchen ceiling budget is 14k"), None)
+            .await
+            .unwrap();
+        drain_deterministically(&pool, &tree, &embedder(), &LightPolicy::default(), NOW)
+            .await
+            .unwrap();
+
+        capture_buffer::buffer_capture(
+            &pool,
+            CaptureRequest {
+                allow: vec![Principal::Group("household".to_owned())],
+                excluded: vec![Principal::User("zoe".to_owned())],
+                ..cap_req("the KITCHEN ceiling budget is 14k")
+            },
+            None,
+        )
+        .await
+        .unwrap();
+        drain_deterministically(&pool, &tree, &embedder(), &LightPolicy::default(), NOW)
+            .await
+            .unwrap();
+
+        let after = fact_index::find_active_in_wiki(&pool, "alice")
+            .await
+            .unwrap();
+        assert_eq!(after.len(), 1, "one fact");
+        assert_eq!(
+            after[0].excluded_ids,
+            vec![Principal::User("zoe".to_owned())],
+            "kept from the one named: {:?}",
+            after[0].excluded_ids
+        );
+        assert!(
+            !after[0]
+                .allow_ids
+                .contains(&Principal::Group("household".to_owned())),
+            "and the group is written out as people, because a fence is on it: {:?}",
+            after[0].allow_ids
+        );
+        assert!(
+            !after[0]
+                .allow_ids
+                .contains(&Principal::User("zoe".to_owned())),
+            "her name never enters the reader list: {:?}",
+            after[0].allow_ids
+        );
+        the_change_is_on_the_record(&pool, &after[0].fact_id, "frozen to today's members").await;
+    }
+
+    /// **Somebody else saying the same thing writes their own fact.**
+    ///
+    /// Founder, 2026-08-18 and again on 96w: who said it is part of what is
+    /// stored. Bob repeating what she told the memory gets his own, and hers
+    /// does not move — not its words, and not who may read it.
+    #[tokio::test]
+    async fn another_persons_telling_is_its_own_fact_and_moves_nothing() {
+        let (_dir, tree, pool) = setup().await;
+        household_is(&pool, &["alice", "bob", "zoe"]).await;
+        capture_buffer::buffer_capture(&pool, cap_req("Alice cannot stand onions"), None)
+            .await
+            .unwrap();
+        drain_deterministically(&pool, &tree, &embedder(), &LightPolicy::default(), NOW)
+            .await
+            .unwrap();
+
+        capture_buffer::buffer_capture(
+            &pool,
+            CaptureRequest {
+                sender: Some(Principal::User("bob".to_owned())),
+                allow: vec![Principal::Group("household".to_owned())],
+                ..cap_req("alice CANNOT stand onions")
+            },
+            None,
+        )
+        .await
+        .unwrap();
+        drain_deterministically(&pool, &tree, &embedder(), &LightPolicy::default(), NOW)
+            .await
+            .unwrap();
+
+        let after = fact_index::find_active_in_wiki(&pool, "alice")
+            .await
+            .unwrap();
+        assert_eq!(after.len(), 2, "two tellings, two facts");
+        let hers = after
+            .iter()
+            .find(|r| r.sender_id.as_ref() == Some(&Principal::User("alice".to_owned())))
+            .expect("her own fact");
+        assert!(
+            hers.allow_ids.is_empty(),
+            "his room does not become hers: {:?}",
+            hers.allow_ids
+        );
+    }
+
+    /// **The same claim to the same room changes nothing, and says nothing.**
+    ///
+    /// The ordinary duplicate: it folds through the scan that handles those,
+    /// and leaves no record of a permission change, because none happened.
+    #[tokio::test]
+    async fn a_repeat_to_the_same_room_leaves_no_receipt() {
+        let (_dir, tree, pool) = setup().await;
+        household_is(&pool, &["alice", "bob", "zoe"]).await;
+        let first = CaptureRequest {
+            allow: vec![Principal::Group("household".to_owned())],
+            ..cap_req("Alice cannot stand onions")
+        };
+        capture_buffer::buffer_capture(&pool, first.clone(), None)
+            .await
+            .unwrap();
+        drain_deterministically(&pool, &tree, &embedder(), &LightPolicy::default(), NOW)
+            .await
+            .unwrap();
+        capture_buffer::buffer_capture(
+            &pool,
+            CaptureRequest {
+                allow: vec![Principal::Group("household".to_owned())],
+                ..cap_req("alice CANNOT stand onions")
+            },
+            None,
+        )
+        .await
+        .unwrap();
+        let report =
+            drain_deterministically(&pool, &tree, &embedder(), &LightPolicy::default(), NOW)
+                .await
+                .unwrap();
+        assert_eq!(report.skipped_dup, 1, "folded as the duplicate it is");
+
+        let after = fact_index::find_active_in_wiki(&pool, "alice")
+            .await
+            .unwrap();
+        assert_eq!(after.len(), 1);
+        let audited: i64 =
+            sqlx::query_scalar("SELECT COUNT(*) FROM disclosure_audit WHERE fact_id = ?")
+                .bind(after[0].fact_id.as_str())
+                .fetch_one(&pool)
+                .await
+                .unwrap();
+        assert_eq!(audited, 0, "nothing moved, so nothing is recorded as moved");
+    }
+
+    /// **A claim read twice does not rewrite its own fact.**
+    ///
+    /// A partial run promotes a claim and leaves its queue row waiting; the
+    /// next round reads it again. The ordinary dedup scan passes over it —
+    /// it excludes the claim's own id — so this rule is what meets it, and
+    /// the fact it would settle is the one it became. Nothing has moved, so
+    /// nothing is written: otherwise every interrupted round would leave a
+    /// permission-change receipt for a permission nobody changed.
+    #[tokio::test]
+    async fn a_claim_read_twice_does_not_rewrite_its_own_fact() {
+        let (_dir, tree, pool) = setup().await;
+        household_is(&pool, &["alice", "bob", "zoe"]).await;
+        let buffered = capture_buffer::buffer_capture(
+            &pool,
+            CaptureRequest {
+                allow: vec![Principal::Group("household".to_owned())],
+                ..cap_req("Alice cannot stand onions")
+            },
+            None,
+        )
+        .await
+        .unwrap();
+        drain_deterministically(&pool, &tree, &embedder(), &LightPolicy::default(), NOW)
+            .await
+            .unwrap();
+
+        // The promotion happened; the queue row never got stamped.
+        sqlx::query("UPDATE capture_buffer SET status = 'buffered', processed_at = NULL WHERE capture_id = ?")
+            .bind(buffered.capture_id.as_str())
+            .execute(&pool)
+            .await
+            .expect("put it back in the queue");
+        drain_deterministically(&pool, &tree, &embedder(), &LightPolicy::default(), NOW)
+            .await
+            .unwrap();
+
+        let audited: i64 =
+            sqlx::query_scalar("SELECT COUNT(*) FROM disclosure_audit WHERE fact_id = ?")
+                .bind(buffered.capture_id.as_str())
+                .fetch_one(&pool)
+                .await
+                .unwrap();
+        assert_eq!(
+            audited, 0,
+            "reading a claim again is not a permission change"
+        );
+    }
+
+    /// **A claim that reaches new people AND keeps somebody out does both.**
+    ///
+    /// The round takes the union and subtracts the fence from the result, so
+    /// the parents are let in, the one named is not, and there is one fact
+    /// rather than a protected copy beside a bare one.
+    #[tokio::test]
+    async fn a_claim_that_reaches_new_people_widens_the_fact_and_still_fences_it() {
         let (_dir, tree, pool) = setup().await;
         parents_are(&pool, &["bob", "alice"]).await;
         capture_buffer::buffer_capture(&pool, cap_req("Alice is planning a surprise party"), None)
@@ -1365,29 +1675,28 @@ mod tests {
         let after = fact_index::find_active_in_wiki(&pool, "alice")
             .await
             .unwrap();
-        assert_eq!(
-            after.len(),
-            2,
-            "two facts: one reaches people the other never did, {:?}",
-            after.iter().map(|r| &r.allow_ids).collect::<Vec<_>>()
-        );
+        assert_eq!(after.len(), 1, "one fact, not two");
+        assert!(reads_it(&after[0], "bob") && reads_it(&after[0], "alice"));
         assert!(
-            after.iter().any(|r| r.allow_ids.is_empty()),
-            "the stored fact keeps the audience it was written with"
+            !reads_it(&after[0], "zoe"),
+            "let in by the widening, kept out by the fence: {:?} / {:?}",
+            after[0].allow_ids,
+            after[0].excluded_ids
         );
     }
 
-    /// The same refusal when the new reach is written as a GROUP.
+    /// **The widening names a group the one kept out is IN, and she still does
+    /// not get it.**
     ///
-    /// «Same claim, and the parents can see it now, and not her» reaches two
-    /// people the stored fact never reached. It is the same rule as the case
-    /// above and it has to survive the group being resolved: a roster that
-    /// only covered the stored fact's own groups would expand `parents` to
-    /// nobody here, and two lists reaching different people would look alike.
+    /// The case the fourth term exists for, arriving through the widening door
+    /// instead: «the parents can see it, and not her» where she is one of the
+    /// parents. The group is resolved so the fence can be taken out of it —
+    /// her name never enters the reader list — and the stored exclusion holds
+    /// behind that against whatever the audience becomes later.
     #[tokio::test]
-    async fn a_group_the_stored_fact_never_named_is_new_reach_too() {
+    async fn the_one_kept_out_does_not_come_back_in_through_her_own_group() {
         let (_dir, tree, pool) = setup().await;
-        parents_are(&pool, &["bob", "alice"]).await;
+        parents_are(&pool, &["bob", "alice", "zoe"]).await;
         capture_buffer::buffer_capture(&pool, cap_req("Alice is planning a surprise party"), None)
             .await
             .unwrap();
@@ -1413,11 +1722,22 @@ mod tests {
         let after = fact_index::find_active_in_wiki(&pool, "alice")
             .await
             .unwrap();
-        assert_eq!(
-            after.len(),
-            2,
-            "the parents are new readers, so this is not the same claim again: {:?}",
-            after.iter().map(|r| &r.allow_ids).collect::<Vec<_>>()
+        assert_eq!(after.len(), 1, "one fact");
+        assert!(
+            reads_it(&after[0], "bob") && reads_it(&after[0], "alice"),
+            "the group named this turn reads it: {:?}",
+            after[0].allow_ids
+        );
+        assert!(
+            !after[0]
+                .allow_ids
+                .contains(&Principal::User("zoe".to_owned())),
+            "her name never enters the reader list, though she is a parent: {:?}",
+            after[0].allow_ids
+        );
+        assert!(
+            !reads_it(&after[0], "zoe"),
+            "and she does not read it, group or no group"
         );
     }
 

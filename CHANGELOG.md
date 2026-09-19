@@ -171,6 +171,28 @@ semver-governed surface: breaking changes are called out explicitly.
   asking for this one, so without that line it would look like somebody had
   retyped the audience by hand.
 
+- **Saying a thing again to a wider room widens what you already said.** You
+  tell the memory something on the phone, where only you can read it, and then
+  you say it again in the kitchen. Until now that left two copies — one the
+  house could read and one it could not — because the second telling was
+  filed as though it were a different thing. It is not: it is the same
+  sentence with a different room around it, and the room is the new part. So
+  the claim you already made is the one that widens, and there is one answer
+  rather than two. Anybody you have asked to keep it from stays out, even
+  when the wider room is a group they are in.
+
+  **It is your own claim this happens to.** Somebody else saying the same
+  thing about you writes their own, and yours does not move — not its words,
+  and not who may read it. Two people telling the memory the same thing have
+  always been two facts, because who said it is part of what is stored.
+
+  **The hourly round is what does it**, not the moment you speak: telling two
+  claims apart is a comparison between everything the memory holds, and the
+  round is what holds it. Nothing here asks the assistant for more work in
+  the moment. The one consequence worth knowing: a claim written straight
+  away without waiting — a shopping list, a note you asked for by name — is
+  filed as its own and waits for a later pass.
+
 - **The trace shows how the memory decided who may read a fact.** A new panel,
   **Who this was filed for**, lists for each fact what your assistant answered:
   one line per group you belong to, with the reason it gave, and who the
