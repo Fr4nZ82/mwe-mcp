@@ -3060,9 +3060,17 @@ fn kept_from_correction(
 /// BOTH. A genuine standing policy about the same person («never tell Zoe
 /// anything about my mother») arrives on a turn that excludes nobody, and
 /// nothing here touches it.
+///
+/// **`others` is every OTHER extraction of the turn, never this one.** What
+/// makes the rule redundant is another extraction already keeping that person
+/// out; a rule that carries the exclusion ITSELF is the only thing saying it,
+/// and reading its own answer back would make every such extraction refute
+/// itself. On the bench it did: «Our ceiling is 14k but I'd rather Zoe didn't
+/// know the number» came back as ONE extraction holding the figure and the
+/// fence, marked as a rule, and the figure went with it.
 fn a_rule_restating_an_exclusion(
     unit: &CaptureUnit<'_>,
-    turn: &[CaptureUnit<'_>],
+    others: &[&CaptureUnit<'_>],
     roster: &[enrollment::EnrolledUserLite],
 ) -> Option<String> {
     if !unit.behaviour_rule && unit.fact_type != Some("rule") {
@@ -3070,13 +3078,58 @@ fn a_rule_restating_an_exclusion(
     }
     let body = unit.body.map(str::trim).filter(|b| !b.is_empty())?;
     let named = recall::turn_subjects(body, "", roster);
-    turn.iter()
+    others
+        .iter()
         .flat_map(|other| other.kept_from.people())
         .filter_map(|p| Principal::from_str(p).ok())
         .find_map(|p| match &p {
             Principal::User(id) if named.contains(id) => Some(id.clone()),
             _ => None,
         })
+}
+
+/// **Is this extraction both the claim and the fence?**
+///
+/// The same question [`a_rule_restating_an_exclusion`] asks, turned on the
+/// extraction itself instead of its neighbours: a rule naming somebody its
+/// OWN answer keeps out. Read against the rest of the turn that means
+/// «somebody else already said this»; read against itself it means «this is
+/// the only thing saying it», which is the opposite, and the reason the claim
+/// must be kept.
+fn a_rule_carrying_its_own_fence(
+    unit: &CaptureUnit<'_>,
+    roster: &[enrollment::EnrolledUserLite],
+) -> bool {
+    a_rule_restating_an_exclusion(unit, std::slice::from_ref(&unit), roster).is_some()
+}
+
+/// **A rule that is the only thing saying who it keeps out is not a rule —
+/// it is the fact, with the fence on it.**
+///
+/// The turn states one thing and fences it in the same breath, and the
+/// classifier packs both into a single extraction marked as a standing rule.
+/// Dropping that as a repetition costs the thing the turn was about; keeping
+/// it as a rule files a policy struck off one afternoon, which outlives the
+/// fact it was about and which nothing retires. So neither: the rule flag
+/// comes off and what is left is the claim, with its exclusion still on it.
+///
+/// **The type is `state`, and that is the engine choosing.** The classifier
+/// said `rule`, which is the half being taken away; what it would have said
+/// instead is not recoverable from the words, and `state` is the neutral
+/// reading of a sentence that says how something IS. It is written into the
+/// turn's trace as a correction, because a type the engine picked and a type
+/// the model picked read the same on the fact afterwards.
+///
+/// **Everything that only a rule can do goes with the flag**, the supersede
+/// target included: `supersede_target` on a standing directive names another
+/// directive to replace in place, and retiring a directive is a thing only a
+/// directive does.
+const fn demote_the_rule_that_carries_its_own_fence(unit: &mut CaptureUnit<'_>) {
+    unit.behaviour_rule = false;
+    unit.behaviour_scope = None;
+    unit.behaviour_about = None;
+    unit.supersede_target = None;
+    unit.fact_type = Some("state");
 }
 
 /// The receipt for a `conflicts_with` the engine dropped because it named a
@@ -13538,7 +13591,37 @@ pub async fn wiki_ingest_message(
                 String,
                 Vec<(FactId, WikiId, String)>,
             > = std::collections::BTreeMap::new();
-            for unit in &units {
+            for (at, unit) in units.iter().enumerate() {
+                let mut unit = *unit;
+                // **The claim and the fence arrive as one extraction, marked
+                // as a standing rule.** Nothing else on this turn keeps that
+                // person out, so this is not a rule repeating a fence
+                // somebody else set — it IS the fence, and it carries the
+                // claim with it. Dropping it costs the claim; filing it as a
+                // rule files a policy struck off one afternoon that outlives
+                // what it was about. The flag comes off, here, before
+                // anything downstream reads it to route the claim.
+                if a_rule_carrying_its_own_fence(&unit, &known_users)
+                    && !units
+                        .iter()
+                        .enumerate()
+                        .any(|(i, other)| i != at && other.kept_from.is_readable())
+                {
+                    let was = unit.fact_type.unwrap_or("rule").to_owned();
+                    demote_the_rule_that_carries_its_own_fence(&mut unit);
+                    tracing::info!(
+                        body = unit.body.unwrap_or(""),
+                        "ingest: a rule carrying its own exclusion is the fact with the fence on \
+                         it — demoted, not dropped"
+                    );
+                    corrected_extractions.push(crate::recall_trace::TraceCorrectedExtraction {
+                        claim: truncate(unit.body.unwrap_or_default(), 160),
+                        field: "fact_type".to_owned(),
+                        was,
+                        now: "state".to_owned(),
+                        reason: "a_rule_that_carries_its_own_exclusion_is_the_fact".to_owned(),
+                    });
+                }
                 // Surface the per-fact validity interval + per-page
                 // style/description the classifier deduced.
                 tracing::info!(
@@ -13685,7 +13768,7 @@ pub async fn wiki_ingest_message(
                         continue;
                     }
                     let mut scope = BehaviourScope::from_hint(unit.behaviour_scope);
-                    let mut supersede = behaviour_supersede_target(unit, &behaviour_rules);
+                    let mut supersede = behaviour_supersede_target(&unit, &behaviour_rules);
                     // What the speaker said on top of «mine»: the extraction's
                     // own audience, in the wire form the classifier writes it.
                     let mut also_for: Vec<Principal> = unit
@@ -13822,7 +13905,7 @@ pub async fn wiki_ingest_message(
                             Arc::clone(&embedder),
                             &request,
                             agent_id,
-                            unit,
+                            &unit,
                             &known_users,
                             policy,
                         )
@@ -13863,7 +13946,6 @@ pub async fn wiki_ingest_message(
                 // otherwise it falls to the sender, the ruling's own last
                 // resort. Fail-open on a DB error: the guard protects against
                 // a coined principal, not against an outage.
-                let mut unit = *unit;
                 // The model named the box instead of filling it: `"subject_id":
                 // "subject_external"` is the sentence "what this is about is in
                 // the other field", which answers a different question from the
@@ -13992,7 +14074,13 @@ pub async fn wiki_ingest_message(
                 // «Don't tell her» about ONE fact is that fact's audience, and
                 // a standing rule saying it again is a policy struck off one
                 // afternoon that outlives the fact it was about.
-                if let Some(person) = a_rule_restating_an_exclusion(&unit, &units, &known_users) {
+                let others: Vec<&CaptureUnit<'_>> = units
+                    .iter()
+                    .enumerate()
+                    .filter(|(i, _)| *i != at)
+                    .map(|(_, u)| u)
+                    .collect();
+                if let Some(person) = a_rule_restating_an_exclusion(&unit, &others, &known_users) {
                     tracing::info!(
                         person = person.as_str(),
                         body = unit.body.unwrap_or(""),
@@ -16955,12 +17043,12 @@ mod tests {
         };
         let turn = [fact, rule];
         assert_eq!(
-            a_rule_restating_an_exclusion(&turn[1], &turn, &roster).as_deref(),
+            a_rule_restating_an_exclusion(&turn[1], &[&turn[0]], &roster).as_deref(),
             Some("zoe"),
-            "the rule says what the fact's own answer already says"
+            "the rule says what the OTHER extraction's answer already says"
         );
         assert!(
-            a_rule_restating_an_exclusion(&turn[0], &turn, &roster).is_none(),
+            a_rule_restating_an_exclusion(&turn[0], &[&turn[1]], &roster).is_none(),
             "the fact itself is not a rule and is never the one dropped"
         );
 
@@ -16970,10 +17058,66 @@ mod tests {
             body: Some("Never tell Bob anything about my work."),
             ..alice_claim_kept(&answers, &NO_KEPT_FROM_ANSWER, &no_ids)
         };
-        let ordinary = [elsewhere];
         assert!(
-            a_rule_restating_an_exclusion(&ordinary[0], &ordinary, &roster).is_none(),
+            a_rule_restating_an_exclusion(&elsewhere, &[], &roster).is_none(),
             "a standing policy is not a restatement of an exclusion nobody made"
+        );
+    }
+
+    /// **The one extraction that carries BOTH the claim and the fence keeps
+    /// the claim.**
+    ///
+    /// The bench turn, as the classifier really sent it: «Our ceiling is 14k
+    /// but I'd rather Zoe didn't know the number» came back as ONE extraction
+    /// holding the figure and the fence, marked as a standing rule. Read
+    /// against the whole turn — itself included — the guard found its own
+    /// answer, called the rule a repetition and dropped it, and the figure
+    /// went with it. Nothing else on that turn keeps her out, so nothing is
+    /// being repeated: the rule flag comes off and the claim stays.
+    #[test]
+    fn a_rule_that_carries_its_own_fence_is_demoted_not_dropped() {
+        let no_ids: [String; 0] = [];
+        let answers = answered(&[("parents", "yes"), ("renovation", "yes")]);
+        let roster = vec![enrollment::EnrolledUserLite {
+            user_id: "zoe".to_owned(),
+            aliases: vec!["Zoe".to_owned()],
+            is_agent: false,
+        }];
+        let kept = kept_from("somebody", &["user:zoe"]);
+        let both_in_one = CaptureUnit {
+            behaviour_rule: true,
+            fact_type: Some("rule"),
+            body: Some(
+                "The kitchen ceiling budget is £14,000. This figure is not to be shared with Zoe.",
+            ),
+            ..alice_claim_kept(&answers, &kept, &no_ids)
+        };
+
+        assert!(
+            a_rule_restating_an_exclusion(&both_in_one, &[], &roster).is_none(),
+            "nothing else on the turn keeps her out, so nothing is repeated"
+        );
+        assert!(
+            a_rule_carrying_its_own_fence(&both_in_one, &roster),
+            "and it is the only thing on the turn saying it"
+        );
+
+        let mut demoted = both_in_one;
+        demote_the_rule_that_carries_its_own_fence(&mut demoted);
+        assert!(!demoted.behaviour_rule, "it is not a standing policy");
+        assert!(
+            demoted.supersede_target.is_none(),
+            "and it retires no directive: that is a thing only a directive does"
+        );
+        assert_eq!(demoted.fact_type, Some("state"), "it is what it says it is");
+        assert_eq!(
+            demoted.body, both_in_one.body,
+            "and the figure is still there"
+        );
+        assert_eq!(
+            demoted.kept_from.people(),
+            &["user:zoe".to_owned()],
+            "fence included"
         );
     }
 
@@ -27423,6 +27567,102 @@ mod tests {
     /// classifier answering `skip` has thrown the rule away before a single
     /// line of Part 7 applies. Filing per scope is covered by its own tests;
     /// what this one pins is the gate over them.
+    /// **The turn that states a figure and fences it keeps the figure.**
+    ///
+    /// The bench turn, with the extraction the classifier really sent: one
+    /// element holding the number AND «not to be shared with Zoe», marked as
+    /// a standing rule. The guard against a rule that merely repeats a fence
+    /// read it against the whole turn, itself included, found its own answer
+    /// and dropped it — and the figure went with it. Nothing else on the turn
+    /// keeps her out, so nothing is repeated, and what is dropped is the rule
+    /// flag rather than the claim.
+    #[tokio::test]
+    async fn a_turn_that_states_a_figure_and_fences_it_keeps_the_figure() {
+        let (dir, tree, pool) = setup_workdir().await;
+        sqlx::query(
+            "INSERT OR IGNORE INTO enrollment_users (user_id, aliases, is_admin) \
+             VALUES ('zoe', '[\"Zoe\"]', 0)",
+        )
+        .execute(&pool)
+        .await
+        .expect("enrol the person the fence names");
+        // The roster a sender is shown is the people they share a group with,
+        // and the guard reads names off that roster.
+        sqlx::query(
+            "INSERT OR REPLACE INTO enrollment_groups (group_id, members) \
+             VALUES ('household', '[\"alice\",\"zoe\"]')",
+        )
+        .execute(&pool)
+        .await
+        .expect("one household");
+        let llm = FakeLlmBackend::new(
+            "fake",
+            "{\"intent\":\"capture\",\"extractions\":[{\
+              \"subject_id\":\"user:alice\",\"behaviour_rule\":true,\
+              \"behaviour_scope\":\"per-user\",\"fact_type\":\"rule\",\
+              \"kept_from\":{\"answer\":\"somebody\",\"people\":[\"user:zoe\"],\
+              \"why\":\"he does not want her to know the number\"},\
+              \"body\":\"The kitchen ceiling budget is 14000 pounds. \
+              This figure is not to be shared with Zoe.\"}]}",
+        );
+        let resp = wiki_ingest_message(
+            &pool,
+            &tree,
+            fake_embedder(),
+            &llm,
+            None,
+            req(
+                "Our ceiling is 14k but I'd rather Zoe didn't know the number.",
+                "alice",
+            ),
+            &IngestPolicy::default(),
+        )
+        .await
+        .expect("ingest");
+        assert!(
+            resp.capture_id.is_some(),
+            "the claim is filed, not thrown away with the rule flag"
+        );
+
+        // Demoted, it takes the ordinary road: it waits in the queue like any
+        // other claim, instead of being written straight onto the rules page.
+        let queued = capture_buffer::find_all_buffered(&pool, 10)
+            .await
+            .expect("queue");
+        let held = queued
+            .iter()
+            .find(|c| c.body.contains("14000"))
+            .expect("the figure survives");
+        assert_eq!(
+            held.fact_type.as_deref(),
+            Some("state"),
+            "and it is filed as a claim, not as a standing rule"
+        );
+        assert_eq!(
+            held.excluded,
+            vec![Principal::User("zoe".to_owned())],
+            "fence included: {:?}",
+            held.excluded
+        );
+        let rules: i64 =
+            sqlx::query_scalar("SELECT COUNT(*) FROM fact_index WHERE source_path LIKE '%@rules%'")
+                .fetch_one(&pool)
+                .await
+                .unwrap();
+        assert_eq!(rules, 0, "no standing policy was filed off this afternoon");
+
+        let trace: String =
+            sqlx::query_scalar("SELECT payload FROM recall_traces ORDER BY id DESC LIMIT 1")
+                .fetch_one(&pool)
+                .await
+                .expect("a trace was written");
+        assert!(
+            trace.contains("a_rule_that_carries_its_own_exclusion_is_the_fact"),
+            "and the turn's record says the engine read it that way: {trace}"
+        );
+        drop(dir);
+    }
+
     #[tokio::test]
     async fn a_standing_directive_is_filed_only_because_the_turn_is_a_capture() {
         const TURN: &str = "One thing I keep forgetting to ask. Keep it short with me. \

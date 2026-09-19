@@ -193,6 +193,18 @@ semver-governed surface: breaking changes are called out explicitly.
   away without waiting — a shopping list, a note you asked for by name — is
   filed as its own and waits for a later pass.
 
+- **«The ceiling is 14k, and don't tell her» keeps the figure.** When you state
+  something and fence it in the same breath, the assistant sometimes hands both
+  halves over as one thing, worded as a standing rule. The memory has a guard
+  against a rule that only repeats a fence the same message already set — a
+  rule like that is a policy struck off one afternoon that outlives what it was
+  about — and the guard was reading that single package as its own repetition
+  and throwing it away, figure and all. Now it looks at what the REST of the
+  message said: if nothing else there keeps that person out, this is not a
+  repetition, it is the thing you said with the fence on it. What goes is the
+  standing-rule half; the claim is kept, and so is who it is kept from. The
+  turn's record says the memory read it that way.
+
 - **The trace shows how the memory decided who may read a fact.** A new panel,
   **Who this was filed for**, lists for each fact what your assistant answered:
   one line per group you belong to, with the reason it gave, and who the
