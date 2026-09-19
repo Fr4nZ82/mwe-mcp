@@ -170,6 +170,16 @@ semver-governed surface: breaking changes are called out explicitly.
   two facts, because who said it is part of what is stored, and that has not
   changed.
 
+  **And the assistant is asked, rather than told.** For this to work the
+  assistant has to hand the repetition over instead of deciding by itself that
+  you have said it before — and told that in prose, three times running, it
+  went on deciding. So it is now a question it answers before anything else:
+  *does this turn say something the memory already holds?* Whatever it answers
+  after that, a turn it marked as a repetition is kept, and the memory notes
+  on the turn's record that it had to overrule the assistant to keep it.
+  Whether two things are really the same thing was never the assistant's call:
+  the memory holds every fact and measures it.
+
   **And a fence still names its readers one by one.** A claim you ask to be
   kept quiet is written with people's names instead of «the parents», so
   whoever joins the parents next year does not walk into it — and a claim
