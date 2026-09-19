@@ -148,27 +148,35 @@ semver-governed surface: breaking changes are called out explicitly.
   does a claim put back in the queue for rewriting.
 
   And when the claim that waited turns out to be something the memory already
-  holds — which is the ordinary case, because the second time you say a thing
-  is usually the time you add the fence — the restriction lands on the claim
-  that is there instead of vanishing with the copy, and you are left with one
-  answer rather than a protected copy sitting beside a bare one. Same rule,
-  same limits, as when you say it and it is written straight away: it only
-  ever narrows, and only somebody who could have changed that claim anyway
-  can narrow it.
+  holds, the fence lands on the claim that is there instead of vanishing with
+  the copy: you are left with one answer, not a protected copy sitting beside
+  a bare one.
 
-  **And the whole of what you asked for lands, not half of it.** A claim you
-  ask to be kept quiet is written with its readers named one by one instead of
-  «the parents», so that whoever joins the parents next year does not walk
-  into it — and now a claim that was already in the memory gets the same
-  treatment when the fence reaches it. Everybody reading it a moment ago goes
-  on reading it, minus the person you named. The one thing the fence does NOT
-  do is hand the claim to somebody new: if you say it again and also widen who
-  may see it, those are two different things and the memory keeps them apart —
-  widening is something you say in your own words, and it leaves what was
-  there standing. Each of these changes shows up where every other change to
-  who may read a fact shows up, saying in a line that the readers were written
-  out one by one and which group they were read from — nobody typed a sentence
-  asking for this one, so without that line it would look like somebody had
+- **Saying a thing again is how you change who may know it.** Telling the
+  memory something you have told it before is not a wasted turn: it is usually
+  how the room changes. You said it privately, and now you say it in the
+  kitchen; or you say it again and add «but not her». Until now the second
+  telling either left a second copy beside the first — one the room could read
+  and one it could not — or was dropped as something already known, and with
+  it went the only new thing it carried, which is who was listening. **Your own
+  claim, said again, now settles who may see the one that is already there.**
+  Everybody who could read it still can, plus whoever the new telling lets in;
+  and anybody you have asked to keep it from stays out, even when the widening
+  names a group they are in. One answer, not two.
+
+  **This is only your own claim.** Somebody else saying the same thing about
+  you writes their own, and yours does not move — not its words, and not who
+  may read it. Two people telling the memory the same thing have always been
+  two facts, because who said it is part of what is stored, and that has not
+  changed.
+
+  **And a fence still names its readers one by one.** A claim you ask to be
+  kept quiet is written with people's names instead of «the parents», so
+  whoever joins the parents next year does not walk into it — and a claim
+  already in the memory gets the same treatment when the fence reaches it.
+  Every one of these changes shows up where any other change to who may read a
+  fact shows up, with a line saying what moved and why: nobody typed a
+  sentence asking for it, so without that line it would look like somebody had
   retyped the audience by hand.
 
 - **The trace shows how the memory decided who may read a fact.** A new panel,

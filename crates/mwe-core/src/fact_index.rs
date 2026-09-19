@@ -1314,8 +1314,8 @@ pub async fn set_acl(
     //
     // A person appears once. The column answers «may she read this», which a
     // second copy of her name cannot answer twice, and the repeat would then
-    // be read back and shown as two — the same rule [`restrict_to`] applies
-    // when it takes its union.
+    // be read back and shown as two — the same rule [`settle_audience`]
+    // applies when it takes its union.
     let excluded_json = excluded
         .map(|list| {
             let mut once: Vec<Principal> = Vec::with_capacity(list.len());
@@ -1344,28 +1344,35 @@ pub async fn set_acl(
     Ok(Some(prev))
 }
 
-/// **Keep a fact from `excluded`, and freeze its readers to `readers` while
-/// doing it** — nothing else on the row moves, and `updated_at` is bumped.
+/// **Write a fact's settled audience** — who reads it and who it is kept
+/// from, together; nothing else on the row moves, and `updated_at` is bumped.
 ///
-/// The write half of «and don't tell her» about something the memory already
-/// holds ([`crate::capture`]'s dedup gate).
+/// The write half of a claim the memory already holds being said again with
+/// something new about who may see it ([`crate::capture`]'s dedup gate):
+/// «and don't tell her», or the same sentence repeated where more people are
+/// listening.
 ///
 /// **The two columns move together because they are one act** (founder, Q7):
 /// a fact carrying an explicit exclusion is written with readers named PERSON
 /// by person and never by group, so that joining the group next year does not
 /// reach it. Writing the exclusion and leaving `group:parents` in the audience
 /// is the half he ruled against — it keeps her out today and lets tomorrow's
-/// members in. `readers` is that same audience already frozen by the caller,
-/// which is where the membership of the day is known.
+/// members in. Both lists arrive settled, from the one place that knows the
+/// membership of the day.
 ///
-/// **The exclusion can only ever narrow, and that is enforced HERE.** The
-/// union is taken inside the function, against what the row already holds,
-/// rather than by the caller handing in a complete list: a caller that passed
-/// only its own names would otherwise drop somebody else's restriction by
-/// writing over it, and that is a mistake nobody would see. Lifting a
-/// restriction is a different act — something a person says of that fact, with
-/// a receipt — and it does not come through this door at all ([`set_acl`]'s
-/// `excluded` argument).
+/// **Neither list may shrink, and that is enforced HERE.** Both unions are
+/// taken inside the function, against what the row already holds, rather than
+/// trusting a complete list from the caller: a caller that passed only its own
+/// names would otherwise drop somebody else's restriction, or a reader nobody
+/// withdrew, by writing over it — and that is a mistake nobody would see.
+/// Taking either back is a different act, something a person says of that
+/// fact, with a receipt, and it does not come through this door at all
+/// ([`set_acl`]).
+///
+/// The one thing that DOES leave the readers is a group the settled list
+/// resolved into its members: the caller hands in the people, the group's own
+/// name is not in them, and keeping it would put back exactly the promise
+/// about a changing list that resolving it was for.
 ///
 /// Returns the row's previous ACL for the audit row the caller writes, or
 /// `None` when `fact_id` has no active row.
@@ -1373,11 +1380,11 @@ pub async fn set_acl(
 /// # Errors
 ///
 /// `sqlx::Error` + JSON serialization failures on the principal lists.
-pub async fn restrict_to(
+pub async fn settle_audience(
     pool: &SqlitePool,
     fact_id: &FactId,
-    excluded: &[Principal],
     readers: &[Principal],
+    excluded: &[Principal],
 ) -> Result<Option<PrevAcl>> {
     let Some(row) = find_by_id(pool, fact_id).await? else {
         return Ok(None);
@@ -1385,18 +1392,29 @@ pub async fn restrict_to(
     if row.deleted_at.is_some() {
         return Ok(None);
     }
-    // The union is taken over the RESULT, not just over what arrives: a row
-    // written before the two roads were read as one question can already hold
-    // the same person twice, and a union that only guards its input carries
-    // that forward for ever. What is written is the set.
+    // Each union is taken over the RESULT, not just over what arrives: a row
+    // written before the two exclusion roads were read as one question can
+    // already hold the same person twice, and a union that only guards its
+    // input carries that forward for ever. What is written is the set.
     let mut union: Vec<Principal> = Vec::with_capacity(row.excluded_ids.len() + excluded.len());
     for principal in row.excluded_ids.iter().chain(excluded) {
         if !union.contains(principal) {
             union.push(principal.clone());
         }
     }
+    // A reader the caller did not carry over is kept, unless it is a group
+    // whose own members are now named: that one was resolved, not dropped.
+    let resolved: std::collections::HashSet<&Principal> = readers.iter().collect();
+    let mut allow: Vec<Principal> = readers.to_vec();
+    for principal in &row.allow_ids {
+        let was_resolved =
+            matches!(principal, Principal::Group(_)) && !resolved.contains(principal);
+        if !was_resolved && !allow.contains(principal) {
+            allow.push(principal.clone());
+        }
+    }
     let excluded_json = principals_to_json(&union)?;
-    let allow_json = principals_to_json(readers)?;
+    let allow_json = principals_to_json(&allow)?;
     let res = sqlx::query(
         "UPDATE fact_index SET excluded_ids = ?, allow_ids = ?, updated_at = ?
           WHERE fact_id = ? AND deleted_at IS NULL",
@@ -6184,11 +6202,11 @@ mod tests {
     /// **A caller that knows only its own names does not drop anybody
     /// else's.**
     ///
-    /// The union is taken inside `restrict_to`, against what the row already
-    /// holds, and not by the caller handing in a complete list: a second
-    /// caller passing only what it wants added would otherwise write over a
-    /// restriction somebody else put there, and nobody would see it happen.
-    /// The function can only ever narrow, and that is the point of it.
+    /// The unions are taken inside `settle_audience`, against what the row
+    /// already holds, and not by the caller handing in a complete list: a
+    /// second caller passing only what it wants added would otherwise write
+    /// over a restriction somebody else put there, or a reader nobody
+    /// withdrew, and nobody would see it happen.
     #[tokio::test]
     async fn adding_one_exclusion_never_drops_another() {
         let dir = tempfile::tempdir().expect("tempdir");
@@ -6213,14 +6231,14 @@ mod tests {
         let carol: Principal = "user:carol".parse().unwrap();
         let bob: Principal = "user:bob".parse().unwrap();
         assert!(
-            restrict_to(
+            settle_audience(
                 &pool,
                 &id,
-                std::slice::from_ref(&carol),
                 std::slice::from_ref(&bob),
+                std::slice::from_ref(&carol),
             )
             .await
-            .expect("restrict")
+            .expect("settle")
             .is_some()
         );
         let row = find_by_id(&pool, &id).await.unwrap().expect("row");
@@ -6232,7 +6250,7 @@ mod tests {
         assert_eq!(
             row.allow_ids,
             vec![bob.clone()],
-            "and the readers the caller froze are what the row now names"
+            "and the readers the caller settled are what the row now names"
         );
 
         // A row that already held a repeat comes out holding one name. The
@@ -6245,14 +6263,14 @@ mod tests {
             .await
             .expect("plant the repeat");
         assert!(
-            restrict_to(
+            settle_audience(
                 &pool,
                 &id,
-                std::slice::from_ref(&carol),
                 std::slice::from_ref(&bob),
+                std::slice::from_ref(&carol),
             )
             .await
-            .expect("restrict")
+            .expect("settle")
             .is_some()
         );
         let row = find_by_id(&pool, &id).await.unwrap().expect("row");
@@ -6265,14 +6283,14 @@ mod tests {
 
         // And saying the same name twice changes nothing.
         assert!(
-            restrict_to(
+            settle_audience(
                 &pool,
                 &id,
-                std::slice::from_ref(&carol),
                 std::slice::from_ref(&bob),
+                std::slice::from_ref(&carol),
             )
             .await
-            .expect("restrict")
+            .expect("settle")
             .is_some()
         );
         let row = find_by_id(&pool, &id).await.unwrap().expect("row");
@@ -6293,7 +6311,7 @@ mod tests {
     /// The column answers «may she read this», and a second copy of her name
     /// answers nothing — it is read back as two and shown as two. A caller
     /// handing in a complete list is the one place a repeat can arrive, since
-    /// [`restrict_to`] takes its union name by name.
+    /// [`settle_audience`] takes its union name by name.
     #[tokio::test]
     async fn a_person_named_twice_in_one_list_is_kept_out_once() {
         let dir = tempfile::tempdir().expect("tmp");

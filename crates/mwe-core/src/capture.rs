@@ -380,31 +380,24 @@ impl Audience<'_> {
         self.same_read_set_as(row) && row.sender_id.as_ref() == self.sender
     }
 
-    /// The same claim by the same person about the same subject, **kept from
-    /// somebody the stored one is not**.
+    /// **The same claim, by the same person, about the same subject** —
+    /// whatever either one says about who may read it.
     ///
-    /// «I'd rather Zoe didn't know» almost always means the thing said
-    /// yesterday too. Written as a second fact, the wish would sit beside a
-    /// copy she can still read, which is the shape of not being kept at all —
-    /// so this pair is not two facts, it is the old one with something added
-    /// to it.
+    /// The admission test for the rule that settles an audience on a fact the
+    /// memory already holds ([`apply_the_audience_to_the_fact_already_there`]).
+    /// Saying a thing again is how a person changes who may see it, in both
+    /// directions — «and don't tell her», or the same sentence repeated where
+    /// more people are listening — so neither the audience nor the exclusions
+    /// are compared HERE. They are what the rule is about to settle, and they
+    /// are not even written in the same alphabet on the two sides.
     ///
-    /// Strictly a RESTRICTION: the incoming exclusion has to contain
-    /// everything the row already keeps it from, and at least one name more.
-    /// A capture that keeps it from FEWER people is not this — lifting a
-    /// restriction is something somebody says of that fact, not something a
-    /// resemblance may do on their behalf.
-    ///
-    /// **The audience is NOT compared here**, because the two are not written
-    /// in the same alphabet: a claim carrying an exclusion has already had its
-    /// groups expanded into today's people, while the stored fact may still
-    /// name the group. That comparison needs the roster and so cannot live on
-    /// a pure predicate — [`the_same_readers_once_frozen`] does it.
-    fn restricts(&self, row: &FactIndexRow) -> bool {
-        &row.subject_id == self.subject
-            && row.sender_id.as_ref() == self.sender
-            && row.excluded_ids.iter().all(|p| self.excluded.contains(p))
-            && self.excluded.iter().any(|p| !row.excluded_ids.contains(p))
+    /// **The author is compared, and that is the one that keeps two people
+    /// apart** (founder, 2026-08-18 and 96w): two people telling the memory
+    /// the same thing are two facts, because who said it is part of what is
+    /// stored. Bob saying what Zoe already said gets his own fact, and hers is
+    /// left exactly as it was — audience included.
+    fn the_same_claim_as(&self, row: &FactIndexRow) -> bool {
+        &row.subject_id == self.subject && row.sender_id.as_ref() == self.sender
     }
 
     /// Whether `row` is readable by exactly the same people — subject plus
@@ -480,48 +473,64 @@ impl<'a> ChannelScope<'a> {
     }
 }
 
-/// **Put the exclusion on the fact that is already there, and fold into it.**
+/// **The audience reaches the fact that is already there, and the claim folds
+/// into it.**
 ///
-/// Somebody saying «and don't tell her» about something the memory already
-/// holds means the thing it already holds. Written as a new fact, the wish
-/// would sit beside a copy she can still read — which is not being kept from
-/// her at all, and nobody would be told. It is the shape a memory meets
-/// constantly, because the second time somebody says a thing is usually the
-/// time they add the fence.
+/// Saying a thing a second time is usually how a person changes who may see
+/// it: «and don't tell her» about something the memory already holds, or the
+/// same sentence said again in a room where more people are listening.
+/// Written as a new fact either one would sit beside the first — a copy she
+/// can still read, or a copy nobody in the room can — so the pair is not two
+/// facts. It is the one that is there, with its audience settled again.
 ///
-/// Four conditions, and each one is a way of not overstepping:
+/// **Who ends up reading it is the UNION**, taken through the same function
+/// that writes an audience anywhere else
+/// ([`crate::ingest::audience_without_the_excluded`]): the two audiences put
+/// together, then whoever is kept out taken back out of the result. So
+/// widening only ever adds people, and an exclusion **always wins** — a name
+/// somebody asked to keep a claim from does not come back through a later
+/// widening, not even one that names their group. The exclusions are unioned
+/// too, and never dropped: lifting one is something a person says of that
+/// fact, and it does not come through this door
+/// ([`fact_index::settle_audience`]).
 ///
-/// - the claim is the same claim, by the same author about the same subject,
-///   at the same dedup threshold every other fold uses;
-/// - the change NARROWS ([`Audience::restricts`]) — an exclusion this fact
-///   does not already carry, and none of its own dropped;
-/// - the same people read it, once both audiences are read in the same
-///   alphabet ([`the_same_readers_once_frozen`]);
+/// Three conditions, and each one is a way of not overstepping:
+///
+/// - the claim is the same claim, by the same author about the same subject
+///   ([`Audience::the_same_claim_as`]), at the same dedup threshold every
+///   other fold uses;
+/// - something actually moves — an audience or an exclusion the fact does not
+///   already have. A claim that changes neither is an ordinary duplicate and
+///   is folded away by the scan that handles those;
 /// - and this speaker could have rewritten that fact anyway
-///   ([`crate::acl::sender_may_rewrite`]) — otherwise a resemblance would let
-///   one person add a restriction to another person's memory, and the answer
-///   there is the ordinary one: their own fact, with their own wish on it, and
-///   the other left alone.
+///   ([`crate::acl::sender_may_rewrite`]).
 ///
-/// **Somebody else's fact is turned away by the second condition, before the
-/// fourth is reached**: [`Audience::restricts`] asks for the same AUTHOR, so a
-/// claim of Alice's never meets a fact Bob wrote. The authority test stands
-/// behind it as the floor, for the day that predicate is loosened — it is not
-/// what does the work today, and a reader who takes it for the guard is
-/// reading the wrong line. It is asked with no groups, because this path does
-/// not carry the speaker's: a fact a group answers for, which the speaker
-/// answers for through that group, would be rewritten on a guess. The same
-/// predicate asked with less, erring towards touching nothing.
+/// **Two people saying the same thing are still two facts** (founder,
+/// 2026-08-18, and again on 96w): who said it is part of what is stored, so a
+/// claim of Bob's never lands on a fact Zoe wrote — his own is written beside
+/// hers and hers does not move, audience included.
 ///
-/// **What lands is the whole act, not half of it** (founder, Q7): the fact
-/// takes the exclusion AND its readers are frozen to the people in its groups
-/// today, so that joining `parents` next year does not reach a fact somebody
-/// asked to be kept quiet. Only the names this claim adds are passed on — the
-/// union against what the row already holds is taken inside
-/// [`fact_index::restrict_to`], so no caller can drop somebody else's
-/// restriction by writing over it — and the change leaves the same audit row
-/// and the same receipt as every other per-fact permission change
-/// ([`receipt_for_the_frozen_readers`]).
+/// **Two conditions hold that, not one, and either alone is enough**: the
+/// predicate asks for the same author, and the authority test asks whether
+/// this speaker could have rewritten that fact. Take away either and Bob
+/// still gets his own fact; take away both and hers moves. They are kept
+/// apart because they answer different questions — one says which facts this
+/// rule is even about, the other says who may change one — and a reader
+/// looking for the guard will find whichever they look at first.
+///
+/// The authority test is asked with no groups, because this path does not
+/// carry the speaker's: a fact a group answers for, which the speaker answers
+/// for through that group, would be rewritten on a guess. The same predicate
+/// asked with less, erring towards touching nothing.
+///
+/// **What lands is the whole act, not half of it** (founder, Q7): where the
+/// settled audience carries an exclusion, its groups are resolved into the
+/// people in them today, so joining `parents` next year does not reach a fact
+/// somebody asked to be kept quiet. Where it carries none, a group stays a
+/// group — freezing an audience nobody asked to fence would quietly stop
+/// tomorrow's member from reading something meant for the room. The change
+/// leaves the same audit row and the same receipt as every other per-fact
+/// permission change ([`receipt_for_the_settled_audience`]).
 ///
 /// **Two roads ask this, and they ask it identically**: the live capture, and
 /// the hourly round promoting a claim that waited in the queue
@@ -532,7 +541,7 @@ impl<'a> ChannelScope<'a> {
 /// # Errors
 ///
 /// Surfaces the fact-index and roster reads and the write.
-pub(crate) async fn apply_exclusion_to_the_fact_already_there<'a>(
+pub(crate) async fn apply_the_audience_to_the_fact_already_there<'a>(
     pool: &SqlitePool,
     candidates: &'a [FactIndexRow],
     audience: &Audience<'_>,
@@ -541,30 +550,27 @@ pub(crate) async fn apply_exclusion_to_the_fact_already_there<'a>(
     speaker: &Principal,
     threshold: f32,
 ) -> std::result::Result<Option<(&'a FactIndexRow, f32)>, FactIndexError> {
-    if audience.excluded.is_empty() {
-        return Ok(None);
-    }
     let Principal::User(speaker_id) = speaker else {
         return Ok(None);
     };
-    let narrowing: Vec<&FactIndexRow> = candidates
+    let same_claim: Vec<&FactIndexRow> = candidates
         .iter()
-        .filter(|row| audience.restricts(row))
+        .filter(|row| audience.the_same_claim_as(row))
         .collect();
-    if narrowing.is_empty() {
+    if same_claim.is_empty() {
         return Ok(None);
     }
-    // Each eligible row carries the readers it would be written with, so the
+    // Each candidate carries the audience it would be written with, so the
     // list the winner is written with is never looked up again by id: an
-    // audience is the one thing here that must not be guessed at, and an empty
-    // list is not a harmless default but every reader removed.
-    let mut eligible: Vec<(&'a FactIndexRow, Vec<Principal>)> = Vec::with_capacity(narrowing.len());
-    for row in narrowing {
-        if let Some(readers) = the_same_readers_once_frozen(pool, row, audience).await? {
-            eligible.push((row, readers));
+    // audience is the one thing here that must not be guessed at, and an
+    // empty list is not a harmless default but every reader removed.
+    let mut moved: Vec<(&'a FactIndexRow, Settled)> = Vec::with_capacity(same_claim.len());
+    for row in same_claim {
+        if let Some(settled) = the_audience_once_settled(pool, row, audience).await? {
+            moved.push((row, settled));
         }
     }
-    let Some((row, similarity)) = closest_by_words(eligible.iter().map(|(r, _)| *r), channel, body)
+    let Some((row, similarity)) = closest_by_words(moved.iter().map(|(r, _)| *r), channel, body)
     else {
         return Ok(None);
     };
@@ -574,26 +580,21 @@ pub(crate) async fn apply_exclusion_to_the_fact_already_there<'a>(
     if !crate::acl::sender_may_rewrite(&row.subject_id, row.sender_id.as_ref(), speaker_id, &[]) {
         return Ok(None);
     }
-    let Some((row, readers)) = eligible.iter().find(|(r, _)| r.fact_id == row.fact_id) else {
+    let Some((row, settled)) = moved.iter().find(|(r, _)| r.fact_id == row.fact_id) else {
         return Ok(None);
     };
     let Some(prev) =
-        fact_index::restrict_to(pool, &row.fact_id, audience.excluded, readers).await?
+        fact_index::settle_audience(pool, &row.fact_id, &settled.readers, &settled.excluded)
+            .await?
     else {
         return Ok(None);
     };
-    // The same receipt any other per-fact permission change leaves, and it is
-    // recorded as a NARROWING because it cannot be anything else here: the
-    // readers written are this fact's own audience resolved into the people in
-    // it today, minus the one named, and everybody in that list was already
-    // reading the fact a moment ago — being in `parents` today is what makes
-    // somebody a reader of a fact filed for `parents`. What it takes away is
-    // the person named, and the members who join tomorrow.
-    //
-    // `acl::widens` is not asked: it compares principals as written, and this
-    // is the one change that deliberately rewrites the same audience in a
-    // different alphabet — it would read `group:parents` → `[bob, alice]` as
-    // two new readers and say the opposite of what happened.
+    let widening = crate::acl::widens(
+        &prev.prev_subject_id,
+        &prev.prev_allow_ids,
+        &row.subject_id,
+        &settled.readers,
+    );
     match crate::disclosure_audit::record(
         pool,
         &row.fact_id,
@@ -601,31 +602,95 @@ pub(crate) async fn apply_exclusion_to_the_fact_already_there<'a>(
         speaker_id,
         &prev,
         &row.subject_id,
-        readers,
+        &settled.readers,
         row.sender_id.as_ref(),
-        false,
+        widening,
     )
     .await
     {
         Ok(audit_id) => {
-            receipt_for_the_frozen_readers(pool, row, readers, &prev, audit_id, speaker_id).await;
+            receipt_for_the_settled_audience(pool, row, settled, &prev, audit_id, speaker_id).await;
         },
         Err(e) => {
             tracing::warn!(error = %e, fact_id = row.fact_id.as_str(),
-                "capture: exclusion applied but its audit row was not written");
+                "capture: audience settled but its audit row was not written");
         },
     }
     tracing::info!(
         fact_id = row.fact_id.as_str(),
         similarity,
-        readers = ?readers,
-        "capture: exclusion applied to an existing fact — the claim folds into it, \
-         and its readers are frozen to today's members"
+        readers = ?settled.readers,
+        excluded = ?settled.excluded,
+        "capture: the claim folds into the fact already there and settles its audience"
     );
     Ok(Some((row, similarity)))
 }
 
-/// **Say, where a person can read it, that the readers were frozen.**
+/// The audience a fact is about to be written with, and who it is kept from.
+#[derive(Debug, Clone)]
+pub(crate) struct Settled {
+    /// Readers, in the form they are stored in: people where an exclusion
+    /// resolved the groups, the groups themselves where none did.
+    readers: Vec<Principal>,
+    /// Everybody the fact is kept from, both sides together.
+    excluded: Vec<Principal>,
+}
+
+/// **What this claim settles about who may read the stored fact** — or `None`
+/// when it settles nothing and the pair is an ordinary duplicate.
+///
+/// The two audiences are not written in the same alphabet, which is the whole
+/// reason this cannot be a plain comparison: a claim carrying an exclusion has
+/// already had its groups resolved into the people in them today, while the
+/// fact it would fold into may still name the group. So both go through the
+/// same function that writes an audience anywhere else, over their union and
+/// their unioned exclusions, and what comes back is what the row is about to
+/// hold.
+///
+/// Returns `None` when neither the readers nor the exclusions move. That is
+/// the same claim said again with nothing added, and the ordinary dedup scan
+/// is what handles it — folding it here would rewrite `updated_at` and leave
+/// a receipt for a change that did not happen.
+async fn the_audience_once_settled(
+    pool: &SqlitePool,
+    row: &FactIndexRow,
+    audience: &Audience<'_>,
+) -> std::result::Result<Option<Settled>, FactIndexError> {
+    let mut excluded = row.excluded_ids.clone();
+    for principal in audience.excluded {
+        if !excluded.contains(principal) {
+            excluded.push(principal.clone());
+        }
+    }
+    let mut union = row.allow_ids.clone();
+    for principal in audience.allow {
+        if !union.contains(principal) {
+            union.push(principal.clone());
+        }
+    }
+    // The roster covers the groups named on BOTH sides. A group missing from
+    // it expands to nobody, which would quietly drop whichever audience named
+    // it.
+    let mut roster: std::collections::BTreeMap<String, Vec<String>> =
+        std::collections::BTreeMap::new();
+    for principal in &union {
+        if let Principal::Group(id) = principal
+            && !roster.contains_key(id)
+        {
+            roster.insert(id.clone(), crate::enrollment::members_for(pool, id).await?);
+        }
+    }
+    let (readers, excluded) =
+        crate::ingest::audience_without_the_excluded(union, excluded, &roster);
+    if crate::acl::reader_set(&row.subject_id, &readers, None, &excluded)
+        == crate::acl::reader_set(&row.subject_id, &row.allow_ids, None, &row.excluded_ids)
+    {
+        return Ok(None);
+    }
+    Ok(Some(Settled { readers, excluded }))
+}
+
+/// **Say, where a person can read it, what was settled and why.**
 ///
 /// The same born-applied receipt the permissions verb writes when somebody
 /// re-shares a fact from the chat ([`crate::promote::emit_acl_change_receipt`]
@@ -641,10 +706,10 @@ pub(crate) async fn apply_exclusion_to_the_fact_already_there<'a>(
 ///
 /// Best-effort. The permission has already moved and the audit row already
 /// stands; a receipt that cannot be written is logged and does not undo them.
-async fn receipt_for_the_frozen_readers(
+async fn receipt_for_the_settled_audience(
     pool: &SqlitePool,
     row: &FactIndexRow,
-    readers: &[Principal],
+    settled: &Settled,
     prev: &fact_index::PrevAcl,
     audit_id: i64,
     speaker_id: &str,
@@ -654,13 +719,18 @@ async fn receipt_for_the_frozen_readers(
         wiki_id: row.wiki_id.clone(),
         preview: row.text.chars().take(120).collect(),
         new_subject: row.subject_id.clone(),
-        new_allow: readers.to_vec(),
+        new_allow: settled.readers.clone(),
         prev: prev.clone(),
         audit_id,
-        widening: false,
+        widening: crate::acl::widens(
+            &prev.prev_subject_id,
+            &prev.prev_allow_ids,
+            &row.subject_id,
+            &settled.readers,
+        ),
         surface: crate::promote::ClosureSurface::Fact,
     };
-    // One recipient, and the fact is theirs to see: `Audience::restricts` asks
+    // One recipient, and the fact is theirs to see: `the_same_claim_as` asks
     // for the same author as the claim, and the speaker is that author (or,
     // on a claim with no author, the subject it is about). Either way the
     // preview this carries is text they already read — which is what the
@@ -669,100 +739,58 @@ async fn receipt_for_the_frozen_readers(
         pool,
         std::slice::from_ref(&applied),
         None,
-        Some(&the_freezing_in_words(&prev.prev_allow_ids, readers)),
+        Some(&the_settling_in_words(prev, settled)),
         Some(speaker_id),
         Some(speaker_id.to_owned()),
     )
     .await
     {
         tracing::warn!(error = %e, fact_id = row.fact_id.as_str(),
-            "capture: exclusion applied but its receipt was not written");
+            "capture: audience settled but its receipt was not written");
     }
 }
 
-/// The sentence on that receipt: which groups stopped being a promise about a
-/// list, and who the fact is now written for.
+/// The sentence on that receipt: what moved about who may read this, said in
+/// the words the change itself used.
 ///
-/// Named groups first because they are what changed — a reader looking at
-/// «Was readable by the parents» beside «Now readable by alice, bob» needs the
-/// line that says why, or the change reads as somebody having retyped the
-/// audience by hand.
-fn the_freezing_in_words(was: &[Principal], now: &[Principal]) -> String {
-    let groups: Vec<&str> = was
+/// Nobody typed a sentence asking for this one — it fell out of a claim
+/// folding away — so without the line a reader seeing «Was readable by the
+/// parents» beside «Now readable by alice, bob» reads it as somebody having
+/// retyped the audience by hand. Widening and freezing are named separately
+/// because they are the two different things that can have happened, and a
+/// reader needs to know which.
+fn the_settling_in_words(prev: &fact_index::PrevAcl, settled: &Settled) -> String {
+    let mut said: Vec<String> = Vec::with_capacity(2);
+    let added: Vec<String> = settled
+        .readers
+        .iter()
+        .filter(|p| !prev.prev_allow_ids.contains(p))
+        .map(ToString::to_string)
+        .collect();
+    if !added.is_empty() {
+        said.push(format!(
+            "said again to a wider room, so it is readable by {} as well",
+            added.join(", ")
+        ));
+    }
+    let resolved: Vec<&str> = prev
+        .prev_allow_ids
         .iter()
         .filter_map(|p| match p {
-            Principal::Group(id) => Some(id.as_str()),
-            Principal::User(_) => None,
+            Principal::Group(id) if !settled.readers.contains(p) => Some(id.as_str()),
+            _ => None,
         })
         .collect();
-    let people = now
-        .iter()
-        .map(ToString::to_string)
-        .collect::<Vec<_>>()
-        .join(", ");
-    if groups.is_empty() {
-        format!("kept from somebody, so its readers are named one by one: {people}")
-    } else {
-        format!(
-            "readers frozen to today's members of {}, minus whoever it is kept from: {people}",
-            groups.join(", ")
-        )
+    if !resolved.is_empty() {
+        said.push(format!(
+            "readers frozen to today's members of {}, minus whoever it is kept from",
+            resolved.join(", ")
+        ));
     }
-}
-
-/// **Do the claim and the stored fact reach the same people** — once both
-/// audiences are read in the same alphabet?
-///
-/// They are written in two, and that is the whole reason this cannot be a
-/// plain comparison. A claim carrying an exclusion has already had its groups
-/// resolved into the people in them today
-/// ([`crate::ingest::audience_without_the_excluded`]); the fact it would fold
-/// into may have been written without one and still name `group:parents`. Read
-/// as stored the two never match, and the fold this exists for could never
-/// happen.
-///
-/// So the stored fact's audience is put through the SAME freezing, with the
-/// same exclusion, and the two are compared after that. Returns those frozen
-/// readers when they match — they are what the row is about to be written with
-/// — and `None` when they do not, because then the claim is not the same claim
-/// said again with a fence: it reaches different people, and reaching
-/// different people is something a person says in their own words, through the
-/// permissions verb, with both facts left standing.
-async fn the_same_readers_once_frozen(
-    pool: &SqlitePool,
-    row: &FactIndexRow,
-    audience: &Audience<'_>,
-) -> std::result::Result<Option<Vec<Principal>>, FactIndexError> {
-    // The roster covers the groups named on BOTH sides. A group missing from
-    // it expands to nobody, which would quietly shrink whichever audience
-    // named it and let two lists that reach different people look alike —
-    // the claim's own groups are usually gone by here (the engine resolves
-    // them the moment a claim carries an exclusion) but a caller writing
-    // straight through `wiki_capture` hands them in as written.
-    let mut roster: std::collections::BTreeMap<String, Vec<String>> =
-        std::collections::BTreeMap::new();
-    for principal in row.allow_ids.iter().chain(audience.allow.iter()) {
-        if let Principal::Group(id) = principal
-            && !roster.contains_key(id)
-        {
-            roster.insert(id.clone(), crate::enrollment::members_for(pool, id).await?);
-        }
+    if said.is_empty() {
+        said.push("kept from somebody, and its readers are named one by one".to_owned());
     }
-    let excluded = audience.excluded.to_vec();
-    let (frozen, _) = crate::ingest::audience_without_the_excluded(
-        row.allow_ids.clone(),
-        excluded.clone(),
-        &roster,
-    );
-    let (claim, _) =
-        crate::ingest::audience_without_the_excluded(audience.allow.to_vec(), excluded, &roster);
-    if crate::acl::reader_set(&row.subject_id, &frozen, None, &[])
-        == crate::acl::reader_set(audience.subject, &claim, None, &[])
-    {
-        Ok(Some(frozen))
-    } else {
-        Ok(None)
-    }
+    said.join("; ")
 }
 
 pub(crate) fn best_dedup_candidate<'a, I>(
@@ -1187,15 +1215,15 @@ pub async fn wiki_capture_with_source(
         excluded: &req.excluded,
         sender: req.sender.as_ref(),
     };
-    // **The wish reaches the fact that is already there**, before the dedup
-    // scan below gets a chance to call the two claims different: that scan
-    // folds only rows whose audience matches AS STORED, and carrying an
-    // exclusion is what turns an audience from groups into the people in
-    // them, so the pair is written in two alphabets and it would never see it
-    // ([`apply_exclusion_to_the_fact_already_there`] carries the rule, and the
-    // hourly round asks it the same way).
+    // **The audience reaches the fact that is already there**, before the
+    // dedup scan below gets a chance to call the two claims different: that
+    // scan folds only rows whose audience matches AS STORED, so the telling
+    // that changes who may see it — a fence added, or a wider room — is
+    // exactly the one it cannot see
+    // ([`apply_the_audience_to_the_fact_already_there`] carries the rule, and
+    // the hourly round asks it the same way).
     let speaker = req.sender.as_ref().unwrap_or(&req.subject);
-    if let Some((matched_row, similarity)) = apply_exclusion_to_the_fact_already_there(
+    if let Some((matched_row, similarity)) = apply_the_audience_to_the_fact_already_there(
         pool,
         &candidates,
         &audience,
@@ -2466,16 +2494,17 @@ mod tests {
 
     // ---------- dedup ----------
 
-    /// **The same claim with a different audience is a different fact.**
+    /// **Saying your own claim again to a wider room widens the claim you
+    /// already made.**
     ///
-    /// Founder, 2026-07-28 and again 2026-08-18 (*«i duplicati possono
-    /// esistere … se due utenti hanno detto la stessa cosa ma con acl
-    /// diversa»*): merging two rows that are not readable by the same people
-    /// hands somebody something they were never told, and it cannot be undone.
-    /// A check on the subject alone would collapse these two into whichever
-    /// landed first.
+    /// Founder, 96w: the private telling and the one in the kitchen are the
+    /// same thing said twice, and a second row would leave a copy the room
+    /// cannot read sitting beside the one it can. The stored fact takes the
+    /// union of the two audiences and there is one fact, not two — which is
+    /// only true of the SAME author saying it again
+    /// ([`Audience::the_same_claim_as`]).
     #[tokio::test]
-    async fn the_same_claim_with_a_wider_audience_stays_a_second_fact() {
+    async fn saying_your_own_claim_again_to_a_wider_room_widens_it() {
         let dir = tempdir().unwrap();
         let tree = WikiTree::open(dir.path()).unwrap();
         seed_alice(&tree);
@@ -2483,7 +2512,7 @@ mod tests {
 
         // Private: readable by its subject alone.
         let private = sample_request("andiamo in Norvegia a luglio");
-        wiki_capture(&tree, &pool, embedder(), private)
+        let stored = wiki_capture(&tree, &pool, embedder(), private)
             .await
             .unwrap();
 
@@ -2495,16 +2524,78 @@ mod tests {
             .unwrap();
 
         assert!(
-            matches!(second.action, CaptureAction::Captured { .. }),
-            "a wider audience is not a duplicate: {:?}",
+            matches!(second.action, CaptureAction::Skipped { .. }),
+            "the second telling folds into the first: {:?}",
             second.action
         );
         assert_eq!(
             fact_index::count_active_in_wiki(&pool, "alice")
                 .await
                 .unwrap(),
+            1,
+            "one answer, not a private copy beside a shared one"
+        );
+        let row = fact_index::find_by_id(&pool, &stored.fact_id)
+            .await
+            .unwrap()
+            .expect("row");
+        assert_eq!(
+            row.allow_ids,
+            vec!["group:famiglia".parse::<Principal>().unwrap()],
+            "and the fact that was already there is the one the family reads: {:?}",
+            row.allow_ids
+        );
+    }
+
+    /// **Two PEOPLE saying the same thing are still two facts.**
+    ///
+    /// Founder, 2026-07-28 and again 2026-08-18 (*«i duplicati possono
+    /// esistere … se due utenti hanno detto la stessa cosa ma con acl
+    /// diversa»*), restated on 96w: who said it is part of what is stored, so
+    /// Bob repeating what Zoe told the memory gets his own fact and hers does
+    /// not move — not its words, and not who may read it. Merging them would
+    /// hand somebody something they were never told, and it cannot be undone.
+    #[tokio::test]
+    async fn another_persons_telling_is_its_own_fact_and_moves_nothing() {
+        let dir = tempdir().unwrap();
+        let tree = WikiTree::open(dir.path()).unwrap();
+        seed_alice(&tree);
+        let pool = make_pool().await;
+
+        // Zoe's own claim about herself, readable by her alone.
+        let mut hers = sample_request("non sopporto le cipolle");
+        hers.subject = "user:zoe".parse().unwrap();
+        hers.sender = Some("user:zoe".parse().unwrap());
+        let stored = wiki_capture(&tree, &pool, embedder(), hers).await.unwrap();
+
+        // Bob says the same thing about her, to the whole household.
+        let mut his = sample_request("Non sopporto le cipolle.");
+        his.subject = "user:zoe".parse().unwrap();
+        his.sender = Some("user:bob".parse().unwrap());
+        his.allow = vec!["group:famiglia".parse().unwrap()];
+        let second = wiki_capture(&tree, &pool, embedder(), his).await.unwrap();
+
+        assert!(
+            matches!(second.action, CaptureAction::Captured { .. }),
+            "his telling is his own fact: {:?}",
+            second.action
+        );
+        let row = fact_index::find_by_id(&pool, &stored.fact_id)
+            .await
+            .unwrap()
+            .expect("row");
+        assert!(
+            row.allow_ids.is_empty(),
+            "and hers is exactly as she left it — his room does not become hers: {:?}",
+            row.allow_ids
+        );
+        assert_eq!(
+            sqlx::query_scalar::<_, i64>("SELECT COUNT(*) FROM fact_index")
+                .fetch_one(&pool)
+                .await
+                .unwrap(),
             2,
-            "dropping either one loses an audience that cannot be recovered"
+            "two tellings, two facts"
         );
     }
 
@@ -2629,14 +2720,14 @@ mod tests {
         );
     }
 
-    /// **Lifting a restriction is not something a resemblance may do.**
+    /// **An exclusion always wins, and a widening does not lift it.**
     ///
-    /// The fold in the other direction: a claim that is kept from FEWER people
-    /// than the one already stored is not that claim with something added, it
-    /// is a claim that would quietly hand her back what somebody asked to keep
-    /// from her. Taking a restriction off is something a person says of that
-    /// fact, and it comes with a receipt — so this one is written as its own
-    /// fact and the stored wish stands.
+    /// The claim said again keeps nobody out, and its audience is the same
+    /// room — so it folds, as any of the author's own re-tellings does. What
+    /// it cannot do is hand her back what somebody asked to keep from her:
+    /// the exclusions are unioned, never dropped, so she stays out even
+    /// though this telling never mentioned her. Taking a restriction off is
+    /// something a person says of that fact, and it comes with a receipt.
     #[tokio::test]
     async fn a_resemblance_does_not_lift_a_restriction() {
         let dir = tempdir().unwrap();
@@ -2665,13 +2756,19 @@ mod tests {
             vec!["user:zoe".parse::<Principal>().unwrap()],
             "the wish stands: nothing here says it was taken back"
         );
+        assert!(
+            !row.allow_ids
+                .contains(&"user:zoe".parse::<Principal>().unwrap()),
+            "and she is not handed it back through the audience either: {:?}",
+            row.allow_ids
+        );
         assert_eq!(
             sqlx::query_scalar::<_, i64>("SELECT COUNT(*) FROM fact_index")
                 .fetch_one(&pool)
                 .await
                 .unwrap(),
-            2,
-            "two audiences, two facts"
+            1,
+            "one fact: the author telling it again is not a second one"
         );
     }
 
